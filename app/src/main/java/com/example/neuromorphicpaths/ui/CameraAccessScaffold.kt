@@ -60,6 +60,15 @@ import com.example.neuromorphicpaths.BuildConfig
 import com.example.neuromorphicpaths.R
 import com.example.neuromorphicpaths.wearables.WearablesViewModel
 
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.Button
+import androidx.compose.ui.platform.LocalContext
+import android.content.Intent
+import com.example.neuromorphicpaths.GlassesStreamService
+import com.example.neuromorphicpaths.debug.MockStreamTestActivity
+import com.example.neuromorphicpaths.debug.PipelineOverlayActivity
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CameraAccessScaffold(
@@ -138,7 +147,43 @@ fun CameraAccessScaffold(
               sheetState = bottomSheetState,
               modifier = Modifier.fillMaxSize(),
           ) {
-            MockDeviceKitScreen(modifier = Modifier.fillMaxSize())
+            val context = LocalContext.current
+            Column(modifier = Modifier.fillMaxSize()) {
+              Button(
+                  onClick = {
+                    val intent = Intent(context, GlassesStreamService::class.java)
+                    context.startForegroundService(intent)
+                    viewModel.hideDebugMenu()
+                  },
+                  modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
+              ) {
+                Text("Start Sidewalk Assistant")
+              }
+              
+              Button(
+                  onClick = {
+                    val intent = Intent(context, PipelineOverlayActivity::class.java)
+                    context.startActivity(intent)
+                    viewModel.hideDebugMenu()
+                  },
+                  modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
+              ) {
+                Text("Launch Pipeline Debug View")
+              }
+
+              Button(
+                  onClick = {
+                    val intent = Intent(context, MockStreamTestActivity::class.java)
+                    context.startActivity(intent)
+                    viewModel.hideDebugMenu()
+                  },
+                  modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
+              ) {
+                Text("Launch Mock Stream Test")
+              }
+              
+              MockDeviceKitScreen(modifier = Modifier.weight(1f))
+            }
           }
         }
       }
