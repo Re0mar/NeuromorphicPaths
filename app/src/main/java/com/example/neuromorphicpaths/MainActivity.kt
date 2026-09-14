@@ -1,24 +1,24 @@
 package com.example.neuromorphicpaths
 
-import android.os.Bundle
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
-import androidx.core.content.ContextCompat
-import com.meta.wearable.dat.core.Wearables
-
 import android.Manifest.permission.BLUETOOTH
 import android.Manifest.permission.BLUETOOTH_CONNECT
 import android.Manifest.permission.INTERNET
 import android.Manifest.permission.RECORD_AUDIO
 import android.content.pm.PackageManager
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions
 import androidx.activity.result.contract.ActivityResultContracts.RequestPermission
 import androidx.activity.viewModels
+import androidx.core.content.ContextCompat
+import com.example.neuromorphicpaths.ui.theme.DisplayAccessTheme
+import com.example.neuromorphicpaths.wearables.WearablesViewModel
+import com.meta.wearable.dat.core.Wearables
 import com.meta.wearable.dat.core.types.Permission
 import com.meta.wearable.dat.core.types.PermissionStatus
-import com.example.neuromorphicpaths.ui.CameraAccessScaffold
-import com.example.neuromorphicpaths.wearables.WearablesViewModel
+import com.meta.wearable.dat.externalsampleapps.displayaccess.ui.AppScaffold
 import kotlin.coroutines.resume
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -93,11 +93,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            CameraAccessScaffold(
-                viewModel = viewModel,
-                onRequestWearablesPermission = ::requestWearablesPermission,
-                onRequestRecordAudioPermission = ::requestRecordAudioPermission,
-            )
+            DisplayAccessTheme {
+                AppScaffold(
+                    wearablesViewModel = viewModel,
+                    onRequestWearablesPermission = ::requestWearablesPermission,
+                    onRequestRecordAudioPermission = ::requestRecordAudioPermission,
+                )
+            }
         }
     }
 

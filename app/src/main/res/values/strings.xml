@@ -77,6 +77,39 @@
     <string name="error_device_update_required" description="Error shown when a connected device needs a firmware update"><xliff:g id="device_name">%1$s</xliff:g> needs an update to work with this app.</string>
     <string name="error_permissions_required" description="Error shown when required Android permissions are denied">Allow Bluetooth, Bluetooth connect and internet permissions.</string>
 
+    <!-- Display Access Strings -->
+    <string name="samples_tab">Samples</string>
+    <string name="settings_tab">Settings</string>
+    <string name="samples_title">Display Samples</string>
+    <string name="settings_title">Connection Settings</string>
+    <string name="system_section">System</string>
+    <string name="devices_section">Devices</string>
+    <string name="compatibility_issue_title">Compatibility Issue</string>
+    <string name="compatibility_issue_both_message">Both your glasses firmware and the DAT app need updates.</string>
+    <string name="compatibility_issue_firmware_message">Your glasses firmware needs an update.</string>
+    <string name="compatibility_issue_dat_app_message">The DAT app needs an update.</string>
+    <string name="update_firmware_button">Update Firmware</string>
+    <string name="update_dat_app_button">Update DAT App</string>
+    <string name="status_unavailable">Unavailable</string>
+    <string name="status_available">Available</string>
+    <string name="status_registering">Registering...</string>
+    <string name="status_unregistering">Unregistering...</string>
+    <string name="status_registered">Registered</string>
+    <string name="unregister_button">Disconnect</string>
+    <string name="register_button">Connect glasses</string>
+    <string name="no_devices_found">No devices found</string>
+    <string name="device_update_required">Update required</string>
+    <string name="device_preparing">Preparing...</string>
+    <string name="device_connected">Connected</string>
+    <string name="device_disconnected">Disconnected</string>
+
+    <!-- Sample Apps -->
+    <string name="sample_car_maintenance">Walking Assist</string>
+    <string name="sample_car_maintenance_desc">Real time assistance for not walking into things anymore!</string>
+    <string name="sample_route_optimizer">Route Optimizer</string>
+    <string name="sample_route_optimizer_desc">Minimise surprise along your path!</string>
+    <string name="try_it_button">Try it</string>
+
     <!-- Streaming notification -->
     <string name="notification_channel_name" description="Streaming notification channel name">Camera streaming</string>
     <string name="notification_channel_description" description="Streaming notification channel description">Notifications for active camera streaming</string>

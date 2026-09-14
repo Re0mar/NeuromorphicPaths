@@ -12,7 +12,9 @@
 
 package com.example.neuromorphicpaths.wearables
 
+import com.meta.wearable.dat.core.types.Device
 import com.meta.wearable.dat.core.types.DeviceIdentifier
+import com.meta.wearable.dat.core.types.LinkState
 import com.meta.wearable.dat.core.types.RegistrationState
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.persistentListOf
@@ -25,6 +27,7 @@ data class RecentError(
 data class WearablesUiState(
     val registrationState: RegistrationState = RegistrationState.UNAVAILABLE,
     val devices: ImmutableList<DeviceIdentifier> = persistentListOf(),
+    val devicesMetadata: Map<DeviceIdentifier, Device> = emptyMap(),
     val recentError: RecentError? = null,
     val isDebugMenuVisible: Boolean = false,
     val isFirmwareUpdateRequired: Boolean = false,
@@ -38,4 +41,7 @@ data class WearablesUiState(
   val isRegistering: Boolean = registrationState == RegistrationState.REGISTERING
 
   val canStartRegistration: Boolean = canRegister && !isRegistering
+
+  val hasConnectedDevice: Boolean
+    get() = devicesMetadata.values.any { it.linkState == LinkState.CONNECTED }
 }

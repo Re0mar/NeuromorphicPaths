@@ -8,6 +8,7 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 
 private val DarkColorScheme = darkColorScheme(
@@ -17,19 +18,18 @@ private val DarkColorScheme = darkColorScheme(
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = Purple40,
-    secondary = PurpleGrey40,
-    tertiary = Pink40
-
-    /* Other default colors to override
-    background = Color(0xFFFFFBFE),
-    surface = Color(0xFFFFFBFE),
+    primary = Color(0xFF2147A8),
     onPrimary = Color.White,
+    primaryContainer = Color(0xFFF3F6FF),
+    onPrimaryContainer = Color(0xFF142B63),
+    secondary = Color(0xFF6B7280),
     onSecondary = Color.White,
-    onTertiary = Color.White,
-    onBackground = Color(0xFF1C1B1F),
-    onSurface = Color(0xFF1C1B1F),
-    */
+    surface = Color.White,
+    onSurface = Color(0xFF111827),
+    onSurfaceVariant = Color(0xFF667085),
+    outline = Color(0xFFD9E1F2),
+    background = Color(0xFFF4F7FC),
+    onBackground = Color(0xFF111827),
 )
 
 @Composable
@@ -53,5 +53,13 @@ fun NeuromorphicPathsTheme(
         colorScheme = colorScheme,
         typography = Typography,
         content = content
+    )
+}
+
+@Composable
+fun DisplayAccessTheme(content: @Composable () -> Unit) {
+    MaterialTheme(
+        colorScheme = LightColorScheme,
+        content = content,
     )
 }
