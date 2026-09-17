@@ -1,17 +1,20 @@
 
 # Abstract
 # Introduction
-In recent years, more and more preventable traffic accidents keep happening on Dutch roads because of distractions caused by smartphones [citation needed].  In light of this, our group has set out to research a potential aid that utilizes surprise to get the user to pay attention to the road when they encounter a dangerous situation.
+In recent years, more and more preventable traffic accidents keep happening on Dutch roads because of distracted driving caused by smartphones [(Rijniers, 2017)](#references). In light of this, our group has set out to research a potential aid that utilizes surprise to get the user to pay attention to the road when they encounter a potentially dangerous situation. To achieve this, we theorized that we could employ smart glasses utilizing computer vision to analyze the environment and infer the relative risk of potential collision using Fitts' law.
 
 # Background
-In a *year* study published by *blank*, we see that...
-
-Many of these are preventable one-sided accidents caused by drivers, cyclists and pedestrians leaving or crossing the road by accident or at the wrong moment. Our group has theorized that using wearable computer vision found in products such as the Meta AI Glasses, we could detect these dangerous situations and subsequently direct the users attention to the road to greatly decrease the number of these such accidents.
+A 2017 thesis published at the Radboud University concluded that reminding drivers to pay attention to the road has a significant effect on subsequent accidents [[1](#references)]. Many of these are preventable one-sided accidents caused by drivers, cyclists and pedestrians leaving or crossing the road by accident or at the wrong moment. Our leading theory is that using wearable computer vision found in products such as the Meta AI Glasses, we could detect these dangerous situations and subsequently direct the users attention to the road to greatly decrease the likelihood for an incident to occur.
 
 # Materials
-(What we used)
+- The glasses
+- Included phone
+- Radboud campus
+- Data sets
+- YOLO
 
-# Methods
+# Methodology
+
 (How we did it)
 
 *If you did an experiment, write about the motivation, earlier experiments in literature and why they didn't show what you are showing, used apparatus, participants and methods, results (just plain results in tables with statistical tests described in text), and a discussion of the results in light of the prior literature.*
@@ -24,3 +27,4 @@ Many of these are preventable one-sided accidents caused by drivers, cyclists an
 # Conclusion
 
 # References
+1. Rijniers, R. (2017). _Ogen op de weg ☺ Een vermindering van het smartphonegebruik op de N36 middels een gedragsinterventie langs de weg_ [Radboud Universiteit]. https://theses.ubn.ru.nl/items/c8935b8d-8583-455a-97e4-90905e7adb13/full
