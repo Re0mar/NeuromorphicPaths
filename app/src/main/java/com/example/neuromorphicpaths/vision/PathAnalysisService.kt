@@ -46,16 +46,23 @@ class PathAnalysisService : Service() {
         pathDetector = PathDetector(this)
     }
 
+    private var isProcessing = false
+
     /**
-     * Submits a frame for processing. This is non-blocking.
+     * Submits a frame for processing. This is non-blocking and skips frames if busy.
      */
     fun processFrame(bitmap: Bitmap) {
+        if (isProcessing) return
+        isProcessing = true
+        
         serviceScope.launch {
             try {
                 val result = pathDetector.detectPath(bitmap)
                 _detectionResult.value = result
             } catch (e: Exception) {
                 Log.e(TAG, "Error processing frame", e)
+            } finally {
+                isProcessing = false
             }
         }
     }

@@ -3,6 +3,7 @@ package com.example.neuromorphicpaths.vision
 import android.content.Context
 import android.graphics.Bitmap
 import android.util.Log
+import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.gpu.GpuDelegate
 import org.tensorflow.lite.support.common.FileUtil
@@ -19,13 +20,13 @@ import java.nio.ByteOrder
 class PathDetector(context: Context) {
     companion object {
         private const val TAG = "PathDetector"
-        private const val MODEL_PATH = "path_segmentation.tflite"
+        private const val MODEL_PATH = "best_int8.tflite"
     }
 
     private var interpreter: Interpreter? = null
     private var gpuDelegate: GpuDelegate? = null
-    private var inputImageWidth = 0
-    private var inputImageHeight = 0
+    private var inputImageWidth = 320
+    private var inputImageHeight = 320
 
     init {
         try {
@@ -61,42 +62,58 @@ class PathDetector(context: Context) {
         tensorImage = imageProcessor.process(tensorImage)
 
         // 2. Prepare output buffer
-        // Assuming the model outputs a segmentation mask of shape {1, height, width, num_classes}
-        val outputShape = interpreter.getOutputTensor(0).shape()
-        val outputBuffer = ByteBuffer.allocateDirect(outputShape.fold(1) { acc, i -> acc * i } * 4)
+        val outputTensor = interpreter.getOutputTensor(0)
+        val outputShape = outputTensor.shape() // e.g., {1, 320, 320, 1}
+        val dataType = outputTensor.dataType()
+        
+        // Allocate buffer based on data type
+        val outputBuffer = ByteBuffer.allocateDirect(outputTensor.numBytes())
         outputBuffer.order(ByteOrder.nativeOrder())
 
         // 3. Run inference
         interpreter.run(tensorImage.buffer, outputBuffer)
 
         // 4. Post-process output to find boundaries
-        // This is highly dependent on the model output format.
-        // For a segmentation mask, we would find the contours of the 'walkway' class.
-        return processMask(outputBuffer, outputShape)
+        return processOutput(outputBuffer, outputShape, dataType)
     }
 
-    private fun processMask(buffer: ByteBuffer, shape: IntArray): PathResult {
+    private fun processOutput(buffer: ByteBuffer, shape: IntArray, dataType: DataType): PathResult {
         val height = shape[1]
         val width = shape[2]
-        val boundaries = mutableListOf<List<Point>>()
-
-        // 1. Create a 2D array for the binary mask
-        val mask = Array(height) { BooleanArray(width) }
+        val numClasses = if (shape.size > 3) shape[3] else 1
+        
         buffer.rewind()
+        val mask = Array(height) { BooleanArray(width) }
+
         for (y in 0 until height) {
             for (x in 0 until width) {
-                // If model has multiple output channels, we take the one corresponding to 'walkway'
-                // Here we assume a single channel sigmoid output
-                val probability = buffer.float
+                val probability = when (dataType) {
+                    DataType.FLOAT32 -> buffer.float
+                    DataType.UINT8, DataType.INT8 -> {
+                        val value = buffer.get().toInt() and 0xFF
+                        value.toFloat() / 255.0f
+                    }
+                    else -> 0f
+                }
+                // Skip other classes if multi-class, assuming class 0 or class 1 is path
+                if (numClasses > 1) {
+                    for (c in 1 until numClasses) {
+                        when (dataType) {
+                            DataType.FLOAT32 -> buffer.float
+                            else -> buffer.get()
+                        }
+                    }
+                }
                 mask[y][x] = probability > 0.5f
             }
         }
 
-        // 2. Simple Boundary Extraction (Scanning for edges)
+        val boundaries = mutableListOf<List<Point>>()
         val leftPathPoints = mutableListOf<Point>()
         val rightPathPoints = mutableListOf<Point>()
 
-        for (y in 0 until height step 5) { // Sample every 5 rows
+        // Scan from bottom to top for better path tracking
+        for (y in height - 1 downTo 0 step 8) {
             var leftEdge = -1
             var rightEdge = -1
             for (x in 0 until width) {
@@ -111,9 +128,7 @@ class PathDetector(context: Context) {
             }
         }
 
-        // Combine into a single list of points forming a boundary
         if (leftPathPoints.isNotEmpty()) {
-            // Concatenate left edge (top down) and right edge (bottom up) to form a polygon
             val fullPath = mutableListOf<Point>()
             fullPath.addAll(leftPathPoints)
             fullPath.addAll(rightPathPoints.reversed())

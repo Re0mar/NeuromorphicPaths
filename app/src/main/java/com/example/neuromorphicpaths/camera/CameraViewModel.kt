@@ -29,6 +29,7 @@ import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
@@ -215,10 +216,17 @@ class CameraViewModel(
 
   private val pathPaint = Paint().apply {
     color = Color.GREEN
-    strokeWidth = 8f
+    strokeWidth = 10f
     style = Paint.Style.STROKE
     strokeJoin = Paint.Join.ROUND
     strokeCap = Paint.Cap.ROUND
+    alpha = 200
+  }
+
+  private val fillPaint = Paint().apply {
+    color = Color.GREEN
+    style = Paint.Style.FILL
+    alpha = 60
   }
 
   private fun setupImageReader(width: Int, height: Int) {
@@ -268,18 +276,28 @@ class CameraViewModel(
   private fun drawProcessedFrame(bitmap: Bitmap) {
     val surface = targetSurface ?: return
     try {
-      val canvas = surface.lockHardwareCanvas() ?: return
-      canvas.drawBitmap(bitmap, 0f, 0f, null)
+      // Use standard lockCanvas for better compatibility across devices
+      val canvas = surface.lockCanvas(null) ?: return
+      
+      // Draw the original camera frame
+      val destRect = Rect(0, 0, canvas.width, canvas.height)
+      canvas.drawBitmap(bitmap, null, destRect, null)
 
+      // Draw the detected path overlay
       val boundaries = uiState.value.pathBoundaries
       for (polygon in boundaries) {
+        if (polygon.size < 2) continue
+        
         val path = Path()
         for ((index, point) in polygon.withIndex()) {
-          val px = point.x * streamWidth.toFloat()
-          val py = point.y * streamHeight.toFloat()
+          val px = point.x * canvas.width.toFloat()
+          val py = point.y * canvas.height.toFloat()
           if (index == 0) path.moveTo(px, py) else path.lineTo(px, py)
         }
-        if (polygon.size > 2) path.close()
+        path.close()
+        
+        // Draw fill first, then outline
+        canvas.drawPath(path, fillPaint)
         canvas.drawPath(path, pathPaint)
       }
 
