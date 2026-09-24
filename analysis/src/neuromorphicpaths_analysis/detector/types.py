@@ -79,3 +79,7 @@ class PathResult:
     top_score: float
     box: tuple[float, float, float, float] | None
     debug_info: str
+    # Left, top, right, bottom of the region the mask was allowed into: the detection box plus
+    # any margin the decoder adds. A mask edge running along one of its sides is the box, not
+    # the path. None for label outlines, which have no box.
+    mask_bounds: tuple[float, float, float, float] | None = None

@@ -22,7 +22,7 @@ supply roll later. Position needs no focal length. Pitch and heading do.
 
 # Standard library imports
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 
 # Third party imports
@@ -50,6 +50,11 @@ MAX_RELIABLE_RMS_CELLS = 0.75
 MIN_RELIABLE_ROWS_PER_EDGE = 12
 # If more than this share of an edge's points had to be dropped, the edge is not one straight line.
 MAX_OUTLIER_SHARE = 0.4
+# An edge that stays within this of the mask region's side over its whole length is the side of
+# the detection box cutting the mask off, not the path. It fits a line perfectly, so the checks
+# above would pass it. With SidewalkVision's decoding it gave pitches of 72 and 4 degrees on
+# photos taken at about 20.
+BOX_SIDE_TOLERANCE_CELLS = 1.0
 
 
 class PovStatus(Enum):
@@ -68,9 +73,19 @@ class EdgeFit:
     rows_used: int
     rows_offered: int
     cell_px: float
+    # Vertical extent of the kept rows, in frame pixels.
+    top_px: float
+    bottom_px: float
+    on_box_side: bool = False
 
     def x_at(self, y_px: float) -> float:
         return self.slope * y_px + self.offset
+
+    def runs_along(self, x_px: float) -> bool:
+        """Whether the fitted line stays within BOX_SIDE_TOLERANCE_CELLS of a vertical line at x_px."""
+        # The fit is a straight line, so its largest distance from a vertical line is at an end.
+        distance = max(abs(self.x_at(self.top_px) - x_px), abs(self.x_at(self.bottom_px) - x_px))
+        return distance <= BOX_SIDE_TOLERANCE_CELLS * self.cell_px
 
     @property
     def rms_cells(self) -> float:
@@ -83,6 +98,7 @@ class EdgeFit:
             self.rms_px <= MAX_RELIABLE_RMS_CELLS * self.cell_px
             and self.rows_used >= MIN_RELIABLE_ROWS_PER_EDGE
             and self.rows_used >= (1 - MAX_OUTLIER_SHARE) * self.rows_offered
+            and not self.on_box_side
         )
 
 
@@ -149,6 +165,8 @@ def fit_edge(
         rows_used=int(kept.sum()),
         rows_offered=len(points),
         cell_px=cell_px,
+        top_px=float(y_values[kept].min()),
+        bottom_px=float(y_values[kept].max()),
     )
 
 
@@ -174,6 +192,10 @@ def estimate_pov(
     right = fit_edge(rows, False, frame_width, frame_height, cell_px)
     if left is None or right is None:
         return PovEstimate(PovStatus.TOO_FEW_ROWS, left, right)
+    if result.mask_bounds is not None:
+        bounds_left, _, bounds_right, _ = result.mask_bounds
+        left = replace(left, on_box_side=left.runs_along(bounds_left * frame_width))
+        right = replace(right, on_box_side=right.runs_along(bounds_right * frame_width))
 
     slope_difference = right.slope - left.slope
     if abs(slope_difference) < MIN_SLOPE_DIFFERENCE:

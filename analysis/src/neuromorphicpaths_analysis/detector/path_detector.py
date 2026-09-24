@@ -419,5 +419,19 @@ class PathDetector:
             geometry.to_image_y(bottom),
         )
         debug_info = f"Walkway {scores[best] * 100:.1f}% @anchor {best} | mask {int(grid_mask.sum())} cells"
+        mask_bounds = (
+            geometry.to_image_x(max(left - margin, 0.0)),
+            geometry.to_image_y(max(top - margin, 0.0)),
+            geometry.to_image_x(min(right + margin, 1.0)),
+            geometry.to_image_y(min(bottom + margin, 1.0)),
+        )
         read_edges = trace_path if settings.edge_rule is EdgeRule.TRACED_RUN else outermost_edges
-        return PathResult(geometry, grid_mask, read_edges(grid_mask, geometry), float(scores[best]), box, debug_info)
+        return PathResult(
+            geometry,
+            grid_mask,
+            read_edges(grid_mask, geometry),
+            float(scores[best]),
+            box,
+            debug_info,
+            mask_bounds,
+        )

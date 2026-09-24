@@ -154,3 +154,27 @@ def test_profile_names_parse_from_their_command_line_spelling() -> None:
     for name in CaptureProfileName:
         assert CaptureProfileName(name.value) is name
         assert CAPTURE_PROFILES[name].name is name
+
+
+def test_an_edge_along_the_mask_regions_side_is_the_box_not_the_path() -> None:
+    result = synthetic_result(0.4, 8.0, 0.0, 0.5, 1.5)
+    # The left edge runs straight down at 30% of the frame width, exactly where the mask region
+    # ends, the way a detection box cuts off a mask that spilled past the path.
+    boxed = [dataclasses.replace(row, left_x=0.3) for row in result.rows]
+
+    estimate = estimate_pov(dataclasses.replace(result, rows=boxed, mask_bounds=(0.3, 0.0, 1.0, 1.0)), BELGIAN)
+
+    assert estimate.left.on_box_side
+    assert not estimate.right.on_box_side
+    assert not estimate.reliable
+
+
+def test_an_edge_touching_the_mask_regions_side_only_at_its_end_is_kept() -> None:
+    result = synthetic_result(0.4, 8.0, 0.0, 0.5, 1.5)
+    # The box always touches the mask's widest row, so the lowest left point sits on its side.
+    lowest_left = min(row.left_x for row in result.rows)
+
+    estimate = estimate_pov(dataclasses.replace(result, mask_bounds=(lowest_left, 0.0, 1.0, 1.0)), BELGIAN)
+
+    assert not estimate.left.on_box_side
+    assert estimate.reliable

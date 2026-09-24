@@ -63,6 +63,14 @@ def csv_row(frame: Frame, detection_score: float, estimate: PovEstimate) -> dict
     }
 
 
+def unreliable_note(estimate: PovEstimate) -> str:
+    if estimate.reliable:
+        return ""
+    if estimate.left.on_box_side or estimate.right.on_box_side:
+        return "  UNRELIABLE, an edge is the detection box's side, not the path"
+    return "  UNRELIABLE, edge curved, blocked or too short"
+
+
 def print_row(frame: Frame, estimate: PovEstimate) -> None:
     time_text = format_optional(frame.time_s, 8, 2)
     if estimate.status is not PovStatus.OK:
@@ -73,7 +81,7 @@ def print_row(frame: Frame, estimate: PovEstimate) -> None:
         f"{format_optional(estimate.heading_deg, 11, 1)} {format_optional(estimate.position_fraction, 9, 2)} "
         f"{format_optional(estimate.camera_height_m, 9, 2)} {format_optional(estimate.path_width_m, 8, 2)}  "
         f"{estimate.left.rms_cells:.2f} / {estimate.right.rms_cells:.2f}"
-        f"{'' if estimate.reliable else '  UNRELIABLE, edge curved, blocked or too short'}"
+        f"{unreliable_note(estimate)}"
     )
 
 
