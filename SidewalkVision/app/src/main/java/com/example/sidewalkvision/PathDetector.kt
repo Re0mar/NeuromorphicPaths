@@ -301,7 +301,7 @@ class PathDetector(context: Context) {
             }
         }
 
-        val CONF_THRESHOLD = 0.001f
+        val CONF_THRESHOLD = 0.001f // TODO: consider 0.25. At 0.001, 2 of 3 no-sidewalk frames got a false path. testimage.png scores 0.89.
         if (bestIdx == -1 || bestScore < CONF_THRESHOLD) {
             return DetectionResult(bestScore, null, null, emptyList())
         }
@@ -336,7 +336,7 @@ class PathDetector(context: Context) {
                 }
                 val sigmoid = 1f / (1f + exp(-dot))
                 val inBox = ys >= (t - 0.1f) && ys <= (b + 0.1f) && xs >= (l - 0.1f) && xs <= (r + 0.1f)
-                maskPixels[mh][mw] = sigmoid > 0.35f && inBox
+                maskPixels[mh][mw] = sigmoid > 0.35f && inBox // TODO: consider 0.5 and no box margin, see extractSidewalkEdges.
             }
         }
 
@@ -387,6 +387,10 @@ class PathDetector(context: Context) {
         return DetectionResult(bestScore, box, origMaskBitmap, edgePoints)
     }
 
+    // Taking the first and last mask pixel per row spans the road when both sidewalks are in view.
+    // With the 0.35 threshold and 0.1 box margin the mask also spills past the path, and the box
+    // cuts it straight, which reads as a clean false edge. Both measured with analysis/ on this model.
+    // TODO: consider tracing the run under the bottom center upward, as the first app did.
     private fun extractSidewalkEdges(maskBitmap: Bitmap, cameraHeightMeters: Float = 1.2f): List<SidewalkEdgePoint> {
         val width = maskBitmap.width
         val height = maskBitmap.height
