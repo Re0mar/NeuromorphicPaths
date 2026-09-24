@@ -223,7 +223,7 @@ detector copies either one, chosen with `--decoder` on the `geometry` and `scori
 
 | Setting | `first-app` (default) | `sidewalk-vision` |
 |---|---|---|
-| Least confidence to accept a detection | 0.25 | 0.001 |
+| Least confidence to accept a detection | 0.25 | 0.25 |
 | Preference for detections low and central in the frame | yes | no |
 | Mask probability a cell needs to count as path | 0.5 | 0.35 |
 | Margin added around the detection box | none | 10% of the model input on each side |

@@ -48,9 +48,9 @@ CLIP_MARGIN_CELLS = 1
 
 # Mirrors of SidewalkVision/app/src/main/java/com/example/sidewalkvision/PathDetector.kt, each
 # citing the Kotlin it copies. Quoted rather than by line number, which edits would shift.
-SIDEWALK_VISION_CONF_THRESHOLD = 0.001  # val CONF_THRESHOLD = 0.001f
+SIDEWALK_VISION_CONF_THRESHOLD = 0.25  # const val CONFIDENCE_THRESHOLD = 0.25f
 SIDEWALK_VISION_MASK_PROBABILITY = 0.35  # sigmoid > 0.35f
-SIDEWALK_VISION_BOX_MARGIN = 0.1  # ys >= (t - 0.1f) and so on, in fractions of the model input
+SIDEWALK_VISION_BOX_MARGIN = 0.1  # private const val MASK_BOX_MARGIN = 0.1f
 
 
 class DecoderPreset(Enum):
