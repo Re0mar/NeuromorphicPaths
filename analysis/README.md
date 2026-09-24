@@ -72,6 +72,17 @@ rather than a visible edge.
 .venv\Scripts\python -m neuromorphicpaths_analysis.scoring --frames data\frames --labels data\labels
 ```
 
+With a capture profile (below), scoring also compares the camera point of view worked out
+from the model's edges with the one worked out from the label's: pitch in degrees, position in
+path widths and height in meters. That translates edge accuracy into the numbers the rider math
+uses.
+
+**Estimate the camera's point of view.**
+
+```powershell
+.venv\Scripts\python -m neuromorphicpaths_analysis.geometry --frames data\frames --profile belgian-dataset --path-width 2.0
+```
+
 **Run the tests.**
 
 ```powershell
@@ -107,6 +118,43 @@ the path's edge, so it's left out of the edge error. The app doesn't flag clippi
 copy here does, with a one-cell margin, because the model's box usually stops just short of
 the border.
 
+## Point of view
+
+The `geometry` layer works out where the camera is and how it's pointed, from the two path
+edges the detector traces. Each edge gets a straight-line fit over the lower half of the frame.
+The two lines meet at the vanishing point, which lies on the horizon. From that:
+
+| Output | Meaning | Needs |
+|---|---|---|
+| Pitch | How far the camera tilts down, in degrees | focal length |
+| Heading | Angle between where the camera points and where the path goes. Positive means the path heads off to the right | focal length |
+| Position | Where the camera stands across the path, 0 at the left edge, 1 at the right | nothing, focal length makes it exact |
+| Height | Camera height in meters | an assumed path width |
+| Width | Path width in meters | a known camera height |
+
+It assumes flat ground, a straight path over the fitted rows, and no sideways tilt of the camera
+(roll). The Neon's IMU can supply roll later.
+
+An estimate is marked **unreliable** when either edge wanders from its line by more than 1% of
+the frame width, or rests on fewer than 12 rows. A curve, a parked bike over the edge, or a path
+that mostly runs off the frame all trigger it. Short fits matter most: two estimates of the same
+frame from nine rows per edge were seen to disagree by 17 degrees of pitch. Only frames where
+both the model's and the label's estimates are reliable go into the scoring averages.
+
+**Capture profiles.** A profile records what's known about one capture setup: focal length, a
+camera height if fixed, and a path width to assume. Pick one with `--profile`, and override any
+field for a single run with `--focal-length`, `--camera-height` and `--path-width`. Profiles live
+in `geometry/capture_profiles.py`. Adding a phone or another pair of glasses means adding a
+member to `CaptureProfileName` and an entry to `CAPTURE_PROFILES`.
+
+| Profile | Focal length | Height | Path width |
+|---|---|---|---|
+| `belgian-dataset` | 1450 px at 1920 wide, assumed | varies by frame | 1.5 m, assumed |
+| `neon` | from each headset's `scene_camera.json` | the participant's eye height | 1.5 m, assumed |
+| `meta-glasses` | unknown until calibrated | not fixed | 1.5 m, assumed |
+
+Neon frames need undistorting before fitting, because the wide lens bends straight edges.
+
 ## Layers
 
 The package is split into layers with a fixed direction of dependency.
@@ -116,17 +164,14 @@ time.
 | Layer | Holds | May use | Must not use |
 |---|---|---|---|
 | `detector` | Copy of the app's detector | the model file, numpy, OpenCV, Pillow, LiteRT | anything else in the package |
-| `scoring` | IoU and edge error | `detector` | `labeling`. Labels are plain mask files to it |
-| `labeling` | SAM 2 assisted labeling | torch, transformers | `detector`, `scoring` |
+| `geometry` | Point of view and capture profiles | `detector` | `scoring`, `labeling` |
+| `scoring` | IoU, edge error, point-of-view differences | `detector`, `geometry` | `labeling`. Labels are plain mask files to it |
+| `labeling` | SAM 2 assisted labeling | torch, transformers | `detector`, `geometry`, `scoring` |
 
 Only `labeling` may import torch or transformers, which keeps the heavy install optional.
 
-Planned, not built yet:
-
-- `geometry` will estimate the vanishing point, heading and position across the path from the
-  traced outline. It may use `detector`.
-- `recordings` will read Neon exports: scene video, frame timestamps, IMU and the camera
-  calibration. It will use no other layer.
+Planned, not built yet: `recordings` will read Neon exports (scene video, frame timestamps, IMU
+and the camera calibration) and use no other layer.
 
 A new layer needs a row in `tests/test_layers.py`. The test fails until it has one.
 

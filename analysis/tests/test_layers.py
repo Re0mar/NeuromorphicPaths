@@ -16,10 +16,12 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "src" / PACKAGE_NAME
 # until it gets a row here, so the rules cannot be skipped by accident.
 ALLOWED_LAYERS = {
     "detector": set(),
-    "scoring": {"detector"},
+    "geometry": {"detector"},
+    "scoring": {"detector", "geometry"},
     "labeling": set(),
 }
 REQUIRED_LAYERS = {
+    "geometry": {"detector"},
     "scoring": {"detector"},
 }
 # The labeling extra is a multi-gigabyte install. Nothing outside labeling may need it.

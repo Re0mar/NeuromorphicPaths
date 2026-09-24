@@ -8,6 +8,10 @@ it cannot produce at its resolution. Two numbers per frame:
   dominated by the easy middle of the path.
 - Edge error: how far the traced left and right edges sit from the label's, in path widths,
   over the lower part of the frame. This is the number the rider-position math reads.
+
+Given a capture profile, it also runs the point-of-view estimate on both outlines and reports
+how far the model moves pitch, position and height away from what the label gives. That turns
+edge accuracy into the units the rest of the project uses.
 """
 
 # Standard library imports
@@ -19,6 +23,7 @@ import numpy
 
 # Local package imports
 from neuromorphicpaths_analysis.detector import LetterboxGeometry, PathResult, TracedRow, trace_path
+from neuromorphicpaths_analysis.geometry import CaptureProfile, PovEstimate, PovStatus, estimate_pov
 
 # Only the part of the frame near the rider feeds the position math.
 DEFAULT_MIN_IMAGE_Y = 0.5
@@ -28,12 +33,41 @@ LABEL_CELL_THRESHOLD = 0.5
 
 
 @dataclass(frozen=True)
+class PovDifference:
+    """Model estimate minus label estimate. None where either side could not be estimated."""
+
+    pitch_deg: float | None
+    position_fraction: float | None
+    camera_height_m: float | None
+    # Only a difference between two reliable estimates says anything about the model.
+    both_reliable: bool = False
+
+
+@dataclass(frozen=True)
 class FrameScore:
     iou: float
     edge_error_mean: float | None
     edge_error_max: float | None
     sides_compared: int
     rows_missed: int
+    pov_difference: PovDifference | None = None
+
+
+def difference(model_value: float | None, label_value: float | None) -> float | None:
+    if model_value is None or label_value is None:
+        return None
+    return model_value - label_value
+
+
+def pov_difference(model: PovEstimate, label: PovEstimate) -> PovDifference:
+    if model.status is not PovStatus.OK or label.status is not PovStatus.OK:
+        return PovDifference(None, None, None)
+    return PovDifference(
+        pitch_deg=difference(model.pitch_deg, label.pitch_deg),
+        position_fraction=difference(model.position_fraction, label.position_fraction),
+        camera_height_m=difference(model.camera_height_m, label.camera_height_m),
+        both_reliable=model.reliable and label.reliable,
+    )
 
 
 def label_to_grid(label_mask: numpy.ndarray, geometry: LetterboxGeometry, grid_shape: tuple[int, int]) -> numpy.ndarray:
@@ -118,12 +152,18 @@ def edge_errors(
     return errors, rows_missed
 
 
-def score_frame(result: PathResult, label_mask: numpy.ndarray, min_image_y: float = DEFAULT_MIN_IMAGE_Y) -> FrameScore:
+def score_frame(
+    result: PathResult,
+    label_mask: numpy.ndarray,
+    min_image_y: float = DEFAULT_MIN_IMAGE_Y,
+    profile: CaptureProfile | None = None,
+) -> FrameScore:
     """
     Score one detector result against its label.
 
     :param result: Detector output for the frame.
     :param label_mask: Boolean label at the frame's original resolution.
+    :param profile: When given, the point-of-view estimates are compared too.
     :rtype: FrameScore
     """
     grid_shape = result.grid_mask.shape
@@ -133,10 +173,18 @@ def score_frame(result: PathResult, label_mask: numpy.ndarray, min_image_y: floa
 
     errors, rows_missed = edge_errors(result.rows, truth_rows, min_image_y)
     absolute = [abs(error) for error in errors]
+
+    pov = None
+    if profile is not None:
+        # The label is traced exactly like the model's mask, so both estimates see the same kind of input.
+        label_result = PathResult(result.geometry, truth_grid, truth_rows, 1.0, None, "label")
+        pov = pov_difference(estimate_pov(result, profile, min_image_y), estimate_pov(label_result, profile, min_image_y))
+
     return FrameScore(
         iou=grid_iou(result.grid_mask, truth_grid, content),
         edge_error_mean=sum(absolute) / len(absolute) if absolute else None,
         edge_error_max=max(absolute) if absolute else None,
         sides_compared=len(errors),
         rows_missed=rows_missed,
+        pov_difference=pov,
     )
