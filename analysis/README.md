@@ -9,25 +9,36 @@ measured here is a score for the model the app runs.
 
 ## Install
 
-Python 3.12 or newer. From this folder:
+Python 3.12 or newer. From this folder, create the environment once:
 
-```powershell
+```bash
 python -m venv .venv
-.venv\Scripts\python -m pip install -e ".[dev]"
+```
+
+Then activate it in each new terminal. The script is in a different place on Windows and on
+Linux or macOS. After that, every command in this README is the same on all three.
+
+```bash
+source .venv/Scripts/activate   # Windows, in Git Bash
+source .venv/bin/activate       # Linux or macOS
+```
+
+```bash
+python -m pip install -e ".[dev]"
 ```
 
 That covers the detector, scoring and tests. Labeling also needs torch and SAM 2, a
 multi-gigabyte install, so it's a separate extra:
 
-```powershell
-.venv\Scripts\python -m pip install -e ".[labeling]"
+```bash
+python -m pip install -e ".[labeling]"
 ```
 
 For labeling on an NVIDIA GPU, install the CUDA build of torch first. Otherwise pip installs a
 CPU-only build, and each click takes several seconds instead of well under one.
 
-```powershell
-.venv\Scripts\python -m pip install torch --index-url https://download.pytorch.org/whl/cu126
+```bash
+python -m pip install torch --index-url https://download.pytorch.org/whl/cu126
 ```
 
 ## Run
@@ -38,9 +49,9 @@ passers-by, so none of it is committed.
 **Label frames.** `propose` starts each frame from one click at the bottom center. `refine` adds
 clicks. Coordinates are pixels of the original frame, read off the grid drawn on the overlay.
 
-```powershell
-.venv\Scripts\python -m neuromorphicpaths_analysis.labeling propose data\frames\*.jpg --out data\labels
-.venv\Scripts\python -m neuromorphicpaths_analysis.labeling refine data\frames\00008.jpg --out data\labels --pos 1050,700 --neg 400,700
+```bash
+python -m neuromorphicpaths_analysis.labeling propose data/frames/*.jpg --out data/labels
+python -m neuromorphicpaths_analysis.labeling refine data/frames/00008.jpg --out data/labels --pos 1050,700 --neg 400,700
 ```
 
 Each frame gets `<name>_mask.png` (the label), `<name>_overlay.png` (for review) and
@@ -68,8 +79,8 @@ rather than a visible edge.
 
 **Score the model.**
 
-```powershell
-.venv\Scripts\python -m neuromorphicpaths_analysis.scoring --frames data\frames --labels data\labels
+```bash
+python -m neuromorphicpaths_analysis.scoring --frames data/frames --labels data/labels
 ```
 
 With a capture profile (below), scoring also compares the camera point of view worked out
@@ -77,17 +88,26 @@ from the model's edges with the one worked out from the label's: pitch in degree
 path widths and height in meters. That translates edge accuracy into the numbers the rider math
 uses.
 
-**Estimate the camera's point of view.**
+**Estimate the camera's point of view.** Give it one image, a folder of images or a video. For
+video, `--every 6` keeps one frame in six. `--csv` also saves every field, one row per frame,
+including the vanishing point and how well each edge fitted.
 
-```powershell
-.venv\Scripts\python -m neuromorphicpaths_analysis.geometry --frames data\frames --profile belgian-dataset --path-width 2.0
+```bash
+python -m neuromorphicpaths_analysis.geometry ../artifacts/images/IMG_2319.JPG --profile iphone-12-ultra-wide
+python -m neuromorphicpaths_analysis.geometry data/walk.mp4 --every 6 --csv data/walk_pov.csv --path-width 2.0
 ```
 
 **Run the tests.**
 
-```powershell
-.venv\Scripts\python -m pytest
+```bash
+python -m pytest
 ```
+
+Most tests use small synthetic inputs. `tests/test_geometry.py` projects a path through a
+simulated camera with known height, pitch, heading and position, and checks each one comes back
+exactly. `tests/test_pipeline.py` runs the whole chain on `artifacts/images/IMG_2319.JPG`: the
+real model, the outline, the point of view, and the geometry command on that image and on a short
+video made from it. Those end-to-end tests skip themselves if the model or the photo is missing.
 
 ## What the scores mean
 
@@ -152,6 +172,7 @@ member to `CaptureProfileName` and an entry to `CAPTURE_PROFILES`.
 | `belgian-dataset` | 1450 px at 1920 wide, assumed | varies by frame | 1.5 m, assumed |
 | `neon` | from each headset's `scene_camera.json` | the participant's eye height | 1.5 m, assumed |
 | `meta-glasses` | unknown until calibrated | not fixed | 1.5 m, assumed |
+| `iphone-12-ultra-wide` | 1568 px at 4032 wide, from the photo's EXIF | hand-held, varies | 1.5 m, assumed |
 
 Neon frames need undistorting before fitting, because the wide lens bends straight edges.
 
@@ -164,14 +185,16 @@ time.
 | Layer | Holds | May use | Must not use |
 |---|---|---|---|
 | `detector` | Copy of the app's detector | the model file, numpy, OpenCV, Pillow, LiteRT | anything else in the package |
-| `geometry` | Point of view and capture profiles | `detector` | `scoring`, `labeling` |
+| `recordings` | Reading frames from an image, a folder or a video | OpenCV, Pillow | anything else in the package |
+| `geometry` | Point of view and capture profiles | `detector`, and `recordings` for its command only | `scoring`, `labeling` |
 | `scoring` | IoU, edge error, point-of-view differences | `detector`, `geometry` | `labeling`. Labels are plain mask files to it |
 | `labeling` | SAM 2 assisted labeling | torch, transformers | `detector`, `geometry`, `scoring` |
 
 Only `labeling` may import torch or transformers, which keeps the heavy install optional.
 
-Planned, not built yet: `recordings` will read Neon exports (scene video, frame timestamps, IMU
-and the camera calibration) and use no other layer.
+Planned, not built yet: a Neon reader in `recordings` for the parts of a Neon export beyond the
+video, namely per-frame timestamps, IMU and the camera calibration. Until then, video frames are
+timed from their index and the file's frame rate, which is exact only for constant-rate video.
 
 A new layer needs a row in `tests/test_layers.py`. The test fails until it has one.
 

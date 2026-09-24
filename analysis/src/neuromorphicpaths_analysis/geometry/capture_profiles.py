@@ -15,6 +15,7 @@ class CaptureProfileName(Enum):
     BELGIAN_DATASET = "belgian-dataset"
     NEON = "neon"
     META_GLASSES = "meta-glasses"
+    IPHONE_12_ULTRA_WIDE = "iphone-12-ultra-wide"
 
 
 @dataclass(frozen=True)
@@ -75,5 +76,15 @@ CAPTURE_PROFILES: dict[CaptureProfileName, CaptureProfile] = {
         camera_height_m=None,
         path_width_m=DEFAULT_PATH_WIDTH_M,
         note="Portrait 504x896 stream. Focal length unknown until calibrated.",
+    ),
+    CaptureProfileName.IPHONE_12_ULTRA_WIDE: CaptureProfile(
+        name=CaptureProfileName.IPHONE_12_ULTRA_WIDE,
+        # EXIF gives 14 mm in 35 mm film terms, and film is 36 mm wide: 14 / 36 of the image width.
+        # The phone corrects this lens's distortion in the JPEG, so straight edges stay straight.
+        focal_length_px=4032 * 14 / 36,
+        reference_width_px=4032,
+        camera_height_m=None,
+        path_width_m=DEFAULT_PATH_WIDTH_M,
+        note="The 0.5x lens, as in the repository's test photos. Hand-held, so height varies.",
     ),
 }

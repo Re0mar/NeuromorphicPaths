@@ -16,12 +16,14 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "src" / PACKAGE_NAME
 # until it gets a row here, so the rules cannot be skipped by accident.
 ALLOWED_LAYERS = {
     "detector": set(),
-    "geometry": {"detector"},
+    "recordings": set(),
+    # Only the geometry command reads frames. The estimate itself takes a detector result.
+    "geometry": {"detector", "recordings"},
     "scoring": {"detector", "geometry"},
     "labeling": set(),
 }
 REQUIRED_LAYERS = {
-    "geometry": {"detector"},
+    "geometry": {"detector", "recordings"},
     "scoring": {"detector"},
 }
 # The labeling extra is a multi-gigabyte install. Nothing outside labeling may need it.
