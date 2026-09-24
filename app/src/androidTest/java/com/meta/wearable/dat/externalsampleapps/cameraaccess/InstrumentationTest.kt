@@ -35,6 +35,8 @@ import androidx.test.filters.LargeTest
 import androidx.test.platform.app.InstrumentationRegistry
 import com.meta.wearable.dat.core.types.Permission
 import com.meta.wearable.dat.core.types.PermissionStatus
+import com.example.neuromorphicpaths.MainActivity
+import com.example.neuromorphicpaths.R
 import com.example.neuromorphicpaths.stream.VideoCaptureHandler
 import com.meta.wearable.dat.mockdevice.MockDeviceKit
 import com.meta.wearable.dat.mockdevice.api.GlassesModel

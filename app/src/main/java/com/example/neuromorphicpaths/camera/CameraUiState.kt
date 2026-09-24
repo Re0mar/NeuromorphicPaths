@@ -39,6 +39,7 @@ data class CameraUiState(
     val isCapturingPhoto: Boolean = false,
     val isRecording: Boolean = false,
     val recordingElapsedSeconds: Long = 0L,
+    val groundSpeedMetersPerSecond: Double = 0.0,
     // Sound-in-video toggle (phone mic), locked once recording starts.
     val includeAudioInStream: Boolean = true,
     // The capture currently shown in the shared preview/share sheet (photo or video).

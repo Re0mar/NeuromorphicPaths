@@ -441,6 +441,12 @@ private fun TopBar(
                 active = ui.isStreaming,
                 present = ui.hasStream,
             )
+            StatusChip(
+                label = stringResource(R.string.status_speed),
+                value = String.format(Locale.ROOT, "%.2f m/s", ui.groundSpeedMetersPerSecond),
+                active = ui.isStreaming,
+                present = ui.hasStream,
+            )
         }
 
         Spacer(modifier = Modifier.weight(1f))
