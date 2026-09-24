@@ -48,15 +48,27 @@ data class DetectionResult(
     // When the camera captured the frame, from CameraX, in nanoseconds on the camera's clock. Time
     // to the edge needs the real gap between analyzed frames, which varies as frames are dropped.
     // Null for still images.
-    val captureTimeNanos: Long? = null
+    val captureTimeNanos: Long? = null,
+    // Left, top, right, bottom of the region the mask was allowed into: the box plus its margin,
+    // normalized. A mask edge running along one of its sides is the box, not the sidewalk.
+    val maskBounds: FloatArray? = null,
+    // Camera pose from the sidewalk's edges. Null when nothing was detected.
+    val pose: PoseEstimate? = null
 )
 
 class PathDetector(context: Context) {
     companion object {
         private const val TAG = "PathDetector"
 
+        // Least score to accept a detection. At 0.001 a path was found in 2 of 3 frames with
+        // none, while real sidewalks score around 0.89. The screens' labels use it too.
+        const val CONFIDENCE_THRESHOLD = 0.25f
+
         // Within this many mask cells of the image's side, an edge point counts as clipped.
         private const val CLIP_MARGIN_CELLS = 1
+
+        // How far past the detection box mask cells are still kept, in fractions of the model input.
+        private const val MASK_BOX_MARGIN = 0.1f
 
         // Box values above this are pixels, at or below it normalized. See isPixelCoords.
         private const val NORMALIZED_COORDINATE_LIMIT = 2f
@@ -136,7 +148,13 @@ class PathDetector(context: Context) {
         return fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, declaredLength)
     }
 
-    fun detect(bitmap: Bitmap): DetectionResult {
+    /**
+     * Detects the sidewalk and estimates the camera's pose from its edges.
+     *
+     * @param intrinsics the camera's focal length, for pitch, heading, height and edge distances.
+     * Null for images from an unknown camera, which then get position across the path only.
+     */
+    fun detect(bitmap: Bitmap, intrinsics: CameraIntrinsics? = null): DetectionResult {
         val interp = interpreter ?: return DetectionResult(0f, null, null)
 
         val origWidth = bitmap.width
@@ -337,8 +355,7 @@ class PathDetector(context: Context) {
             }
         }
 
-        val CONF_THRESHOLD = 0.001f // TODO: consider 0.25. At 0.001, 2 of 3 no-sidewalk frames got a false path. testimage.png scores 0.89.
-        if (bestIdx == -1 || bestScore < CONF_THRESHOLD) {
+        if (bestIdx == -1 || bestScore < CONFIDENCE_THRESHOLD) {
             return DetectionResult(bestScore, null, null, emptyList())
         }
 
@@ -374,7 +391,8 @@ class PathDetector(context: Context) {
                     dot += protoPixel[c] * coeffs[c]
                 }
                 val sigmoid = 1f / (1f + exp(-dot))
-                val inBox = ys >= (t - 0.1f) && ys <= (b + 0.1f) && xs >= (l - 0.1f) && xs <= (r + 0.1f)
+                val inBox = ys >= (t - MASK_BOX_MARGIN) && ys <= (b + MASK_BOX_MARGIN) &&
+                    xs >= (l - MASK_BOX_MARGIN) && xs <= (r + MASK_BOX_MARGIN)
                 maskPixels[mh][mw] = sigmoid > 0.35f && inBox // TODO: consider 0.5 and no box margin, see extractSidewalkEdges.
             }
         }
@@ -424,20 +442,31 @@ class PathDetector(context: Context) {
         // One mask cell, in pixels of the full-size mask. The model's box usually stops a little
         // inside the frame, so a sidewalk running off the side often ends one cell short of it.
         val maskCellPx = maskWidth.toFloat() / (newWidth * pw.toFloat() / inWidth)
-        val edgePoints = extractSidewalkEdges(origMaskBitmap, clipMarginPx = round(CLIP_MARGIN_CELLS * maskCellPx).toInt())
+        val edgesWithoutDistance = extractSidewalkEdges(origMaskBitmap, clipMarginPx = round(CLIP_MARGIN_CELLS * maskCellPx).toInt())
 
-        return DetectionResult(bestScore, box, origMaskBitmap, edgePoints)
+        // The region the mask was allowed into: the box plus its margin, in image fractions.
+        val maskBounds = floatArrayOf(
+            max(0f, min(1f, ((l - MASK_BOX_MARGIN) * inWidth - padX) / newWidth)),
+            max(0f, min(1f, ((t - MASK_BOX_MARGIN) * inHeight - padY) / newHeight)),
+            max(0f, min(1f, ((r + MASK_BOX_MARGIN) * inWidth - padX) / newWidth)),
+            max(0f, min(1f, ((b + MASK_BOX_MARGIN) * inHeight - padY) / newHeight))
+        )
+        val maskCellFraction = maskCellPx.toDouble() / maskWidth
+        val pose = estimatePose(edgesWithoutDistance, maskWidth, maskHeight, maskCellFraction, maskBounds, intrinsics)
+        // Distances only from a pose the edges support, instead of a fixed horizon and camera height.
+        val edgePoints = edgesWithoutDistance.map { point ->
+            val distance = groundDistanceMeters(pose, point.position.y.toDouble() * maskHeight, maskHeight)
+            point.copy(estimatedDistanceMeters = distance?.toFloat())
+        }
+
+        return DetectionResult(bestScore, box, origMaskBitmap, edgePoints, maskBounds = maskBounds, pose = pose)
     }
 
     // Taking the first and last mask pixel per row spans the road when both sidewalks are in view.
     // With the 0.35 threshold and 0.1 box margin the mask also spills past the path, and the box
     // cuts it straight, which reads as a clean false edge. Both measured with analysis/ on this model.
     // TODO: consider tracing the run under the bottom center upward, as the first app did.
-    private fun extractSidewalkEdges(
-        maskBitmap: Bitmap,
-        clipMarginPx: Int,
-        cameraHeightMeters: Float = 1.2f
-    ): List<SidewalkEdgePoint> {
+    private fun extractSidewalkEdges(maskBitmap: Bitmap, clipMarginPx: Int): List<SidewalkEdgePoint> {
         val width = maskBitmap.width
         val height = maskBitmap.height
         val pixels = IntArray(width * height)
@@ -482,30 +511,20 @@ class PathDetector(context: Context) {
                 val normX = leftEdgeX.toFloat() / width
                 val normY = y.toFloat() / height
                 val side = if (leftEdgeX < centerX) SidewalkEdgeSide.LEFT else SidewalkEdgeSide.RIGHT
-                val distance = estimateDistance(normY, cameraHeightMeters)
                 val clipped = leftEdgeX <= clipMarginPx
-                edgePoints.add(SidewalkEdgePoint(Point2D(normX, normY), side, distance, clipped))
+                edgePoints.add(SidewalkEdgePoint(Point2D(normX, normY), side, null, clipped))
             }
 
             if (rightEdgeX != -1 && rightEdgeX != leftEdgeX) {
                 val normX = rightEdgeX.toFloat() / width
                 val normY = y.toFloat() / height
                 val side = if (rightEdgeX < centerX) SidewalkEdgeSide.LEFT else SidewalkEdgeSide.RIGHT
-                val distance = estimateDistance(normY, cameraHeightMeters)
                 val clipped = rightEdgeX >= width - 1 - clipMarginPx
-                edgePoints.add(SidewalkEdgePoint(Point2D(normX, normY), side, distance, clipped))
+                edgePoints.add(SidewalkEdgePoint(Point2D(normX, normY), side, null, clipped))
             }
         }
 
         return edgePoints
-    }
-
-    private fun estimateDistance(normalizedY: Float, cameraHeightMeters: Float): Float {
-        val horizonY = 0.4f
-        if (normalizedY <= horizonY) return Float.MAX_VALUE
-        val effectiveY = normalizedY - horizonY
-        val focalFactor = 1.5f
-        return (cameraHeightMeters * focalFactor) / effectiveY
     }
 
     private fun maybeDumpDebugFrames(raw: Bitmap, letterboxed: Bitmap) {

@@ -1,6 +1,7 @@
 package com.example.sidewalkvision
 
 import android.Manifest
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
@@ -50,6 +51,7 @@ import androidx.core.content.ContextCompat
 import com.example.sidewalkvision.ui.theme.SidewalkVisionTheme
 import java.util.Locale
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicReference
 
 sealed interface AppScreen {
     object Menu : AppScreen
@@ -254,6 +256,10 @@ fun CameraScreen(
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
 
     val context = LocalContext.current
+    // Written on the main thread once the camera is bound, read on the analysis thread.
+    val intrinsics = remember { AtomicReference<CameraIntrinsics?>(null) }
+    // Debug builds, the ones Android Studio installs, show the pose readout.
+    val showPoseReadout = remember { (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0 }
     val groundSpeedTracker = remember { GroundSpeedTracker(context) }
     val groundSpeed by groundSpeedTracker.metersPerSecond.collectAsState()
     var hasLocationPermission by remember { mutableStateOf(groundSpeedTracker.hasPermission()) }
@@ -306,7 +312,7 @@ fun CameraScreen(
                             try {
                                 val bitmap = imageProxy.toBitmap()
                                 val rotatedBitmap = rotateBitmap(bitmap, imageProxy.imageInfo.rotationDegrees)
-                                val result = pathDetector.detect(rotatedBitmap)
+                                val result = pathDetector.detect(rotatedBitmap, intrinsics.get())
                                     .copy(captureTimeNanos = imageProxy.imageInfo.timestamp)
                                 mainHandler.post {
                                     val oldMask = detectionResult?.maskBitmap
@@ -329,12 +335,13 @@ fun CameraScreen(
 
                     try {
                         cameraProvider.unbindAll()
-                        cameraProvider.bindToLifecycle(
+                        val camera = cameraProvider.bindToLifecycle(
                             lifecycleOwner,
                             cameraSelector,
                             preview,
                             imageAnalysis
                         )
+                        intrinsics.set(cameraIntrinsics(camera))
                     } catch (e: Exception) {
                         e.printStackTrace()
                     }
@@ -389,7 +396,7 @@ fun CameraScreen(
                     .align(Alignment.TopCenter)
                     .padding(top = 48.dp)
             ) {
-                val scoreText = if (res.score >= 0.001f) {
+                val scoreText = if (res.score >= PathDetector.CONFIDENCE_THRESHOLD) {
                     "Walkway Detected: ${(res.score * 100).toInt()}%"
                 } else {
                     "No Walkway (${String.format(Locale.US, "%.2f", res.score)})"
@@ -427,6 +434,17 @@ fun CameraScreen(
                 fontSize = 14.sp,
                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
             )
+        }
+
+        if (showPoseReadout) {
+            detectionResult?.pose?.let { pose ->
+                PoseReadout(
+                    pose = pose,
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(16.dp)
+                )
+            }
         }
 
         // Back button
@@ -567,7 +585,7 @@ fun ImageResultScreen(
                         .align(Alignment.TopCenter)
                         .padding(top = 16.dp)
                 ) {
-                    val scoreText = if (detectionResult.score >= 0.001f) {
+                    val scoreText = if (detectionResult.score >= PathDetector.CONFIDENCE_THRESHOLD) {
                         "Walkway Detected: ${(detectionResult.score * 100).toInt()}%"
                     } else {
                         "No Walkway (${String.format(Locale.US, "%.2f", detectionResult.score)})"
@@ -593,4 +611,35 @@ fun rotateBitmap(source: Bitmap, angle: Int): Bitmap {
     if (angle == 0) return source
     val matrix = Matrix().apply { postRotate(angle.toFloat()) }
     return Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
+}
+
+/** Debug readout of the camera pose estimated from the sidewalk's edges. */
+@Composable
+fun PoseReadout(pose: PoseEstimate, modifier: Modifier = Modifier) {
+    fun format(value: Double?, pattern: String): String =
+        value?.let { String.format(Locale.US, pattern, it) } ?: "n/a"
+
+    val lines = buildList {
+        add("pitch ${format(pose.pitchDegrees, "%.1f")}°   heading ${format(pose.headingDegrees, "%.1f")}°")
+        add("height ${format(pose.cameraHeightMeters, "%.2f")} m, for a ${DEFAULT_PATH_WIDTH_METERS} m wide path")
+        add("position across ${format(pose.positionAcross, "%.2f")}   focal ${format(pose.focalLengthPx, "%.0f")} px")
+        add(
+            when {
+                pose.status != PoseStatus.OK -> "no pose: ${pose.status.description}"
+                pose.reliable -> "reliable"
+                else -> "UNRELIABLE: ${pose.unreliableReason}"
+            }
+        )
+    }
+    Surface(
+        color = Color.Black.copy(alpha = 0.6f),
+        shape = MaterialTheme.shapes.medium,
+        modifier = modifier
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+            for (line in lines) {
+                Text(text = line, color = Color.White, fontSize = 12.sp)
+            }
+        }
+    }
 }
