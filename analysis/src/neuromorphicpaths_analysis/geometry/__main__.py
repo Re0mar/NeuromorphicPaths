@@ -19,7 +19,7 @@ from pathlib import Path
 from neuromorphicpaths_analysis.detector import PathDetector
 from neuromorphicpaths_analysis.detector.path_detector import DEFAULT_MODEL_PATH
 from neuromorphicpaths_analysis.geometry.capture_profiles import CaptureProfile, CaptureProfileName
-from neuromorphicpaths_analysis.geometry.pov import PovEstimate, PovStatus, estimate_pov
+from neuromorphicpaths_analysis.geometry.pov import MAX_RELIABLE_RMS_CELLS, PovEstimate, PovStatus, estimate_pov
 from neuromorphicpaths_analysis.geometry.profile_arguments import add_profile_arguments, profile_from_arguments
 from neuromorphicpaths_analysis.recordings import Frame, iter_frames
 
@@ -27,7 +27,8 @@ CSV_COLUMNS = [
     "frame", "time_s", "status", "reliable", "detection_score",
     "pitch_deg", "heading_deg", "position", "camera_height_m", "path_width_m",
     "vanishing_x_px", "vanishing_y_px",
-    "left_rms_px", "right_rms_px", "left_rows", "right_rows",
+    "left_rms_cells", "right_rms_cells", "left_rms_px", "right_rms_px",
+    "left_rows_kept", "left_rows_offered", "right_rows_kept", "right_rows_offered",
 ]
 
 
@@ -50,10 +51,14 @@ def csv_row(frame: Frame, detection_score: float, estimate: PovEstimate) -> dict
         "path_width_m": estimate.path_width_m,
         "vanishing_x_px": None if vanishing is None else vanishing[0],
         "vanishing_y_px": None if vanishing is None else vanishing[1],
+        "left_rms_cells": None if estimate.left is None else estimate.left.rms_cells,
+        "right_rms_cells": None if estimate.right is None else estimate.right.rms_cells,
         "left_rms_px": None if estimate.left is None else estimate.left.rms_px,
         "right_rms_px": None if estimate.right is None else estimate.right.rms_px,
-        "left_rows": None if estimate.left is None else estimate.left.rows_used,
-        "right_rows": None if estimate.right is None else estimate.right.rows_used,
+        "left_rows_kept": None if estimate.left is None else estimate.left.rows_used,
+        "left_rows_offered": None if estimate.left is None else estimate.left.rows_offered,
+        "right_rows_kept": None if estimate.right is None else estimate.right.rows_used,
+        "right_rows_offered": None if estimate.right is None else estimate.right.rows_offered,
     }
 
 
@@ -66,7 +71,7 @@ def print_row(frame: Frame, estimate: PovEstimate) -> None:
         f"{frame.name:<22} {time_text} {format_optional(estimate.pitch_deg, 9, 1)} "
         f"{format_optional(estimate.heading_deg, 11, 1)} {format_optional(estimate.position_fraction, 9, 2)} "
         f"{format_optional(estimate.camera_height_m, 9, 2)} {format_optional(estimate.path_width_m, 8, 2)}  "
-        f"{estimate.left.rms_px:.1f} / {estimate.right.rms_px:.1f}"
+        f"{estimate.left.rms_cells:.2f} / {estimate.right.rms_cells:.2f}"
         f"{'' if estimate.reliable else '  UNRELIABLE, edge curved, blocked or too short'}"
     )
 
@@ -80,7 +85,7 @@ def run(source: Path, profile: CaptureProfile, detector: PathDetector, every_nth
     """
     print(f"profile {profile.name.value}: {profile.note}")
     print(f"{'frame':<22} {'time s':>8} {'pitch deg':>9} {'heading deg':>11} {'position':>9} "
-          f"{'height m':>9} {'width m':>8}  fit rms px")
+          f"{'height m':>9} {'width m':>8}  edge scatter, cells (limit {MAX_RELIABLE_RMS_CELLS})")
     rows = []
     for frame in iter_frames(source, every_nth):
         result = detector.detect_path(frame.image)

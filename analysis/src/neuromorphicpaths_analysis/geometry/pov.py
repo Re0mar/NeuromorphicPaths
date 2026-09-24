@@ -73,6 +73,11 @@ class EdgeFit:
         return self.slope * y_px + self.offset
 
     @property
+    def rms_cells(self) -> float:
+        """Scatter in mask-grid cells, the unit the straightness limit uses on every camera."""
+        return self.rms_px / self.cell_px
+
+    @property
     def straight(self) -> bool:
         return (
             self.rms_px <= MAX_RELIABLE_RMS_CELLS * self.cell_px
