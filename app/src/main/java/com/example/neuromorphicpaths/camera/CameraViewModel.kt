@@ -32,7 +32,6 @@ import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
-import android.os.Looper
 import android.util.Log
 import android.view.Surface
 import androidx.exifinterface.media.ExifInterface
@@ -61,6 +60,7 @@ import com.example.neuromorphicpaths.stream.HevcParameterSetCollector
 import com.example.neuromorphicpaths.stream.RecordingResult
 import com.example.neuromorphicpaths.stream.StreamingService
 import com.example.neuromorphicpaths.stream.VideoRecorder
+import com.example.neuromorphicpaths.surprise.Surprise
 import com.example.neuromorphicpaths.vision.PathAnalysisService
 import com.example.neuromorphicpaths.wearables.WearablesViewModel
 import java.io.ByteArrayInputStream
@@ -166,6 +166,7 @@ class CameraViewModel(
   private var videoJob: Job? = null
   private var streamStateJob: Job? = null
   private var streamErrorJob: Job? = null
+  private var streamTimerJob: Job? = null
 
   init {
     bindPathAnalysis()
@@ -599,11 +600,31 @@ class CameraViewModel(
       var hasBeenActive = false
       stream.state.collect { state ->
         _uiState.update { it.copy(streamState = state) }
+        if (state == StreamState.STREAMING && streamTimerJob == null) {
+          Surprise.start(getApplication())
+          streamTimerJob?.cancel()
+          streamTimerJob =
+            viewModelScope.launch {
+              while (true) {
+                _uiState.update {
+                  it.copy(
+                    groundSpeedMetersPerSecond =
+                        Surprise.currentGroundSpeedMetersPerSecond()
+                  )
+                }
+                delay(1_000L)
+              }
+            }
+        }
         val isTerminal = state == StreamState.STOPPED || state == StreamState.CLOSED
         if (!isTerminal) {
           hasBeenActive = true
         } else if (hasBeenActive) {
           hasBeenActive = false
+          Surprise.stop()
+          streamTimerJob?.cancel()
+          streamTimerJob = null
+          _uiState.update { it.copy(groundSpeedMetersPerSecond = 0.0) }
           onStreamTerminated()
         }
       }
