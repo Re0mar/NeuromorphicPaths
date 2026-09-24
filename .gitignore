@@ -1,11 +1,117 @@
+# Environment
+.env
+#.env.local
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+.Python
+pip-wheel-metadata/
+
+# Python tooling
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# LaTeX build artifacts - assignments
+# pdflatex scratch lands in out/, and the built PDF is a rebuild of tracked sources.
+assignment_*/out/
+assignment_*/*.pdf
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Node.js
+node_modules/
+*.tsbuildinfo
+
+# IDE — VS Code
+.vscode/
+*.code-workspace
+
+# IDE — JetBrains (PyCharm, etc.)
+.idea/
 *.iml
-.gradle
-.kotlin
-/local.properties
-/.idea
+*.iws
+*.ipr
+
+# IDE — Vim/Neovim
+*.swp
+*.swo
+[._]*.sw[a-p]
+
+# macOS
 .DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# LaTeX build artifacts
+report/*.pdf
+report/*.aux
+report/*.bbl
+report/*.bcf
+report/*.blg
+report/*.fdb_latexmk
+report/*.fls
+report/*.log
+report/*.out
+report/*.run.xml
+report/*.synctex.gz
+report/*.toc
+report/*.lof
+report/*.lot
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs and temp files
+*.log
+*.tmp
+*.bak
+*~
+
+# Archives (export artifacts)
+*.zip
+
+# Model weights and large binaries
+*.bin
+*.safetensors
+*.pt
+*.ckpt
+*.gguf
+
+# Android and Gradle
+# local.properties carries the Meta Wearables access token the README asks for. Never commit it.
+.gradle/
+.kotlin/
 local.properties
+captures/
+.externalNativeBuild/
+.cxx/
