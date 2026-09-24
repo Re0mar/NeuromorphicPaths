@@ -5,14 +5,18 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Rect
+import android.util.Log
 import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.Tensor
+import java.io.File
 import java.io.FileInputStream
+import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
+import java.util.Locale
 import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
@@ -30,17 +34,48 @@ data class Point2D(
 data class SidewalkEdgePoint(
     val position: Point2D,
     val side: SidewalkEdgeSide,
-    val estimatedDistanceMeters: Float?
+    val estimatedDistanceMeters: Float?,
+    // True when the mask runs off the side of the image here, so this point is the frame's border
+    // and not the sidewalk's edge. Anything measuring position or fitting edge lines must skip it.
+    val clipped: Boolean = false
 )
 
 data class DetectionResult(
     val score: Float,
     val box: FloatArray?, // [l, t, r, b] normalized [0, 1]
     val maskBitmap: Bitmap?,
-    val edgePoints: List<SidewalkEdgePoint> = emptyList()
+    val edgePoints: List<SidewalkEdgePoint> = emptyList(),
+    // When the camera captured the frame, from CameraX, in nanoseconds on the camera's clock. Time
+    // to the edge needs the real gap between analyzed frames, which varies as frames are dropped.
+    // Null for still images.
+    val captureTimeNanos: Long? = null
 )
 
 class PathDetector(context: Context) {
+    companion object {
+        private const val TAG = "PathDetector"
+
+        // Within this many mask cells of the image's side, an edge point counts as clipped.
+        private const val CLIP_MARGIN_CELLS = 1
+
+        // Box values above this are pixels, at or below it normalized. See isPixelCoords.
+        private const val NORMALIZED_COORDINATE_LIMIT = 2f
+
+        // Saves what the detector received and what the model saw, for labeling and scoring
+        // offline. The camera screen analyzes about 15 frames a second, so every 30th is one
+        // frame every 2 seconds. Set DEBUG_DUMP_MAX to 0 to turn it off.
+        const val DEBUG_DUMP_FOLDER = "pathdetector_debug"
+        private const val DEBUG_DUMP_EVERY = 30
+        private const val DEBUG_DUMP_MAX = 60
+        private const val DEBUG_DUMP_JPEG_QUALITY = 95
+    }
+
+    private val appContext = context.applicationContext
+    // Frames from different app sessions get different file names instead of overwriting.
+    private val dumpSessionId = System.currentTimeMillis()
+    private var framesSeen = 0
+    private var framesDumped = 0
+
     private var interpreter: Interpreter? = null
     private var inputShape: IntArray = intArrayOf()
     private var inputDataType: DataType = DataType.FLOAT32
@@ -119,6 +154,7 @@ class PathDetector(context: Context) {
         val canvas = Canvas(canvasBitmap)
         canvas.drawColor(Color.rgb(114, 114, 114))
         canvas.drawBitmap(scaledBitmap, padX, padY, null)
+        maybeDumpDebugFrames(bitmap, canvasBitmap)
 
         val intValues = IntArray(inWidth * inHeight)
         canvasBitmap.getPixels(intValues, 0, inWidth, 0, 0, inWidth, inHeight)
@@ -308,7 +344,10 @@ class PathDetector(context: Context) {
 
         val bestAnchor = det[bestIdx]
         val maxVal = maxOf(bestAnchor[0], bestAnchor[1], bestAnchor[2], bestAnchor[3])
-        val isPixelCoords = maxVal > 1.0f
+        // Normalized boxes run slightly past 1.0 when the sidewalk fills the frame's width, for
+        // example w = 1.0011 on testimage.png. Testing against 1.0 read those as pixels, divided
+        // them by the input size, and left the mask empty. Pixel boxes run up to the input size.
+        val isPixelCoords = maxVal > NORMALIZED_COORDINATE_LIMIT
         val cx = if (isPixelCoords) bestAnchor[0] / inWidth.toFloat() else bestAnchor[0]
         val cy = if (isPixelCoords) bestAnchor[1] / inHeight.toFloat() else bestAnchor[1]
         val w = if (isPixelCoords) bestAnchor[2] / inWidth.toFloat() else bestAnchor[2]
@@ -382,7 +421,10 @@ class PathDetector(context: Context) {
         val uyb = max(0f, min(1f, (b * inHeight - padY) / newHeight))
 
         val box = floatArrayOf(uxl, uyt, uxr, uyb)
-        val edgePoints = extractSidewalkEdges(origMaskBitmap)
+        // One mask cell, in pixels of the full-size mask. The model's box usually stops a little
+        // inside the frame, so a sidewalk running off the side often ends one cell short of it.
+        val maskCellPx = maskWidth.toFloat() / (newWidth * pw.toFloat() / inWidth)
+        val edgePoints = extractSidewalkEdges(origMaskBitmap, clipMarginPx = round(CLIP_MARGIN_CELLS * maskCellPx).toInt())
 
         return DetectionResult(bestScore, box, origMaskBitmap, edgePoints)
     }
@@ -391,7 +433,11 @@ class PathDetector(context: Context) {
     // With the 0.35 threshold and 0.1 box margin the mask also spills past the path, and the box
     // cuts it straight, which reads as a clean false edge. Both measured with analysis/ on this model.
     // TODO: consider tracing the run under the bottom center upward, as the first app did.
-    private fun extractSidewalkEdges(maskBitmap: Bitmap, cameraHeightMeters: Float = 1.2f): List<SidewalkEdgePoint> {
+    private fun extractSidewalkEdges(
+        maskBitmap: Bitmap,
+        clipMarginPx: Int,
+        cameraHeightMeters: Float = 1.2f
+    ): List<SidewalkEdgePoint> {
         val width = maskBitmap.width
         val height = maskBitmap.height
         val pixels = IntArray(width * height)
@@ -437,7 +483,8 @@ class PathDetector(context: Context) {
                 val normY = y.toFloat() / height
                 val side = if (leftEdgeX < centerX) SidewalkEdgeSide.LEFT else SidewalkEdgeSide.RIGHT
                 val distance = estimateDistance(normY, cameraHeightMeters)
-                edgePoints.add(SidewalkEdgePoint(Point2D(normX, normY), side, distance))
+                val clipped = leftEdgeX <= clipMarginPx
+                edgePoints.add(SidewalkEdgePoint(Point2D(normX, normY), side, distance, clipped))
             }
 
             if (rightEdgeX != -1 && rightEdgeX != leftEdgeX) {
@@ -445,7 +492,8 @@ class PathDetector(context: Context) {
                 val normY = y.toFloat() / height
                 val side = if (rightEdgeX < centerX) SidewalkEdgeSide.LEFT else SidewalkEdgeSide.RIGHT
                 val distance = estimateDistance(normY, cameraHeightMeters)
-                edgePoints.add(SidewalkEdgePoint(Point2D(normX, normY), side, distance))
+                val clipped = rightEdgeX >= width - 1 - clipMarginPx
+                edgePoints.add(SidewalkEdgePoint(Point2D(normX, normY), side, distance, clipped))
             }
         }
 
@@ -458,6 +506,23 @@ class PathDetector(context: Context) {
         val effectiveY = normalizedY - horizonY
         val focalFactor = 1.5f
         return (cameraHeightMeters * focalFactor) / effectiveY
+    }
+
+    private fun maybeDumpDebugFrames(raw: Bitmap, letterboxed: Bitmap) {
+        val frameNumber = framesSeen++
+        if (DEBUG_DUMP_MAX <= 0 || framesDumped >= DEBUG_DUMP_MAX || frameNumber % DEBUG_DUMP_EVERY != 0) return
+        val directory = appContext.getExternalFilesDir(DEBUG_DUMP_FOLDER) ?: return
+        try {
+            for ((suffix, image) in listOf("raw" to raw, "input" to letterboxed)) {
+                File(directory, "session_${dumpSessionId}_frame_%03d_$suffix.jpg".format(Locale.US, framesDumped))
+                    .outputStream()
+                    .use { stream -> image.compress(Bitmap.CompressFormat.JPEG, DEBUG_DUMP_JPEG_QUALITY, stream) }
+            }
+            framesDumped++
+        } catch (ioException: IOException) {
+            // A full or missing storage folder costs a debug frame, never a detection.
+            Log.w(TAG, "Could not save debug frame: ${ioException.message}")
+        }
     }
 
     fun close() {
