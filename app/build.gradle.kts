@@ -28,6 +28,7 @@ android {
   buildTypes {
     release {
       isMinifyEnabled = true
+      isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       signingConfig = signingConfigs.getByName("debug")
     }
@@ -65,7 +66,9 @@ dependencies {
   implementation(libs.androidx.navigation.compose)
   implementation(libs.litert)
   implementation(libs.litert.gpu)
+  implementation(libs.litert.gpuapi)
   implementation(libs.litert.support)
+  testImplementation("junit:junit:4.13.2")
   androidTestImplementation(libs.androidx.ui.test.junit4)
   androidTestImplementation(libs.androidx.test.uiautomator)
   androidTestImplementation(libs.androidx.test.rules)

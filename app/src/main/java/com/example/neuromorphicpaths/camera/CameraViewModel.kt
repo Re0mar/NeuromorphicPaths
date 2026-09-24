@@ -23,13 +23,11 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.Canvas
-import android.graphics.Color
+import android.graphics.ImageFormat
 import android.graphics.Matrix
-import android.graphics.Paint
-import android.graphics.Path
-import android.graphics.PixelFormat
 import android.graphics.Rect
+import android.graphics.YuvImage
+import android.media.Image
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
@@ -68,6 +66,7 @@ import com.example.neuromorphicpaths.wearables.WearablesViewModel
 import java.io.ByteArrayInputStream
 import java.io.IOException
 import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -77,18 +76,30 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.io.Closeable
 
 class CameraViewModel(
-    application: Application,
-    private val wearablesViewModel: WearablesViewModel,
+  application: Application,
+  private val wearablesViewModel: WearablesViewModel,
 ) : AndroidViewModel(application) {
 
   companion object {
     private const val TAG = "CameraAccess:CameraViewModel"
-    private const val FRAME_RATE = 24
+    private const val FRAME_RATE = 4
     private const val KEYFRAME_WAIT_STEP_MS = 25L
     private const val KEYFRAME_WAIT_MAX_MS = 500L
+
+    // Quality 100 makes the JPEG round-trip (YUV -> JPEG -> Bitmap) much slower for no visible gain.
+    private const val JPEG_QUALITY = 85
+
+    // Must be > 2: while we convert one frame the codec still needs free output buffers, otherwise
+    // the decoder stalls, drops input, and HEVC shows corruption/flashing until the next keyframe.
+    private const val IMAGE_READER_BUFFERS = 4
+
+    // How long the last detected path stays on screen after the detector returns "nothing", so a
+    // single empty/noisy detection doesn't make the overlay blink.
+    private const val OVERLAY_HOLD_MS = 400L
   }
 
   private val deviceSelector: DeviceSelector = wearablesViewModel.deviceSelector
@@ -110,12 +121,18 @@ class CameraViewModel(
   // MediaMuxer/MediaCodec see in-order calls from one consistent thread.
   private val frameDispatcher = Dispatchers.Default.limitedParallelism(1)
 
+  // Path analysis (TFLite inference) runs here, never on the thread that draws frames, so a slow
+  // inference can't delay or skip the on-screen video.
+  private val analysisDispatcher = Dispatchers.Default.limitedParallelism(1)
+  private val analysisInFlight = AtomicBoolean(false)
+
   // Guards decoder create/teardown so a frame can't bind a new decoder to a Surface that
   // setSurface(null) just released — the @Volatile refs alone can't fix that check-then-act.
   private val decoderLock = Any()
 
   // @Volatile: single refs shared by the frame-collector and main threads, nulled at teardown.
   @Volatile private var hevcDecoder: HevcDecoder? = null
+  @Volatile private var analysisDecoder: HevcDecoder? = null
   @Volatile private var decoderSurface: Surface? = null
   @Volatile private var targetSurface: Surface? = null
   private var streamWidth: Int = 0
@@ -124,6 +141,8 @@ class CameraViewModel(
   private var analysisThread: HandlerThread? = null
   private var analysisHandler: Handler? = null
   private var pathAnalysisService: PathAnalysisService? = null
+  private var pathResultJob: Job? = null
+  private var overlayClearJob: Job? = null
   private val pathAnalysisConnection = object : ServiceConnection {
     override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
       val binder = service as PathAnalysisService.LocalBinder
@@ -149,6 +168,7 @@ class CameraViewModel(
   private var streamErrorJob: Job? = null
 
   init {
+    bindPathAnalysis()
     videoRecorder.setAudioInputHandler(audioInputHandler)
 
     // Mirror the recorder's intent/elapsed into UI state.
@@ -173,14 +193,43 @@ class CameraViewModel(
     }
   }
 
+  fun toggleVisionMode() {
+    _uiState.update {
+      val enabled = !it.isVisionEnabled
+      // Clear the overlay once when turning vision off (instead of on every frame).
+      it.copy(
+        isVisionEnabled = enabled,
+        pathBoundaries = if (enabled) it.pathBoundaries else emptyList(),
+        topDetectionBox = if (enabled) it.topDetectionBox else null,
+        topScore = if (enabled) it.topScore else 0f,
+        visionDebugInfo = if (enabled) it.visionDebugInfo else "",
+      )
+    }
+
+    if (!_uiState.value.isVisionEnabled) {
+      synchronized(decoderLock) {
+        analysisDecoder?.stop()
+        analysisDecoder = null
+        analysisImageReader?.close()
+        analysisImageReader = null
+        analysisThread?.quit()
+        analysisThread = null
+        analysisHandler = null
+      }
+    }
+  }
+
   // MARK: - Surface
 
   fun setSurface(surface: Surface?) {
+    Log.d(TAG, "setSurface: $surface")
     synchronized(decoderLock) {
       targetSurface = surface
       if (surface == null) {
         hevcDecoder?.stop()
         hevcDecoder = null
+        analysisDecoder?.stop()
+        analysisDecoder = null
         analysisImageReader?.close()
         analysisImageReader = null
         analysisThread?.quit()
@@ -199,6 +248,10 @@ class CameraViewModel(
   }
 
   private fun unbindPathAnalysis() {
+    pathResultJob?.cancel()
+    pathResultJob = null
+    overlayClearJob?.cancel()
+    overlayClearJob = null
     if (pathAnalysisService != null) {
       getApplication<Application>().unbindService(pathAnalysisConnection)
       pathAnalysisService = null
@@ -207,103 +260,170 @@ class CameraViewModel(
 
   private fun observePathAnalysisResults() {
     val service = pathAnalysisService ?: return
-    viewModelScope.launch {
+    // Cancel any previous collector so reconnecting doesn't leave duplicate collectors running.
+    pathResultJob?.cancel()
+    pathResultJob = viewModelScope.launch {
       service.detectionResult.collect { result ->
-        _uiState.update { it.copy(pathBoundaries = result?.boundaries ?: emptyList()) }
+        if (!_uiState.value.isVisionEnabled) return@collect
+
+        val boundaries = result?.boundaries ?: emptyList()
+        val topBox = result?.topBox
+        val topScore = result?.topScore ?: 0f
+        val debugInfo = result?.debugInfo ?: ""
+        Log.d(
+          TAG,
+          "path result: polygons=${boundaries.size} pts=${boundaries.firstOrNull()?.size ?: 0} " +
+                  "box=$topBox score=$topScore"
+        )
+
+        if (boundaries.isNotEmpty()) {
+          overlayClearJob?.cancel()
+          overlayClearJob = null
+          _uiState.update {
+            it.copy(
+              pathBoundaries = boundaries,
+              topDetectionBox = topBox,
+              topScore = topScore,
+              visionDebugInfo = debugInfo,
+            )
+          }
+        } else {
+          _uiState.update {
+            it.copy(
+              topDetectionBox = topBox,
+              topScore = topScore,
+              visionDebugInfo = debugInfo,
+            )
+          }
+          if (overlayClearJob == null) {
+            overlayClearJob = viewModelScope.launch {
+              delay(OVERLAY_HOLD_MS)
+              _uiState.update { it.copy(pathBoundaries = emptyList(), topDetectionBox = null) }
+              overlayClearJob = null
+            }
+          }
+        }
       }
     }
   }
 
-  private val pathPaint = Paint().apply {
-    color = Color.GREEN
-    strokeWidth = 10f
-    style = Paint.Style.STROKE
-    strokeJoin = Paint.Join.ROUND
-    strokeCap = Paint.Cap.ROUND
-    alpha = 200
+  private fun yuv420ToNv21(image: Image): ByteArray {
+    val width = image.width
+    val height = image.height
+    val nv21 = ByteArray(width * height * 3 / 2)
+
+    val yPlane = image.planes[0]
+    val uPlane = image.planes[1]
+    val vPlane = image.planes[2]
+
+    val yBuffer = yPlane.buffer
+    val uBuffer = uPlane.buffer
+    val vBuffer = vPlane.buffer
+
+    val yRowStride = yPlane.rowStride
+    var nvIndex = 0
+    for (row in 0 until height) {
+      yBuffer.position(row * yRowStride)
+      yBuffer.get(nv21, nvIndex, width)
+      nvIndex += width
+    }
+
+    val vRowStride = vPlane.rowStride
+    val uRowStride = uPlane.rowStride
+    val vPixelStride = vPlane.pixelStride
+    val uPixelStride = uPlane.pixelStride
+
+    nvIndex = width * height
+    for (row in 0 until height / 2) {
+      for (col in 0 until width / 2) {
+        val vOffset = row * vRowStride + col * vPixelStride
+        val uOffset = row * uRowStride + col * uPixelStride
+
+        nv21[nvIndex++] = vBuffer.get(vOffset)
+        nv21[nvIndex++] = uBuffer.get(uOffset)
+      }
+    }
+
+    return nv21
   }
 
-  private val fillPaint = Paint().apply {
-    color = Color.GREEN
-    style = Paint.Style.FILL
-    alpha = 60
+  private fun nv21ToBitmap(nv21: ByteArray, width: Int, height: Int): Bitmap? {
+    val out = ByteArrayOutputStream(width * height / 4)
+    YuvImage(nv21, ImageFormat.NV21, width, height, null)
+      .compressToJpeg(Rect(0, 0, width, height), JPEG_QUALITY, out)
+    val bytes = out.toByteArray()
+    return BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
   }
 
   private fun setupImageReader(width: Int, height: Int) {
+    Log.d(TAG, "setupImageReader: ${width}x${height}")
     analysisImageReader?.close()
     analysisThread?.quit()
-    
+
     val thread = HandlerThread("PathAnalysisThread").also { it.start() }
     analysisThread = thread
     val handler = Handler(thread.looper)
     analysisHandler = handler
 
-    // Using RGBA_8888 for easier Bitmap conversion, though YUV_420_888 might be more efficient
-    val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-    reader.setOnImageAvailableListener({ r ->
-      val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
-      
-      // Convert Image to Bitmap
-      val planes = image.planes
-      val buffer = planes[0].buffer
-      val pixelStride = planes[0].pixelStride
-      val rowStride = planes[0].rowStride
-      val rowPadding = rowStride - pixelStride * width
-      
-      val bitmap = Bitmap.createBitmap(
-          width + rowPadding / pixelStride,
-          height,
-          Bitmap.Config.ARGB_8888
-      )
-      bitmap.copyPixelsFromBuffer(buffer)
-      
-      // If there was padding, crop it
-      val finalBitmap = if (rowPadding > 0) {
-          Bitmap.createBitmap(bitmap, 0, 0, width, height)
-      } else {
-          bitmap
-      }
+    // Using YUV_420_888 format which is universally supported by MediaCodec video decoders on physical devices
+    try {
+      val reader =
+        ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, IMAGE_READER_BUFFERS)
+      reader.setOnImageAvailableListener({ r ->
+        val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
 
-      pathAnalysisService?.processFrame(finalBitmap)
-      drawProcessedFrame(finalBitmap)
-      image.close()
-    }, handler)
-    
-    analysisImageReader = reader
-    decoderSurface = reader.surface
+        // Copy the pixels out and hand the Image straight back to the codec. Holding it during
+        // the slow JPEG/Bitmap work below starves MediaCodec of output buffers.
+        val nv21 = try {
+          yuv420ToNv21(image)
+        } catch (e: Exception) {
+          Log.e(TAG, "Error converting YUV frame: ${e.message}", e)
+          return@setOnImageAvailableListener
+        } finally {
+          image.close()
+        }
+
+        try {
+          val bitmap = nv21ToBitmap(nv21, width, height) ?: return@setOnImageAvailableListener
+
+          // Hand a copy to the detector (asynchronously, dropping frames while it's still busy).
+          submitForAnalysis(bitmap)
+        } catch (e: Exception) {
+          Log.e(TAG, "Error processing frame: ${e.message}", e)
+        }
+      }, handler)
+
+      analysisImageReader = reader
+      decoderSurface = reader.surface
+      Log.d(TAG, "ImageReader setup successful, surface: $decoderSurface")
+    } catch (e: Exception) {
+      Log.e(TAG, "Failed to create ImageReader: ${e.message}", e)
+    }
   }
 
-  private fun drawProcessedFrame(bitmap: Bitmap) {
-    val surface = targetSurface ?: return
-    try {
-      // Use standard lockCanvas for better compatibility across devices
-      val canvas = surface.lockCanvas(null) ?: return
-      
-      // Draw the original camera frame
-      val destRect = Rect(0, 0, canvas.width, canvas.height)
-      canvas.drawBitmap(bitmap, null, destRect, null)
+  /**
+   * Sends a frame to the path detector without ever blocking the draw thread. If the previous
+   * analysis is still running the frame is simply skipped. The detector gets its own copy of the
+   * bitmap, so it can recycle/modify it freely without breaking the frame we're drawing.
+   */
+  private fun submitForAnalysis(bitmap: Bitmap) {
+    if (!_uiState.value.isVisionEnabled) return
+    val service = pathAnalysisService ?: return
+    if (!analysisInFlight.compareAndSet(false, true)) return
 
-      // Draw the detected path overlay
-      val boundaries = uiState.value.pathBoundaries
-      for (polygon in boundaries) {
-        if (polygon.size < 2) continue
-        
-        val path = Path()
-        for ((index, point) in polygon.withIndex()) {
-          val px = point.x * canvas.width.toFloat()
-          val py = point.y * canvas.height.toFloat()
-          if (index == 0) path.moveTo(px, py) else path.lineTo(px, py)
-        }
-        path.close()
-        
-        // Draw fill first, then outline
-        canvas.drawPath(path, fillPaint)
-        canvas.drawPath(path, pathPaint)
+    val copy = bitmap.copy(Bitmap.Config.ARGB_8888, false)
+    if (copy == null) {
+      analysisInFlight.set(false)
+      return
+    }
+    viewModelScope.launch(analysisDispatcher) {
+      try {
+        service.processFrame(copy)
+      } catch (e: Exception) {
+        Log.e(TAG, "Path analysis failed: ${e.message}", e)
+      } finally {
+        analysisInFlight.set(false)
       }
-
-      surface.unlockCanvasAndPost(canvas)
-    } catch (e: Exception) {
-      Log.e(TAG, "Error drawing to surface: ${e.message}")
     }
   }
 
@@ -313,18 +433,18 @@ class CameraViewModel(
   fun startSession() {
     if (_uiState.value.hasSession) return
     Wearables.createSession(deviceSelector)
-        .onSuccess { created ->
-          session = created
-          // Subscribe before start() so no initial transitions are missed.
-          observeSession(created)
-          _uiState.update { it.copy(sessionState = DeviceSessionState.STARTING) }
-          created.start()
-        }
-        .onFailure { error, _ ->
-          Log.e(TAG, "Failed to start session: ${error.description}")
-          wearablesViewModel.setRecentError(error.getLocalizedDescription(getApplication()))
-          cleanupSession()
-        }
+      .onSuccess { created ->
+        session = created
+        // Subscribe before start() so no initial transitions are missed.
+        observeSession(created)
+        _uiState.update { it.copy(sessionState = DeviceSessionState.STARTING) }
+        created.start()
+      }
+      .onFailure { error, _ ->
+        Log.e(TAG, "Failed to start session: ${error.description}")
+        wearablesViewModel.setRecentError(error.getLocalizedDescription(getApplication()))
+        cleanupSession()
+      }
   }
 
   /**
@@ -376,7 +496,7 @@ class CameraViewModel(
   fun startStreaming() {
     if (!_uiState.value.isSessionActive) {
       wearablesViewModel.setRecentError(
-          getApplication<Application>().getString(R.string.error_start_session_first)
+        getApplication<Application>().getString(R.string.error_start_session_first)
       )
       return
     }
@@ -385,17 +505,17 @@ class CameraViewModel(
     viewModelScope.launch {
       try {
         Wearables.checkPermissionStatus(Permission.CAMERA)
-            .onSuccess { status ->
-              if (status == PermissionStatus.Granted) {
-                beginStream()
-              } else {
-                _uiState.update { it.copy(showCameraPermissionRedirectConfirm = true) }
-              }
+          .onSuccess { status ->
+            if (status == PermissionStatus.Granted) {
+              beginStream()
+            } else {
+              _uiState.update { it.copy(showCameraPermissionRedirectConfirm = true) }
             }
-            .onFailure { error, _ ->
-              Log.e(TAG, "Failed to check camera permission: ${error.description}")
-              wearablesViewModel.setRecentError(error.getLocalizedDescription(getApplication()))
-            }
+          }
+          .onFailure { error, _ ->
+            Log.e(TAG, "Failed to check camera permission: ${error.description}")
+            wearablesViewModel.setRecentError(error.getLocalizedDescription(getApplication()))
+          }
       } finally {
         _uiState.update { it.copy(isStartingStream = false) }
       }
@@ -404,7 +524,7 @@ class CameraViewModel(
 
   /** Confirmed from the permission prompt: requests camera access, then starts the stream. */
   fun confirmCameraPermissionRedirect(
-      requestPermission: suspend (Permission) -> PermissionStatus,
+    requestPermission: suspend (Permission) -> PermissionStatus,
   ) {
     _uiState.update { it.copy(showCameraPermissionRedirectConfirm = false) }
     if (!_uiState.value.isSessionActive || stream != null) return
@@ -414,7 +534,7 @@ class CameraViewModel(
         beginStream()
       } else {
         wearablesViewModel.setRecentError(
-            getApplication<Application>().getString(R.string.error_camera_permission_denied)
+          getApplication<Application>().getString(R.string.error_camera_permission_denied)
         )
       }
     }
@@ -430,35 +550,35 @@ class CameraViewModel(
     // Foreground service keeps the stream/recording alive while backgrounded.
     StreamingService.start(getApplication())
     current
-        .addCamera(
-            StreamConfiguration(
-                videoQuality = VideoQuality.MEDIUM,
-                frameRate = FRAME_RATE,
-                // Compressed HEVC so frames feed both the on-screen decoder and the passthrough
-                // MP4 writer.
-                compressVideo = true,
-            )
+      .addCamera(
+        StreamConfiguration(
+          videoQuality = VideoQuality.MEDIUM,
+          frameRate = FRAME_RATE,
+          // Compressed HEVC so frames feed both the on-screen decoder and the passthrough
+          // MP4 writer.
+          compressVideo = true,
         )
-        .onSuccess { addedCamera ->
-          camera = addedCamera
-          val added = addedCamera.stream
-          stream = added
-          // Subscribe before start() so no initial transitions are missed.
-          setupStreamListeners(added)
-          _uiState.update { it.copy(streamState = StreamState.STARTING) }
-          added.start().onFailure { error, _ ->
-            Log.e(TAG, "Failed to start stream: ${error.description}")
-            wearablesViewModel.setRecentError(error.getLocalizedDescription(getApplication()))
-            // A failed start leaves the stream attached and the FGS running — tear both down so the
-            // UI doesn't stick at STARTING, matching the addCamera() failure path below.
-            clearStreamResources()
-          }
-        }
-        .onFailure { error, _ ->
-          Log.e(TAG, "Failed to add camera: ${error.description}")
-          StreamingService.stop(getApplication())
+      )
+      .onSuccess { addedCamera ->
+        camera = addedCamera
+        val added = addedCamera.stream
+        stream = added
+        // Subscribe before start() so no initial transitions are missed.
+        setupStreamListeners(added)
+        _uiState.update { it.copy(streamState = StreamState.STARTING) }
+        added.start().onFailure { error, _ ->
+          Log.e(TAG, "Failed to start stream: ${error.description}")
           wearablesViewModel.setRecentError(error.getLocalizedDescription(getApplication()))
+          // A failed start leaves the stream attached and the FGS running — tear both down so the
+          // UI doesn't stick at STARTING, matching the addCamera() failure path below.
+          clearStreamResources()
         }
+      }
+      .onFailure { error, _ ->
+        Log.e(TAG, "Failed to add camera: ${error.description}")
+        StreamingService.stop(getApplication())
+        wearablesViewModel.setRecentError(error.getLocalizedDescription(getApplication()))
+      }
   }
 
   /** Stops the camera stream but keeps the [DeviceSession] connected. */
@@ -471,9 +591,9 @@ class CameraViewModel(
 
   private fun setupStreamListeners(stream: Stream) {
     videoJob =
-        viewModelScope.launch(frameDispatcher) {
-          stream.videoStream.collect { handleVideoFrame(it) }
-        }
+      viewModelScope.launch(frameDispatcher) {
+        stream.videoStream.collect { handleVideoFrame(it) }
+      }
     streamStateJob = viewModelScope.launch {
       // state replays its current value (STOPPED) on subscribe, and we subscribe before start().
       var hasBeenActive = false
@@ -517,11 +637,11 @@ class CameraViewModel(
 
     // Append to the recorder (no-op unless recording); keeps writing while backgrounded.
     videoRecorder.writeCompressedFrame(
-        byteArray,
-        presentationTimeUs,
-        width,
-        height,
-        videoFrame.isCodecConfig,
+      byteArray,
+      presentationTimeUs,
+      width,
+      height,
+      videoFrame.isCodecConfig,
     )
 
     // Lazily create the decoder once a Surface is available; it renders directly to it. Prime it
@@ -529,15 +649,28 @@ class CameraViewModel(
     // concurrent setSurface(null) can't leave a decoder bound to a released Surface.
     synchronized(decoderLock) {
       if (hevcDecoder == null && targetSurface != null) {
-        setupImageReader(width, height)
+        Log.d(TAG, "Initializing hardware preview decoder for $width x $height")
         hevcDecoder =
+          HevcDecoder().also { decoder ->
+            decoder.start(width, height, targetSurface!!)
+            csdCollector.complete()?.let { decoder.decodeFrame(it, 0) }
+          }
+      }
+      // Feed under the lock so teardown can't null the decoder between check and feed.
+      hevcDecoder?.decodeFrame(byteArray, presentationTimeUs)
+
+      if (_uiState.value.isVisionEnabled && targetSurface != null) {
+        if (analysisDecoder == null) {
+          Log.d(TAG, "Initializing analysis decoder for $width x $height")
+          setupImageReader(width, height)
+          analysisDecoder =
             HevcDecoder().also { decoder ->
               decoder.start(width, height, decoderSurface!!)
               csdCollector.complete()?.let { decoder.decodeFrame(it, 0) }
             }
+        }
+        analysisDecoder?.decodeFrame(byteArray, presentationTimeUs)
       }
-      // Feed under the lock so teardown can't null the decoder between check and feed.
-      hevcDecoder?.decodeFrame(byteArray, presentationTimeUs)
     }
 
     if (!videoFrame.isCodecConfig && !_uiState.value.hasReceivedFirstFrame) {
@@ -566,6 +699,13 @@ class CameraViewModel(
     synchronized(decoderLock) {
       hevcDecoder?.stop()
       hevcDecoder = null
+      analysisDecoder?.stop()
+      analysisDecoder = null
+      analysisImageReader?.close()
+      analysisImageReader = null
+      analysisThread?.quit()
+      analysisThread = null
+      analysisHandler = null
     }
     csdCollector.reset()
     StreamingService.stop(getApplication())
@@ -594,27 +734,27 @@ class CameraViewModel(
     _uiState.update { it.copy(isCapturingPhoto = true) }
     viewModelScope.launch {
       stream
-          ?.capturePhoto()
-          ?.onSuccess { photoData ->
-            // Decode/rotate is CPU-bound and blocking; keep it off the main thread so capture
-            // doesn't jank the UI. Resumes on main for the state update.
-            val bitmap = withContext(Dispatchers.Default) { decodePhoto(photoData) }
-            if (bitmap != null) {
-              _uiState.update {
-                it.copy(isCapturingPhoto = false, activePreview = CapturePreview.Photo(bitmap))
-              }
-            } else {
-              _uiState.update { it.copy(isCapturingPhoto = false) }
-              wearablesViewModel.setRecentError(
-                  getApplication<Application>().getString(R.string.error_photo_capture_failed)
-              )
+        ?.capturePhoto()
+        ?.onSuccess { photoData ->
+          // Decode/rotate is CPU-bound and blocking; keep it off the main thread so capture
+          // doesn't jank the UI. Resumes on main for the state update.
+          val bitmap = withContext(Dispatchers.Default) { decodePhoto(photoData) }
+          if (bitmap != null) {
+            _uiState.update {
+              it.copy(isCapturingPhoto = false, activePreview = CapturePreview.Photo(bitmap))
             }
-          }
-          ?.onFailure { error, _ ->
-            Log.e(TAG, "Failed to capture photo: ${error.description}")
+          } else {
             _uiState.update { it.copy(isCapturingPhoto = false) }
-            wearablesViewModel.setRecentError(error.getLocalizedDescription(getApplication()))
-          } ?: _uiState.update { it.copy(isCapturingPhoto = false) }
+            wearablesViewModel.setRecentError(
+              getApplication<Application>().getString(R.string.error_photo_capture_failed)
+            )
+          }
+        }
+        ?.onFailure { error, _ ->
+          Log.e(TAG, "Failed to capture photo: ${error.description}")
+          _uiState.update { it.copy(isCapturingPhoto = false) }
+          wearablesViewModel.setRecentError(error.getLocalizedDescription(getApplication()))
+        } ?: _uiState.update { it.copy(isCapturingPhoto = false) }
     }
   }
 
@@ -655,15 +795,15 @@ class CameraViewModel(
     }
     when (val result = videoRecorder.stopRecording()) {
       is RecordingResult.Completed ->
-          _uiState.update { it.copy(activePreview = CapturePreview.Video(result.uri)) }
+        _uiState.update { it.copy(activePreview = CapturePreview.Video(result.uri)) }
       RecordingResult.NoRecording ->
-          wearablesViewModel.setRecentError(
-              getApplication<Application>().getString(R.string.error_recording_too_short)
-          )
+        wearablesViewModel.setRecentError(
+          getApplication<Application>().getString(R.string.error_recording_too_short)
+        )
       RecordingResult.Failed ->
-          wearablesViewModel.setRecentError(
-              getApplication<Application>().getString(R.string.error_recording_save_failed)
-          )
+        wearablesViewModel.setRecentError(
+          getApplication<Application>().getString(R.string.error_recording_save_failed)
+        )
     }
   }
 
@@ -686,7 +826,7 @@ class CameraViewModel(
         runCatching {
           getApplication<Application>().contentResolver.delete(preview.uri, null, null)
         }
-            .onFailure { Log.w(TAG, "Failed to delete temp recording", it) }
+          .onFailure { Log.w(TAG, "Failed to delete temp recording", it) }
       }
     }
   }
@@ -694,10 +834,10 @@ class CameraViewModel(
   // MARK: - Photo decoding
 
   private fun decodePhoto(photo: PhotoData): Bitmap? =
-      when (photo) {
-        is PhotoData.Bitmap -> photo.bitmap
-        is PhotoData.HEIC -> decodeWithOrientation(photo.data)
-      }
+    when (photo) {
+      is PhotoData.Bitmap -> photo.bitmap
+      is PhotoData.HEIC -> decodeWithOrientation(photo.data)
+    }
 
   // The glasses store orientation in an EXIF tag that BitmapFactory/ImageDecoder don't apply for
   // HEIC, so read TAG_ORIENTATION and rotate — otherwise the preview and shared image are sideways.
@@ -730,15 +870,15 @@ class CameraViewModel(
 
   private fun exifOrientationMatrix(bytes: ByteArray): Matrix {
     val orientation =
-        try {
-          ByteArrayInputStream(bytes).use { input ->
-            ExifInterface(input)
-                .getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
-          }
-        } catch (e: IOException) {
-          Log.w(TAG, "Failed to read EXIF orientation", e)
-          ExifInterface.ORIENTATION_NORMAL
+      try {
+        ByteArrayInputStream(bytes).use { input ->
+          ExifInterface(input)
+            .getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
         }
+      } catch (e: IOException) {
+        Log.w(TAG, "Failed to read EXIF orientation", e)
+        ExifInterface.ORIENTATION_NORMAL
+      }
     val matrix = Matrix()
     when (orientation) {
       ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.postScale(-1f, 1f)
@@ -761,6 +901,7 @@ class CameraViewModel(
   override fun onCleared() {
     super.onCleared()
     clearStreamResources()
+    unbindPathAnalysis()
     session?.stop()
     cleanupSession()
     audioInputHandler.cleanup()
@@ -768,8 +909,8 @@ class CameraViewModel(
   }
 
   class Factory(
-      private val application: Application,
-      private val wearablesViewModel: WearablesViewModel,
+    private val application: Application,
+    private val wearablesViewModel: WearablesViewModel,
   ) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
       if (modelClass.isAssignableFrom(CameraViewModel::class.java)) {
