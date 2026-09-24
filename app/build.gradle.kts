@@ -72,4 +72,7 @@ dependencies {
   androidTestImplementation(libs.androidx.ui.test.junit4)
   androidTestImplementation(libs.androidx.test.uiautomator)
   androidTestImplementation(libs.androidx.test.rules)
+  // ui-test-junit4 brings Espresso 3.5, which calls InputManager.getInstance. Android 15 removed
+  // that hidden method, so every Compose test crashes on its first idle check.
+  androidTestImplementation(libs.androidx.test.espresso.core)
 }
