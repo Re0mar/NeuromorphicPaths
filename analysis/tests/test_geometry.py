@@ -8,6 +8,7 @@ import dataclasses
 import math
 
 # Third party imports
+import numpy
 import pytest
 from PIL import Image
 
@@ -67,7 +68,8 @@ def synthetic_result(height: float, pitch_deg: float, heading_deg: float, positi
             left_clipped=False,
             right_clipped=False,
         ))
-    return PathResult(geometry, None, rows, 0.9, None, "")
+    # The estimate reads the grid's shape for its cell size. The cells themselves are unused here.
+    return PathResult(geometry, numpy.zeros((80, 80), dtype=bool), rows, 0.9, None, "")
 
 
 @pytest.mark.parametrize(
@@ -88,6 +90,22 @@ def test_recovers_a_known_camera(height, pitch_deg, heading_deg, position) -> No
     assert estimate.camera_height_m == pytest.approx(height, rel=1e-6)
     assert estimate.path_width_m is None
     assert estimate.reliable
+
+
+def test_a_few_stray_points_are_dropped_without_changing_the_answer() -> None:
+    result = synthetic_result(0.4, 8.0, 2.0, 0.5, 1.5)
+    # Three points knocked 4 cells off the edge, like mask cells fraying at the frame border.
+    stray = [
+        dataclasses.replace(row, right_x=row.right_x + (0.05 if index in (1, 7, 15) else 0.0))
+        for index, row in enumerate(result.rows)
+    ]
+
+    estimate = estimate_pov(dataclasses.replace(result, rows=stray), BELGIAN)
+
+    assert estimate.reliable
+    assert estimate.right.rows_used == estimate.right.rows_offered - 3
+    assert estimate.pitch_deg == pytest.approx(8.0, abs=1e-6)
+    assert estimate.camera_height_m == pytest.approx(0.4, rel=1e-6)
 
 
 def test_a_bent_edge_is_marked_unreliable() -> None:

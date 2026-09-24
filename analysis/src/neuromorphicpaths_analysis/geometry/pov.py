@@ -37,13 +37,19 @@ DEFAULT_MIN_IMAGE_Y = 0.5
 MIN_ROWS_PER_EDGE = 4
 # Below this difference in slope the edges are parallel in the image and meet nowhere useful.
 MIN_SLOPE_DIFFERENCE = 1e-3
-# A straight edge traced on the model grid scatters by about a third of a cell, roughly 0.4% of
-# the frame width. Well past that, the edge is curved or blocked (a parked bike, a hedge) and the
-# estimate should not be trusted.
-MAX_RELIABLE_FIT_RMS_FRACTION = 0.01
+# Edge points come from the model's mask grid, so distances are judged in grid cells. A straight
+# edge traced on the grid steps by up to a cell and scatters by about a third of one.
+# Points further than this from the fitted line are dropped and the line refitted. They are stray
+# cells where the mask frays at the frame border or catches something beside the path.
+OUTLIER_DISTANCE_CELLS = 1.5
+OUTLIER_REFITS = 3
+# After dropping outliers, a straight edge fits within this. Past it, the edge is curved.
+MAX_RELIABLE_RMS_CELLS = 0.75
 # A line through a handful of rows swings a lot once extended to the horizon. Two estimates of
-# the same frame from nine rows each were seen to disagree by 17 degrees of pitch.
+# the same frame from nine rows each disagreed by 17 degrees of pitch.
 MIN_RELIABLE_ROWS_PER_EDGE = 12
+# If more than this share of an edge's points had to be dropped, the edge is not one straight line.
+MAX_OUTLIER_SHARE = 0.4
 
 
 class PovStatus(Enum):
@@ -57,11 +63,22 @@ class PovStatus(Enum):
 class EdgeFit:
     slope: float
     offset: float
+    # Over the rows kept after dropping outliers.
     rms_px: float
     rows_used: int
+    rows_offered: int
+    cell_px: float
 
     def x_at(self, y_px: float) -> float:
         return self.slope * y_px + self.offset
+
+    @property
+    def straight(self) -> bool:
+        return (
+            self.rms_px <= MAX_RELIABLE_RMS_CELLS * self.cell_px
+            and self.rows_used >= MIN_RELIABLE_ROWS_PER_EDGE
+            and self.rows_used >= (1 - MAX_OUTLIER_SHARE) * self.rows_offered
+        )
 
 
 @dataclass(frozen=True)
@@ -75,15 +92,29 @@ class PovEstimate:
     position_fraction: float | None = None
     camera_height_m: float | None = None
     path_width_m: float | None = None
-    # False when either edge fits its line poorly or rests on too few rows. The numbers are
-    # still reported, but marked.
+    # False unless both edges are straight by EdgeFit.straight. The numbers are still reported,
+    # but marked.
     reliable: bool = False
 
 
-def fit_edge(rows: list[TracedRow], side_is_left: bool, frame_width: int, frame_height: int) -> EdgeFit | None:
-    """
-    Least-squares line through one edge's unclipped points, in frame pixels.
+def grid_cell_px(result: PathResult) -> float:
+    """Width of one mask-grid cell, in pixels of the original frame."""
+    geometry = result.geometry
+    grid_width = result.grid_mask.shape[1]
+    return geometry.input_width / grid_width * geometry.source_width / geometry.content_width
 
+
+def fit_edge(
+    rows: list[TracedRow],
+    side_is_left: bool,
+    frame_width: int,
+    frame_height: int,
+    cell_px: float,
+) -> EdgeFit | None:
+    """
+    Line through one edge's unclipped points, in frame pixels, refitted without outliers.
+
+    :param cell_px: Size of one mask-grid cell in frame pixels, the unit for outlier distance.
     :return: None when fewer than MIN_ROWS_PER_EDGE rows are usable.
     :rtype: EdgeFit | None
     """
@@ -95,9 +126,25 @@ def fit_edge(rows: list[TracedRow], side_is_left: bool, frame_width: int, frame_
     if len(points) < MIN_ROWS_PER_EDGE:
         return None
     y_values, x_values = numpy.array(points).T
-    slope, offset = numpy.polyfit(y_values, x_values, 1)
-    residuals = x_values - (slope * y_values + offset)
-    return EdgeFit(float(slope), float(offset), float(numpy.sqrt(numpy.mean(residuals ** 2))), len(points))
+    kept = numpy.ones(len(points), dtype=bool)
+    for _ in range(OUTLIER_REFITS + 1):
+        slope, offset = numpy.polyfit(y_values[kept], x_values[kept], 1)
+        distance = numpy.abs(x_values - (slope * y_values + offset))
+        next_kept = distance <= OUTLIER_DISTANCE_CELLS * cell_px
+        # Too few left to fit a line means the edge is not straight. Keep the last fit and let
+        # the reliability check say so.
+        if next_kept.sum() < MIN_ROWS_PER_EDGE or numpy.array_equal(next_kept, kept):
+            break
+        kept = next_kept
+    residuals = x_values[kept] - (slope * y_values[kept] + offset)
+    return EdgeFit(
+        slope=float(slope),
+        offset=float(offset),
+        rms_px=float(numpy.sqrt(numpy.mean(residuals ** 2))),
+        rows_used=int(kept.sum()),
+        rows_offered=len(points),
+        cell_px=cell_px,
+    )
 
 
 def estimate_pov(
@@ -117,8 +164,9 @@ def estimate_pov(
     frame_height = result.geometry.source_height
     rows = [row for row in result.rows if row.y >= min_image_y]
 
-    left = fit_edge(rows, True, frame_width, frame_height)
-    right = fit_edge(rows, False, frame_width, frame_height)
+    cell_px = grid_cell_px(result)
+    left = fit_edge(rows, True, frame_width, frame_height, cell_px)
+    right = fit_edge(rows, False, frame_width, frame_height, cell_px)
     if left is None or right is None:
         return PovEstimate(PovStatus.TOO_FEW_ROWS, left, right)
 
@@ -132,10 +180,7 @@ def estimate_pov(
     if vanishing_y >= min(row.y for row in rows) * frame_height or slope_difference < 0:
         return PovEstimate(PovStatus.VANISHING_POINT_BELOW_PATH, left, right, (vanishing_x, vanishing_y))
 
-    reliable = (
-        max(left.rms_px, right.rms_px) <= MAX_RELIABLE_FIT_RMS_FRACTION * frame_width
-        and min(left.rows_used, right.rows_used) >= MIN_RELIABLE_ROWS_PER_EDGE
-    )
+    reliable = left.straight and right.straight
     position_fraction = -left.slope / slope_difference
     estimate = PovEstimate(
         status=PovStatus.OK,

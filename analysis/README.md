@@ -155,11 +155,25 @@ The two lines meet at the vanishing point, which lies on the horizon. From that:
 It assumes flat ground, a straight path over the fitted rows, and no sideways tilt of the camera
 (roll). The Neon's IMU can supply roll later.
 
-An estimate is marked **unreliable** when either edge wanders from its line by more than 1% of
-the frame width, or rests on fewer than 12 rows. A curve, a parked bike over the edge, or a path
-that mostly runs off the frame all trigger it. Short fits matter most: two estimates of the same
-frame from nine rows per edge were seen to disagree by 17 degrees of pitch. Only frames where
-both the model's and the label's estimates are reliable go into the scoring averages.
+Edge points come from the model's mask grid, so the fit measures distance in grid cells. Each
+edge is fitted, points more than 1.5 cells off the line are dropped, and the line is refitted.
+Those points are usually stray cells where the mask frays at the frame border.
+
+An estimate is marked **unreliable** when, on either edge, the kept points still scatter by more
+than 0.75 of a cell, fewer than 12 points are left, or more than 40% had to be dropped. A curve, a
+parked bike over the edge, or a path that mostly runs off the frame all trigger it. Short fits
+matter most: two estimates of the same frame from nine rows per edge disagreed by 17
+degrees of pitch. Only frames where both the model's and the label's estimates are reliable go
+into the scoring averages.
+
+A gentle curve can still pass, because dropping outliers straightens it. Treat an estimate from a
+visibly bending path with care even when it isn't marked.
+
+**Two-tone sidewalks.** Many Dutch sidewalks are a band of tiles beside a strip of brick. The
+model often paints only one of them. Pitch and heading don't mind, because every line running
+along the path meets at the same vanishing point, whichever boundary the model traced. Position
+and height do: they treat the painted band as the whole path. A position below 0 or above 1 then
+means standing beside the painted band, for example on the brick strip.
 
 **Capture profiles.** A profile records what's known about one capture setup: focal length, a
 camera height if fixed, and a path width to assume. Pick one with `--profile`, and override any
