@@ -47,6 +47,25 @@ Each frame gets `<name>_mask.png` (the label), `<name>_overlay.png` (for review)
 `<name>.json` (its clicks, so refinements build on earlier ones). A negative click on its own
 can shrink the mask to almost nothing. When excluding something, also click on what should stay.
 
+**What counts as path.** The model has one class, `sidewalk`, learned from the
+`flat-sidewalk` class of the `segments/sidewalk-semantic` dataset. Labels have to follow that
+dataset's rules, or the score measures a difference in rules rather than a model error. Checked
+against its labels:
+
+| Path | Not path |
+|---|---|
+| All sidewalk paving, including differently colored strips and decorative cobbles | Curbs and gutters |
+| Manholes, drain grates and lights set into the sidewalk | Crosswalks, including the paved approach to one |
+| | Cycling lanes |
+| | Driveways and parking bays, even when paved like the sidewalk |
+| | Tree pits and their grates |
+| | Road |
+
+SAM follows what the surface looks like, not these rules. It merges a driveway paved like the
+sidewalk into the path, and it stops at a color change inside the sidewalk. So when reviewing an
+overlay, check each row of the right-hand column, and add clicks where a boundary is a rule
+rather than a visible edge.
+
 **Score the model.**
 
 ```powershell
