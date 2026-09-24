@@ -43,7 +43,7 @@ roughly 1.4 m/s walking and 3 to 6 m/s cycling, and with it the size of the wobb
 | z | how many σₜ fit between the line and the edge | none |
 | μₚ, σₚ | the rider's recent average position and wobble, the progress distribution | m |
 | Δt | window length, what counts as one unit of time | s |
-| δt | duration of one frame of the game | s |
+| δt | time between two analyzed camera frames | s |
 | α | per-frame smoothing weight | none |
 | d | gap between the rider and the edge they are moving toward | m |
 | τ | Tau, time until that gap closes at the current rate | s |
@@ -52,6 +52,10 @@ roughly 1.4 m/s walking and 3 to 6 m/s cycling, and with it the size of the wobb
 | T | lookahead time for the display | s |
 | B | band around the line that counts as recovered | m |
 | a, b | intercept and slope of the recovery-time fit | s, s/bit |
+| W | path width | m |
+| p | where the camera stands across the path, 0 at the left edge and 1 at the right | none |
+| ψ | heading: angle between where the camera points and where the path goes, positive when the path heads off to the right | rad |
+| u | forward speed along the direction of travel | m/s |
 
 **Choosing z.** Welford's convention, on the week 2 slides, counts 96% of hits as inside the target.
 For a normal distribution that is about ±2.07 standard deviations, the same figure MacKenzie uses
@@ -59,11 +63,60 @@ for effective width (4.133 σ across). So z = 2.07 and σₜ = w / 2.07.
 
 ---
 
+## Camera input
+
+This section is a draft. Nothing below has been run on a real recording yet.
+
+The inputs come from a head-worn camera, with the head kept pointing forward. In each frame the
+path detector marks the path, and the analysis fits a straight line along each of its two edges.
+The code is in `analysis/`, and its README explains the fit. Three numbers come out of those lines.
+
+- **p**, where the camera stands across the path. It comes from the two edges' slopes alone,
+  plus a small correction when the camera is both tilted down and turned, which needs the focal
+  length.
+- **ψ**, the heading. It needs the camera's focal length, which the Neon ships with.
+- **W**, the path width in meters. It needs the camera's height above the ground, which for a
+  head-worn camera is the participant's eye height, measured once.
+
+Forward speed **u** comes from outside the frame: GPS in the app, and for Neon recordings the
+speed the ground moves past the camera. That second source is not built yet.
+
+The rider is treated as a point, so the usable half-width is half the path width.
+
+    w  = W / 2
+    x  = (p − 0.5) · W
+    v  = −u · sin ψ                     from one frame
+    v  ≈ (x − x_previous) / δt          from two frames of video
+
+The minus sign follows from the heading's direction. Positive ψ means the path heads off to the
+right of where the camera points, so a rider moving where the camera points drifts left.
+
+The one-frame form needs forward speed but works on a single image. The two-frame form needs no
+speed but amplifies the frame-to-frame noise in x, so smooth it with the same α as below before
+using it. Where both are available, their disagreement is a check on each other.
+
+**Units.** Every quantity the surprise channels read is a ratio: x over σₜ, and the gap d over
+the closing speed |v|. So p, x, w and v can all be counted in path widths (W = 1) without
+changing any surprise value or threshold. Meters only matter when comparing wobble between paths
+of different widths.
+
+**Frames to skip.** The analysis marks a frame unreliable when an edge isn't straight enough to
+trust: a curve, something covering the edge, or a path running off the side of the frame. It
+also drops frames where the gyro shows the head turned away from the direction of travel. A
+skipped frame leaves the running values where they were, and time moves on.
+
+**Two-tone sidewalks.** Many Dutch sidewalks are a band of tiles beside a strip of brick. The
+detector often marks only one of them, and then p and W describe that band. A p below 0 or above
+1 then means standing beside the marked band, not off the sidewalk. ψ is unaffected, since every
+line running along the path gives the same heading.
+
+---
+
 ## Measuring the rider
 
-In the path game, x and v are exact simulation state, so nothing needs to be differenced. What has
-to be estimated is the rider's recent average and wobble. Both are kept as running values so the
-game can use them every frame.
+With a camera, x and v are estimates rather than exact values, from the section above. What has
+to be estimated on top of them is the rider's recent average and wobble. Both are kept as running
+values so they can be updated every frame.
 
     α    = 1 − exp(−δt / Δt)
     e    = x − μₚ
@@ -96,7 +149,8 @@ Settings shared by every scenario in this document:
 | σₜ | 0.338 m | 0.7 / 2.07 |
 | Δt | 1 s | window length |
 | δt (worked examples) | 0.1 s | α = 1 − exp(−0.1) = 0.0952 |
-| δt (game) | 1/60 s | α = 0.0165, same arithmetic |
+| δt (60 frames per second) | 1/60 s | α = 0.0165, same arithmetic |
+| δt (Neon scene camera) | 1/30 s | α = 0.0328, when every frame is analyzed |
 
 **Scenario 1: steady wobble.** The rider swings 5 cm either side of the middle with a 1.2 s period,
 x = 0.05·sin(2π·t / 1.2). The true spread of that signal is 0.05 / √2 = 0.0354 m.
@@ -427,6 +481,19 @@ below the rider's own baseline.
 ---
 
 ## What still has to be checked
+
+- With a camera, σₚ measures the rider's wobble plus the camera's own noise: the mask's jitter
+  from frame to frame and the head's movement. Measure that noise floor once, for example
+  standing still on a straight path, and subtract its variance before reading σₚ as the rider's
+  precision.
+- v = −u · sin ψ assumes the camera points where the rider is going. Head turns break that,
+  which is why those frames are dropped. The gyro threshold for dropping them is a starting
+  value, 4° walking and 2° cycling, still to tune.
+- Forward speed from phone GPS is noisy at walking pace, because the position wobbles by a few
+  meters between one-second fixes. Android's own speed value, derived from the satellite signals,
+  is steadier. The Neon records no GPS, so recordings need speed from the video instead.
+- The lookahead time T could be measured rather than chosen: where the rider's gaze lands on the
+  path, divided by forward speed. The Neon records gaze.
 
 - Every Vertegaal equation number above was read from the arXiv HTML through a summary, not from
   the PDF. Check each form and number against the PDF before it goes into the report or the
