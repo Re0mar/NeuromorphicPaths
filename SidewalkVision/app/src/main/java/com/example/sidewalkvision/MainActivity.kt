@@ -253,8 +253,28 @@ fun CameraScreen(
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
 
+    val context = LocalContext.current
+    val groundSpeedTracker = remember { GroundSpeedTracker(context) }
+    val groundSpeed by groundSpeedTracker.metersPerSecond.collectAsState()
+    var hasLocationPermission by remember { mutableStateOf(groundSpeedTracker.hasPermission()) }
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        hasLocationPermission = grants.values.any { it }
+        if (hasLocationPermission) {
+            groundSpeedTracker.start()
+        }
+    }
+
     DisposableEffect(Unit) {
+        // Speed is optional. Without location permission the camera screen still works.
+        if (!groundSpeedTracker.start()) {
+            locationPermissionLauncher.launch(
+                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+            )
+        }
         onDispose {
+            groundSpeedTracker.stop()
             cameraExecutor.shutdown()
             detectionResult?.maskBitmap?.recycle()
         }
@@ -385,6 +405,27 @@ fun CameraScreen(
                     )
                 }
             }
+        }
+
+        Surface(
+            color = Color.Black.copy(alpha = 0.6f),
+            shape = MaterialTheme.shapes.medium,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(16.dp)
+        ) {
+            val speed = groundSpeed
+            val speedText = when {
+                !hasLocationPermission -> "Speed: no location permission"
+                speed == null -> "Speed: waiting for GPS"
+                else -> "Speed: ${String.format(Locale.US, "%.2f", speed)} m/s"
+            }
+            Text(
+                text = speedText,
+                color = Color.White,
+                fontSize = 14.sp,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+            )
         }
 
         // Back button
