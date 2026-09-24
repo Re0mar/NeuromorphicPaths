@@ -307,6 +307,7 @@ fun CameraScreen(
                                 val bitmap = imageProxy.toBitmap()
                                 val rotatedBitmap = rotateBitmap(bitmap, imageProxy.imageInfo.rotationDegrees)
                                 val result = pathDetector.detect(rotatedBitmap)
+                                    .copy(captureTimeNanos = imageProxy.imageInfo.timestamp)
                                 mainHandler.post {
                                     val oldMask = detectionResult?.maskBitmap
                                     detectionResult = result
