@@ -15,6 +15,8 @@ import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.LargeTest
 import androidx.test.platform.app.InstrumentationRegistry
+import com.example.neuromorphicpaths.MainActivity
+import com.example.neuromorphicpaths.R
 import java.io.IOException
 import org.junit.Before
 import org.junit.Rule
