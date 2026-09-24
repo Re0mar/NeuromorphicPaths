@@ -14,6 +14,7 @@
 package com.example.neuromorphicpaths.camera
 
 import android.graphics.Bitmap
+import android.graphics.RectF
 import android.net.Uri
 import com.example.neuromorphicpaths.vision.Point
 import com.meta.wearable.dat.camera.types.StreamState
@@ -50,6 +51,11 @@ data class CameraUiState(
     val isStartingStream: Boolean = false,
     // The boundaries of the detected walkway.
     val pathBoundaries: List<List<Point>> = emptyList(),
+    val topDetectionBox: RectF? = null,
+    val topScore: Float = 0f,
+    val visionDebugInfo: String = "",
+    // Toggle for running TensorFlow Path Detection model on frames
+    val isVisionEnabled: Boolean = false,
 ) {
   /** A session exists and is connected (or connecting); a stream can be started. */
   val hasSession: Boolean

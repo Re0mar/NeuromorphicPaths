@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * PathAnalysisService receives camera frames and runs image recognition
@@ -46,16 +47,23 @@ class PathAnalysisService : Service() {
         pathDetector = PathDetector(this)
     }
 
+    // Written by the caller thread and cleared on a Default-dispatcher thread, so it must be atomic.
+    private val isProcessing = AtomicBoolean(false)
+
     /**
-     * Submits a frame for processing. This is non-blocking.
+     * Submits a frame for processing. This is non-blocking and skips frames if busy.
      */
     fun processFrame(bitmap: Bitmap) {
+        if (!isProcessing.compareAndSet(false, true)) return
+
         serviceScope.launch {
             try {
                 val result = pathDetector.detectPath(bitmap)
                 _detectionResult.value = result
             } catch (e: Exception) {
                 Log.e(TAG, "Error processing frame", e)
+            } finally {
+                isProcessing.set(false)
             }
         }
     }

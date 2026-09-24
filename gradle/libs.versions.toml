@@ -10,13 +10,16 @@ uiAutomator = "2.3.0"
 testRules = "1.7.0"
 uiJunit4 = "1.11.2"
 exifInterface = "1.4.2"
-litert = "1.4.2"
+litert = "2.2.0"
+litertGpu = "1.4.2"
 navigation = "2.8.8"
+junit = "4.13.2"
 
 [libraries]
 litert = { group = "com.google.ai.edge.litert", name = "litert", version.ref = "litert" }
-litert-gpu = { group = "com.google.ai.edge.litert", name = "litert-gpu", version.ref = "litert" }
-litert-support = { group = "com.google.ai.edge.litert", name = "litert-support-api", version.ref = "litert" }
+litert-gpu = { group = "com.google.ai.edge.litert", name = "litert-gpu", version.ref = "litertGpu" }
+litert-gpuapi = { group = "com.google.ai.edge.litert", name = "litert-gpu-api", version.ref = "litertGpu" }
+litert-support = { group = "com.google.ai.edge.litert", name = "litert-support-api", version.ref = "litertGpu" }
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
 androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
 androidx-material3 = { group = "androidx.compose.material3", name = "material3" }
@@ -33,6 +36,7 @@ androidx-test-uiautomator = { group = "androidx.test.uiautomator", name = "uiaut
 androidx-test-rules = { group = "androidx.test", name = "rules", version.ref = "testRules" }
 androidx-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4", version.ref = "uiJunit4" }
 androidx-exifinterface = { group = "androidx.exifinterface", name = "exifinterface", version.ref = "exifInterface" }
+junit = { group = "junit", name = "junit", version.ref = "junit" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
