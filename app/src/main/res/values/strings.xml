@@ -25,6 +25,7 @@
     <string name="waiting_for_active_device" description="Waiting for active device message">Waiting for an active device</string>
     <string name="status_session" description="Session status chip label">Session</string>
     <string name="status_stream" description="Stream status chip label">Stream</string>
+    <string name="status_speed" description="Ground speed status label">Speed</string>
     <string name="unregister_button_title" description="Disconnect App">Disconnect</string>
 
     <!-- Placeholder states -->

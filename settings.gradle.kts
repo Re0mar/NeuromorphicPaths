@@ -38,6 +38,7 @@ dependencyResolutionManagement {
   repositories {
     google()
     mavenCentral()
+    mavenLocal { content { includeGroup("com.meta.wearable") } }
     maven {
       url = uri("https://maven.pkg.github.com/facebook/meta-wearables-dat-android")
       credentials {

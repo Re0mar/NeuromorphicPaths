@@ -2,6 +2,8 @@ package com.example.neuromorphicpaths
 
 import android.Manifest.permission.BLUETOOTH
 import android.Manifest.permission.BLUETOOTH_CONNECT
+import android.Manifest.permission.ACCESS_COARSE_LOCATION
+import android.Manifest.permission.ACCESS_FINE_LOCATION
 import android.Manifest.permission.INTERNET
 import android.Manifest.permission.RECORD_AUDIO
 import android.content.pm.PackageManager
@@ -28,7 +30,14 @@ import kotlinx.coroutines.sync.withLock
 class MainActivity : ComponentActivity() {
     companion object {
         // Required Android permissions for the DAT SDK to function properly
-        val PERMISSIONS: Array<String> = arrayOf(BLUETOOTH, BLUETOOTH_CONNECT, INTERNET)
+        val PERMISSIONS: Array<String> =
+            arrayOf(
+                BLUETOOTH,
+                BLUETOOTH_CONNECT,
+                INTERNET,
+                ACCESS_COARSE_LOCATION,
+                ACCESS_FINE_LOCATION,
+            )
     }
 
     val viewModel: WearablesViewModel by viewModels()
