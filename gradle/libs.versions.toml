@@ -10,7 +10,7 @@ uiAutomator = "2.3.0"
 testRules = "1.7.0"
 uiJunit4 = "1.11.2"
 exifInterface = "1.4.2"
-litert = "1.0.1"
+litert = "1.4.2"
 navigation = "2.8.8"
 
 [libraries]
