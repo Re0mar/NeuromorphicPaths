@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neuromorphicpaths-analysis"
+version = "0.1.0"
+description = "Offline analysis for NeuromorphicPaths: a Python copy of the app's path detector, and scoring against labeled frames"
+requires-python = ">=3.12"
+dependencies = [
+    # Same LiteRT version as the app's gradle/libs.versions.toml, so both run the model identically.
+    "ai-edge-litert==2.2.0",
+    "numpy",
+    "opencv-python",
+    "pillow",
+]
+
+[project.optional-dependencies]
+# Kept apart because torch is a multi-gigabyte install that only labeling needs.
+labeling = [
+    "torch",
+    "transformers>=4.56",
+]
+dev = [
+    "pytest",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

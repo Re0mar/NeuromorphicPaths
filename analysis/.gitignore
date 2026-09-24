@@ -1,0 +1,5 @@
+# Recordings, extracted frames and label masks. Neon scene video shows passers-by.
+data/
+
+.venv/
+.pytest_cache/
