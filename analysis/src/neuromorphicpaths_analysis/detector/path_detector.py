@@ -46,10 +46,11 @@ MAX_GAP_ROWS = 2
 # border, a side counts as clipped.
 CLIP_MARGIN_CELLS = 1
 
-# Mirrors of SidewalkVision/app/src/main/java/com/example/sidewalkvision/PathDetector.kt.
-SIDEWALK_VISION_CONF_THRESHOLD = 0.001  # line 304
-SIDEWALK_VISION_MASK_PROBABILITY = 0.35  # line 339
-SIDEWALK_VISION_BOX_MARGIN = 0.1  # line 338, in fractions of the model input
+# Mirrors of SidewalkVision/app/src/main/java/com/example/sidewalkvision/PathDetector.kt, each
+# citing the Kotlin it copies. Quoted rather than by line number, which edits would shift.
+SIDEWALK_VISION_CONF_THRESHOLD = 0.001  # val CONF_THRESHOLD = 0.001f
+SIDEWALK_VISION_MASK_PROBABILITY = 0.35  # sigmoid > 0.35f
+SIDEWALK_VISION_BOX_MARGIN = 0.1  # ys >= (t - 0.1f) and so on, in fractions of the model input
 
 
 class DecoderPreset(Enum):
@@ -95,7 +96,7 @@ DECODER_SETTINGS: dict[DecoderPreset, DecoderSettings] = {
         prefer_ground_ahead=False,
         mask_probability=SIDEWALK_VISION_MASK_PROBABILITY,
         box_margin=SIDEWALK_VISION_BOX_MARGIN,
-        # createScaledBitmap with filtering on, in one step (line 117).
+        # Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true), filtered, in one step.
         antialiased_resize=False,
         edge_rule=EdgeRule.OUTERMOST,
     ),

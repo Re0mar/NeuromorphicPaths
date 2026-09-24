@@ -236,7 +236,7 @@ The settings live in `DECODER_SETTINGS` in `detector/path_detector.py`.
 
 The `first-app` constants at the top of `detector/path_detector.py` carry the same names as the
 companion object in the first app's `PathDetector.kt`, in snake case. The `sidewalk-vision` ones
-each note the line of `SidewalkVision/.../PathDetector.kt` they copy. When a value changes in
+each quote the Kotlin in `SidewalkVision/.../PathDetector.kt` they copy. When a value changes in
 either app, change it here too. The one deliberate addition in both is `CLIP_MARGIN_CELLS`,
 which neither app has yet.
 
