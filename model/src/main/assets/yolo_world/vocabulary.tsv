@@ -1,0 +1,29 @@
+# One model class per line: the text prompt the model is exported with, a tab, the obstacle
+# class it maps to. Order is the model's output order. Both the export script and the app read
+# this file, so the two never disagree about which index means what.
+tree	TREE
+fence	BARRIER
+barrier	BARRIER
+road barrier	BARRIER
+person	PERSON
+dog	ANIMAL
+cat	ANIMAL
+bird	ANIMAL
+car	CAR
+bus	CAR
+truck	CAR
+bicycle	BIKE
+motorcycle	BIKE
+scooter	BIKE
+pole	POLE
+lamp post	POLE
+bollard	POLE
+traffic sign	POLE
+pothole	HOLE
+hole in the ground	HOLE
+table	TABLE
+desk	TABLE
+chair	CHAIR
+bench	CHAIR
+trash can	TRASH_CAN
+garbage bin	TRASH_CAN

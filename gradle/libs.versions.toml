@@ -8,6 +8,7 @@ activityCompose = "1.13.0"
 composeBom = "2026.02.01"
 camerax = "1.4.1"
 junit = "4.13.2"
+onnxruntime = "1.20.0"
 
 [libraries]
 kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "coroutines" }
@@ -25,6 +26,7 @@ androidx-compose-material3 = { group = "androidx.compose.material3", name = "mat
 camerax-core = { group = "androidx.camera", name = "camera-core", version.ref = "camerax" }
 camerax-camera2 = { group = "androidx.camera", name = "camera-camera2", version.ref = "camerax" }
 camerax-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "camerax" }
+onnxruntime-android = { group = "com.microsoft.onnxruntime", name = "onnxruntime-android", version.ref = "onnxruntime" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 
 [plugins]

@@ -51,11 +51,15 @@ with rather than queueing them, so what the walker sees is never older than one 
   recording at a fixed interval, which is how phone and glasses recordings are replayed.
   `SensorPoseProvider` reads camera pitch from the rotation vector sensor.
 - **Model.** `EmptyObstacleDetector` returns nothing. `ScriptedObstacleDetector` returns a fixed
-  list every frame, for exercising the display. The pretrained detector is not wired yet.
+  list every frame, for exercising the display. `OnnxYoloWorldDetector` runs YOLO-World with
+  this project's class list through ONNX Runtime. Its model file is not committed. See *The
+  detector model* below.
 - **Math.** `GroundPlaneObstacleLocator` gets bearing from the box center and the horizontal field
   of view, and range from where the box meets the ground, given camera height and pitch. When
-  the box bottom is cut off it falls back to a typical height per class. `NoGuidanceField` says
-  straight ahead with zero surprise. The push field replaces it.
+  the box bottom is cut off it falls back to a typical height per class. `PushFieldGuidance` is
+  the push field: per-obstacle surprise from miss distance and time to contact, summed over
+  candidate headings, lowest sum wins. `docs/math/push_field.md` explains it. `NoGuidanceField`
+  is the straight-ahead stand-in for tests.
 - **Output.** `ScreenOverlayDisplay` plus the `GuidanceOverlay` composable draws the frame, the
   boxes, a heading arrow and the numbers. `LogcatDisplay` writes one line per frame.
 
@@ -71,6 +75,21 @@ Open the repository root in Android Studio and run the `app` configuration, or f
 The app has two buttons. **Camera** asks for permission and starts the live pipeline. **Open
 video** picks a recording and replays it. The **Scripted** switch swaps in the fixed detections
 the next time a source starts.
+
+## The detector model
+
+The app expects `model/src/main/assets/yolo_world/yolo_world.onnx`, which is about 50 MB and
+is built, not written, so it stays out of git. `model/tools/export_yolo_world.py` produces it
+from the public YOLO-World weights and the prompt list in `vocabulary.tsv` beside it. No
+training happens. From a Python environment with `ultralytics`, `onnx` and `onnxslim`:
+
+```
+python model/tools/export_yolo_world.py
+```
+
+Without the file the app still builds and runs, and the YOLO-World choice is grayed out.
+To change what the detector looks for, edit `vocabulary.tsv` and export again. The app reads
+the same file, so the class order cannot drift between the two.
 
 ## Adding a piece
 

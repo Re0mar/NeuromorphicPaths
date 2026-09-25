@@ -27,14 +27,15 @@ import kotlinx.coroutines.withContext
  * Streams the back camera through CameraX image analysis.
  *
  * Frames arrive as RGBA at the analysis resolution, rotated upright, stamped with whatever the
- * pose provider says at that moment. CameraX keeps only the latest image while the analyzer is
- * busy, which matches what the pipeline wants.
+ * pose provider says at that moment. The field of view comes from the camera itself once it is
+ * bound, and falls back to [fallbackIntrinsics] on a camera that does not report one. CameraX
+ * keeps only the latest image while the analyzer is busy, which matches what the pipeline wants.
  */
 class CameraXFrameSource(
     private val context: Context,
     private val lifecycleOwner: LifecycleOwner,
     private val poseProvider: PoseProvider,
-    private val intrinsics: CameraIntrinsics,
+    private val fallbackIntrinsics: CameraIntrinsics,
 ) : FrameSource {
 
     override val name: String = "camera"
@@ -47,16 +48,19 @@ class CameraXFrameSource(
             .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
+        // CameraX insists on binding from the main thread. Binding first also gives the camera
+        // info the field of view is read from, before the first frame needs it.
+        val camera = withContext(Dispatchers.Main) {
+            provider.unbindAll()
+            provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, analysis)
+        }
+        val rotationDegrees = camera.cameraInfo.getSensorRotationDegrees(analysis.targetRotation)
+        val intrinsics = horizontalFieldOfView(camera.cameraInfo, rotationDegrees) ?: fallbackIntrinsics
         analysis.setAnalyzer(analysisExecutor) { image ->
             image.use { proxy ->
                 val frame = proxy.toRgbaImage().toFrame(proxy.imageInfo.timestamp, poseProvider.currentPose(), intrinsics)
                 trySend(frame)
             }
-        }
-        // CameraX insists on binding from the main thread.
-        withContext(Dispatchers.Main) {
-            provider.unbindAll()
-            provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, analysis)
         }
         awaitClose {
             mainExecutor.execute { provider.unbind(analysis) }

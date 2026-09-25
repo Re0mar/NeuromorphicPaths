@@ -69,6 +69,7 @@ fun GuidanceOverlay(display: ScreenOverlayDisplay, modifier: Modifier = Modifier
             val guidance = current.update.guidance
             Text(formatLine("heading %+.0f deg", Math.toDegrees(guidance.desiredHeadingRadians)), color = Color.White)
             Text(formatLine("surprise %.2f bits", guidance.overallSurpriseBits), color = Color.White)
+            Text(formatLine("pitch %+.0f deg, fov %.0f deg", Math.toDegrees(current.update.frame.pose.pitchRadians), Math.toDegrees(current.update.frame.intrinsics.horizontalFovRadians)), color = Color.White)
             Text("${current.update.obstacles.size} obstacles", color = Color.White)
             for (obstacle in current.update.obstacles) {
                 Text(describe(obstacle), color = Color.White)

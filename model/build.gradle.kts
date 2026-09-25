@@ -18,4 +18,7 @@ android {
 
 dependencies {
     api(project(":core"))
+    implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.onnxruntime.android)
+    testImplementation(libs.junit)
 }
