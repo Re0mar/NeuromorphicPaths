@@ -114,6 +114,20 @@ Without the file the app still builds and runs, and the YOLO-World choice is gra
 To change what the detector looks for, edit `vocabulary.tsv` and export again. The app reads
 the same file, so the class order cannot drift between the two.
 
+The export is at 640 by default. The app reads the input size from the model, so a different
+size is only a flag, and `--output` writes the model somewhere other than the assets folder
+for comparing exports side by side:
+
+```
+python model/tools/export_yolo_world.py --input-size 320 --output /tmp/yolo_world_320.onnx
+```
+
+640 is the size to ship. On the Pixel 8, replaying the outdoor walk through ONNX Runtime
+1.30.0 on the CPU, the detector takes a median 553 ms per frame at 640 and 112 ms at 320, but
+the 320 model puts a box in 327 of the 918 frames against 625 at 640. A portrait frame
+letterboxed into a 320 square leaves the model 180 pixels of width, and the obstacles that
+matter most, a cone a meter ahead or a post beside the path, are the ones it loses.
+
 ## Adding a piece
 
 - A new frame source implements `FrameSource` in `input`.

@@ -7,7 +7,7 @@ app's class order are the same file. Writes the model next to it.
 Run from a Python environment with ultralytics, onnx and onnxslim installed:
 
     python model/tools/export_yolo_world.py
-    python model/tools/export_yolo_world.py --weights yolov8m-worldv2.pt --input-size 416
+    python model/tools/export_yolo_world.py --weights yolov8m-worldv2.pt --input-size 320 --output /tmp/yolo_world_320.onnx
 
 The first run downloads the base weights and the CLIP text encoder ultralytics uses to embed
 the prompts. Nothing is trained.
@@ -27,7 +27,7 @@ VOCABULARY_PATH = ASSET_DIR / "vocabulary.tsv"
 OUTPUT_PATH = ASSET_DIR / "yolo_world.onnx"
 
 DEFAULT_WEIGHTS = "yolov8s-worldv2.pt"
-DEFAULT_INPUT_SIZE = 320
+DEFAULT_INPUT_SIZE = 640
 
 
 def read_prompts(vocabulary_path: Path) -> list[str]:
@@ -52,12 +52,14 @@ def read_prompts(vocabulary_path: Path) -> list[str]:
     return prompts
 
 
-def export(weights: str, input_size: int) -> Path:
+def export(weights: str, input_size: int, output_path: Path = OUTPUT_PATH) -> Path:
     """
-    Embed the vocabulary into the model and export it to ONNX at the app's asset path.
+    Embed the vocabulary into the model and export it to ONNX, at the app's asset path by default.
 
     :param weights: Ultralytics YOLO-World checkpoint name or path.
-    :param input_size: Square input size in pixels. Must match the detector's input size.
+    :param input_size: Square input size in pixels. The app reads it back from the model.
+    :param output_path: Where to write the model. Anywhere but the asset path is for comparing
+        exports, since the app only loads the one in its assets.
     :return: Path of the written ONNX file.
     :rtype: Path
     """
@@ -67,17 +69,18 @@ def export(weights: str, input_size: int) -> Path:
     # Static shapes, fp32 and opset 12 keep the graph inside what ONNX Runtime Mobile runs
     # on every Android CPU without extra providers.
     exported = Path(model.export(format="onnx", imgsz=input_size, half=False, dynamic=False, simplify=True, opset=12))
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(exported), str(OUTPUT_PATH))
-    return OUTPUT_PATH
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(exported), str(output_path))
+    return output_path
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--weights", default=DEFAULT_WEIGHTS, help="YOLO-World checkpoint, default yolov8s-worldv2.pt")
-    parser.add_argument("--input-size", type=int, default=DEFAULT_INPUT_SIZE, help="square input size, default 320")
+    parser.add_argument("--input-size", type=int, default=DEFAULT_INPUT_SIZE, help="square input size, default 640")
+    parser.add_argument("--output", type=Path, default=OUTPUT_PATH, help="where to write the model, default the app's asset path")
     arguments = parser.parse_args()
-    output = export(arguments.weights, arguments.input_size)
+    output = export(arguments.weights, arguments.input_size, arguments.output)
     size_mb = output.stat().st_size / (1024 * 1024)
     print(f"wrote {output} ({size_mb:.1f} MB), {len(read_prompts(VOCABULARY_PATH))} classes, input {arguments.input_size}")
 
