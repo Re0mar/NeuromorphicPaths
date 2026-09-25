@@ -28,7 +28,7 @@ fun MainScreen(
     yoloWorldAvailable: Boolean,
     onDetectorChoiceChange: (DetectorChoice) -> Unit,
     onStartCamera: () -> Unit,
-    onOpenVideo: () -> Unit,
+    onOpenRecording: () -> Unit,
 ) {
     // Edge-to-edge is the default now, so without this the buttons sit under the status bar and
     // a tap on them lands on the clock instead.
@@ -41,7 +41,7 @@ fun MainScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Button(onClick = onStartCamera) { Text("Camera") }
-            Button(onClick = onOpenVideo) { Text("Open video") }
+            Button(onClick = onOpenRecording) { Text("Open recording") }
         }
         SingleChoiceSegmentedButtonRow(
             Modifier

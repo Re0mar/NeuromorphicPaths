@@ -77,8 +77,27 @@ Open the repository root in Android Studio and run the `app` configuration, or f
 ```
 
 The app has two buttons. **Camera** asks for permission and starts the live pipeline. **Open
-video** picks a recording and replays it. The **Scripted** switch swaps in the fixed detections
-the next time a source starts.
+recording** picks a folder holding a video and, if Sensor Logger ran beside it, its
+`Orientation.csv`. With the log, replay uses the pitch the camera really had at each frame,
+lined up through the video's own end time and duration, and feeds the logged azimuth to the
+wobble estimate. Without it, replay takes the pose from the live sensor. The detector row picks
+what runs, YOLO-World by default when its model is bundled, and changing it restarts the source.
+
+To replay from a shell without touching the screen, put the folder in the app's own storage and
+name it in the launch intent:
+
+```
+adb push recording.mp4 /data/local/tmp/outdoor1/
+adb push Orientation.csv /data/local/tmp/outdoor1/
+adb shell run-as com.neuromorphicpaths mkdir -p files/recordings/outdoor1
+adb shell run-as com.neuromorphicpaths cp /data/local/tmp/outdoor1/recording.mp4 files/recordings/outdoor1/
+adb shell run-as com.neuromorphicpaths cp /data/local/tmp/outdoor1/Orientation.csv files/recordings/outdoor1/
+adb shell am start -n com.neuromorphicpaths/.app.MainActivity --es recording outdoor1
+adb logcat -s Guidance:D
+```
+
+The log line per frame carries the detector time, the counts, the heading, the surprise and the
+walker's speed, wobble and turn tolerance, so a replay's numbers can be pulled out with `grep`.
 
 ## The detector model
 

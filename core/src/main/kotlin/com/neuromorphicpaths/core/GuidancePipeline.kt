@@ -15,7 +15,7 @@ class GuidancePipeline(
     private val locator: ObstacleLocator,
     private val field: GuidanceField,
     private val displays: List<GuidanceDisplay>,
-    private val walkerState: () -> WalkerState = { WalkerState.ALIGNED_WITH_CAMERA },
+    private val walkerState: (Frame) -> WalkerState = { WalkerState.ALIGNED_WITH_CAMERA },
     private val dropStaleFrames: Boolean = true,
 ) {
     suspend fun run() {
@@ -27,7 +27,7 @@ class GuidancePipeline(
             val detections = detector.detect(frame)
             val detectorNanos = System.nanoTime() - detectStartNanos
             val obstacles = locator.locate(detections, frame)
-            val walker = walkerState()
+            val walker = walkerState(frame)
             val guidance = field.evaluate(obstacles, walker, frame.timestampNanos)
             val update = GuidanceUpdate(frame, detections, obstacles, guidance, walker, detectorNanos)
             for (display in displays) {

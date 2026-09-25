@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import com.neuromorphicpaths.core.CameraIntrinsics
+import com.neuromorphicpaths.core.CameraPose
 import com.neuromorphicpaths.core.Frame
 import com.neuromorphicpaths.core.FrameSource
 import com.neuromorphicpaths.core.PoseProvider
@@ -20,6 +21,8 @@ import kotlinx.coroutines.flow.flowOn
  * same pipeline as the live camera. Frames come out already rotated the way the file says they
  * should be viewed. With [playInRealTime] the source paces itself to the video clock, so what is
  * on screen moves at walking speed. Without it, the source runs as fast as decoding allows.
+ * With [poseForPosition] the pose comes from the recording's own log at each frame's time,
+ * otherwise from [poseProvider], which is the live sensor.
  */
 class VideoFileFrameSource(
     private val context: Context,
@@ -28,6 +31,7 @@ class VideoFileFrameSource(
     private val intrinsics: CameraIntrinsics,
     private val frameIntervalMillis: Long = DEFAULT_FRAME_INTERVAL_MILLIS,
     private val playInRealTime: Boolean = true,
+    private val poseForPosition: ((positionMillis: Long) -> CameraPose)? = null,
 ) : FrameSource {
 
     override val name: String = "video:${uri.lastPathSegment ?: uri}"
@@ -43,7 +47,8 @@ class VideoFileFrameSource(
             while (positionMillis <= durationMillis) {
                 val bitmap = retriever.getFrameAtTime(positionMillis * MICROS_PER_MILLI, MediaMetadataRetriever.OPTION_CLOSEST)
                     ?: break
-                val frame = bitmap.toRgbaImage().toFrame(positionMillis * NANOS_PER_MILLI, poseProvider.currentPose(), intrinsics)
+                val pose = poseForPosition?.invoke(positionMillis) ?: poseProvider.currentPose()
+                val frame = bitmap.toRgbaImage().toFrame(positionMillis * NANOS_PER_MILLI, pose, intrinsics)
                 bitmap.recycle()
                 emit(frame)
                 if (playInRealTime) delay(frameIntervalMillis)
