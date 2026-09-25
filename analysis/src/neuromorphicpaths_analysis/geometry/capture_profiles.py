@@ -7,6 +7,7 @@ Adding a setup means adding a member to CaptureProfileName and an entry to CAPTU
 """
 
 # Standard library imports
+import math
 from dataclasses import dataclass
 from enum import Enum
 
@@ -79,9 +80,11 @@ CAPTURE_PROFILES: dict[CaptureProfileName, CaptureProfile] = {
     ),
     CaptureProfileName.IPHONE_12_ULTRA_WIDE: CaptureProfile(
         name=CaptureProfileName.IPHONE_12_ULTRA_WIDE,
-        # EXIF gives 14 mm in 35 mm film terms, and film is 36 mm wide: 14 / 36 of the image width.
+        # EXIF gives a 14 mm equivalent, measured against the 43.27 mm diagonal of a 35 mm film
+        # frame, so focal length is 14 times the 5040 px image diagonal over 43.27. Dividing by the
+        # 36 mm film width instead is only right for 3:2 images, and about 4% short for this 4:3 one.
         # The phone corrects this lens's distortion in the JPEG, so straight edges stay straight.
-        focal_length_px=4032 * 14 / 36,
+        focal_length_px=14 * math.hypot(4032, 3024) / 43.27,
         reference_width_px=4032,
         camera_height_m=None,
         path_width_m=DEFAULT_PATH_WIDTH_M,

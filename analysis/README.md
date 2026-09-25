@@ -190,7 +190,7 @@ member to `CaptureProfileName` and an entry to `CAPTURE_PROFILES`.
 | `belgian-dataset` | 1450 px at 1920 wide, assumed | varies by frame | 1.5 m, assumed |
 | `neon` | from each headset's `scene_camera.json` | the participant's eye height | 1.5 m, assumed |
 | `meta-glasses` | unknown until calibrated | not fixed | 1.5 m, assumed |
-| `iphone-12-ultra-wide` | 1568 px at 4032 wide, from the photo's EXIF | hand-held, varies | 1.5 m, assumed |
+| `iphone-12-ultra-wide` | 1631 px at 4032 wide, from the photo's EXIF | hand-held, varies | 1.5 m, assumed |
 
 Neon frames need undistorting before fitting, because the wide lens bends straight edges.
 
