@@ -12,3 +12,6 @@ captures/
 model/src/main/assets/yolo_world/*.onnx
 *.log
 .DS_Store
+.artifacts/
+*.pt
+weights/

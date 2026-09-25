@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.Button
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -29,7 +30,9 @@ fun MainScreen(
     onStartCamera: () -> Unit,
     onOpenVideo: () -> Unit,
 ) {
-    Column(Modifier.fillMaxSize()) {
+    // Edge-to-edge is the default now, so without this the buttons sit under the status bar and
+    // a tap on them lands on the clock instead.
+    Column(Modifier.fillMaxSize().safeDrawingPadding()) {
         Row(
             Modifier
                 .fillMaxWidth()

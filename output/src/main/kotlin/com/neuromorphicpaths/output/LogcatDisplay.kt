@@ -5,7 +5,7 @@ import com.neuromorphicpaths.core.GuidanceDisplay
 import com.neuromorphicpaths.core.GuidanceUpdate
 import java.util.Locale
 
-/** One line per frame in logcat: timestamp, counts, heading and surprise. The cheapest record of a run. */
+/** One line per frame in logcat: timestamp, detector time, counts, heading and surprise. The cheapest record of a run. */
 class LogcatDisplay : GuidanceDisplay {
     override val name: String = "logcat"
 
@@ -15,8 +15,9 @@ class LogcatDisplay : GuidanceDisplay {
             TAG,
             String.format(
                 Locale.US,
-                "t=%dns detections=%d obstacles=%d heading=%+.1fdeg surprise=%.2fbits",
+                "t=%dns detect=%dms detections=%d obstacles=%d heading=%+.1fdeg surprise=%.2fbits",
                 update.frame.timestampNanos,
+                update.detectorNanos / NANOS_PER_MILLI,
                 update.detections.size,
                 update.obstacles.size,
                 Math.toDegrees(guidance.desiredHeadingRadians),
@@ -29,5 +30,6 @@ class LogcatDisplay : GuidanceDisplay {
 
     private companion object {
         const val TAG = "Guidance"
+        const val NANOS_PER_MILLI = 1_000_000L
     }
 }

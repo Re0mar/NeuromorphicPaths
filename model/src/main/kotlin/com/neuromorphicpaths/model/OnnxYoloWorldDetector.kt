@@ -3,6 +3,7 @@ package com.neuromorphicpaths.model
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import ai.onnxruntime.TensorInfo
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -24,7 +25,8 @@ import kotlinx.coroutines.withContext
  *
  * The model file is not committed. `model/tools/export_yolo_world.py` writes it into the assets
  * folder, and [isAvailable] says whether that has happened on this build. One frame goes in as
- * a letterboxed square, and the decoder maps the boxes back out.
+ * a letterboxed square of whatever size the model was exported at, and the decoder maps the
+ * boxes back out.
  */
 class OnnxYoloWorldDetector private constructor(
     private val environment: OrtEnvironment,
@@ -91,7 +93,7 @@ class OnnxYoloWorldDetector private constructor(
 
     companion object {
         const val MODEL_ASSET_PATH = "yolo_world/yolo_world.onnx"
-        const val DEFAULT_INPUT_SIZE = 320
+        private const val INPUT_DIMENSIONS = 4
         private const val CHANNELS = 3
         private const val MAX_CHANNEL = 255f
 
@@ -107,9 +109,21 @@ class OnnxYoloWorldDetector private constructor(
             false
         }
 
+        /**
+         * The square side the model was exported with, read from its input tensor. The export
+         * script decides the size, so restating it here would only give the two a way to disagree.
+         */
+        private fun inputSizeOf(session: OrtSession): Int {
+            val info = session.inputInfo.values.first().info as TensorInfo
+            val shape = info.shape
+            require(shape.size == INPUT_DIMENSIONS && shape[2] == shape[3] && shape[3] > 0) {
+                "Expected a [1, 3, size, size] input, got ${shape.toList()}"
+            }
+            return shape[3].toInt()
+        }
+
         fun load(
             context: Context,
-            inputSize: Int = DEFAULT_INPUT_SIZE,
             dispatcher: CoroutineDispatcher = Dispatchers.Default,
         ): OnnxYoloWorldDetector {
             val vocabulary = context.assets.open(YoloWorldVocabulary.ASSET_PATH).bufferedReader().use { reader ->
@@ -118,7 +132,7 @@ class OnnxYoloWorldDetector private constructor(
             val modelBytes = context.assets.open(MODEL_ASSET_PATH).use { stream -> stream.readBytes() }
             val environment = OrtEnvironment.getEnvironment()
             val session = environment.createSession(modelBytes, OrtSession.SessionOptions())
-            return OnnxYoloWorldDetector(environment, session, YoloDecoder(vocabulary), inputSize, dispatcher)
+            return OnnxYoloWorldDetector(environment, session, YoloDecoder(vocabulary), inputSizeOf(session), dispatcher)
         }
     }
 }

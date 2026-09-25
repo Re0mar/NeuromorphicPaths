@@ -7,4 +7,6 @@ data class GuidanceUpdate(
     val obstacles: List<Obstacle>,
     val guidance: Guidance,
     val walker: WalkerState,
+    /** Wall-clock time the detector took on this frame. The one number that says whether the model fits the phone. */
+    val detectorNanos: Long = 0L,
 )

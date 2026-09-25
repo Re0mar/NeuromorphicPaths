@@ -5,6 +5,8 @@ tree	TREE
 fence	BARRIER
 barrier	BARRIER
 road barrier	BARRIER
+brick wall	BARRIER
+stairs	BARRIER
 person	PERSON
 dog	ANIMAL
 cat	ANIMAL
@@ -19,6 +21,12 @@ pole	POLE
 lamp post	POLE
 bollard	POLE
 traffic sign	POLE
+utility pole	POLE
+post	POLE
+column	POLE
+pillar	POLE
+traffic cone	POLE
+fire hydrant	POLE
 pothole	HOLE
 hole in the ground	HOLE
 table	TABLE

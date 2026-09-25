@@ -23,11 +23,13 @@ class GuidancePipeline(
         // Tests turn this off so every frame is accounted for.
         val frames: Flow<Frame> = if (dropStaleFrames) source.frames().conflate() else source.frames()
         frames.collect { frame ->
+            val detectStartNanos = System.nanoTime()
             val detections = detector.detect(frame)
+            val detectorNanos = System.nanoTime() - detectStartNanos
             val obstacles = locator.locate(detections, frame)
             val walker = walkerState()
             val guidance = field.evaluate(obstacles, walker, frame.timestampNanos)
-            val update = GuidanceUpdate(frame, detections, obstacles, guidance, walker)
+            val update = GuidanceUpdate(frame, detections, obstacles, guidance, walker, detectorNanos)
             for (display in displays) {
                 display.show(update)
             }
