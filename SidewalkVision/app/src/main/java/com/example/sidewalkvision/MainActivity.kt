@@ -263,6 +263,8 @@ fun CameraScreen(
     // Debug builds, the ones Android Studio installs, show the pose readout.
     val showPoseReadout = remember { (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0 }
     val overlayHold = remember { OverlayHold() }
+    val surpriseMonitor = remember { SurpriseMonitor() }
+    var surprise by remember { mutableStateOf<SurpriseReading?>(null) }
     // The button's state for the screen, and a copy the analysis thread can read.
     var detectionEnabled by remember { mutableStateOf(true) }
     val detectionEnabledForAnalysis = remember { AtomicBoolean(true) }
@@ -323,6 +325,14 @@ fun CameraScreen(
                                 mainHandler.post {
                                     // Dropped if detection was switched off while this frame ran,
                                     // or if it's an empty result inside the hold after a path.
+                                    // Every frame counts toward surprise, shown or not. Only a
+                                    // reliable pose moves it, the rest only age the reading.
+                                    if (detectionEnabledForAnalysis.get()) {
+                                        result.captureTimeNanos?.let { time ->
+                                            val position = result.pose?.takeIf { it.reliable }?.positionAcross
+                                            surprise = surpriseMonitor.update(time, position)
+                                        }
+                                    }
                                     val hasPath = result.maskBitmap != null
                                     val show = detectionEnabledForAnalysis.get() &&
                                         overlayHold.shouldShow(hasPath, SystemClock.elapsedRealtime())
@@ -451,14 +461,26 @@ fun CameraScreen(
             )
         }
 
+        if (surprise?.alarmOn == true) {
+            EdgeAlarm(
+                reading = surprise!!,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 104.dp)
+            )
+        }
+
         if (showPoseReadout) {
-            detectionResult?.pose?.let { pose ->
-                PoseReadout(
-                    pose = pose,
-                    modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(16.dp)
-                )
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(16.dp)
+            ) {
+                surprise?.let { reading ->
+                    SurpriseReadout(reading, detectionResult?.pose, groundSpeed)
+                }
+                detectionResult?.pose?.let { pose -> PoseReadout(pose = pose) }
             }
         }
 
@@ -469,6 +491,8 @@ fun CameraScreen(
                 if (!detectionEnabled) {
                     detectionResult?.maskBitmap?.recycle()
                     detectionResult = null
+                    surpriseMonitor.reset()
+                    surprise = null
                     overlayHold.reset()
                 }
             },
@@ -667,6 +691,65 @@ fun PoseReadout(pose: PoseEstimate, modifier: Modifier = Modifier) {
         color = Color.Black.copy(alpha = 0.6f),
         shape = MaterialTheme.shapes.medium,
         modifier = modifier
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+            for (line in lines) {
+                Text(text = line, color = Color.White, fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+/** The warning itself: shown in every build while edge surprise is over the alarm threshold. */
+@Composable
+fun EdgeAlarm(reading: SurpriseReading, modifier: Modifier = Modifier) {
+    val seconds = reading.secondsToEdge
+    val text = if (seconds == null || seconds <= 0.0) {
+        "Edge of the path"
+    } else {
+        "Edge in ${String.format(Locale.US, "%.1f", seconds)} s"
+    }
+    Surface(
+        color = Color(0xFFD32F2F),
+        shape = MaterialTheme.shapes.medium,
+        modifier = modifier
+    ) {
+        Text(
+            text = text,
+            color = Color.White,
+            fontSize = 22.sp,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+        )
+    }
+}
+
+/**
+ * Debug readout of both surprise channels. Sideways speed is shown twice: from the camera alone,
+ * which the channels use, and from GPS speed and heading, v = -u sin(heading), as a cross-check.
+ */
+@Composable
+fun SurpriseReadout(reading: SurpriseReading, pose: PoseEstimate?, groundSpeedMetersPerSecond: Double?) {
+    fun format(value: Double?, pattern: String): String =
+        value?.let { if (it.isInfinite()) "past" else String.format(Locale.US, pattern, it) } ?: "n/a"
+
+    val headingDegrees = pose?.takeIf { it.reliable }?.headingDegrees
+    val pathWidthMeters = pose?.pathWidthMeters ?: DEFAULT_PATH_WIDTH_METERS
+    val headingSpeed = if (headingDegrees != null && groundSpeedMetersPerSecond != null) {
+        -groundSpeedMetersPerSecond / pathWidthMeters * kotlin.math.sin(Math.toRadians(headingDegrees))
+    } else {
+        null
+    }
+    val lines = listOf(
+        "line ${format(reading.lineSurpriseBits, "%.2f")} bits   edge ${format(reading.edgeSurpriseBits, "%.2f")} bits   " +
+            "alarm ${if (reading.alarmOn) "ON" else "off"}",
+        "to edge ${format(reading.secondsToEdge, "%.1f")} s   gap ${format(reading.gapToEdge, "%.2f")} widths",
+        "sideways ${format(reading.sidewaysSpeed, "%.2f")} widths/s camera, ${format(headingSpeed, "%.2f")} GPS",
+        "position ${format(reading.positionFromCenter, "%.2f")}   mean ${format(reading.meanPosition, "%.2f")}   " +
+            "wobble ${format(reading.wobble, "%.3f")}",
+    )
+    Surface(
+        color = Color.Black.copy(alpha = 0.6f),
+        shape = MaterialTheme.shapes.medium
     ) {
         Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
             for (line in lines) {

@@ -110,6 +110,15 @@ detector often marks only one of them, and then p and W describe that band. A p 
 1 then means standing beside the marked band, not off the sidewalk. ψ is unaffected, since every
 line running along the path gives the same heading.
 
+**In the app.** SidewalkVision computes both channels live, in
+`SidewalkVision/app/src/main/java/com/example/sidewalkvision/SurpriseMonitor.kt`, in path widths.
+It uses the two-frame form of v, timed by each frame's capture time and smoothed with α, so the
+edge channel needs neither GPS nor the path's width in meters. The one-frame form appears next to
+it in the debug readout as the cross-check. Line surprise uses the Eq 15 form, since the argument
+order of Eq 31 is still open. The display shows an alarm when Uₑ passes θ₁. The line intensity
+is computed but not yet drawn, because how the rider sees it is a design choice still to make.
+The worked scenarios in this document are the app's unit tests.
+
 ---
 
 ## Measuring the rider
