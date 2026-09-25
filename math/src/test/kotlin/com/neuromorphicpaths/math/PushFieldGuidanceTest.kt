@@ -15,13 +15,19 @@ class PushFieldGuidanceTest {
     private val field = PushFieldGuidance()
     private val walker = WalkerState.ALIGNED_WITH_CAMERA
 
-    private fun obstacleAt(bearingDegrees: Double, rangeMeters: Double, obstacleClass: ObstacleClass = ObstacleClass.CHAIR) =
-        Obstacle(
-            detection = Detection(obstacleClass, confidence = 0.9, box = NormalizedBox(0.4, 0.4, 0.6, 0.8)),
-            bearingRadians = Math.toRadians(bearingDegrees),
-            rangeMeters = rangeMeters,
-            closingSpeedMetersPerSecond = null,
-        )
+    // A tree is the plainest obstacle: 0.5 m clearance, 2 s horizon, no acceptability of
+    // contact. With full confidence the closed forms below come out exact.
+    private fun obstacleAt(
+        bearingDegrees: Double,
+        rangeMeters: Double,
+        obstacleClass: ObstacleClass = ObstacleClass.TREE,
+        confidence: Double = 1.0,
+    ) = Obstacle(
+        detection = Detection(obstacleClass, confidence = confidence, box = NormalizedBox(0.4, 0.4, 0.6, 0.8)),
+        bearingRadians = Math.toRadians(bearingDegrees),
+        rangeMeters = rangeMeters,
+        closingSpeedMetersPerSecond = null,
+    )
 
     private fun degrees(radians: Double) = Math.toDegrees(radians)
 
@@ -58,7 +64,7 @@ class PushFieldGuidanceTest {
 
         assertTrue("should turn, was ${degrees(guidance.desiredHeadingRadians)}", abs(guidance.desiredHeadingRadians) > Math.toRadians(5.0))
         assertTrue("should turn right on a tie", guidance.desiredHeadingRadians > 0.0)
-        // 3 m at 1.4 m/s is 2.1 s, just past the reference time, so the object alone is about
+        // 3 m at 1.4 m/s is 2.1 s, just past the horizon, so the object alone is about
         // 0.6 bits. The best turn still costs something, so the excess is smaller than that.
         assertTrue("the object itself should be surprising", guidance.perObstacle.single().surpriseBits > 0.5)
         assertTrue("heading straight at it should cost more than turning", guidance.overallSurpriseBits > 0.2)
@@ -91,9 +97,9 @@ class PushFieldGuidanceTest {
     }
 
     @Test
-    fun objectAtTheReferenceTimeDeadAheadIsAboutSevenTenthsOfABit() {
-        // Range 2.8 m at 1.4 m/s is 2 s, the reference time, so the ratio is 1 and the surprise
-        // is half a bit in nats, which is 0.72 bits.
+    fun objectAtTheHorizonDeadAheadIsAboutSevenTenthsOfABit() {
+        // Range 2.8 m at 1.4 m/s is 2 s, the tree's horizon, so the urgency is 1 and the
+        // surprise is half a nat, which is 0.72 bits.
         val surprise = field.obstacleSurpriseBits(obstacleAt(0.0, 2.8), headingRadians = 0.0, walkerSpeed = 1.4)
 
         assertEquals(0.5 / Math.log(2.0), surprise, 1e-9)

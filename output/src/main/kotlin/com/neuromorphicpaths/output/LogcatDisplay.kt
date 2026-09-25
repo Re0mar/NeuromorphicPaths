@@ -15,7 +15,7 @@ class LogcatDisplay : GuidanceDisplay {
             TAG,
             String.format(
                 Locale.US,
-                "t=%dns detect=%dms detections=%d obstacles=%d heading=%+.1fdeg surprise=%.2fbits speed=%.2fm/s wobble=%.1fdeg tolerance=%.1fdeg",
+                "t=%dns detect=%dms detections=%d obstacles=%d heading=%+.1fdeg surprise=%.2fbits speed=%.2fm/s wobble=%.1fdeg tolerance=%.1fdeg entropy=%.2fbits",
                 update.frame.timestampNanos,
                 update.detectorNanos / NANOS_PER_MILLI,
                 update.detections.size,
@@ -26,8 +26,29 @@ class LogcatDisplay : GuidanceDisplay {
                 update.walker.speedMetersPerSecond ?: Double.NaN,
                 Math.toDegrees(guidance.walkerWobbleRadians ?: Double.NaN),
                 Math.toDegrees(guidance.turnToleranceRadians ?: Double.NaN),
+                guidance.headingEntropyBits ?: Double.NaN,
             ),
         )
+        // One line per obstacle after the frame line, so a replay can be read per track. The
+        // frame line stays first and keeps its shape, since scripts already parse it.
+        for (entry in guidance.perObstacle) {
+            val obstacle = entry.obstacle
+            Log.d(
+                TAG,
+                String.format(
+                    Locale.US,
+                    "  t=%dns track=%d class=%s confidence=%.2f range=%.2fm bearing=%+.1fdeg closing=%.2fm/s surprise=%.2fbits",
+                    update.frame.timestampNanos,
+                    obstacle.detection.trackId ?: -1,
+                    obstacle.obstacleClass.name,
+                    obstacle.detection.confidence,
+                    obstacle.rangeMeters,
+                    Math.toDegrees(obstacle.bearingRadians),
+                    obstacle.closingSpeedMetersPerSecond ?: Double.NaN,
+                    entry.surpriseBits,
+                ),
+            )
+        }
     }
 
     override fun close() = Unit

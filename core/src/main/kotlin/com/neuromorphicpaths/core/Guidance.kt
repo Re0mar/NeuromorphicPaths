@@ -24,6 +24,9 @@ data class ObstacleSurprise(
  * The per-obstacle list is for the display and the log, not for adding up. Walker wobble is the
  * running spread of the walker's own heading, null until measured. Turn tolerance is the value
  * the field charged turns against on this frame, null for a field that has no such term.
+ * Heading entropy is how spread out the field's belief over headings is, in bits: near zero
+ * when one heading is clearly best, near the log of the number of candidates when they are
+ * all about as good. Null for a field that holds no such belief.
  */
 data class Guidance(
     val desiredHeadingRadians: Double,
@@ -31,4 +34,5 @@ data class Guidance(
     val perObstacle: List<ObstacleSurprise>,
     val walkerWobbleRadians: Double? = null,
     val turnToleranceRadians: Double? = null,
+    val headingEntropyBits: Double? = null,
 )

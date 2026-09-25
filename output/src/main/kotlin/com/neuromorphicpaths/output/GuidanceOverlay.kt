@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
+import com.neuromorphicpaths.core.Guidance
 import com.neuromorphicpaths.core.GuidanceUpdate
 import com.neuromorphicpaths.core.Obstacle
 import java.util.Locale
@@ -69,7 +70,7 @@ fun GuidanceOverlay(display: ScreenOverlayDisplay, modifier: Modifier = Modifier
         ) {
             val guidance = current.update.guidance
             Text(formatLine("heading %+.0f deg", Math.toDegrees(guidance.desiredHeadingRadians)), color = Color.White)
-            Text(formatLine("surprise %.2f bits", guidance.overallSurpriseBits), color = Color.White)
+            Text(formatLine("surprise %.2f bits, %s", guidance.overallSurpriseBits, describeEntropy(guidance)), color = Color.White)
             Text(formatLine("pitch %+.0f deg, fov %.0f deg", Math.toDegrees(current.update.frame.pose.pitchRadians), Math.toDegrees(current.update.frame.intrinsics.horizontalFovRadians)), color = Color.White)
             Text(describeWalker(current.update), color = Color.White)
             Text("${current.update.obstacles.size} obstacles", color = Color.White)
@@ -80,12 +81,22 @@ fun GuidanceOverlay(display: ScreenOverlayDisplay, modifier: Modifier = Modifier
     }
 }
 
-private fun describe(obstacle: Obstacle): String = formatLine(
-    "%s %.1f m at %+.0f deg",
-    obstacle.obstacleClass.name.lowercase().replace('_', ' '),
-    obstacle.rangeMeters,
-    Math.toDegrees(obstacle.bearingRadians),
-)
+private fun describe(obstacle: Obstacle): String {
+    val closing = obstacle.closingSpeedMetersPerSecond?.let { formatLine(", closing %.1f m/s", it) } ?: ""
+    val track = obstacle.detection.trackId?.let { "#$it " } ?: ""
+    return formatLine(
+        "%s%s %.1f m at %+.0f deg%s",
+        track,
+        obstacle.obstacleClass.name.lowercase().replace('_', ' '),
+        obstacle.rangeMeters,
+        Math.toDegrees(obstacle.bearingRadians),
+        closing,
+    )
+}
+
+/** How spread the field's belief over headings is, or a dash for a field that holds none. */
+private fun describeEntropy(guidance: Guidance): String =
+    guidance.headingEntropyBits?.let { formatLine("entropy %.2f bits", it) } ?: "entropy - bits"
 
 /** Speed, wobble and the tolerance in force, with a dash for whatever nothing has measured yet. */
 private fun describeWalker(update: GuidanceUpdate): String {

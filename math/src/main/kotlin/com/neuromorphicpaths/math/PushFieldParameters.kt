@@ -1,14 +1,21 @@
 package com.neuromorphicpaths.math
 
+import com.neuromorphicpaths.core.ObstacleClass
+
 /**
  * The tuning knobs of the push field. Every one has a physical meaning, so a value can be
  * argued about in meters and seconds rather than found by trial.
  *
- * Clearance is how far an object has to sit from the walker's line for the walker to be
- * comfortable. Reference time is the time to contact at which a dead-ahead object is worth
- * about 0.7 bits of surprise. Turn tolerance is how far the walker expects to deviate from
- * straight ahead before that alone feels wrong. Default speed stands in until something
- * measures the walker.
+ * What each class of obstacle means is in [profiles], one [ObstacleProfile] per class: the
+ * berth it needs, how far ahead in time it starts to count, and whether touching it is fine.
+ * Turn tolerance is how far the walker expects to deviate from straight ahead before that
+ * alone feels wrong. Default speed stands in until something measures the walker.
+ *
+ * A detector's score is not a probability, so it is calibrated before it enters the field: a
+ * score at or above [confidenceForCertainty] counts as an object that certainly exists, and
+ * below it the probability falls linearly, so the detector's own 0.25 threshold reads as an
+ * even chance. Taken literally, a cone a meter ahead scored at 0.45 could never be worth more
+ * than a bit, however close it came.
  *
  * The turn tolerance can instead follow the walker's measured heading wobble, as the wobble times
  * a ratio, clamped between a floor and the search range. That is off by default on purpose. On
@@ -18,8 +25,8 @@ package com.neuromorphicpaths.math
  * or the ratio is wrong is an open question, and the switch is here so it can be tried.
  */
 data class PushFieldParameters(
-    val clearanceMeters: Double = 0.5,
-    val referenceTimeSeconds: Double = 2.0,
+    val profiles: Map<ObstacleClass, ObstacleProfile> = ObstacleProfile.DEFAULTS,
+    val confidenceForCertainty: Double = 0.5,
     val minimumTimeToContactSeconds: Double = 0.2,
     val turnToleranceRadians: Double = Math.toRadians(30.0),
     val turnToleranceFromWobble: Boolean = false,
@@ -30,8 +37,10 @@ data class PushFieldParameters(
     val headingStepRadians: Double = Math.toRadians(1.0),
 ) {
     init {
-        require(clearanceMeters > 0.0) { "clearanceMeters must be positive" }
-        require(referenceTimeSeconds > 0.0) { "referenceTimeSeconds must be positive" }
+        // A class without a profile would surface as a lookup failure deep inside the search.
+        val missing = ObstacleClass.entries.filterNot { it in profiles }
+        require(missing.isEmpty()) { "profiles is missing $missing" }
+        require(confidenceForCertainty > 0.0 && confidenceForCertainty <= 1.0) { "confidenceForCertainty must be in (0, 1]" }
         require(minimumTimeToContactSeconds > 0.0) { "minimumTimeToContactSeconds must be positive" }
         require(turnToleranceRadians > 0.0) { "turnToleranceRadians must be positive" }
         require(wobbleToToleranceRatio > 0.0) { "wobbleToToleranceRatio must be positive" }
@@ -39,6 +48,8 @@ data class PushFieldParameters(
         require(defaultWalkerSpeedMetersPerSecond > 0.0) { "defaultWalkerSpeedMetersPerSecond must be positive" }
         require(maxHeadingRadians > 0.0 && headingStepRadians > 0.0) { "heading search range and step must be positive" }
     }
+
+    fun profileOf(obstacleClass: ObstacleClass): ObstacleProfile = profiles.getValue(obstacleClass)
 
     companion object {
         /** Welford's convention: 96 percent of a walker's headings fall within this many spreads. */

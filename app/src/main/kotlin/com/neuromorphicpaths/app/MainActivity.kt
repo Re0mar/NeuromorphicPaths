@@ -21,8 +21,11 @@ import com.neuromorphicpaths.input.GpsGroundSpeed
 import com.neuromorphicpaths.input.Recording
 import com.neuromorphicpaths.input.SensorPoseProvider
 import com.neuromorphicpaths.input.VideoFileFrameSource
+import com.neuromorphicpaths.math.DetectionTracker
 import com.neuromorphicpaths.math.GroundPlaneObstacleLocator
 import com.neuromorphicpaths.math.PushFieldGuidance
+import com.neuromorphicpaths.math.TrackedObstacleDetector
+import com.neuromorphicpaths.math.TrackedObstacleLocator
 import com.neuromorphicpaths.model.EmptyObstacleDetector
 import com.neuromorphicpaths.model.OnnxYoloWorldDetector
 import com.neuromorphicpaths.model.ScriptedObstacleDetector
@@ -149,7 +152,10 @@ class MainActivity : ComponentActivity() {
     private fun startPipeline(sourceFactory: () -> FrameSource, walkerState: (Frame) -> WalkerState = ::liveWalkerState) {
         stopPipeline()
         val source = sourceFactory()
-        val detector = detector()
+        // One tracker per run, shared by the detector side that hands out ids and the locator
+        // side that turns a track's range history into a closing speed.
+        val tracker = DetectionTracker()
+        val detector = TrackedObstacleDetector(detector(), tracker)
         activeSourceFactory = sourceFactory
         activeWalkerState = walkerState
         activeSource = source
@@ -157,7 +163,7 @@ class MainActivity : ComponentActivity() {
         val pipeline = GuidancePipeline(
             source = source,
             detector = detector,
-            locator = GroundPlaneObstacleLocator(),
+            locator = TrackedObstacleLocator(GroundPlaneObstacleLocator(), tracker),
             field = PushFieldGuidance(),
             displays = listOf(screenDisplay, LogcatDisplay()),
             walkerState = walkerState,

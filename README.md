@@ -43,7 +43,7 @@ All of them live in `core`, one interface each.
 | Output | `GuidanceDisplay` | Receives one `GuidanceUpdate` per processed frame and shows it however it likes. |
 
 `GuidancePipeline` in `core` runs them in that order. It drops frames the detector cannot keep up
-with rather than queueing them, so what the walker sees is never older than one detector call.
+with rather than queuing them, so what the walker sees is never older than one detector call.
 
 ## What is implemented right now
 
@@ -58,14 +58,19 @@ with rather than queueing them, so what the walker sees is never older than one 
 - **Math.** `GroundPlaneObstacleLocator` gets bearing from the box center and the horizontal field
   of view, and range from where the box meets the ground, given camera height and pitch. When
   the box bottom is cut off it falls back to a typical height per class. `PushFieldGuidance` is
-  the push field: per-obstacle surprise from miss distance and time to contact, summed over
-  candidate headings, lowest sum wins. `docs/math/push_field.md` explains it, including the
-  running heading wobble it measures and why that does not yet set the turn tolerance.
-  `NoGuidanceField`
-  is the straight-ahead stand-in for tests.
+  the push field: per obstacle, the probability of a collision on a candidate heading from
+  miss distance, time to contact, detector confidence and what the class is, turned into a
+  surprise and summed over candidate headings, lowest sum wins. It also reports the entropy
+  of its belief over headings. `docs/math/push_field.md` explains it, including the running
+  heading wobble it measures and why that does not yet set the turn tolerance.
+  `NoGuidanceField` is the straight-ahead stand-in for tests.
+- **Tracking.** `DetectionTracker` in `math` follows a box from frame to frame by overlap and
+  gives it a track id. A box the detector misses for a frame or two is carried through at a
+  fading confidence, so one missed detection does not flip the heading. `TrackedObstacleDetector`
+  wraps any detector with it, and `TrackedObstacleLocator` wraps any locator so a track's range
+  over the last two seconds gives its closing speed, which the field uses for time to contact.
 - **Output.** `ScreenOverlayDisplay` plus the `GuidanceOverlay` composable draws the frame, the
-  boxes, a heading arrow and the numbers, and holds the last boxes for 0.8 s over an empty
-  frame so one missed detection doesn't blink. `LogcatDisplay` writes one line per frame.
+  boxes, a heading arrow and the numbers. `LogcatDisplay` writes one line per frame.
 
 ## Running it
 
@@ -96,8 +101,10 @@ adb shell am start -n com.neuromorphicpaths/.app.MainActivity --es recording out
 adb logcat -s Guidance:D
 ```
 
-The log line per frame carries the detector time, the counts, the heading, the surprise and the
-walker's speed, wobble and turn tolerance, so a replay's numbers can be pulled out with `grep`.
+The log line per frame carries the detector time, the counts, the heading, the surprise, the
+walker's speed, wobble and turn tolerance, and the entropy of the field's belief over headings,
+so a replay's numbers can be pulled out with `grep`. One indented line per obstacle follows it,
+with the track id, class, confidence, range, bearing, closing speed and that obstacle's surprise.
 
 ## The detector model
 
