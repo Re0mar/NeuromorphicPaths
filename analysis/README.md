@@ -6,8 +6,8 @@ frames and scores it against hand-checked labels.
 The detector here is a copy of the first app's `PathDetector.kt`, now kept under
 `OldAppEnvrionmentStuff/`. It loads the model SidewalkVision ships,
 `SidewalkVision/app/src/main/assets/best_int8.tflite`, which is byte-identical to the first
-app's. SidewalkVision reads the model's output with its own thresholds and edge rules, so scores
-here describe the first app's pipeline on the shared model.
+app's. Since 2026-09-25 SidewalkVision also decodes the model's output with the first app's
+settings, so scores here describe what both apps run.
 
 ## Install
 
@@ -218,12 +218,14 @@ A new layer needs a row in `tests/test_layers.py`. The test fails until it has o
 
 ## Two ways to decode the same model
 
-Both apps run the same model file but turn its output into a mask and edges differently. The
-detector copies either one, chosen with `--decoder` on the `geometry` and `scoring` commands.
+The detector can turn the model's output into a mask and edges two ways, chosen with `--decoder`
+on the `geometry` and `scoring` commands. `first-app` is what both apps run now. The other is
+SidewalkVision's decoding as it first shipped, kept so the comparison between the two can be
+reproduced.
 
-| Setting | `first-app` (default) | `sidewalk-vision` |
+| Setting | `first-app` (default, both apps now) | `sidewalk-vision-original` |
 |---|---|---|
-| Least confidence to accept a detection | 0.25 | 0.25 |
+| Least confidence to accept a detection | 0.25 | 0.001 |
 | Preference for detections low and central in the frame | yes | no |
 | Mask probability a cell needs to count as path | 0.5 | 0.35 |
 | Margin added around the detection box | none | 10% of the model input on each side |
@@ -235,8 +237,9 @@ The settings live in `DECODER_SETTINGS` in `detector/path_detector.py`.
 ## Keeping the copy in step with the apps
 
 The `first-app` constants at the top of `detector/path_detector.py` carry the same names as the
-companion object in the first app's `PathDetector.kt`, in snake case. The `sidewalk-vision` ones
-each quote the Kotlin in `SidewalkVision/.../PathDetector.kt` they copy. When a value changes in
+companion object in the first app's `PathDetector.kt`, in snake case, and SidewalkVision's
+`PathDetector.kt` now uses the same values. The `sidewalk-vision-original` ones quote
+SidewalkVision's code as it first shipped, at commit `e8b81c2`. When a value changes in
 either app, change it here too. The one deliberate addition in both is `CLIP_MARGIN_CELLS`,
 which neither app has yet.
 

@@ -52,7 +52,7 @@ MIN_RELIABLE_ROWS_PER_EDGE = 12
 MAX_OUTLIER_SHARE = 0.4
 # An edge that stays within this of the mask region's side over its whole length is the side of
 # the detection box cutting the mask off, not the path. It fits a line perfectly, so the checks
-# above would pass it. With SidewalkVision's decoding it gave pitches of 72 and 4 degrees on
+# above would pass it. With SidewalkVision's original decoding it gave pitches of 72 and 4 degrees on
 # photos taken at about 20.
 BOX_SIDE_TOLERANCE_CELLS = 1.0
 

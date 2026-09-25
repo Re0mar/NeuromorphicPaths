@@ -108,7 +108,7 @@ def test_every_decoder_preset_has_settings() -> None:
 
 
 def test_outermost_edges_span_two_separate_runs() -> None:
-    # Two sidewalks with a road between them. SidewalkVision's rule reads one outline across
+    # Two sidewalks with a road between them. SidewalkVision's first rule read one outline across
     # both, and the traced run keeps to the one under the center.
     geometry = letterbox(Image.new("RGB", (1920, 1080)), 320, 320)[1]
     grid = numpy.zeros((GRID_SIZE, GRID_SIZE), dtype=bool)

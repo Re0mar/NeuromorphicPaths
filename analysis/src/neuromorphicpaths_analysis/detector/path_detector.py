@@ -5,10 +5,10 @@ OldAppEnvrionmentStuff/app/src/main/java/com/example/neuromorphicpaths/vision/Pa
 It runs the same .tflite file with the same preprocessing and decoding. Constants keep the
 Kotlin names in snake case. When one changes there, change it here too.
 
-The SidewalkVision app has its own detector, with different thresholds and a different way of
-reading the edges, so a score measured here is a score for the first app's pipeline on the model
-both apps ship. The one deliberate addition over the first app is clipping: each traced row says
-whether a side touched the image border.
+SidewalkVision took over these settings on 2026-09-25, so the default preset now matches both
+apps. The one addition over the first app, which SidewalkVision also has, is clipping: each
+traced row says whether a side touched the image border. The other preset keeps SidewalkVision's
+decoding as it first shipped, to reproduce the comparison between the two.
 """
 
 # Standard library imports
@@ -46,16 +46,16 @@ MAX_GAP_ROWS = 2
 # border, a side counts as clipped.
 CLIP_MARGIN_CELLS = 1
 
-# Mirrors of SidewalkVision/app/src/main/java/com/example/sidewalkvision/PathDetector.kt, each
-# citing the Kotlin it copies. Quoted rather than by line number, which edits would shift.
-SIDEWALK_VISION_CONF_THRESHOLD = 0.25  # const val CONFIDENCE_THRESHOLD = 0.25f
-SIDEWALK_VISION_MASK_PROBABILITY = 0.35  # sigmoid > 0.35f
-SIDEWALK_VISION_BOX_MARGIN = 0.1  # private const val MASK_BOX_MARGIN = 0.1f
+# SidewalkVision's decoding as it first shipped, in PathDetector.kt at commit e8b81c2, each citing
+# the Kotlin it copies. Kept only to reproduce the comparison with the first app's settings.
+SIDEWALK_VISION_ORIGINAL_CONF_THRESHOLD = 0.001  # val CONF_THRESHOLD = 0.001f
+SIDEWALK_VISION_ORIGINAL_MASK_PROBABILITY = 0.35  # sigmoid > 0.35f
+SIDEWALK_VISION_ORIGINAL_BOX_MARGIN = 0.1  # ys >= (t - 0.1f) and so on, in fractions of the model input
 
 
 class DecoderPreset(Enum):
     FIRST_APP = "first-app"
-    SIDEWALK_VISION = "sidewalk-vision"
+    SIDEWALK_VISION_ORIGINAL = "sidewalk-vision-original"
 
 
 class EdgeRule(Enum):
@@ -90,12 +90,12 @@ DECODER_SETTINGS: dict[DecoderPreset, DecoderSettings] = {
         antialiased_resize=True,
         edge_rule=EdgeRule.TRACED_RUN,
     ),
-    DecoderPreset.SIDEWALK_VISION: DecoderSettings(
-        preset=DecoderPreset.SIDEWALK_VISION,
-        conf_threshold=SIDEWALK_VISION_CONF_THRESHOLD,
+    DecoderPreset.SIDEWALK_VISION_ORIGINAL: DecoderSettings(
+        preset=DecoderPreset.SIDEWALK_VISION_ORIGINAL,
+        conf_threshold=SIDEWALK_VISION_ORIGINAL_CONF_THRESHOLD,
         prefer_ground_ahead=False,
-        mask_probability=SIDEWALK_VISION_MASK_PROBABILITY,
-        box_margin=SIDEWALK_VISION_BOX_MARGIN,
+        mask_probability=SIDEWALK_VISION_ORIGINAL_MASK_PROBABILITY,
+        box_margin=SIDEWALK_VISION_ORIGINAL_BOX_MARGIN,
         # Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true), filtered, in one step.
         antialiased_resize=False,
         edge_rule=EdgeRule.OUTERMOST,
@@ -129,10 +129,11 @@ def letterbox(
 
     PIL's bilinear resize is antialiased when shrinking. The first app gets the same effect by
     halving repeatedly before its final bilinear draw, so pixel values differ slightly but not the
-    shape. SidewalkVision shrinks in one bilinear step, which OpenCV's plain bilinear resize matches.
+    shape. SidewalkVision as first shipped shrank in one bilinear step, which OpenCV's plain
+    bilinear resize matches.
 
     :param image: RGB frame at original resolution.
-    :param antialiased: False to copy SidewalkVision's single-step shrink.
+    :param antialiased: False to copy the original SidewalkVision's single-step shrink.
     :return: The padded RGB input as a uint8 array, and where the frame sits inside it.
     :rtype: tuple[numpy.ndarray, LetterboxGeometry]
     """
@@ -244,7 +245,7 @@ def trace_path(grid_mask: numpy.ndarray, geometry: LetterboxGeometry) -> list[Tr
 
 def outermost_edges(grid_mask: numpy.ndarray, geometry: LetterboxGeometry) -> list[TracedRow]:
     """
-    The first and last mask cell of every row, as SidewalkVision reads its edges.
+    The first and last mask cell of every row, as SidewalkVision first read its edges.
 
     Unlike trace_path, this follows no run. Two sidewalks in one row give one outline spanning
     both and the road between them. Clipping is flagged the same way as in trace_path.
