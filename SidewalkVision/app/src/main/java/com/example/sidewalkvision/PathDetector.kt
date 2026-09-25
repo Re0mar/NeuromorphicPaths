@@ -17,6 +17,7 @@ import java.nio.ByteOrder
 import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
@@ -68,7 +69,21 @@ class PathDetector(context: Context) {
         private const val CLIP_MARGIN_CELLS = 1
 
         // How far past the detection box mask cells are still kept, in fractions of the model input.
-        private const val MASK_BOX_MARGIN = 0.1f
+        // At 0.1 a mask spilling onto the next surface ran on to the margin and stopped in a straight
+        // line, which the pose read as a perfect path edge.
+        private const val MASK_BOX_MARGIN = 0f
+
+        // A cell is sidewalk when the model thinks it more likely than not. At 0.35 the mask crept
+        // onto surfaces that look alike, a red bike lane or driveway tiles.
+        private const val MASK_PROBABILITY = 0.5f
+
+        // Detections low and central in the frame are where the ground ahead of the user is. A
+        // score is weighted down by up to these fractions toward the sides and the top.
+        private const val GROUND_PREFERENCE_X = 0.3f
+        private const val GROUND_PREFERENCE_Y = 0.3f
+
+        // Empty grid rows tolerated while tracing the sidewalk upward before it counts as ended.
+        private const val MAX_GAP_ROWS = 2
 
         // Box values above this are pixels, at or below it normalized. See isPixelCoords.
         private const val NORMALIZED_COORDINATE_LIMIT = 2f
@@ -167,7 +182,7 @@ class PathDetector(context: Context) {
         val padX = (inWidth - newWidth) / 2f
         val padY = (inHeight - newHeight) / 2f
 
-        val scaledBitmap = Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true)
+        val scaledBitmap = shrinkSmoothly(bitmap, newWidth, newHeight)
         val canvasBitmap = Bitmap.createBitmap(inWidth, inHeight, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(canvasBitmap)
         canvas.drawColor(Color.rgb(114, 114, 114))
@@ -346,17 +361,31 @@ class PathDetector(context: Context) {
         }
 
         var bestIdx = -1
-        var bestScore = -1f
+        var bestScore = 0f
+        var bestWeighted = 0f
+        var topScore = 0f
         for (a in det.indices) {
             val score = det[a][4]
-            if (score > bestScore) {
+            topScore = max(topScore, score)
+            if (score < CONFIDENCE_THRESHOLD) continue
+            val anchorIsPixels = maxOf(det[a][0], det[a][1], det[a][2], det[a][3]) > NORMALIZED_COORDINATE_LIMIT
+            val anchorCx = if (anchorIsPixels) det[a][0] / inWidth else det[a][0]
+            val anchorCy = if (anchorIsPixels) det[a][1] / inHeight else det[a][1]
+            val imageCx = (anchorCx * inWidth - padX) / newWidth
+            val imageCy = (anchorCy * inHeight - padY) / newHeight
+            // A box centered on the gray padding isn't looking at the picture at all.
+            if (imageCx !in 0f..1f || imageCy !in 0f..1f) continue
+            val weight = (1f - GROUND_PREFERENCE_X * abs(imageCx - 0.5f) * 2f) *
+                (1f - GROUND_PREFERENCE_Y * (1f - imageCy))
+            if (score * weight > bestWeighted) {
+                bestWeighted = score * weight
                 bestScore = score
                 bestIdx = a
             }
         }
 
-        if (bestIdx == -1 || bestScore < CONFIDENCE_THRESHOLD) {
-            return DetectionResult(bestScore, null, null, emptyList())
+        if (bestIdx == -1) {
+            return DetectionResult(topScore, null, null, emptyList())
         }
 
         val bestAnchor = det[bestIdx]
@@ -393,7 +422,7 @@ class PathDetector(context: Context) {
                 val sigmoid = 1f / (1f + exp(-dot))
                 val inBox = ys >= (t - MASK_BOX_MARGIN) && ys <= (b + MASK_BOX_MARGIN) &&
                     xs >= (l - MASK_BOX_MARGIN) && xs <= (r + MASK_BOX_MARGIN)
-                maskPixels[mh][mw] = sigmoid > 0.35f && inBox // TODO: consider 0.5 and no box margin, see extractSidewalkEdges.
+                maskPixels[mh][mw] = sigmoid > MASK_PROBABILITY && inBox
             }
         }
 
@@ -442,7 +471,7 @@ class PathDetector(context: Context) {
         // One mask cell, in pixels of the full-size mask. The model's box usually stops a little
         // inside the frame, so a sidewalk running off the side often ends one cell short of it.
         val maskCellPx = maskWidth.toFloat() / (newWidth * pw.toFloat() / inWidth)
-        val edgesWithoutDistance = extractSidewalkEdges(origMaskBitmap, clipMarginPx = round(CLIP_MARGIN_CELLS * maskCellPx).toInt())
+        val edgesWithoutDistance = traceSidewalkEdges(maskPixels, padX, padY, newWidth, newHeight)
 
         // The region the mask was allowed into: the box plus its margin, in image fractions.
         val maskBounds = floatArrayOf(
@@ -462,69 +491,98 @@ class PathDetector(context: Context) {
         return DetectionResult(bestScore, box, origMaskBitmap, edgePoints, maskBounds = maskBounds, pose = pose)
     }
 
-    // Taking the first and last mask pixel per row spans the road when both sidewalks are in view.
-    // With the 0.35 threshold and 0.1 box margin the mask also spills past the path, and the box
-    // cuts it straight, which reads as a clean false edge. Both measured with analysis/ on this model.
-    // TODO: consider tracing the run under the bottom center upward, as the first app did.
-    private fun extractSidewalkEdges(maskBitmap: Bitmap, clipMarginPx: Int): List<SidewalkEdgePoint> {
-        val width = maskBitmap.width
-        val height = maskBitmap.height
-        val pixels = IntArray(width * height)
-        maskBitmap.getPixels(pixels, 0, width, 0, 0, width, height)
-
-        var minX = width; var maxX = 0; var minY = height; var maxY = 0
-        for (y in 0 until height) {
-            for (x in 0 until width) {
-                val alpha = (pixels[y * width + x] ushr 24) and 0xFF
-                if (alpha > 0) {
-                    if (x < minX) minX = x
-                    if (x > maxX) maxX = x
-                    if (y < minY) minY = y
-                    if (y > maxY) maxY = y
-                }
-            }
+    /**
+     * The sidewalk's left and right edge on each grid row, traced upward from the bottom center.
+     *
+     * On the first row with mask cells, the run containing the center column wins, or else the
+     * nearest run. On each row above, only a run overlapping the one below counts, and the largest
+     * overlap wins. Other patches of mask, a sidewalk across the road or a spill onto a driveway,
+     * are never joined to the one the user stands on. The same rule as trace_path in analysis/.
+     */
+    private fun traceSidewalkEdges(
+        maskPixels: Array<BooleanArray>,
+        padX: Float,
+        padY: Float,
+        newWidth: Int,
+        newHeight: Int
+    ): List<SidewalkEdgePoint> {
+        val gridHeight = maskPixels.size
+        val gridWidth = maskPixels[0].size
+        fun imageX(gridX: Float) = max(0f, min(1f, (gridX / gridWidth * inWidth - padX) / newWidth))
+        fun imageY(gridY: Float) = max(0f, min(1f, (gridY / gridHeight * inHeight - padY) / newHeight))
+        // Columns whose center falls on the picture rather than the gray padding.
+        val contentColumns = (0 until gridWidth).filter { column ->
+            val centerPx = (column + 0.5f) / gridWidth * inWidth
+            centerPx >= padX && centerPx <= padX + newWidth
         }
+        val firstContentColumn = contentColumns.first()
+        val lastContentColumn = contentColumns.last()
 
-        if (minX > maxX || minY > maxY) return emptyList()
-
-        val centerX = (minX + maxX) / 2f
+        val centerColumn = gridWidth / 2
+        var previousLeft = -1
+        var previousRight = -1
+        var gapRows = 0
         val edgePoints = mutableListOf<SidewalkEdgePoint>()
 
-        for (y in minY..maxY) {
-            var leftEdgeX = -1
-            for (x in minX..maxX) {
-                if (((pixels[y * width + x] ushr 24) and 0xFF) > 0) {
-                    leftEdgeX = x
-                    break
+        for (gridY in gridHeight - 1 downTo 0) {
+            val row = maskPixels[gridY]
+            var chosenLeft = -1
+            var chosenRight = -1
+            var chosenRank = Int.MIN_VALUE
+            var x = 0
+            while (x < gridWidth) {
+                if (!row[x]) {
+                    x++
+                    continue
+                }
+                val start = x
+                while (x < gridWidth && row[x]) x++
+                val end = x - 1
+                val rank = if (previousLeft == -1) {
+                    if (centerColumn in start..end) 0 else -minOf(abs(start - centerColumn), abs(end - centerColumn))
+                } else {
+                    minOf(end, previousRight) - maxOf(start, previousLeft) + 1
+                }
+                if (previousLeft != -1 && rank <= 0) continue
+                if (rank > chosenRank) {
+                    chosenRank = rank
+                    chosenLeft = start
+                    chosenRight = end
                 }
             }
 
-            var rightEdgeX = -1
-            for (x in maxX downTo minX) {
-                if (((pixels[y * width + x] ushr 24) and 0xFF) > 0) {
-                    rightEdgeX = x
-                    break
-                }
+            if (chosenLeft == -1) {
+                if (previousLeft != -1 && ++gapRows > MAX_GAP_ROWS) break
+                continue
             }
+            gapRows = 0
+            previousLeft = chosenLeft
+            previousRight = chosenRight
 
-            if (leftEdgeX != -1) {
-                val normX = leftEdgeX.toFloat() / width
-                val normY = y.toFloat() / height
-                val side = if (leftEdgeX < centerX) SidewalkEdgeSide.LEFT else SidewalkEdgeSide.RIGHT
-                val clipped = leftEdgeX <= clipMarginPx
-                edgePoints.add(SidewalkEdgePoint(Point2D(normX, normY), side, null, clipped))
-            }
-
-            if (rightEdgeX != -1 && rightEdgeX != leftEdgeX) {
-                val normX = rightEdgeX.toFloat() / width
-                val normY = y.toFloat() / height
-                val side = if (rightEdgeX < centerX) SidewalkEdgeSide.LEFT else SidewalkEdgeSide.RIGHT
-                val clipped = rightEdgeX >= width - 1 - clipMarginPx
-                edgePoints.add(SidewalkEdgePoint(Point2D(normX, normY), side, null, clipped))
-            }
+            val y = imageY(gridY + 0.5f)
+            val leftClipped = chosenLeft <= firstContentColumn + CLIP_MARGIN_CELLS
+            val rightClipped = chosenRight >= lastContentColumn - CLIP_MARGIN_CELLS
+            edgePoints.add(SidewalkEdgePoint(Point2D(imageX(chosenLeft.toFloat()), y), SidewalkEdgeSide.LEFT, null, leftClipped))
+            edgePoints.add(SidewalkEdgePoint(Point2D(imageX(chosenRight + 1f), y), SidewalkEdgeSide.RIGHT, null, rightClipped))
         }
-
         return edgePoints
+    }
+
+    /**
+     * Shrinks by halving until one last step of at most 2x remains. A single bilinear step from a
+     * large frame samples only a few source pixels per output pixel and aliases, so fine texture
+     * such as paving joints turns into noise unlike anything the model saw in training.
+     */
+    private fun shrinkSmoothly(source: Bitmap, width: Int, height: Int): Bitmap {
+        var current = source
+        while (current.width >= width * 2 && current.height >= height * 2) {
+            val half = Bitmap.createScaledBitmap(current, maxOf(width, current.width / 2), maxOf(height, current.height / 2), true)
+            if (current !== source) current.recycle()
+            current = half
+        }
+        val result = Bitmap.createScaledBitmap(current, width, height, true)
+        if (current !== source && current !== result) current.recycle()
+        return result
     }
 
     private fun maybeDumpDebugFrames(raw: Bitmap, letterboxed: Bitmap) {
