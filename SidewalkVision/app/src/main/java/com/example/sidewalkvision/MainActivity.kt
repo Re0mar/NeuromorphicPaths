@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -51,6 +52,7 @@ import androidx.core.content.ContextCompat
 import com.example.sidewalkvision.ui.theme.SidewalkVisionTheme
 import java.util.Locale
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 sealed interface AppScreen {
@@ -260,6 +262,10 @@ fun CameraScreen(
     val intrinsics = remember { AtomicReference<CameraIntrinsics?>(null) }
     // Debug builds, the ones Android Studio installs, show the pose readout.
     val showPoseReadout = remember { (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0 }
+    val overlayHold = remember { OverlayHold() }
+    // The button's state for the screen, and a copy the analysis thread can read.
+    var detectionEnabled by remember { mutableStateOf(true) }
+    val detectionEnabledForAnalysis = remember { AtomicBoolean(true) }
     val groundSpeedTracker = remember { GroundSpeedTracker(context) }
     val groundSpeed by groundSpeedTracker.metersPerSecond.collectAsState()
     var hasLocationPermission by remember { mutableStateOf(groundSpeedTracker.hasPermission()) }
@@ -308,16 +314,25 @@ fun CameraScreen(
                     var frameCount = 0
                     imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
                         frameCount++
-                        if (frameCount % 2 == 0) {
+                        if (frameCount % 2 == 0 && detectionEnabledForAnalysis.get()) {
                             try {
                                 val bitmap = imageProxy.toBitmap()
                                 val rotatedBitmap = rotateBitmap(bitmap, imageProxy.imageInfo.rotationDegrees)
                                 val result = pathDetector.detect(rotatedBitmap, intrinsics.get())
                                     .copy(captureTimeNanos = imageProxy.imageInfo.timestamp)
                                 mainHandler.post {
-                                    val oldMask = detectionResult?.maskBitmap
-                                    detectionResult = result
-                                    oldMask?.recycle()
+                                    // Dropped if detection was switched off while this frame ran,
+                                    // or if it's an empty result inside the hold after a path.
+                                    val hasPath = result.maskBitmap != null
+                                    val show = detectionEnabledForAnalysis.get() &&
+                                        overlayHold.shouldShow(hasPath, SystemClock.elapsedRealtime())
+                                    if (show) {
+                                        val oldMask = detectionResult?.maskBitmap
+                                        detectionResult = result
+                                        oldMask?.recycle()
+                                    } else {
+                                        result.maskBitmap?.recycle()
+                                    }
                                 }
                                 if (rotatedBitmap != bitmap) {
                                     rotatedBitmap.recycle()
@@ -445,6 +460,23 @@ fun CameraScreen(
                         .padding(16.dp)
                 )
             }
+        }
+
+        Button(
+            onClick = {
+                detectionEnabled = !detectionEnabled
+                detectionEnabledForAnalysis.set(detectionEnabled)
+                if (!detectionEnabled) {
+                    detectionResult?.maskBitmap?.recycle()
+                    detectionResult = null
+                    overlayHold.reset()
+                }
+            },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(16.dp)
+        ) {
+            Text(if (detectionEnabled) "Detection on" else "Detection off")
         }
 
         // Back button
