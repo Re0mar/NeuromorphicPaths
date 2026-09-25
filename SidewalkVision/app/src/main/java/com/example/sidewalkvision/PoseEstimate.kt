@@ -43,6 +43,23 @@ data class CameraIntrinsics(val focalLengthOverLongSide: Double) {
     fun focalLengthPx(widthPx: Int, heightPx: Int): Double = focalLengthOverLongSide * max(widthPx, heightPx)
 }
 
+// The diagonal of a 36 x 24 mm film frame, which 35 mm equivalent focal lengths are measured against.
+private const val FULL_FRAME_DIAGONAL_MM = 43.27
+
+/**
+ * Intrinsics from a photo's 35 mm equivalent focal length, the EXIF FocalLengthIn35mmFilm tag.
+ *
+ * The equivalent is defined against the film frame's diagonal, so focal length in pixels is the
+ * equivalent times the image diagonal in pixels over 43.27 mm. Dividing by the 36 mm film width
+ * instead is only right for 3:2 images, and about 4% off for a phone's 4:3.
+ */
+fun intrinsicsFrom35mmEquivalent(equivalentFocalLengthMm: Double, widthPx: Int, heightPx: Int): CameraIntrinsics? {
+    if (equivalentFocalLengthMm <= 0.0 || widthPx <= 0 || heightPx <= 0) return null
+    val diagonalPx = sqrt(widthPx.toDouble() * widthPx + heightPx.toDouble() * heightPx)
+    val focalLengthPx = equivalentFocalLengthMm * diagonalPx / FULL_FRAME_DIAGONAL_MM
+    return CameraIntrinsics(focalLengthPx / max(widthPx, heightPx))
+}
+
 enum class PoseStatus(val description: String) {
     OK("ok"),
     TOO_FEW_POINTS("too few unclipped points on one edge"),

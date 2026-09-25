@@ -125,6 +125,27 @@ class PoseEstimateTest {
     }
 
     @Test
+    fun aThreeByTwoPhotoMatchesTheFilmWidthConvention() {
+        // On a 3:2 image the diagonal and the 36 mm width agree: a 36 mm equivalent is one image width.
+        val intrinsics = intrinsicsFrom35mmEquivalent(36.0, 6000, 4000)!!
+        assertEquals(6000.0, intrinsics.focalLengthPx(6000, 4000), 6000 * 1e-3)
+    }
+
+    @Test
+    fun aFourByThreePhotoIsMeasuredAgainstTheDiagonal() {
+        // The iPhone 12 ultra-wide: 14 mm equivalent on 4032 x 3024, whose diagonal is 5040 px.
+        val intrinsics = intrinsicsFrom35mmEquivalent(14.0, 4032, 3024)!!
+        assertEquals(14.0 * 5040 / 43.27, intrinsics.focalLengthPx(4032, 3024), 1e-6)
+        // The film-width shortcut would give 14 / 36 of the width, about 4% less.
+        assertTrue(intrinsics.focalLengthPx(4032, 3024) > 1.03 * 14.0 / 36 * 4032)
+    }
+
+    @Test
+    fun noIntrinsicsWithoutAFocalLength() {
+        assertNull(intrinsicsFrom35mmEquivalent(0.0, 4032, 3024))
+    }
+
+    @Test
     fun noGroundDistanceAboveTheHorizon() {
         val pose = estimate(edgePoints(Camera(0.4, 8.0, 0.0, 0.5)))
         assertNull(groundDistanceMeters(pose, 0.0, FRAME_HEIGHT))

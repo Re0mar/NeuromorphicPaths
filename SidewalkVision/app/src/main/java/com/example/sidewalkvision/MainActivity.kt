@@ -52,6 +52,9 @@ import androidx.core.content.ContextCompat
 import com.example.sidewalkvision.ui.theme.SidewalkVisionTheme
 import java.util.Locale
 import java.util.concurrent.Executors
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -91,24 +94,38 @@ class MainActivity : ComponentActivity() {
                 }
 
                 val context = LocalContext.current
+                val coroutineScope = rememberCoroutineScope()
+                var isAnalyzingImage by remember { mutableStateOf(false) }
                 val imagePickerLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.GetContent()
                 ) { uri: Uri? ->
                     uri?.let { selectedUri ->
-                        try {
-                            val source = ImageDecoder.createSource(context.contentResolver, selectedUri)
-                            val bitmap = ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
-                                decoder.isMutableRequired = true
+                        isAnalyzingImage = true
+                        coroutineScope.launch {
+                            // Decoding a full-size photo and running the model take long enough to
+                            // freeze the screen, so both run off the main thread.
+                            val analyzed = withContext(Dispatchers.Default) {
+                                try {
+                                    val source = ImageDecoder.createSource(context.contentResolver, selectedUri)
+                                    val bitmap = ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
+                                        decoder.isMutableRequired = true
+                                    }
+                                    val argbBitmap = if (bitmap.config != Bitmap.Config.ARGB_8888) {
+                                        bitmap.copy(Bitmap.Config.ARGB_8888, true)
+                                    } else {
+                                        bitmap
+                                    }
+                                    val intrinsics = photoIntrinsics(context.contentResolver, selectedUri, argbBitmap.width, argbBitmap.height)
+                                    argbBitmap to pathDetector.detect(argbBitmap, intrinsics)
+                                } catch (e: Exception) {
+                                    e.printStackTrace()
+                                    null
+                                }
                             }
-                            val argbBitmap = if (bitmap.config != Bitmap.Config.ARGB_8888) {
-                                bitmap.copy(Bitmap.Config.ARGB_8888, true)
-                            } else {
-                                bitmap
+                            isAnalyzingImage = false
+                            analyzed?.let { (argbBitmap, detectionResult) ->
+                                currentScreen = AppScreen.ImageResult(selectedUri, argbBitmap, detectionResult)
                             }
-                            val detectionResult = pathDetector.detect(argbBitmap)
-                            currentScreen = AppScreen.ImageResult(selectedUri, argbBitmap, detectionResult)
-                        } catch (e: Exception) {
-                            e.printStackTrace()
                         }
                     }
                 }
@@ -154,6 +171,9 @@ class MainActivity : ComponentActivity() {
                                     }
                                 )
                             }
+                        }
+                        if (isAnalyzingImage) {
+                            CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
                         }
                     }
                 }
@@ -413,6 +433,12 @@ fun CameraScreen(
                             style = Stroke(width = 10f)
                         )
                     }
+
+                    if (showPoseReadout) {
+                        res.pose?.let { pose ->
+                            drawPoseWorking(pose, FrameOnScreen(mask.width, mask.height, left, top, scaledWidth, scaledHeight))
+                        }
+                    }
                 }
             }
 
@@ -533,6 +559,9 @@ fun ImageResultScreen(
     onPickAnother: () -> Unit,
     onBack: () -> Unit
 ) {
+    val context = LocalContext.current
+    // Debug builds show how the pose was worked out, as on the camera screen.
+    val showPoseWorking = remember { (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0 }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -634,6 +663,12 @@ fun ImageResultScreen(
                             style = Stroke(width = 10f)
                         )
                     }
+
+                    if (showPoseWorking && mask != null) {
+                        detectionResult.pose?.let { pose ->
+                            drawPoseWorking(pose, FrameOnScreen(mask.width, mask.height, left, top, scaledWidth, scaledHeight))
+                        }
+                    }
                 }
 
                 Box(
@@ -655,6 +690,17 @@ fun ImageResultScreen(
                             color = Color.White,
                             fontSize = 18.sp,
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+
+                if (showPoseWorking) {
+                    detectionResult.pose?.let { pose ->
+                        PoseReadout(
+                            pose = pose,
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(16.dp)
                         )
                     }
                 }
