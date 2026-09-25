@@ -30,6 +30,9 @@ class SensorPoseProvider(
     @Volatile
     private var latest = CameraPose(pitchRadians = 0.0, yawRadians = yawRadians, rollRadians = 0.0, heightMeters = heightMeters)
 
+    @Volatile
+    private var latestAzimuthRadians: Double? = null
+
     /** True when the phone has the sensor. Without it the pose stays level. */
     val available: Boolean get() = rotationVector != null
 
@@ -39,6 +42,13 @@ class SensorPoseProvider(
 
     override fun currentPose(): CameraPose = latest
 
+    /**
+     * Where the camera points over the ground, in radians, from the same rotation vector. Null
+     * until the sensor has reported. The reference direction and the sign are the platform's, and
+     * only the changes over time are used, so neither is documented further.
+     */
+    fun currentAzimuthRadians(): Double? = latestAzimuthRadians
+
     override fun onSensorChanged(event: SensorEvent) {
         SensorManager.getRotationMatrixFromVector(rotation, event.values)
         // Upright phone: the screen's outward axis becomes the new Y. This is the remap the
@@ -47,6 +57,7 @@ class SensorPoseProvider(
         SensorManager.getOrientation(remapped, orientation)
         // After the remap, tipping the camera toward the ground raises the screen's outward axis,
         // which the platform reports as negative pitch. CameraPose wants looking down positive.
+        latestAzimuthRadians = orientation[0].toDouble()
         latest = CameraPose(
             pitchRadians = -orientation[1].toDouble(),
             yawRadians = yawRadians,

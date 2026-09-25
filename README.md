@@ -49,7 +49,8 @@ with rather than queueing them, so what the walker sees is never older than one 
 
 - **Input.** `CameraXFrameSource` streams the back camera. `VideoFileFrameSource` steps through a
   recording at a fixed interval, which is how phone and glasses recordings are replayed.
-  `SensorPoseProvider` reads camera pitch from the rotation vector sensor.
+  `SensorPoseProvider` reads camera pitch and azimuth from the rotation vector sensor.
+  `GpsGroundSpeed` smooths the walker's speed from GPS fixes when location permission is granted.
 - **Model.** `EmptyObstacleDetector` returns nothing. `ScriptedObstacleDetector` returns a fixed
   list every frame, for exercising the display. `OnnxYoloWorldDetector` runs YOLO-World with
   this project's class list through ONNX Runtime. Its model file is not committed. See *The
@@ -58,10 +59,13 @@ with rather than queueing them, so what the walker sees is never older than one 
   of view, and range from where the box meets the ground, given camera height and pitch. When
   the box bottom is cut off it falls back to a typical height per class. `PushFieldGuidance` is
   the push field: per-obstacle surprise from miss distance and time to contact, summed over
-  candidate headings, lowest sum wins. `docs/math/push_field.md` explains it. `NoGuidanceField`
+  candidate headings, lowest sum wins. `docs/math/push_field.md` explains it, including the
+  running heading wobble it measures and why that does not yet set the turn tolerance.
+  `NoGuidanceField`
   is the straight-ahead stand-in for tests.
 - **Output.** `ScreenOverlayDisplay` plus the `GuidanceOverlay` composable draws the frame, the
-  boxes, a heading arrow and the numbers. `LogcatDisplay` writes one line per frame.
+  boxes, a heading arrow and the numbers, and holds the last boxes for 0.8 s over an empty
+  frame so one missed detection doesn't blink. `LogcatDisplay` writes one line per frame.
 
 ## Running it
 

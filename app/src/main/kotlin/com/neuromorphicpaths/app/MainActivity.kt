@@ -15,7 +15,9 @@ import com.neuromorphicpaths.app.ui.MainScreen
 import com.neuromorphicpaths.core.FrameSource
 import com.neuromorphicpaths.core.GuidancePipeline
 import com.neuromorphicpaths.core.ObstacleDetector
+import com.neuromorphicpaths.core.WalkerState
 import com.neuromorphicpaths.input.CameraXFrameSource
+import com.neuromorphicpaths.input.GpsGroundSpeed
 import com.neuromorphicpaths.input.SensorPoseProvider
 import com.neuromorphicpaths.input.VideoFileFrameSource
 import com.neuromorphicpaths.math.GroundPlaneObstacleLocator
@@ -38,25 +40,34 @@ class MainActivity : ComponentActivity() {
     private val screenDisplay = ScreenOverlayDisplay()
     private val detectorChoice = MutableStateFlow(DetectorChoice.NONE)
     private lateinit var poseProvider: SensorPoseProvider
+    private lateinit var groundSpeed: GpsGroundSpeed
     private var pipelineJob: Job? = null
     private var activeSource: FrameSource? = null
     private var activeDetector: ObstacleDetector? = null
 
-    private val requestCameraPermission =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted) startPipeline(cameraSource())
+    // Remembered so a change of detector can restart the same kind of source.
+    private var activeSourceFactory: (() -> FrameSource)? = null
+
+    private val requestPermissions =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
+            // Location is optional. Without it the walker's speed stays unknown and the field uses its default.
+            if (granted[Manifest.permission.ACCESS_FINE_LOCATION] == true) groundSpeed.start()
+            if (granted[Manifest.permission.CAMERA] == true) startPipeline { cameraSource() }
         }
 
     private val pickVideo =
         registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-            if (uri != null) startPipeline(videoSource(uri))
+            if (uri != null) startPipeline { videoSource(uri) }
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         poseProvider = SensorPoseProvider(this, heightMeters = AppDefaults.CAMERA_HEIGHT_METERS)
         poseProvider.start()
+        groundSpeed = GpsGroundSpeed(this)
         val yoloWorldAvailable = OnnxYoloWorldDetector.isAvailable(this)
+        // The real detector is the point of the app, so it is the default whenever its model is bundled.
+        if (yoloWorldAvailable) detectorChoice.value = DetectorChoice.YOLO_WORLD
         setContent {
             val choice by detectorChoice.collectAsState()
             MaterialTheme {
@@ -64,8 +75,14 @@ class MainActivity : ComponentActivity() {
                     display = screenDisplay,
                     detectorChoice = choice,
                     yoloWorldAvailable = yoloWorldAvailable,
-                    onDetectorChoiceChange = { detectorChoice.value = it },
-                    onStartCamera = { requestCameraPermission.launch(Manifest.permission.CAMERA) },
+                    onDetectorChoiceChange = { choice ->
+                        detectorChoice.value = choice
+                        // A running pipeline picks up the new detector at once rather than on the next start.
+                        activeSourceFactory?.let { startPipeline(it) }
+                    },
+                    onStartCamera = {
+                        requestPermissions.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.ACCESS_FINE_LOCATION))
+                    },
                     onOpenVideo = { pickVideo.launch(arrayOf("video/*")) },
                 )
             }
@@ -74,6 +91,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         stopPipeline()
+        groundSpeed.close()
         poseProvider.close()
         screenDisplay.close()
         super.onDestroy()
@@ -97,9 +115,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun startPipeline(source: FrameSource) {
+    private fun startPipeline(sourceFactory: () -> FrameSource) {
         stopPipeline()
+        val source = sourceFactory()
         val detector = detector()
+        activeSourceFactory = sourceFactory
         activeSource = source
         activeDetector = detector
         val pipeline = GuidancePipeline(
@@ -108,9 +128,17 @@ class MainActivity : ComponentActivity() {
             locator = GroundPlaneObstacleLocator(),
             field = PushFieldGuidance(),
             displays = listOf(screenDisplay, LogcatDisplay()),
+            walkerState = ::currentWalkerState,
         )
         pipelineJob = lifecycleScope.launch { pipeline.run() }
     }
+
+    /** Head forward, with whatever speed and azimuth the sensors have measured so far. */
+    private fun currentWalkerState(): WalkerState = WalkerState(
+        headingRadians = 0.0,
+        speedMetersPerSecond = groundSpeed.metersPerSecond.value,
+        azimuthRadians = poseProvider.currentAzimuthRadians(),
+    )
 
     private fun stopPipeline() {
         pipelineJob?.cancel()

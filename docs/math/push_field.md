@@ -79,7 +79,23 @@ already turned.
 ## What is not in it yet
 
 Closing speed per object is passed through but nothing produces it, so every object closes at
-walking speed. The walker's own speed is a constant 1.4 m/s until something measures it. There
-is no memory between frames, so the heading can flicker when a detection does. A running
-estimate of the walker's own heading wobble, which would set the turn tolerance from data
-rather than by choice, belongs here and is not written.
+walking speed. The walker's own speed comes from GPS when the app has location permission and
+is outdoors, smoothed over one second, and is 1.4 m/s otherwise. There is no memory between
+frames in the field itself, so the heading can flicker when a detection does. The screen holds
+the last boxes and arrow for 0.8 s over an empty frame, which hides the flicker without fixing it.
+
+## The walker's own wobble
+
+The field keeps a running spread of the walker's heading over the ground, from the phone's
+rotation vector, weighted so the last second counts most. That number is shown on screen and
+logged. It is meant to set the turn tolerance σ from data, as the wobble times 2.07, which is
+the band that holds 96 percent of a walker's headings.
+
+That switch is off. On the first outdoor recording the one-second wobble has a median of 4
+degrees, and it only passes 20 degrees through corners. As a tolerance, 4 degrees times 2.07
+is about 8 degrees, and a 20 degree turn would then cost about 4 bits, against 0.7 bits for an
+obstacle two seconds ahead. The field would hold its line into most things. Something in the
+mapping is off, the window, the ratio, or the idea that sway and tolerance are the same
+quantity, and that is a decision to make with the team rather than by tuning until it looks
+right. The switch is `turnToleranceFromWobble` in the parameters, with a floor of 5 degrees
+and the 60 degree search range as the ceiling.

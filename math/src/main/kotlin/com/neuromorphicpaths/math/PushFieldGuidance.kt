@@ -38,9 +38,16 @@ import kotlin.math.sin
  */
 class PushFieldGuidance(
     private val parameters: PushFieldParameters = PushFieldParameters(),
+    private val wobble: HeadingWobbleEstimator = HeadingWobbleEstimator(),
 ) : GuidanceField {
 
+    /** The tolerance turns are charged against right now. Follows the wobble only when the parameters say so. */
+    var turnToleranceRadians: Double = parameters.turnToleranceRadians
+        private set
+
     override fun evaluate(obstacles: List<Obstacle>, walker: WalkerState, timestampNanos: Long): Guidance {
+        walker.azimuthRadians?.let { wobble.add(timestampNanos, it) }
+        turnToleranceRadians = currentTurnTolerance()
         val speed = walker.speedMetersPerSecond ?: parameters.defaultWalkerSpeedMetersPerSecond
         val desiredHeading = lowestCostHeading(obstacles, speed)
         val excess = totalCostBits(obstacles, walker.headingRadians, speed) - totalCostBits(obstacles, desiredHeading, speed)
@@ -60,7 +67,16 @@ class PushFieldGuidance(
             // Rounding in the search can leave the difference a hair below zero.
             overallSurpriseBits = max(0.0, excess),
             perObstacle = perObstacle,
+            walkerWobbleRadians = wobble.wobbleRadians,
+            turnToleranceRadians = turnToleranceRadians,
         )
+    }
+
+    private fun currentTurnTolerance(): Double {
+        if (!parameters.turnToleranceFromWobble) return parameters.turnToleranceRadians
+        val measured = wobble.wobbleRadians ?: return parameters.turnToleranceRadians
+        return (measured * parameters.wobbleToToleranceRatio)
+            .coerceIn(parameters.minimumTurnToleranceRadians, parameters.maxHeadingRadians)
     }
 
     /**
@@ -86,7 +102,7 @@ class PushFieldGuidance(
 
     /** What deviating from straight ahead costs on its own, in bits. */
     fun turnCostBits(headingRadians: Double): Double {
-        val ratio = headingRadians / parameters.turnToleranceRadians
+        val ratio = headingRadians / turnToleranceRadians
         return HALF * ratio * ratio / LN_2
     }
 

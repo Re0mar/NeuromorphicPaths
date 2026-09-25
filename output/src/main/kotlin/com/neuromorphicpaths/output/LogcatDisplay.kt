@@ -5,7 +5,7 @@ import com.neuromorphicpaths.core.GuidanceDisplay
 import com.neuromorphicpaths.core.GuidanceUpdate
 import java.util.Locale
 
-/** One line per frame in logcat: timestamp, detector time, counts, heading and surprise. The cheapest record of a run. */
+/** One line per frame in logcat: timestamp, detector time, counts, heading, surprise and the walker's numbers. The cheapest record of a run. */
 class LogcatDisplay : GuidanceDisplay {
     override val name: String = "logcat"
 
@@ -15,13 +15,17 @@ class LogcatDisplay : GuidanceDisplay {
             TAG,
             String.format(
                 Locale.US,
-                "t=%dns detect=%dms detections=%d obstacles=%d heading=%+.1fdeg surprise=%.2fbits",
+                "t=%dns detect=%dms detections=%d obstacles=%d heading=%+.1fdeg surprise=%.2fbits speed=%.2fm/s wobble=%.1fdeg tolerance=%.1fdeg",
                 update.frame.timestampNanos,
                 update.detectorNanos / NANOS_PER_MILLI,
                 update.detections.size,
                 update.obstacles.size,
                 Math.toDegrees(guidance.desiredHeadingRadians),
                 guidance.overallSurpriseBits,
+                // NaN where nothing has measured it yet, which a log reader can tell from a zero.
+                update.walker.speedMetersPerSecond ?: Double.NaN,
+                Math.toDegrees(guidance.walkerWobbleRadians ?: Double.NaN),
+                Math.toDegrees(guidance.turnToleranceRadians ?: Double.NaN),
             ),
         )
     }

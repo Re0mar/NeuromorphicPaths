@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
+import com.neuromorphicpaths.core.GuidanceUpdate
 import com.neuromorphicpaths.core.Obstacle
 import java.util.Locale
 import kotlin.math.cos
@@ -70,6 +71,7 @@ fun GuidanceOverlay(display: ScreenOverlayDisplay, modifier: Modifier = Modifier
             Text(formatLine("heading %+.0f deg", Math.toDegrees(guidance.desiredHeadingRadians)), color = Color.White)
             Text(formatLine("surprise %.2f bits", guidance.overallSurpriseBits), color = Color.White)
             Text(formatLine("pitch %+.0f deg, fov %.0f deg", Math.toDegrees(current.update.frame.pose.pitchRadians), Math.toDegrees(current.update.frame.intrinsics.horizontalFovRadians)), color = Color.White)
+            Text(describeWalker(current.update), color = Color.White)
             Text("${current.update.obstacles.size} obstacles", color = Color.White)
             for (obstacle in current.update.obstacles) {
                 Text(describe(obstacle), color = Color.White)
@@ -84,6 +86,14 @@ private fun describe(obstacle: Obstacle): String = formatLine(
     obstacle.rangeMeters,
     Math.toDegrees(obstacle.bearingRadians),
 )
+
+/** Speed, wobble and the tolerance in force, with a dash for whatever nothing has measured yet. */
+private fun describeWalker(update: GuidanceUpdate): String {
+    val speed = update.walker.speedMetersPerSecond?.let { formatLine("%.1f m/s", it) } ?: "- m/s"
+    val wobble = update.guidance.walkerWobbleRadians?.let { formatLine("%.0f deg", Math.toDegrees(it)) } ?: "- deg"
+    val tolerance = update.guidance.turnToleranceRadians?.let { formatLine("%.0f deg", Math.toDegrees(it)) } ?: "- deg"
+    return "speed $speed, wobble $wobble, tolerance $tolerance"
+}
 
 private fun formatLine(pattern: String, vararg values: Any): String = String.format(Locale.US, pattern, *values)
 

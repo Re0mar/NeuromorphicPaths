@@ -22,6 +22,7 @@ android {
 
 dependencies {
     api(project(":core"))
+    testImplementation(libs.junit)
     implementation(libs.kotlinx.coroutines.android)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.foundation)

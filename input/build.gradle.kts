@@ -18,6 +18,7 @@ android {
 
 dependencies {
     api(project(":core"))
+    testImplementation(libs.junit)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.camerax.core)
     implementation(libs.camerax.camera2)
