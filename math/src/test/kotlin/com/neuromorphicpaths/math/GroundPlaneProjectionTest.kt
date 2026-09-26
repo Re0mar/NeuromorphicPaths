@@ -4,6 +4,9 @@ import com.neuromorphicpaths.core.CameraIntrinsics
 import com.neuromorphicpaths.core.CameraPose
 import com.neuromorphicpaths.core.Detection
 import com.neuromorphicpaths.core.Frame
+import com.neuromorphicpaths.core.FramePoint
+import com.neuromorphicpaths.core.GroundPlaneProjection
+import com.neuromorphicpaths.core.GroundPoint
 import com.neuromorphicpaths.core.NormalizedBox
 import com.neuromorphicpaths.core.ObstacleClass
 import org.junit.Assert.assertEquals

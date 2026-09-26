@@ -3,6 +3,8 @@ package com.neuromorphicpaths.math
 import com.neuromorphicpaths.core.CameraIntrinsics
 import com.neuromorphicpaths.core.CameraPose
 import com.neuromorphicpaths.core.Frame
+import com.neuromorphicpaths.core.FramePoint
+import com.neuromorphicpaths.core.GroundPlaneProjection
 import com.neuromorphicpaths.core.ObstacleClass
 import com.neuromorphicpaths.core.SceneClass
 import com.neuromorphicpaths.core.SceneClassMap

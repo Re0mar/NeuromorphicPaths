@@ -2,6 +2,9 @@ package com.neuromorphicpaths.math
 
 import com.neuromorphicpaths.core.Detection
 import com.neuromorphicpaths.core.Frame
+import com.neuromorphicpaths.core.FramePoint
+import com.neuromorphicpaths.core.GroundPlaneProjection
+import com.neuromorphicpaths.core.GroundPoint
 import com.neuromorphicpaths.core.GroundSurfaceMap
 import com.neuromorphicpaths.core.LocatedScene
 import com.neuromorphicpaths.core.NormalizedBox

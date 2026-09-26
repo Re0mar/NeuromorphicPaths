@@ -71,7 +71,10 @@ used on the frames between, since walls and verges move slowly in the frame.
   miss distance, time to contact, detector confidence and what the class is, turned into a
   surprise and summed over candidate headings, lowest sum wins, with a small charge per meter
   for ground the walker would rather not cross once a segmenter says what the ground is. It
-  also reports the entropy of its belief over headings. `docs/math/push_field.md` explains it,
+  also reports the entropy of its belief over headings, how far the scene moved that belief
+  off the walker's own prior, and a projected path: the field rolled forward half a meter at
+  a time for six steps, which the overlay draws as a curve on the ground, faded where the
+  scene had nothing to say and colored by the alert. `docs/math/push_field.md` explains it,
   including the running heading wobble it measures and why that does not set the turn
   tolerance. `GroundPlaneSceneLocator` turns a scene map into the surfaces the field asks about,
   by projecting each asked-for ground point back into the frame, and into obstacles for walls

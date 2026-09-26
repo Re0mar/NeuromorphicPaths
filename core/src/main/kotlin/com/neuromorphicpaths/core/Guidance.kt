@@ -26,7 +26,12 @@ data class ObstacleSurprise(
  * the field charged turns against on this frame, null for a field that has no such term.
  * Heading entropy is how spread out the field's belief over headings is, in bits: near zero
  * when one heading is clearly best, near the log of the number of candidates when they are
- * all about as good. Null for a field that holds no such belief.
+ * all about as good. Null for a field that holds no such belief. Heading information is how
+ * far the scene moved that belief away from the walker's own prior, in bits, the divergence of
+ * the posterior from the prior: zero with nothing in view, however spread the belief is, and
+ * large when something in view reshapes where the walker would go. Null for a field with no
+ * prior to move from. The projected path is where the field would send the walker over the
+ * next few meters, rolled forward a step at a time, empty for a field that does not project.
  */
 data class Guidance(
     val desiredHeadingRadians: Double,
@@ -35,4 +40,19 @@ data class Guidance(
     val walkerWobbleRadians: Double? = null,
     val turnToleranceRadians: Double? = null,
     val headingEntropyBits: Double? = null,
+    val headingInformationBits: Double? = null,
+    val projectedPath: List<PathPoint> = emptyList(),
+)
+
+/**
+ * One step of the projected path: where the virtual walker stands after it, in the walker's
+ * frame, which heading the field chose there, and how much the scene reshaped the belief at
+ * that step, in bits. A display fades a step by its information and colors the path by the
+ * frame's surprise, two different things kept on two different channels.
+ */
+data class PathPoint(
+    val forwardMeters: Double,
+    val rightMeters: Double,
+    val headingRadians: Double,
+    val informationBits: Double,
 )

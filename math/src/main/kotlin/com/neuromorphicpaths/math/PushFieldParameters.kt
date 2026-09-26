@@ -31,6 +31,10 @@ import com.neuromorphicpaths.core.SurfaceClass
  * [surfaceLookaheadSeconds] spent on each surface, sampled every [surfaceStepMeters]. Pavement
  * and unknown ground are free, so grass is crossed to get away from a wall and left alone
  * otherwise. A cost of 0.1 bits per meter says each meter of grass is fine with probability 0.93.
+ *
+ * The projected path rolls the field forward [pathSteps] times, [pathStepMeters] each, so with
+ * the defaults it reaches 3 m, about two seconds of walking and the same distance the surface
+ * term looks ahead.
  */
 data class PushFieldParameters(
     val profiles: Map<ObstacleClass, ObstacleProfile> = ObstacleProfile.DEFAULTS,
@@ -44,6 +48,8 @@ data class PushFieldParameters(
     val surfaceCostBitsPerMeter: Map<SurfaceClass, Double> = DEFAULT_SURFACE_COSTS,
     val surfaceLookaheadSeconds: Double = 2.0,
     val surfaceStepMeters: Double = 0.25,
+    val pathSteps: Int = 6,
+    val pathStepMeters: Double = 0.5,
 ) {
     init {
         // A class without a profile would surface as a lookup failure deep inside the search.
@@ -59,6 +65,7 @@ data class PushFieldParameters(
         require(minimumWalkerSpeedMetersPerSecond > 0.0) { "minimumWalkerSpeedMetersPerSecond must be positive" }
         require(maxHeadingRadians > 0.0 && headingStepRadians > 0.0) { "heading search range and step must be positive" }
         require(surfaceLookaheadSeconds > 0.0 && surfaceStepMeters > 0.0) { "surface lookahead and step must be positive" }
+        require(pathSteps >= 0 && pathStepMeters > 0.0) { "path steps cannot be negative and the step must be positive" }
     }
 
     fun profileOf(obstacleClass: ObstacleClass): ObstacleProfile = profiles.getValue(obstacleClass)

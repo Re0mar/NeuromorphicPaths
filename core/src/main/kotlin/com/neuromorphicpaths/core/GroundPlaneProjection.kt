@@ -1,7 +1,5 @@
-package com.neuromorphicpaths.math
+package com.neuromorphicpaths.core
 
-import com.neuromorphicpaths.core.CameraIntrinsics
-import com.neuromorphicpaths.core.CameraPose
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.tan

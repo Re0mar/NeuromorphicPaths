@@ -5,10 +5,13 @@ import com.neuromorphicpaths.core.Guidance
 import com.neuromorphicpaths.core.GuidanceField
 import com.neuromorphicpaths.core.Obstacle
 import com.neuromorphicpaths.core.ObstacleSurprise
+import com.neuromorphicpaths.core.PathPoint
 import com.neuromorphicpaths.core.Push
 import com.neuromorphicpaths.core.WalkerState
+import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.exp
+import kotlin.math.hypot
 import kotlin.math.ln
 import kotlin.math.log2
 import kotlin.math.max
@@ -103,7 +106,43 @@ class PushFieldGuidance(
             walkerWobbleRadians = wobble.wobbleRadians,
             turnToleranceRadians = turnToleranceRadians,
             headingEntropyBits = posteriorEntropyBits(costs, costs[bestIndex]),
+            headingInformationBits = informationGainBits(costs, costs[bestIndex]),
+            projectedPath = projectPath(obstacles, speed, surfaces),
         )
+    }
+
+    /**
+     * Where the field would send the walker over the next few meters.
+     *
+     * The field is rolled forward a step at a time: from the current position the cheapest
+     * heading is taken, the virtual walker moves one step along it, every obstacle is
+     * re-placed relative to the new position, and the field is asked again. The prior stays
+     * centered on the walker's real heading throughout, since it says where the walker wants
+     * to go, not where the last step pointed. Each point carries the information the scene
+     * added at that step, so a display can fade the path where the scene stops shaping it.
+     */
+    fun projectPath(obstacles: List<Obstacle>, walkerSpeed: Double, surfaces: GroundSurfaceMap): List<PathPoint> {
+        val points = ArrayList<PathPoint>(parameters.pathSteps)
+        var forward = 0.0
+        var right = 0.0
+        var placed = obstacles
+        repeat(parameters.pathSteps) {
+            val costs = DoubleArray(candidateHeadings.size) { totalCostBits(placed, candidateHeadings[it], walkerSpeed, surfaces, forward, right) }
+            val bestIndex = lowestCostIndex(costs)
+            val heading = candidateHeadings[bestIndex]
+            forward += parameters.pathStepMeters * cos(heading)
+            right += parameters.pathStepMeters * sin(heading)
+            points += PathPoint(forward, right, heading, informationGainBits(costs, costs[bestIndex]))
+            placed = obstacles.map { seenFrom(it, forward, right) }
+        }
+        return points
+    }
+
+    /** The same obstacle as seen from a point ahead of the walker, its bearing still in the walker's frame. */
+    private fun seenFrom(obstacle: Obstacle, forwardMeters: Double, rightMeters: Double): Obstacle {
+        val deltaForward = obstacle.rangeMeters * cos(obstacle.bearingRadians) - forwardMeters
+        val deltaRight = obstacle.rangeMeters * sin(obstacle.bearingRadians) - rightMeters
+        return obstacle.copy(bearingRadians = atan2(deltaRight, deltaForward), rangeMeters = hypot(deltaForward, deltaRight))
     }
 
     /**
@@ -160,28 +199,65 @@ class PushFieldGuidance(
      * time, and each step is charged the per-meter cost of the surface it lands on. Ground
      * nobody has classified costs nothing, so without a segmenter this term is zero everywhere.
      */
-    fun surfaceCostBits(headingRadians: Double, walkerSpeed: Double, surfaces: GroundSurfaceMap): Double {
+    fun surfaceCostBits(
+        headingRadians: Double,
+        walkerSpeed: Double,
+        surfaces: GroundSurfaceMap,
+        fromForwardMeters: Double = 0.0,
+        fromRightMeters: Double = 0.0,
+    ): Double {
         val lookaheadMeters = walkerSpeed * parameters.surfaceLookaheadSeconds
         val step = parameters.surfaceStepMeters
         var cost = 0.0
         var along = step
         while (along <= lookaheadMeters) {
-            val surface = surfaces.surfaceAt(along * cos(headingRadians), along * sin(headingRadians))
+            val surface = surfaces.surfaceAt(fromForwardMeters + along * cos(headingRadians), fromRightMeters + along * sin(headingRadians))
             cost += step * parameters.surfaceCostOf(surface)
             along += step
         }
         return cost
     }
 
+    /**
+     * The cost of holding [headingRadians], in bits, with the obstacles as already placed
+     * relative to the point the cost is asked from. The point only matters to the surface
+     * term, which reads the map in the walker's frame. The projected path asks from points
+     * ahead of the walker with the obstacles re-placed to match.
+     */
     fun totalCostBits(
         obstacles: List<Obstacle>,
         headingRadians: Double,
         walkerSpeed: Double,
         surfaces: GroundSurfaceMap = GroundSurfaceMap.UNKNOWN_EVERYWHERE,
+        fromForwardMeters: Double = 0.0,
+        fromRightMeters: Double = 0.0,
     ): Double =
         turnCostBits(headingRadians) +
             obstacles.sumOf { obstacleSurpriseBits(it, headingRadians, walkerSpeed) } +
-            surfaceCostBits(headingRadians, walkerSpeed, surfaces)
+            surfaceCostBits(headingRadians, walkerSpeed, surfaces, fromForwardMeters, fromRightMeters)
+
+    /**
+     * How far the scene moved the field's belief away from the prior, in bits: the divergence
+     * of the posterior over headings from the prior over the same headings.
+     *
+     * This is what the literature calls Bayesian surprise, and it is the information-gain
+     * term of expected free energy, so it is the one measure here with a name in the course's
+     * family. Nothing in view gives exactly zero however spread the belief is, and a scene
+     * that pulls the walker hard off their line gives several bits.
+     */
+    fun informationGainBits(costs: DoubleArray, lowestCost: Double): Double {
+        val posterior = DoubleArray(costs.size) { 2.0.pow(-(costs[it] - lowestCost)) }
+        val prior = DoubleArray(costs.size) { 2.0.pow(-turnCostBits(candidateHeadings[it])) }
+        val posteriorTotal = posterior.sum()
+        val priorTotal = prior.sum()
+        var divergence = 0.0
+        for (index in costs.indices) {
+            val p = posterior[index] / posteriorTotal
+            if (p > 0.0) divergence += p * log2(p / (prior[index] / priorTotal))
+        }
+        // Rounding can leave a scene with nothing in it a hair below zero.
+        return max(0.0, divergence)
+    }
 
     /**
      * Entropy of the posterior over candidate headings, in bits.

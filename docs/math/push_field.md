@@ -114,14 +114,64 @@ nothing in view. The posterior is used for two things only, its mode and its ent
 **The heading entropy** is the entropy of that posterior, in bits: minus the sum over headings
 of p log2 p. It says how spread the field's belief is. One clearly best heading gives a number
 near zero. An open scene gives the entropy of the prior alone, several bits. A row of trees
-with one gap sharpens the belief onto the gap, and the entropy drops. The overlay that draws
-the projected path fades with this number, and the alert reddens with the surprise. They are
-different things and are kept apart on purpose.
+with one gap sharpens the belief onto the gap, and the entropy drops. On the outdoor walk it
+barely moved, 6.73 bits against a ceiling of 6.92, because a few bits of cost over a few
+degrees cannot sharpen a belief that a 30 degree prior has spread over 121 candidates. It is
+reported and logged, and nothing on screen depends on it.
+
+**The heading information** is how far the scene moved the belief away from the prior, in
+bits: the sum over headings of p log2 (p / q), with p the posterior and q the prior at the
+same heading. That is the divergence of the posterior from the prior, which the literature
+calls Bayesian surprise, and it is the information-gain half of the expected free energy that
+active inference minimizes, so it is the one number here with a name in the course's family.
+Nothing in view gives exactly zero, however spread the belief is, since the posterior then is
+the prior. A barrier a meter ahead gives about half a bit, two meters ahead under a tenth, a
+wall along the path about one bit, and walls on both sides that leave only straight ahead
+about two. The numbers are small because the dent one object makes is shallow against a prior
+spread over 121 headings, and what matters is that they order the scenes the right way. This
+is what the projected path fades by, below.
 
 The per-object push is still reported. It is the slope of that object's surprise against
 heading at the walker's current heading, positive when turning right would help, plus a forward
 component that is minus the surprise, since an object only ever argues for slowing down. That
 is for the display and the log, not for steering.
+
+## The projected path
+
+One heading says which way to go. It does not say how the next few meters bend around
+several things at once, which is what the picture on screen is for. So the field is rolled
+forward. From where the walker stands, the cheapest heading is taken and a virtual walker
+moves half a meter along it. Every obstacle is placed again relative to that new position,
+the ground term is read from there, and the field is asked again. Six steps of that reach 3 m,
+about two seconds of walking, the same distance the ground term looks ahead. The prior stays
+centered on the walker's real heading the whole way, because it says where the walker wants
+to go, not where the last step happened to point. The chain of positions, projected through
+the ground plane back into the frame, is the curve. With nothing in view it is a straight
+line dead ahead. With a wall along the right it bends left, and the test that says so pins it.
+
+Two things are drawn on the curve, and they are kept on two channels on purpose.
+
+**Opacity is information.** Each step carries the heading information at that step, the
+divergence above, and the curve is drawn solid where the scene shaped the choice and faint
+where it did not. One bit, a wall along the path or a barrier a meter ahead doubling the odds
+of the chosen direction, is fully solid. An open scene gives zero everywhere, so the curve would vanish
+exactly when the walker is fine, and a floor of a quarter keeps a thin line findable straight
+ahead. The reading is: a solid curve is a path the scene decided, a faint one is the walker's
+own line with nothing to say about it.
+
+**Color is surprise.** The whole curve takes one color from the frame's overall surprise,
+blue when the walker's line is near the best one and red from three bits up, the cone at its
+worst on the outdoor walk. That is the alert, the thing that says an obstacle is about to be
+hit. It is not how sure the field is, and a solid blue curve and a faint red one are both
+possible: the first is a scene that decided a path the walker is on, the second an open line
+the walker has wandered off.
+
+The entropy was the first candidate for the opacity, and it does not work here. On the whole
+outdoor walk it sat within two tenths of a bit of the prior's own entropy, because the prior
+spreads over 121 candidates and a few bits of cost over a few of them barely move the sum. It
+also cannot tell a belief sharpened onto one gap from one flattened over two equally good
+sides, which is the case a walker most needs to see. The divergence is zero for the open
+scene, grows with what the scene did, and is a named quantity in the course's own vocabulary.
 
 ## Why a search and not a sum of forces
 

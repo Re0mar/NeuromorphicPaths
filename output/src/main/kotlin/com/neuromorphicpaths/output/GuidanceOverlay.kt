@@ -20,6 +20,8 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
+import com.neuromorphicpaths.core.GroundPlaneProjection
+import com.neuromorphicpaths.core.GroundPoint
 import com.neuromorphicpaths.core.Guidance
 import com.neuromorphicpaths.core.GuidanceUpdate
 import com.neuromorphicpaths.core.Obstacle
@@ -52,6 +54,7 @@ fun GuidanceOverlay(display: ScreenOverlayDisplay, modifier: Modifier = Modifier
         Canvas(Modifier.fillMaxSize()) {
             val fit = FittedImage(current.image.width, current.image.height, size)
             current.update.sceneMap?.let { drawSceneMap(it, fit) }
+            drawProjectedPath(current.update, fit)
             for (detection in current.update.detections) {
                 val topLeft = fit.point(detection.box.left, detection.box.top)
                 val bottomRight = fit.point(detection.box.right, detection.box.bottom)
@@ -97,9 +100,12 @@ private fun describe(obstacle: Obstacle): String {
     )
 }
 
-/** How spread the field's belief over headings is, or a dash for a field that holds none. */
-private fun describeEntropy(guidance: Guidance): String =
-    guidance.headingEntropyBits?.let { formatLine("entropy %.2f bits", it) } ?: "entropy - bits"
+/** How spread the field's belief is and how far the scene moved it, with a dash for a field that holds neither. */
+private fun describeEntropy(guidance: Guidance): String {
+    val entropy = guidance.headingEntropyBits?.let { formatLine("entropy %.2f bits", it) } ?: "entropy - bits"
+    val information = guidance.headingInformationBits?.let { formatLine("information %.2f bits", it) } ?: "information - bits"
+    return "$entropy, $information"
+}
 
 /** Speed, wobble and the tolerance in force, with a dash for whatever nothing has measured yet. */
 private fun describeWalker(update: GuidanceUpdate): String {
@@ -140,6 +146,48 @@ private fun DrawScope.drawSceneMap(map: SceneClassMap, fit: FittedImage) {
     }
 }
 
+/**
+ * Draws the projected path as a curve on the ground, from the walker's feet through each
+ * step's position projected into the frame.
+ *
+ * Two channels, kept apart on purpose. Color follows the frame's surprise, blue when the
+ * walker's line is near the best one and red as the gap opens, since that is what says an
+ * obstacle is about to be hit. Opacity follows the information at each step, how far the
+ * scene moved the field's belief off the walker's own prior: a step where nothing in view
+ * shaped the choice is drawn faint, a step where a wall or a gap decided it is drawn solid.
+ * A floor keeps the faint end findable, so an open scene still shows a thin line straight
+ * ahead.
+ */
+private fun DrawScope.drawProjectedPath(update: GuidanceUpdate, fit: FittedImage) {
+    val path = update.guidance.projectedPath
+    if (path.isEmpty()) return
+    val frame = update.frame
+    val projection = GroundPlaneProjection(frame.pose, frame.intrinsics, frame.width, frame.height)
+    val color = pathColor(update.guidance.overallSurpriseBits)
+    // The walker's feet sit below the bottom edge of the frame, so the curve starts where the
+    // arrow starts, at the bottom center, and runs to the first step that projects inside it.
+    var previous: Offset? = fit.point(0.5, 1.0)
+    for (point in path) {
+        val framePoint = projection.frameAt(GroundPoint(point.forwardMeters, point.rightMeters))
+        val current = framePoint?.let { fit.point(it.x, it.y) }
+        if (previous != null && current != null) {
+            val opacity = PATH_OPACITY_FLOOR + (1f - PATH_OPACITY_FLOOR) * min(1.0, point.informationBits / PATH_INFORMATION_FOR_SOLID_BITS).toFloat()
+            drawLine(color.copy(alpha = opacity), previous, current, strokeWidth = PATH_STROKE_PX)
+        }
+        previous = current ?: previous
+    }
+}
+
+/** Blue at no surprise, red from [PATH_SURPRISE_FOR_RED_BITS] up, mixed in between. */
+private fun pathColor(surpriseBits: Double): Color {
+    val fraction = min(1.0, surpriseBits / PATH_SURPRISE_FOR_RED_BITS).toFloat()
+    return Color(
+        red = PATH_CALM_COLOR.red + (PATH_ALERT_COLOR.red - PATH_CALM_COLOR.red) * fraction,
+        green = PATH_CALM_COLOR.green + (PATH_ALERT_COLOR.green - PATH_CALM_COLOR.green) * fraction,
+        blue = PATH_CALM_COLOR.blue + (PATH_ALERT_COLOR.blue - PATH_CALM_COLOR.blue) * fraction,
+    )
+}
+
 private fun DrawScope.drawHeadingArrow(headingRadians: Double, fit: FittedImage) {
     val start = fit.point(0.5, 1.0)
     val length = fit.drawnHeight * ARROW_LENGTH_FRACTION
@@ -162,6 +210,16 @@ private fun DrawScope.drawHeadingArrow(headingRadians: Double, fit: FittedImage)
 
 private val BOX_COLOR = Color(0xFFFFC107)
 private val ARROW_COLOR = Color(0xFF00E5FF)
+
+// The path's two channels. One bit of information is a wall along the path or a barrier a
+// meter ahead doubling the odds of the chosen direction, which is solid. Three bits of
+// surprise is the cone at its worst on the outdoor walk, which is red.
+private val PATH_CALM_COLOR = Color(0xFF2979FF)
+private val PATH_ALERT_COLOR = Color(0xFFFF1744)
+private const val PATH_STROKE_PX = 10f
+private const val PATH_OPACITY_FLOOR = 0.25f
+private const val PATH_INFORMATION_FOR_SOLID_BITS = 1.0
+private const val PATH_SURPRISE_FOR_RED_BITS = 3.0
 
 // Translucent, so the frame stays readable under the tint. Ground is cool, structures are warm.
 private val SCENE_TINTS: Map<SceneClass, Color> = mapOf(

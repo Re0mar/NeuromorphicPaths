@@ -17,7 +17,7 @@ class LogcatDisplay : GuidanceDisplay {
             TAG,
             String.format(
                 Locale.US,
-                "t=%dns detect=%dms detections=%d obstacles=%d heading=%+.1fdeg surprise=%.2fbits speed=%.2fm/s wobble=%.1fdeg tolerance=%.1fdeg entropy=%.2fbits segment=%dms structures=%d",
+                "t=%dns detect=%dms detections=%d obstacles=%d heading=%+.1fdeg surprise=%.2fbits speed=%.2fm/s wobble=%.1fdeg tolerance=%.1fdeg entropy=%.2fbits segment=%dms structures=%d information=%.2fbits",
                 update.frame.timestampNanos,
                 update.detectorNanos / NANOS_PER_MILLI,
                 update.detections.size,
@@ -32,6 +32,7 @@ class LogcatDisplay : GuidanceDisplay {
                 // -1 on a frame the segmenter did not run on, so a timing script can skip those.
                 update.segmenterNanos?.let { it / NANOS_PER_MILLI } ?: NO_SEGMENTER_RUN,
                 update.obstacles.count { it.obstacleClass in STRUCTURE_CLASSES },
+                guidance.headingInformationBits ?: Double.NaN,
             ),
         )
         // One line per obstacle after the frame line, so a replay can be read per track. The
