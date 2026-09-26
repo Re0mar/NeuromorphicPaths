@@ -32,6 +32,10 @@ data class ObstacleSurprise(
  * large when something in view reshapes where the walker would go. Null for a field with no
  * prior to move from. The projected path is where the field would send the walker over the
  * next few meters, rolled forward a step at a time, empty for a field that does not project.
+ * Lowest surprise ahead is the surprise of the least surprising heading on offer, judged over a
+ * longer look-ahead than the arrow uses: low when some heading leads clear, high when every
+ * heading runs into something, which a display reads as no way through. Null for a field that
+ * does not ask.
  */
 data class Guidance(
     val desiredHeadingRadians: Double,
@@ -42,6 +46,7 @@ data class Guidance(
     val headingEntropyBits: Double? = null,
     val headingInformationBits: Double? = null,
     val projectedPath: List<PathPoint> = emptyList(),
+    val lowestSurpriseAheadBits: Double? = null,
 )
 
 /**

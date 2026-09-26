@@ -107,9 +107,23 @@ class PushFieldGuidance(
             turnToleranceRadians = turnToleranceRadians,
             headingEntropyBits = posteriorEntropyBits(costs, costs[bestIndex]),
             headingInformationBits = informationGainBits(costs, costs[bestIndex]),
+            lowestSurpriseAheadBits = lowestSurpriseAheadBits(obstacles, speed, surfaces),
             projectedPath = projectPath(obstacles, speed, surfaces),
         )
     }
+
+    /**
+     * The surprise of the least surprising heading on offer, with every horizon stretched by
+     * [PushFieldParameters.noWayThroughHorizonStretch], in bits.
+     *
+     * Low when some heading leads clear. High when every heading from hard left to hard right
+     * is expected to run into something within the stretched look-ahead, which is what "no way
+     * through" means here. A display decides what counts as high.
+     */
+    fun lowestSurpriseAheadBits(obstacles: List<Obstacle>, walkerSpeed: Double, surfaces: GroundSurfaceMap): Double =
+        candidateHeadings.minOf { heading ->
+            totalCostBits(obstacles, heading, walkerSpeed, surfaces, horizonStretch = parameters.noWayThroughHorizonStretch)
+        }
 
     /**
      * Where the field would send the walker over the next few meters.
@@ -150,9 +164,10 @@ class PushFieldGuidance(
      *
      * Four factors, each a probability: in the path, contact within the horizon, the object
      * exists, and contact would matter. An object behind the walker, or level with them, has
-     * no chance at all.
+     * no chance at all. [horizonStretch] multiplies the class's horizon, for the question of
+     * whether there is any way through, which looks further ahead than the arrow does.
      */
-    fun collisionProbability(obstacle: Obstacle, headingRadians: Double, walkerSpeed: Double): Double {
+    fun collisionProbability(obstacle: Obstacle, headingRadians: Double, walkerSpeed: Double, horizonStretch: Double = 1.0): Double {
         val relativeBearing = obstacle.bearingRadians - headingRadians
         val alongMeters = obstacle.rangeMeters * cos(relativeBearing)
         if (alongMeters <= 0.0) return 0.0
@@ -166,7 +181,7 @@ class PushFieldGuidance(
         // more often than a person walking away, and the walker's own speed is the floor.
         val closingSpeed = max(obstacle.closingSpeedMetersPerSecond ?: walkerSpeed, walkerSpeed)
         val timeToContact = max(alongMeters / closingSpeed, parameters.minimumTimeToContactSeconds)
-        val urgency = profile.horizonSeconds / timeToContact
+        val urgency = profile.horizonSeconds * horizonStretch / timeToContact
         // The complement of this term is a Gaussian in urgency, so for an object on the line
         // with certain existence and no acceptability the surprise is half urgency squared in
         // nats, the same closed form as the time-to-contact surprise elsewhere in the project.
@@ -178,8 +193,8 @@ class PushFieldGuidance(
     }
 
     /** Surprise one obstacle carries if the walker holds [headingRadians], in bits: minus log2 of the chance of missing it. */
-    fun obstacleSurpriseBits(obstacle: Obstacle, headingRadians: Double, walkerSpeed: Double): Double {
-        val noCollision = 1.0 - collisionProbability(obstacle, headingRadians, walkerSpeed)
+    fun obstacleSurpriseBits(obstacle: Obstacle, headingRadians: Double, walkerSpeed: Double, horizonStretch: Double = 1.0): Double {
+        val noCollision = 1.0 - collisionProbability(obstacle, headingRadians, walkerSpeed, horizonStretch)
         // A collision probability rounded to exactly one would give infinite bits, which no
         // sum or search can use, so the floor turns it into a very large finite number. The
         // outer max turns the minus zero of a certain miss into a plain zero for the log.
@@ -231,9 +246,10 @@ class PushFieldGuidance(
         surfaces: GroundSurfaceMap = GroundSurfaceMap.UNKNOWN_EVERYWHERE,
         fromForwardMeters: Double = 0.0,
         fromRightMeters: Double = 0.0,
+        horizonStretch: Double = 1.0,
     ): Double =
         turnCostBits(headingRadians) +
-            obstacles.sumOf { obstacleSurpriseBits(it, headingRadians, walkerSpeed) } +
+            obstacles.sumOf { obstacleSurpriseBits(it, headingRadians, walkerSpeed, horizonStretch) } +
             surfaceCostBits(headingRadians, walkerSpeed, surfaces, fromForwardMeters, fromRightMeters)
 
     /**

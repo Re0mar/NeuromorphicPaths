@@ -1,237 +1,164 @@
 package com.neuromorphicpaths.app
 
 import android.Manifest
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
+import android.net.Uri
 import android.os.Bundle
+import android.os.IBinder
+import android.provider.Settings
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.lifecycle.lifecycleScope
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import com.neuromorphicpaths.app.ui.MainScreen
-import com.neuromorphicpaths.core.Frame
-import com.neuromorphicpaths.core.FrameSource
-import com.neuromorphicpaths.core.GuidancePipeline
-import com.neuromorphicpaths.core.ObstacleDetector
-import com.neuromorphicpaths.core.SurfaceSegmenter
-import com.neuromorphicpaths.core.WalkerState
-import com.neuromorphicpaths.input.AccelerometerCadenceSpeed
-import com.neuromorphicpaths.input.CameraXFrameSource
-import com.neuromorphicpaths.input.GpsGroundSpeed
 import com.neuromorphicpaths.input.Recording
-import com.neuromorphicpaths.input.SensorPoseProvider
-import com.neuromorphicpaths.input.VideoFileFrameSource
-import com.neuromorphicpaths.math.DetectionTracker
-import com.neuromorphicpaths.math.GroundPlaneObstacleLocator
-import com.neuromorphicpaths.math.GroundPlaneSceneLocator
-import com.neuromorphicpaths.math.PushFieldGuidance
-import com.neuromorphicpaths.math.TrackedObstacleDetector
-import com.neuromorphicpaths.math.TrackedObstacleLocator
-import com.neuromorphicpaths.model.EmptyObstacleDetector
-import com.neuromorphicpaths.model.OnnxSegFormerSegmenter
-import com.neuromorphicpaths.model.OnnxYoloWorldDetector
-import com.neuromorphicpaths.model.ScriptedObstacleDetector
-import com.neuromorphicpaths.output.LogcatDisplay
-import com.neuromorphicpaths.output.ScreenOverlayDisplay
-import kotlinx.coroutines.Job
+import com.neuromorphicpaths.output.FloatingForm
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.launch
 import java.io.File
 
 /**
- * The composition root. Picks one implementation of each contract and runs the pipeline for
- * the lifetime of the screen. Nothing here knows how any stage works.
+ * The controls. Binds to [GuidanceService], which runs the pipeline, and draws that service's
+ * screen display while it is in front. It asks for the permissions the service needs, since
+ * only a visible screen can, and it tells the floating overlay to stay out of the way while
+ * this screen is showing.
  */
 class MainActivity : ComponentActivity() {
 
-    private val screenDisplay = ScreenOverlayDisplay()
-    private val detectorChoice = MutableStateFlow(DetectorChoice.NONE)
-    private val segmenterOn = MutableStateFlow(false)
-    private var segmenterAvailable = false
-    // Set only from the adb intent, for timing comparisons between CPU and XNNPACK providers.
-    private var segmenterUsesXnnpack = false
-    private lateinit var poseProvider: SensorPoseProvider
-    private lateinit var groundSpeed: GpsGroundSpeed
-    private lateinit var cadenceSpeed: AccelerometerCadenceSpeed
-    private var pipelineJob: Job? = null
-    private var activeSource: FrameSource? = null
-    private var activeDetector: ObstacleDetector? = null
-    private var activeSegmenter: SurfaceSegmenter? = null
+    private val service = MutableStateFlow<GuidanceService?>(null)
 
-    // Remembered so a change of detector can restart the same kind of source with the same walker.
-    private var activeSourceFactory: (() -> FrameSource)? = null
-    private var activeWalkerState: (Frame) -> WalkerState = ::liveWalkerState
+    // The adb extras wait here until the service is bound, then run once.
+    private var pendingLaunchExtras: Bundle? = null
+
+    // A floating form picked before the draw-over-apps permission was granted, applied on return from settings.
+    private var formAwaitingPermission: FloatingForm? = null
+
+    private val connection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName, binder: IBinder) {
+            val bound = (binder as GuidanceService.LocalBinder).service
+            bound.floatingDisplay.setAppVisible(true)
+            service.value = bound
+            pendingLaunchExtras?.let { applyLaunchExtras(bound, it) }
+            pendingLaunchExtras = null
+        }
+
+        override fun onServiceDisconnected(name: ComponentName) {
+            service.value = null
+        }
+    }
 
     private val requestPermissions =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
+            val bound = service.value ?: return@registerForActivityResult
             // Location is optional. Without it the walker's speed stays unknown and the field uses its default.
-            if (granted[Manifest.permission.ACCESS_FINE_LOCATION] == true) groundSpeed.start()
-            if (granted[Manifest.permission.CAMERA] == true) startPipeline(sourceFactory = { cameraSource() })
+            if (granted[Manifest.permission.ACCESS_FINE_LOCATION] == true) bound.startGroundSpeed()
+            // Notifications are optional too. Without them the service still runs, its notice is just hidden.
+            if (granted[Manifest.permission.CAMERA] == true) bound.startCamera()
         }
 
     private val pickRecording =
         registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
             val recording = uri?.let { Recording.fromTree(this, it) }
-            if (recording != null) startRecording(recording) else Log.w(TAG, "No video in the picked folder")
+            val bound = service.value
+            when {
+                recording == null -> Log.w(TAG, "No video in the picked folder")
+                bound == null -> Log.w(TAG, "Service not bound, recording not started")
+                else -> bound.startRecording(recording)
+            }
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        poseProvider = SensorPoseProvider(this, heightMeters = AppDefaults.CAMERA_HEIGHT_METERS)
-        poseProvider.start()
-        groundSpeed = GpsGroundSpeed(this)
-        // Steps need no permission and work indoors, so they are the speed the field uses.
-        cadenceSpeed = AccelerometerCadenceSpeed(this)
-        cadenceSpeed.start()
-        val yoloWorldAvailable = OnnxYoloWorldDetector.isAvailable(this)
-        // The real detector is the point of the app, so it is the default whenever its model is bundled.
-        if (yoloWorldAvailable) detectorChoice.value = DetectorChoice.YOLO_WORLD
-        // The segmenter likewise runs whenever its model is bundled, and the adb intent can turn
-        // it off or ask for the XNNPACK provider for a timing comparison:
-        //   --ez segmenter false      --ez xnnpack true
-        segmenterAvailable = OnnxSegFormerSegmenter.isAvailable(this)
-        segmenterOn.value = segmenterAvailable && intent.getBooleanExtra(EXTRA_SEGMENTER, true)
-        segmenterUsesXnnpack = intent.getBooleanExtra(EXTRA_XNNPACK, false)
-        // adb hook for replaying a folder under files/recordings without touching the screen:
+        // adb hooks, applied once the service is bound:
         //   adb shell am start -n com.neuromorphicpaths/.app.MainActivity --es recording outdoor1
-        intent.getStringExtra(EXTRA_RECORDING)?.let { name ->
-            val recording = Recording.fromDirectory(this, File(filesDir, "$RECORDINGS_DIR/$name"))
-            if (recording != null) startRecording(recording) else Log.w(TAG, "No recording named $name under $RECORDINGS_DIR")
-        }
+        //   --ez segmenter false      --ez xnnpack true      --es overlay corner|full|off
+        if (savedInstanceState == null) pendingLaunchExtras = intent.extras
         setContent {
-            val choice by detectorChoice.collectAsState()
-            val surfaces by segmenterOn.collectAsState()
+            val bound by service.collectAsState()
             MaterialTheme {
-                MainScreen(
-                    display = screenDisplay,
-                    detectorChoice = choice,
-                    yoloWorldAvailable = yoloWorldAvailable,
-                    segmenterOn = surfaces,
-                    segmenterAvailable = segmenterAvailable,
-                    onDetectorChoiceChange = { choice ->
-                        detectorChoice.value = choice
-                        // A running pipeline picks up the new detector at once rather than on the next start.
-                        activeSourceFactory?.let { startPipeline(it, activeWalkerState) }
-                    },
-                    onSegmenterChange = { on ->
-                        segmenterOn.value = on
-                        activeSourceFactory?.let { startPipeline(it, activeWalkerState) }
-                    },
-                    onStartCamera = {
-                        requestPermissions.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.ACCESS_FINE_LOCATION))
-                    },
-                    onOpenRecording = { pickRecording.launch(null) },
-                )
+                val current = bound
+                if (current == null) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Starting") }
+                } else {
+                    val choice by current.detectorChoice.collectAsState()
+                    val surfaces by current.segmenterOn.collectAsState()
+                    val running by current.runningSource.collectAsState()
+                    val form by current.floatingDisplay.form.collectAsState()
+                    MainScreen(
+                        display = current.screenDisplay,
+                        detectorChoice = choice,
+                        yoloWorldAvailable = current.yoloWorldAvailable,
+                        segmenterOn = surfaces,
+                        segmenterAvailable = current.segmenterAvailable,
+                        running = running != null,
+                        floatingForm = form,
+                        onDetectorChoiceChange = current::setDetectorChoice,
+                        onSegmenterChange = current::setSegmenterOn,
+                        onStartCamera = {
+                            requestPermissions.launch(
+                                arrayOf(Manifest.permission.CAMERA, Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.POST_NOTIFICATIONS),
+                            )
+                        },
+                        onOpenRecording = { pickRecording.launch(null) },
+                        onStop = current::stopGuidance,
+                        onFloatingFormChange = { picked -> pickFloatingForm(current, picked) },
+                    )
+                }
             }
         }
     }
 
-    override fun onDestroy() {
-        stopPipeline()
-        cadenceSpeed.close()
-        groundSpeed.close()
-        poseProvider.close()
-        screenDisplay.close()
-        super.onDestroy()
+    override fun onStart() {
+        super.onStart()
+        bindService(Intent(this, GuidanceService::class.java), connection, Context.BIND_AUTO_CREATE)
     }
 
-    private fun cameraSource(): FrameSource =
-        CameraXFrameSource(this, this, poseProvider, AppDefaults.CAMERA_INTRINSICS)
+    override fun onResume() {
+        super.onResume()
+        val waiting = formAwaitingPermission ?: return
+        formAwaitingPermission = null
+        if (Settings.canDrawOverlays(this)) service.value?.floatingDisplay?.setForm(waiting)
+    }
 
-    private fun startRecording(recording: Recording) {
-        Log.i(TAG, "Replaying ${recording.videoUri.lastPathSegment}, logged pose: ${recording.hasLoggedPose}, logged speed: ${recording.hasLoggedSpeed}")
-        val walker: (Frame) -> WalkerState = { frame ->
-            val positionMillis = frame.timestampNanos / NANOS_PER_MILLI
-            WalkerState(
-                headingRadians = 0.0,
-                // From the walker's steps in the acceleration log. Null without one, and the field keeps its default.
-                speedMetersPerSecond = recording.speedForPosition(positionMillis),
-                azimuthRadians = recording.azimuthForPosition(positionMillis),
-            )
+    override fun onStop() {
+        // From here on the floating overlay is the only thing showing the guidance.
+        service.value?.floatingDisplay?.setAppVisible(false)
+        unbindService(connection)
+        service.value = null
+        super.onStop()
+    }
+
+    private fun pickFloatingForm(bound: GuidanceService, form: FloatingForm) {
+        if (form != FloatingForm.OFF && !Settings.canDrawOverlays(this)) {
+            // Drawing over other apps is a special permission, granted on its own settings page.
+            formAwaitingPermission = form
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+            return
         }
-        startPipeline(
-            sourceFactory = {
-                VideoFileFrameSource(
-                    this,
-                    recording.videoUri,
-                    poseProvider,
-                    AppDefaults.CAMERA_INTRINSICS,
-                    poseForPosition = recording.poseForPosition(AppDefaults.CAMERA_HEIGHT_METERS),
-                )
-            },
-            walkerState = walker,
-        )
+        bound.floatingDisplay.setForm(form)
     }
 
-    private fun detector(): ObstacleDetector = when (detectorChoice.value) {
-        DetectorChoice.NONE -> EmptyObstacleDetector()
-        DetectorChoice.SCRIPTED -> ScriptedObstacleDetector(AppDefaults.SCRIPTED_DETECTIONS)
-        DetectorChoice.YOLO_WORLD -> if (OnnxYoloWorldDetector.isAvailable(this)) {
-            OnnxYoloWorldDetector.load(this)
-        } else {
-            // The screen disables this choice when the model is missing, so this is a race, not a path.
-            Log.w(TAG, "YOLO-World model asset missing, running without detections")
-            EmptyObstacleDetector()
+    private fun applyLaunchExtras(bound: GuidanceService, extras: Bundle) {
+        if (extras.containsKey(EXTRA_SEGMENTER)) bound.setSegmenterOn(extras.getBoolean(EXTRA_SEGMENTER))
+        bound.segmenterUsesXnnpack = extras.getBoolean(EXTRA_XNNPACK, false)
+        extras.getString(EXTRA_OVERLAY)?.let { name ->
+            val form = OVERLAY_NAMES[name]
+            if (form != null) bound.floatingDisplay.setForm(form) else Log.w(TAG, "Unknown overlay $name, expected one of ${OVERLAY_NAMES.keys}")
         }
-    }
-
-    private fun startPipeline(sourceFactory: () -> FrameSource, walkerState: (Frame) -> WalkerState = ::liveWalkerState) {
-        stopPipeline()
-        val source = sourceFactory()
-        // One tracker per run, shared by the detector side that hands out ids and the locator
-        // side that turns a track's range history into a closing speed.
-        val tracker = DetectionTracker()
-        val detector = TrackedObstacleDetector(detector(), tracker)
-        val segmenter = segmenter()
-        activeSourceFactory = sourceFactory
-        activeWalkerState = walkerState
-        activeSource = source
-        activeDetector = detector
-        activeSegmenter = segmenter
-        val pipeline = GuidancePipeline(
-            source = source,
-            detector = detector,
-            locator = TrackedObstacleLocator(GroundPlaneObstacleLocator(), tracker),
-            field = PushFieldGuidance(),
-            displays = listOf(screenDisplay, LogcatDisplay()),
-            walkerState = walkerState,
-            segmenter = segmenter,
-            sceneLocator = segmenter?.let { GroundPlaneSceneLocator() },
-        )
-        pipelineJob = lifecycleScope.launch { pipeline.run() }
-    }
-
-    /** The surface segmenter when it is switched on and its model is bundled, otherwise none. */
-    private fun segmenter(): SurfaceSegmenter? {
-        if (!segmenterOn.value) return null
-        if (!OnnxSegFormerSegmenter.isAvailable(this)) {
-            // The switch is disabled when the model is missing, so this is a race, not a path.
-            Log.w(TAG, "SegFormer model asset missing, running without surfaces")
-            return null
+        extras.getString(EXTRA_RECORDING)?.let { name ->
+            val recording = Recording.fromDirectory(this, File(filesDir, "$RECORDINGS_DIR/$name"))
+            if (recording != null) bound.startRecording(recording) else Log.w(TAG, "No recording named $name under $RECORDINGS_DIR")
         }
-        Log.i(TAG, "Segmenter on, xnnpack: $segmenterUsesXnnpack")
-        return OnnxSegFormerSegmenter.load(this, useXnnpack = segmenterUsesXnnpack)
-    }
-
-    /** Head forward, with whatever speed and azimuth the live sensors have measured so far. Steps first, GPS as the fallback. */
-    @Suppress("UNUSED_PARAMETER")
-    private fun liveWalkerState(frame: Frame): WalkerState = WalkerState(
-        headingRadians = 0.0,
-        speedMetersPerSecond = cadenceSpeed.metersPerSecond.value ?: groundSpeed.metersPerSecond.value,
-        azimuthRadians = poseProvider.currentAzimuthRadians(),
-    )
-
-    private fun stopPipeline() {
-        pipelineJob?.cancel()
-        pipelineJob = null
-        activeSource?.close()
-        activeSource = null
-        activeDetector?.close()
-        activeDetector = null
-        activeSegmenter?.close()
-        activeSegmenter = null
     }
 
     private companion object {
@@ -239,7 +166,8 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_RECORDING = "recording"
         const val EXTRA_SEGMENTER = "segmenter"
         const val EXTRA_XNNPACK = "xnnpack"
+        const val EXTRA_OVERLAY = "overlay"
         const val RECORDINGS_DIR = "recordings"
-        const val NANOS_PER_MILLI = 1_000_000L
+        val OVERLAY_NAMES = mapOf("off" to FloatingForm.OFF, "corner" to FloatingForm.CORNER, "full" to FloatingForm.FULL_SCREEN)
     }
 }

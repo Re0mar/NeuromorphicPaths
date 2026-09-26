@@ -18,10 +18,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.neuromorphicpaths.app.DetectorChoice
+import com.neuromorphicpaths.output.FloatingForm
 import com.neuromorphicpaths.output.GuidanceOverlay
 import com.neuromorphicpaths.output.ScreenOverlayDisplay
 
-/** Two rows of controls over the overlay. Everything the first version lets a person do. */
+/** Three rows of controls over the overlay: what to run, which detector, and what floats over other apps. */
 @Composable
 fun MainScreen(
     display: ScreenOverlayDisplay,
@@ -29,10 +30,14 @@ fun MainScreen(
     yoloWorldAvailable: Boolean,
     segmenterOn: Boolean,
     segmenterAvailable: Boolean,
+    running: Boolean,
+    floatingForm: FloatingForm,
     onDetectorChoiceChange: (DetectorChoice) -> Unit,
     onSegmenterChange: (Boolean) -> Unit,
     onStartCamera: () -> Unit,
     onOpenRecording: () -> Unit,
+    onStop: () -> Unit,
+    onFloatingFormChange: (FloatingForm) -> Unit,
 ) {
     // Edge-to-edge is the default now, so without this the buttons sit under the status bar and
     // a tap on them lands on the clock instead.
@@ -46,6 +51,7 @@ fun MainScreen(
         ) {
             Button(onClick = onStartCamera) { Text("Camera") }
             Button(onClick = onOpenRecording) { Text("Open recording") }
+            Button(onClick = onStop, enabled = running) { Text("Stop") }
             // The segmenter is a second model beside the detector, so it gets a switch rather than
             // a place in the detector row. Grayed out on a build without its model file.
             Text("Surfaces")
@@ -68,6 +74,24 @@ fun MainScreen(
                 }
             }
         }
+        // What floats over other apps once this screen is left. Off, a symbol in the corner, or
+        // the path's ribbon across the whole screen.
+        SingleChoiceSegmentedButtonRow(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+        ) {
+            val forms = FloatingForm.entries
+            forms.forEachIndexed { index, form ->
+                SegmentedButton(
+                    selected = form == floatingForm,
+                    onClick = { onFloatingFormChange(form) },
+                    shape = SegmentedButtonDefaults.itemShape(index = index, count = forms.size),
+                ) {
+                    Text(FLOATING_FORM_LABELS.getValue(form))
+                }
+            }
+        }
         GuidanceOverlay(
             display = display,
             modifier = Modifier
@@ -76,3 +100,9 @@ fun MainScreen(
         )
     }
 }
+
+private val FLOATING_FORM_LABELS = mapOf(
+    FloatingForm.OFF to "No overlay",
+    FloatingForm.CORNER to "Corner",
+    FloatingForm.FULL_SCREEN to "Full screen",
+)

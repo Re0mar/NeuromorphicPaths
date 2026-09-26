@@ -45,3 +45,18 @@ tasks.register<Test>("priorSweep") {
         showStandardStreams = true
     }
 }
+
+tasks.register<Test>("noPath") {
+    description = "Re-runs the field over a replay log and reports the surprise of the least surprising heading on each frame."
+    group = "tools"
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    filter {
+        includeTestsMatching("*.NoPathTool")
+    }
+    outputs.upToDateWhen { false }
+    project.findProperty("replay.log")?.let { systemProperty("replay.log", it) }
+    testLogging {
+        showStandardStreams = true
+    }
+}

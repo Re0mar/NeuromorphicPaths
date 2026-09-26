@@ -13,6 +13,7 @@ class ReplayFrame(
     val wobbleRadians: Double?,
     val loggedHeadingRadians: Double,
     val loggedSurpriseBits: Double,
+    val loggedSpeedMetersPerSecond: Double? = null,
 )
 
 /**
@@ -26,7 +27,7 @@ class ReplayFrame(
  */
 object ReplayLog {
     private val FRAME = Regex(
-        """t=(\d+)ns detect=\d+ms detections=\d+ obstacles=\d+ heading=([-+]?[\d.]+)deg surprise=([\d.]+)bits speed=[\w.]+m/s wobble=([\w.]+)deg""",
+        """t=(\d+)ns detect=\d+ms detections=\d+ obstacles=\d+ heading=([-+]?[\d.]+)deg surprise=([\d.]+)bits speed=([\w.]+)m/s wobble=([\w.]+)deg""",
     )
     private val OBSTACLE = Regex(
         """t=(\d+)ns track=(-?\d+) class=(\w+) confidence=([\d.]+) range=([\d.]+)m bearing=([-+]?[\d.]+)deg closing=([\w.-]+)m/s""",
@@ -40,7 +41,7 @@ object ReplayLog {
 
         fun finish() {
             val frame = current ?: return
-            runs.last() += ReplayFrame(frame.videoSeconds, pending.toList(), frame.wobbleRadians, frame.loggedHeadingRadians, frame.loggedSurpriseBits)
+            runs.last() += ReplayFrame(frame.videoSeconds, pending.toList(), frame.wobbleRadians, frame.loggedHeadingRadians, frame.loggedSurpriseBits, frame.loggedSpeedMetersPerSecond)
             pending.clear()
             current = null
         }
@@ -59,7 +60,7 @@ object ReplayLog {
             }
             val frame = FRAME.find(line) ?: return@forEachLine
             finish()
-            val (nanos, heading, surprise, wobble) = frame.destructured
+            val (nanos, heading, surprise, speed, wobble) = frame.destructured
             val seconds = nanos.toLong() / 1e9
             if (seconds == 0.0 && runs.last().isNotEmpty()) runs.add(mutableListOf())
             current = ReplayFrame(
@@ -68,6 +69,7 @@ object ReplayLog {
                 wobbleRadians = wobble.toDoubleOrNull()?.takeIf { it.isFinite() }?.let(Math::toRadians),
                 loggedHeadingRadians = Math.toRadians(heading.toDouble()),
                 loggedSurpriseBits = surprise.toDouble(),
+                loggedSpeedMetersPerSecond = speed.toDoubleOrNull()?.takeIf { it.isFinite() },
             )
         }
         finish()

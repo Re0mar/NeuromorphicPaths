@@ -167,12 +167,15 @@ at zero information, solid at one bit. The reading is: a solid ribbon is a path 
 decided, a slightly paler one is the walker's own line with nothing to say about it, and the
 fade with distance runs on top of both.
 
-**Color is surprise.** The whole curve takes one color from the frame's overall surprise,
-blue when the walker's line is near the best one and red from three bits up, the cone at its
-worst on the outdoor walk. That is the alert, the thing that says an obstacle is about to be
-hit. It is not how sure the field is, and a solid blue curve and a faint red one are both
-possible: the first is a scene that decided a path the walker is on, the second an open line
-the walker has wandered off.
+**Color is surprise.** The whole curve takes one color, blue when there is nothing to worry
+about and red from three bits up, the cone at its worst on the outdoor walk. The number it
+follows is the higher of two surprises: the overall surprise, which says the walker's own line
+is worse than the best one, and the lowest surprise ahead, covered below, which says even the
+best line is heading into something. So the ribbon turns red when the walker is off the
+good line, and also when there is no good line left, and it turns red before any STOP is
+shown. That is the alert. It is not how sure the field is, and a solid blue curve and a faint
+red one are both possible: the first is a scene that decided a path the walker is on, the
+second an open line the walker has wandered off.
 
 The entropy was the first candidate for the opacity, and it does not work here. On the whole
 outdoor walk it sat within two tenths of a bit of the prior's own entropy, because the prior
@@ -180,6 +183,51 @@ spreads over 121 candidates and a few bits of cost over a few of them barely mov
 also cannot tell a belief sharpened onto one gap from one flattened over two equally good
 sides, which is the case a walker most needs to see. The divergence is zero for the open
 scene, grows with what the scene did, and is a named quantity in the course's own vocabulary.
+
+### What the ribbon is telling you, in plain words
+
+| What you see | What the field is saying |
+|---|---|
+| A blue ribbon going straight up the middle | Nothing ahead is surprising. Keep walking where you are walking. |
+| A blue ribbon bending to one side | Something is ahead, and stepping around it the way the ribbon bends is not surprising at all. |
+| A solid ribbon | What is in view decided this path. A wall, a gap or an obstacle pulled the choice away from plain straight ahead. |
+| A slightly paler ribbon | Nothing in view had anything to say about the path. It is just your own line drawn out. The app's own screen shows this. Over other apps the ribbon keeps one strength, set by the window. |
+| The ribbon turning purple, then red | Surprise is climbing. Either your line is heading into something the best line avoids, or every line is heading into something. Red means three bits or more, a collision is now likely enough to act on. Over other apps the ribbon also gets stronger then, from half to 0.8. |
+| The far end fading to nothing | Always there. The path is a guess about the next few meters, so it is drawn trailing off rather than ending in a hard edge. |
+
+## No way through
+
+The ribbon always goes somewhere. The field picks the least surprising heading, and there is
+always a least surprising one, even when every heading ahead runs into a wall. So a second
+question is asked on every frame: how surprising is the least surprising heading on offer?
+That is the lowest surprise ahead. When it is low, some heading leads clear. When it is high,
+every heading from hard left to hard right is expected to hit something, and there is no way
+through.
+
+Asked with the same two second horizons the arrow uses, that question cannot tell a dead end
+from a squeeze. A wall straight across the path only reaches 3 bits about 2 m out, and the
+outdoor walk had six moments where the walker slipped past a post or a wall sample 0.6 m away
+at 3 bits or more. So it is asked with every horizon doubled, "how surprised would you be over
+the next four seconds rather than the next two". With that, a wall across the path reads 2.5
+bits at 4 m, 3.6 at 3 m and 7.1 at 2 m, while a gap between two posts 0.6 m either side of the
+line reads 1.7 at 2 m. The arrow and the ribbon keep the shipped horizons. Only this number
+uses the stretch, and the stretch is `noWayThroughHorizonStretch` in `PushFieldParameters`.
+
+The floating overlay turns the number into three states. The thresholds are in
+`GuidanceDisplayTuning`, each one labeled.
+
+- **Red from 3 bits.** The same line where the ribbon's color reaches full red. It comes first,
+  so the walker sees red before a STOP.
+- **STOP from 4 bits, held for a second.** A wall across the path crosses 4 bits about 2.8 m
+  out, and a second of walking later the STOP is up, about 1.5 m from it. On the outdoor walk
+  the lowest surprise ahead reached 4 bits three times, never for longer than half a second,
+  so the rule would have raised no STOP there. The walk has no real dead end in it, so the
+  scale on the dead-end side is from the synthetic wall only.
+- **U-turn once stopped.** When the walker's measured speed reaches zero while STOP is up, the
+  symbol becomes a U-turn and stays one until they walk again. It has to latch. The field
+  treats a standing walker as barely moving, and standing things fade at that speed, so the
+  surprise ahead drops the moment the walker stops. When they set off again the field is asked
+  afresh, and the STOP clears once the surprise ahead is back under 3 bits.
 
 ## Why a search and not a sum of forces
 

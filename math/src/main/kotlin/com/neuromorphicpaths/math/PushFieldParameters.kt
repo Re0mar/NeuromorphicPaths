@@ -35,6 +35,12 @@ import com.neuromorphicpaths.core.SurfaceClass
  * The projected path rolls the field forward [pathSteps] times, [pathStepMeters] each, so with
  * the defaults it reaches 3 m, about two seconds of walking and the same distance the surface
  * term looks ahead.
+ *
+ * Whether there is any way through at all is asked with every class's horizon multiplied by
+ * [noWayThroughHorizonStretch]. With the shipped 2 s horizons a wall straight across the path
+ * only gets surprising about 2 m out, the same level a tight squeeze past a post reaches, so
+ * the question looks twice as far ahead in time. The arrow and the path keep the shipped
+ * horizons. Only the no-way-through number uses the stretch.
  */
 data class PushFieldParameters(
     val profiles: Map<ObstacleClass, ObstacleProfile> = ObstacleProfile.DEFAULTS,
@@ -50,6 +56,8 @@ data class PushFieldParameters(
     val surfaceStepMeters: Double = 0.25,
     val pathSteps: Int = 6,
     val pathStepMeters: Double = 0.5,
+    /** TUNABLE. How much further ahead in time the no-way-through question looks than the arrow does. 2 doubles every horizon. */
+    val noWayThroughHorizonStretch: Double = 2.0,
 ) {
     init {
         // A class without a profile would surface as a lookup failure deep inside the search.
@@ -66,6 +74,7 @@ data class PushFieldParameters(
         require(maxHeadingRadians > 0.0 && headingStepRadians > 0.0) { "heading search range and step must be positive" }
         require(surfaceLookaheadSeconds > 0.0 && surfaceStepMeters > 0.0) { "surface lookahead and step must be positive" }
         require(pathSteps >= 0 && pathStepMeters > 0.0) { "path steps cannot be negative and the step must be positive" }
+        require(noWayThroughHorizonStretch >= 1.0) { "noWayThroughHorizonStretch must be at least 1, got $noWayThroughHorizonStretch" }
     }
 
     fun profileOf(obstacleClass: ObstacleClass): ObstacleProfile = profiles.getValue(obstacleClass)
