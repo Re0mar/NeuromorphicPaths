@@ -73,8 +73,9 @@ used on the frames between, since walls and verges move slowly in the frame.
   for ground the walker would rather not cross once a segmenter says what the ground is. It
   also reports the entropy of its belief over headings, how far the scene moved that belief
   off the walker's own prior, and a projected path: the field rolled forward half a meter at
-  a time for six steps, which the overlay draws as a curve on the ground, faded where the
-  scene had nothing to say and colored by the alert. `docs/math/push_field.md` explains it,
+  a time for six steps, which the overlay draws as a ribbon on the ground, a fifth of the
+  frame wide at the walker's feet and narrowing with distance, faded where the scene had
+  nothing to say and colored by the alert. `docs/math/push_field.md` explains it,
   including the running heading wobble it measures and why that does not set the turn
   tolerance. `GroundPlaneSceneLocator` turns a scene map into the surfaces the field asks about,
   by projecting each asked-for ground point back into the frame, and into obstacles for walls

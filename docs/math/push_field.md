@@ -149,15 +149,23 @@ to go, not where the last step happened to point. The chain of positions, projec
 the ground plane back into the frame, is the curve. With nothing in view it is a straight
 line dead ahead. With a wall along the right it bends left, and the test that says so pins it.
 
-Two things are drawn on the curve, and they are kept on two channels on purpose.
+On screen the curve is a ribbon, not a line, since it is the thing the walker is meant to
+see. It is a fifth of the frame's width where it leaves the bottom edge and narrows with
+height to about twenty pixels at the top, the way a strip of ground does in perspective, and
+the heading arrow sits on top of it. Whatever else is drawn on it, the ribbon fades with
+distance from full at the walker's feet to nothing at its far end, so it is always seen
+disappearing rather than stopping at an edge.
+
+Two things are drawn on the ribbon, and they are kept on two channels on purpose.
 
 **Opacity is information.** Each step carries the heading information at that step, the
-divergence above, and the curve is drawn solid where the scene shaped the choice and faint
-where it did not. One bit, a wall along the path or a barrier a meter ahead doubling the odds
-of the chosen direction, is fully solid. An open scene gives zero everywhere, so the curve would vanish
-exactly when the walker is fine, and a floor of a quarter keeps a thin line findable straight
-ahead. The reading is: a solid curve is a path the scene decided, a faint one is the walker's
-own line with nothing to say about it.
+divergence above, and the ribbon is drawn solid where the scene shaped the choice and less
+so where it did not. One bit, a wall along the path or a barrier a meter ahead doubling the
+odds of the chosen direction, is fully solid. An open scene gives zero everywhere, and since
+the ribbon is meant to be prominent whatever the scene says, the floor is high: seven tenths
+at zero information, solid at one bit. The reading is: a solid ribbon is a path the scene
+decided, a slightly paler one is the walker's own line with nothing to say about it, and the
+fade with distance runs on top of both.
 
 **Color is surprise.** The whole curve takes one color from the frame's overall surprise,
 blue when the walker's line is near the best one and red from three bits up, the cone at its
