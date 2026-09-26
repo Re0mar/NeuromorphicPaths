@@ -15,6 +15,7 @@ import com.neuromorphicpaths.core.Frame
 import com.neuromorphicpaths.core.FrameSource
 import com.neuromorphicpaths.core.GuidancePipeline
 import com.neuromorphicpaths.core.ObstacleDetector
+import com.neuromorphicpaths.core.SurfaceSegmenter
 import com.neuromorphicpaths.core.WalkerState
 import com.neuromorphicpaths.input.AccelerometerCadenceSpeed
 import com.neuromorphicpaths.input.CameraXFrameSource
@@ -24,10 +25,12 @@ import com.neuromorphicpaths.input.SensorPoseProvider
 import com.neuromorphicpaths.input.VideoFileFrameSource
 import com.neuromorphicpaths.math.DetectionTracker
 import com.neuromorphicpaths.math.GroundPlaneObstacleLocator
+import com.neuromorphicpaths.math.GroundPlaneSceneLocator
 import com.neuromorphicpaths.math.PushFieldGuidance
 import com.neuromorphicpaths.math.TrackedObstacleDetector
 import com.neuromorphicpaths.math.TrackedObstacleLocator
 import com.neuromorphicpaths.model.EmptyObstacleDetector
+import com.neuromorphicpaths.model.OnnxSegFormerSegmenter
 import com.neuromorphicpaths.model.OnnxYoloWorldDetector
 import com.neuromorphicpaths.model.ScriptedObstacleDetector
 import com.neuromorphicpaths.output.LogcatDisplay
@@ -45,12 +48,17 @@ class MainActivity : ComponentActivity() {
 
     private val screenDisplay = ScreenOverlayDisplay()
     private val detectorChoice = MutableStateFlow(DetectorChoice.NONE)
+    private val segmenterOn = MutableStateFlow(false)
+    private var segmenterAvailable = false
+    // Set only from the adb intent, for timing comparisons between CPU and XNNPACK providers.
+    private var segmenterUsesXnnpack = false
     private lateinit var poseProvider: SensorPoseProvider
     private lateinit var groundSpeed: GpsGroundSpeed
     private lateinit var cadenceSpeed: AccelerometerCadenceSpeed
     private var pipelineJob: Job? = null
     private var activeSource: FrameSource? = null
     private var activeDetector: ObstacleDetector? = null
+    private var activeSegmenter: SurfaceSegmenter? = null
 
     // Remembered so a change of detector can restart the same kind of source with the same walker.
     private var activeSourceFactory: (() -> FrameSource)? = null
@@ -80,6 +88,12 @@ class MainActivity : ComponentActivity() {
         val yoloWorldAvailable = OnnxYoloWorldDetector.isAvailable(this)
         // The real detector is the point of the app, so it is the default whenever its model is bundled.
         if (yoloWorldAvailable) detectorChoice.value = DetectorChoice.YOLO_WORLD
+        // The segmenter likewise runs whenever its model is bundled, and the adb intent can turn
+        // it off or ask for the XNNPACK provider for a timing comparison:
+        //   --ez segmenter false      --ez xnnpack true
+        segmenterAvailable = OnnxSegFormerSegmenter.isAvailable(this)
+        segmenterOn.value = segmenterAvailable && intent.getBooleanExtra(EXTRA_SEGMENTER, true)
+        segmenterUsesXnnpack = intent.getBooleanExtra(EXTRA_XNNPACK, false)
         // adb hook for replaying a folder under files/recordings without touching the screen:
         //   adb shell am start -n com.neuromorphicpaths/.app.MainActivity --es recording outdoor1
         intent.getStringExtra(EXTRA_RECORDING)?.let { name ->
@@ -88,14 +102,21 @@ class MainActivity : ComponentActivity() {
         }
         setContent {
             val choice by detectorChoice.collectAsState()
+            val surfaces by segmenterOn.collectAsState()
             MaterialTheme {
                 MainScreen(
                     display = screenDisplay,
                     detectorChoice = choice,
                     yoloWorldAvailable = yoloWorldAvailable,
+                    segmenterOn = surfaces,
+                    segmenterAvailable = segmenterAvailable,
                     onDetectorChoiceChange = { choice ->
                         detectorChoice.value = choice
                         // A running pipeline picks up the new detector at once rather than on the next start.
+                        activeSourceFactory?.let { startPipeline(it, activeWalkerState) }
+                    },
+                    onSegmenterChange = { on ->
+                        segmenterOn.value = on
                         activeSourceFactory?.let { startPipeline(it, activeWalkerState) }
                     },
                     onStartCamera = {
@@ -163,10 +184,12 @@ class MainActivity : ComponentActivity() {
         // side that turns a track's range history into a closing speed.
         val tracker = DetectionTracker()
         val detector = TrackedObstacleDetector(detector(), tracker)
+        val segmenter = segmenter()
         activeSourceFactory = sourceFactory
         activeWalkerState = walkerState
         activeSource = source
         activeDetector = detector
+        activeSegmenter = segmenter
         val pipeline = GuidancePipeline(
             source = source,
             detector = detector,
@@ -174,8 +197,22 @@ class MainActivity : ComponentActivity() {
             field = PushFieldGuidance(),
             displays = listOf(screenDisplay, LogcatDisplay()),
             walkerState = walkerState,
+            segmenter = segmenter,
+            sceneLocator = segmenter?.let { GroundPlaneSceneLocator() },
         )
         pipelineJob = lifecycleScope.launch { pipeline.run() }
+    }
+
+    /** The surface segmenter when it is switched on and its model is bundled, otherwise none. */
+    private fun segmenter(): SurfaceSegmenter? {
+        if (!segmenterOn.value) return null
+        if (!OnnxSegFormerSegmenter.isAvailable(this)) {
+            // The switch is disabled when the model is missing, so this is a race, not a path.
+            Log.w(TAG, "SegFormer model asset missing, running without surfaces")
+            return null
+        }
+        Log.i(TAG, "Segmenter on, xnnpack: $segmenterUsesXnnpack")
+        return OnnxSegFormerSegmenter.load(this, useXnnpack = segmenterUsesXnnpack)
     }
 
     /** Head forward, with whatever speed and azimuth the live sensors have measured so far. Steps first, GPS as the fallback. */
@@ -193,11 +230,15 @@ class MainActivity : ComponentActivity() {
         activeSource = null
         activeDetector?.close()
         activeDetector = null
+        activeSegmenter?.close()
+        activeSegmenter = null
     }
 
     private companion object {
         const val TAG = "MainActivity"
         const val EXTRA_RECORDING = "recording"
+        const val EXTRA_SEGMENTER = "segmenter"
+        const val EXTRA_XNNPACK = "xnnpack"
         const val RECORDINGS_DIR = "recordings"
         const val NANOS_PER_MILLI = 1_000_000L
     }

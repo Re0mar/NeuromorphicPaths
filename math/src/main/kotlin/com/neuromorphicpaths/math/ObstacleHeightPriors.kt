@@ -21,5 +21,10 @@ class ObstacleHeightPriors {
         ObstacleClass.CHAIR -> 0.9
         ObstacleClass.TRASH_CAN -> 1.0
         ObstacleClass.UNKNOWN -> null
+        // Structure samples arrive from the segmenter with their foot already on the ground, and
+        // no detector prompt maps to these, so a box of one never reaches this fallback.
+        ObstacleClass.BUILDING -> null
+        ObstacleClass.WALL -> null
+        ObstacleClass.STAIRS -> null
     }
 }

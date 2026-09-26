@@ -1,0 +1,159 @@
+# One line per ADE20K class in the model's output order: the class index, a tab, the label the
+# model was trained with, a tab, the scene class it maps to. The export script checks the index
+# and label columns against the checkpoint's own label list, and the app reads the third column,
+# so a mismatch fails the export rather than reaching the phone.
+#
+# PAVEMENT is anything the walker is meant to be on, indoors or out. "path" is a footpath more
+# often than not. Fences, railings and bannisters stay OTHER for now: the detector has a fence
+# prompt, and a railing beside stairs is usually beside a STAIRS region already. People, cars,
+# bikes and trees are OTHER because the detector boxes them.
+0	wall	WALL
+1	building	BUILDING
+2	sky	SKY
+3	floor	PAVEMENT
+4	tree	OTHER
+5	ceiling	OTHER
+6	road	ROAD
+7	bed	OTHER
+8	windowpane	OTHER
+9	grass	GRASS
+10	cabinet	OTHER
+11	sidewalk	PAVEMENT
+12	person	OTHER
+13	earth	DIRT
+14	door	OTHER
+15	table	OTHER
+16	mountain	OTHER
+17	plant	OTHER
+18	curtain	OTHER
+19	chair	OTHER
+20	car	OTHER
+21	water	OTHER
+22	painting	OTHER
+23	sofa	OTHER
+24	shelf	OTHER
+25	house	BUILDING
+26	sea	OTHER
+27	mirror	OTHER
+28	rug	PAVEMENT
+29	field	GRASS
+30	armchair	OTHER
+31	seat	OTHER
+32	fence	OTHER
+33	desk	OTHER
+34	rock	OTHER
+35	wardrobe	OTHER
+36	lamp	OTHER
+37	bathtub	OTHER
+38	railing	OTHER
+39	cushion	OTHER
+40	base	OTHER
+41	box	OTHER
+42	column	OTHER
+43	signboard	OTHER
+44	chest of drawers	OTHER
+45	counter	OTHER
+46	sand	DIRT
+47	sink	OTHER
+48	skyscraper	BUILDING
+49	fireplace	OTHER
+50	refrigerator	OTHER
+51	grandstand	OTHER
+52	path	PAVEMENT
+53	stairs	STAIRS
+54	runway	ROAD
+55	case	OTHER
+56	pool table	OTHER
+57	pillow	OTHER
+58	screen door	OTHER
+59	stairway	STAIRS
+60	river	OTHER
+61	bridge	OTHER
+62	bookcase	OTHER
+63	blind	OTHER
+64	coffee table	OTHER
+65	toilet	OTHER
+66	flower	OTHER
+67	book	OTHER
+68	hill	OTHER
+69	bench	OTHER
+70	countertop	OTHER
+71	stove	OTHER
+72	palm	OTHER
+73	kitchen island	OTHER
+74	computer	OTHER
+75	swivel chair	OTHER
+76	boat	OTHER
+77	bar	OTHER
+78	arcade machine	OTHER
+79	hovel	BUILDING
+80	bus	OTHER
+81	towel	OTHER
+82	light	OTHER
+83	truck	OTHER
+84	tower	BUILDING
+85	chandelier	OTHER
+86	awning	OTHER
+87	streetlight	OTHER
+88	booth	OTHER
+89	television receiver	OTHER
+90	airplane	OTHER
+91	dirt track	DIRT
+92	apparel	OTHER
+93	pole	OTHER
+94	land	DIRT
+95	bannister	OTHER
+96	escalator	STAIRS
+97	ottoman	OTHER
+98	bottle	OTHER
+99	buffet	OTHER
+100	poster	OTHER
+101	stage	OTHER
+102	van	OTHER
+103	ship	OTHER
+104	fountain	OTHER
+105	conveyer belt	OTHER
+106	canopy	OTHER
+107	washer	OTHER
+108	plaything	OTHER
+109	swimming pool	OTHER
+110	stool	OTHER
+111	barrel	OTHER
+112	basket	OTHER
+113	waterfall	OTHER
+114	tent	OTHER
+115	bag	OTHER
+116	minibike	OTHER
+117	cradle	OTHER
+118	oven	OTHER
+119	ball	OTHER
+120	food	OTHER
+121	step	STAIRS
+122	tank	OTHER
+123	trade name	OTHER
+124	microwave	OTHER
+125	pot	OTHER
+126	animal	OTHER
+127	bicycle	OTHER
+128	lake	OTHER
+129	dishwasher	OTHER
+130	screen	OTHER
+131	blanket	OTHER
+132	sculpture	OTHER
+133	hood	OTHER
+134	sconce	OTHER
+135	vase	OTHER
+136	traffic light	OTHER
+137	tray	OTHER
+138	ashcan	OTHER
+139	fan	OTHER
+140	pier	OTHER
+141	crt screen	OTHER
+142	plate	OTHER
+143	monitor	OTHER
+144	bulletin board	OTHER
+145	shower	OTHER
+146	radiator	OTHER
+147	glass	OTHER
+148	clock	OTHER
+149	flag	OTHER

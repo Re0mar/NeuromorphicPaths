@@ -32,7 +32,9 @@ data class ObstacleProfile(
          * clearance off the line is a 61 percent chance of being in the path for anything.
          * Hard and fixed things get no acceptability at all. Things that move themselves out
          * of the way, or that a shin can nudge, get some. A car gets the widest berth and the
-         * longest horizon because it is big and may be moving.
+         * longest horizon because it is big and may be moving. The three structure classes a
+         * segmenter produces are as hard and fixed as a pole, and a flight of stairs is a
+         * trip rather than a route, so it gets the same numbers.
          */
         val DEFAULTS: Map<ObstacleClass, ObstacleProfile> = mapOf(
             ObstacleClass.TREE to ObstacleProfile(clearanceMeters = 0.5, horizonSeconds = 2.0, contactAcceptability = 0.0),
@@ -47,6 +49,9 @@ data class ObstacleProfile(
             ObstacleClass.CHAIR to ObstacleProfile(clearanceMeters = 0.5, horizonSeconds = 1.5, contactAcceptability = 0.2),
             ObstacleClass.TRASH_CAN to ObstacleProfile(clearanceMeters = 0.5, horizonSeconds = 1.5, contactAcceptability = 0.5),
             ObstacleClass.UNKNOWN to ObstacleProfile(clearanceMeters = 0.5, horizonSeconds = 2.0, contactAcceptability = 0.0),
+            ObstacleClass.BUILDING to ObstacleProfile(clearanceMeters = 0.5, horizonSeconds = 2.0, contactAcceptability = 0.0),
+            ObstacleClass.WALL to ObstacleProfile(clearanceMeters = 0.5, horizonSeconds = 2.0, contactAcceptability = 0.0),
+            ObstacleClass.STAIRS to ObstacleProfile(clearanceMeters = 0.5, horizonSeconds = 2.0, contactAcceptability = 0.0),
         )
     }
 }

@@ -23,6 +23,8 @@ import androidx.compose.ui.unit.dp
 import com.neuromorphicpaths.core.Guidance
 import com.neuromorphicpaths.core.GuidanceUpdate
 import com.neuromorphicpaths.core.Obstacle
+import com.neuromorphicpaths.core.SceneClass
+import com.neuromorphicpaths.core.SceneClassMap
 import java.util.Locale
 import kotlin.math.cos
 import kotlin.math.min
@@ -49,6 +51,7 @@ fun GuidanceOverlay(display: ScreenOverlayDisplay, modifier: Modifier = Modifier
         )
         Canvas(Modifier.fillMaxSize()) {
             val fit = FittedImage(current.image.width, current.image.height, size)
+            current.update.sceneMap?.let { drawSceneMap(it, fit) }
             for (detection in current.update.detections) {
                 val topLeft = fit.point(detection.box.left, detection.box.top)
                 val bottomRight = fit.point(detection.box.right, detection.box.bottom)
@@ -120,6 +123,23 @@ private class FittedImage(imageWidth: Int, imageHeight: Int, canvas: Size) {
         Offset(offsetX + (normalizedX * drawnWidth).toFloat(), offsetY + (normalizedY * drawnHeight).toFloat())
 }
 
+/**
+ * Tints each cell of the scene map that the field acts on, so a person can see what the
+ * segmenter called ground and what it called a wall. Sky and everything else stay clear.
+ */
+private fun DrawScope.drawSceneMap(map: SceneClassMap, fit: FittedImage) {
+    val cellWidth = 1.0 / map.width
+    val cellHeight = 1.0 / map.height
+    for (row in 0 until map.height) {
+        for (column in 0 until map.width) {
+            val color = SCENE_TINTS[map.classAt(column, row)] ?: continue
+            val topLeft = fit.point(column * cellWidth, row * cellHeight)
+            val bottomRight = fit.point((column + 1) * cellWidth, (row + 1) * cellHeight)
+            drawRect(color, topLeft, Size(bottomRight.x - topLeft.x, bottomRight.y - topLeft.y))
+        }
+    }
+}
+
 private fun DrawScope.drawHeadingArrow(headingRadians: Double, fit: FittedImage) {
     val start = fit.point(0.5, 1.0)
     val length = fit.drawnHeight * ARROW_LENGTH_FRACTION
@@ -142,6 +162,17 @@ private fun DrawScope.drawHeadingArrow(headingRadians: Double, fit: FittedImage)
 
 private val BOX_COLOR = Color(0xFFFFC107)
 private val ARROW_COLOR = Color(0xFF00E5FF)
+
+// Translucent, so the frame stays readable under the tint. Ground is cool, structures are warm.
+private val SCENE_TINTS: Map<SceneClass, Color> = mapOf(
+    SceneClass.PAVEMENT to Color(0x4000E5FF),
+    SceneClass.GRASS to Color(0x5000C853),
+    SceneClass.DIRT to Color(0x50795548),
+    SceneClass.ROAD to Color(0x506A1B9A),
+    SceneClass.BUILDING to Color(0x60E53935),
+    SceneClass.WALL to Color(0x60FF6D00),
+    SceneClass.STAIRS to Color(0x60FF4081),
+)
 private const val BOX_STROKE_PX = 4f
 private const val ARROW_STROKE_PX = 8f
 private const val ARROW_LENGTH_FRACTION = 0.3f

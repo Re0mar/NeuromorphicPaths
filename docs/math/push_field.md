@@ -137,11 +137,20 @@ costs zero everywhere, the prior picks straight, and the entropy says the field 
 
 ## Regions count once
 
-A wall, a building face or a grass verge will arrive as many boundary samples, not one box.
-Fifty samples along one wall are not fifty independent objects, and treating them so would
-make a wall outweigh a person fifty to one. Until region input exists, the rule is written
-here so it is not forgotten: a region contributes one sample per clearance width along its
-boundary, or only its nearest sample, and never one per pixel.
+A wall, a building face or a flight of stairs arrives from the segmenter as a region of cells,
+not a box. The cells where such a region touches ground are its foot, and each foot cell is
+projected through the ground plane to a point on the ground, the same geometry that places a
+box by its bottom edge. Fifty foot points along one wall are not fifty independent objects,
+and treating them so would make a wall outweigh a person fifty to one. So the points are
+thinned, nearest first, to one per half meter of the same class, half a meter being the
+smallest clearance any class gets, and each surviving point enters the field as an obstacle:
+class WALL, BUILDING or STAIRS, certain, no track, closing at the walker's own speed. A wall
+that runs beside the path for ten meters is then about twenty samples, each with the ordinary
+in-path Gaussian, and the ones near the walker do the pushing.
+
+The ground under a structure is not also charged as a surface. The field asks what the ground
+is at a point, the point projects into a wall cell, and the answer is unknown, which costs
+nothing. The wall's cost is already in its samples.
 
 ## Closing speed and memory between frames
 
@@ -176,20 +185,22 @@ run the same estimator, live off the phone's accelerometer and replay off the re
 acceleration log. The 0.7 m step is a constant, and a taller or hurrying walker takes a longer
 one. The GPS cross-check is what would calibrate it.
 
-## What is not in it yet
-
-Nothing produces a surface map yet, so the ground term is written and tested but idle until
-the segmenter lands.
-
 ## The ground ahead
 
-Where a segmenter has said what the ground is, each candidate heading is also charged for the
-ground it crosses. The line is sampled every 0.25 m out to the distance the walker covers in
-2 s, and each sample is charged the per-meter cost of the surface it lands on: nothing for
-pavement, 0.1 bits per meter for grass, 0.15 for dirt, 0.6 for a road. Read as a probability,
-each meter of grass is fine with probability 0.93. Ground nobody has classified costs nothing,
-so until a segmenter exists this term is zero everywhere and the field behaves as if it were
-not there.
+A segmenter says what the ground is. SegFormer-B0 trained on ADE20K reads every third frame
+at 256 by 256 and answers with a 64 by 64 grid of labels, which are mapped onto pavement,
+grass, dirt, road, the three structure classes, sky and other. The grid is stretched over the
+frame, so asking what the ground is at a point ahead of the walker means projecting that point
+into the frame and reading the cell it lands in. The map is held until the next one, so on the
+two frames between it is a little stale, which for verges and walls does not matter.
+
+Each candidate heading is then charged for the ground it crosses. The line is sampled every
+0.25 m out to the distance the walker covers in 2 s, and each sample is charged the per-meter
+cost of the surface it lands on: nothing for pavement, 0.1 bits per meter for grass, 0.15 for
+dirt, 0.6 for a road. Read as a probability, each meter of grass is fine with probability 0.93.
+Ground outside the frame, above the horizon, under a structure or under something the map
+calls other costs nothing, so a pipeline without a segmenter behaves as if the term were not
+there.
 
 The effect is a preference, not a rule. A walker with a wall along the pavement's edge crosses
 the grass to get away from it, since a few tenths of a bit of grass are cheaper than the wall's

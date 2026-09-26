@@ -11,6 +11,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -26,7 +27,10 @@ fun MainScreen(
     display: ScreenOverlayDisplay,
     detectorChoice: DetectorChoice,
     yoloWorldAvailable: Boolean,
+    segmenterOn: Boolean,
+    segmenterAvailable: Boolean,
     onDetectorChoiceChange: (DetectorChoice) -> Unit,
+    onSegmenterChange: (Boolean) -> Unit,
     onStartCamera: () -> Unit,
     onOpenRecording: () -> Unit,
 ) {
@@ -42,6 +46,10 @@ fun MainScreen(
         ) {
             Button(onClick = onStartCamera) { Text("Camera") }
             Button(onClick = onOpenRecording) { Text("Open recording") }
+            // The segmenter is a second model beside the detector, so it gets a switch rather than
+            // a place in the detector row. Grayed out on a build without its model file.
+            Text("Surfaces")
+            Switch(checked = segmenterOn, onCheckedChange = onSegmenterChange, enabled = segmenterAvailable)
         }
         SingleChoiceSegmentedButtonRow(
             Modifier

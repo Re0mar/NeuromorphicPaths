@@ -10,6 +10,7 @@ captures/
 *.apk
 *.aab
 model/src/main/assets/yolo_world/*.onnx
+model/src/main/assets/segformer/*.onnx
 *.log
 .DS_Store
 .artifacts/
