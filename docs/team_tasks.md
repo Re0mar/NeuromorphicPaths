@@ -16,7 +16,7 @@ Ok so here's all the stuff that still needs doing. If you want one, put your nam
 
 ## When you're done
 
-You're done when you've got whatever the task asks for AND you wrote a quick how-to in `docs/guides/` so somebody else could do it again without texting you. Just say what you were trying to find out, what you had to install, where the files are, what you typed and in what order, what it looks like when it works, and what you found out.
+You're done when you've got whatever the task asks for and (ideally) you wrote a quick how-to in `docs/guides/` so somebody else could do it again without texting you. Just say what you were trying to find out, what you had to install, where the files are, what you typed and in what order, what it looks like when it works, and what you found out.
 
 ## Getting the recording
 
