@@ -50,7 +50,7 @@ class PathDetector(context: Context) {
     private var inWidth: Int = 320
     private var inHeight: Int = 320
 
-    private var confThreshold = 0.25f
+    var confidenceThreshold: Float = 0.25f
 
 
     private val outputDetails = mutableListOf<Tensor>()
@@ -304,7 +304,7 @@ class PathDetector(context: Context) {
             }
         }
 
-        if (bestIdx == -1 || bestScore < confThreshold) {
+        if (bestIdx == -1 || bestScore < confidenceThreshold) {
             return DetectionResult(bestScore, null, null, emptyList())
         }
 

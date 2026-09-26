@@ -250,6 +250,7 @@ fun CameraScreen(
 
     val lifecycleOwner = LocalLifecycleOwner.current
     var detectionResult by remember { mutableStateOf<DetectionResult?>(null) }
+    var confidenceThreshold by remember { mutableStateOf(pathDetector.confidenceThreshold) }
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
 
@@ -403,6 +404,40 @@ fun CameraScreen(
                     contentDescription = "Back",
                     tint = Color.White,
                     modifier = Modifier.padding(8.dp)
+                )
+            }
+        }
+
+        // Bottom control panel for confidence threshold slider
+        Surface(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(16.dp),
+            color = Color.Black.copy(alpha = 0.6f),
+            shape = MaterialTheme.shapes.medium
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "Confidence Threshold: ${(confidenceThreshold * 100).toInt()}%",
+                    color = Color.White,
+                    fontSize = 14.sp
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Slider(
+                    value = confidenceThreshold,
+                    onValueChange = { newValue ->
+                        confidenceThreshold = newValue
+                        pathDetector.confidenceThreshold = newValue
+                    },
+                    valueRange = 0.05f..0.95f,
+                    colors = SliderDefaults.colors(
+                        thumbColor = Color.Yellow,
+                        activeTrackColor = Color.Yellow
+                    )
                 )
             }
         }
