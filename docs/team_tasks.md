@@ -30,7 +30,7 @@ When a command asks for a file, give it the whole path, like starting from `C:/`
 
 Basically most of the app's settings are guesses we agreed on, nobody actually tested them. The big one is how much the app expects you to just keep walking straight (it's set to 30 degrees right now). The motion sensor file shows exactly when the walker turned and which way, and nobody's compared the app to that yet.
 
-Someone already started on this. This command runs the recorded walk through the app a few times with different settings and counts how many of the walker's turns the app got:
+Sort-of already started on this. This command runs the recorded walk through the app a few times with different settings and counts how many of the walker's turns the app got:
 
 `./gradlew :math:priorSweep -Preplay.log=<whole path> -Porientation.csv=<whole path> -Pout.dir=<whole path>`
 
