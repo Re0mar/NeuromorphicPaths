@@ -104,6 +104,28 @@ class GroundPlaneSceneLocatorTest {
         assertTrue(scene.structures.isEmpty())
     }
 
+    /** Pavement with a flight of stairs filling the right quarter of the frame from the horizon down. */
+    private fun pavementWithStairsOnTheRight() = SceneClassMap.build(gridSize, gridSize) { column, row ->
+        when {
+            row < horizonRow -> SceneClass.SKY
+            column >= gridSize * 3 / 4 -> SceneClass.STAIRS
+            else -> SceneClass.PAVEMENT
+        }
+    }
+
+    @Test
+    fun stairsAreNotPlacedUnlessAskedFor() {
+        // On the outdoor walk the stairs were the route, so by default they stay on the map and off the field.
+        val byDefault = locator.locate(pavementWithStairsOnTheRight(), frame)
+        assertTrue(byDefault.structures.isEmpty())
+        // The ground under them is still not charged as a surface.
+        assertEquals(SurfaceClass.UNKNOWN, byDefault.surfaces.surfaceAt(3.0, 2.0))
+
+        val asked = GroundPlaneSceneLocator(placedStructures = setOf(ObstacleClass.STAIRS)).locate(pavementWithStairsOnTheRight(), frame)
+        assertTrue("expected stairs samples when asked for", asked.structures.isNotEmpty())
+        assertTrue(asked.structures.all { it.obstacleClass == ObstacleClass.STAIRS })
+    }
+
     @Test
     fun feetBeyondTheRangeCapAreDropped() {
         val scene = GroundPlaneSceneLocator(maxRangeMeters = 3.0).locate(pavementWithAWallOnTheRight(), frame)

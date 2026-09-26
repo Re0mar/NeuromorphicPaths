@@ -74,9 +74,10 @@ used on the frames between, since walls and verges move slowly in the frame.
   also reports the entropy of its belief over headings. `docs/math/push_field.md` explains it,
   including the running heading wobble it measures and why that does not set the turn
   tolerance. `GroundPlaneSceneLocator` turns a scene map into the surfaces the field asks about,
-  by projecting each asked-for ground point back into the frame, and into obstacles for walls,
-  buildings and stairs, by walking the cells where a structure meets the ground, projecting
-  each through the ground plane and keeping one sample per half meter.
+  by projecting each asked-for ground point back into the frame, and into obstacles for walls
+  and buildings, by walking the cells where a structure meets the ground, projecting each
+  through the ground plane and keeping one sample per half meter. Stairs stay on the map and
+  out of the field until the classroom recording says what indoor stairs need.
   `NoGuidanceField` is the straight-ahead stand-in for tests.
 - **Tracking.** `DetectionTracker` in `math` follows a box from frame to frame by overlap and
   gives it a track id. A box the detector misses for a frame or two is carried through at a

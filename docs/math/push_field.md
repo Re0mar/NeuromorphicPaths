@@ -144,9 +144,15 @@ box by its bottom edge. Fifty foot points along one wall are not fifty independe
 and treating them so would make a wall outweigh a person fifty to one. So the points are
 thinned, nearest first, to one per half meter of the same class, half a meter being the
 smallest clearance any class gets, and each surviving point enters the field as an obstacle:
-class WALL, BUILDING or STAIRS, certain, no track, closing at the walker's own speed. A wall
+class WALL or BUILDING, certain, no track, closing at the walker's own speed. A wall
 that runs beside the path for ten meters is then about twenty samples, each with the ordinary
 in-path Gaussian, and the ones near the walker do the pushing.
+
+Stairs are on the map but not in the field for now. On the outdoor recording the stairs were
+the walker's route, and treating them as a hard obstacle put a 12 bit alert on the flight the
+walker was climbing. Whether indoor stairs need a berth, a charge per meter, or nothing waits
+for the classroom recording, and the locator takes the set of classes it places as a
+parameter so that is one line to change.
 
 The ground under a structure is not also charged as a surface. The field asks what the ground
 is at a point, the point projects into a wall cell, and the answer is unknown, which costs

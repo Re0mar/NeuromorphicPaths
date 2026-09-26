@@ -29,10 +29,16 @@ import kotlin.math.hypot
  * obstacles a clearance apart rather than fifty. Each sample becomes an obstacle with the
  * structure's class, full confidence, no track and no closing speed, so the field treats it as
  * a standing thing at the walker's own speed.
+ *
+ * Only the classes in [placedStructures] become obstacles. Stairs are left out by default: on
+ * the outdoor recording the stairs were the walker's route, and a flight of steps read as a
+ * hard obstacle put a 12 bit alert on the thing the walker was climbing. They stay on the map,
+ * so the overlay still shows them, until the classroom recording says what indoor stairs need.
  */
 class GroundPlaneSceneLocator(
     private val sampleSpacingMeters: Double = DEFAULT_SAMPLE_SPACING_METERS,
     private val maxRangeMeters: Double = DEFAULT_MAX_RANGE_METERS,
+    private val placedStructures: Set<ObstacleClass> = DEFAULT_PLACED_STRUCTURES,
 ) : SceneLocator {
 
     init {
@@ -61,6 +67,7 @@ class GroundPlaneSceneLocator(
         for (row in 0 until map.height) {
             for (column in 0 until map.width) {
                 val structure = map.classAt(column, row).structure ?: continue
+                if (structure !in placedStructures) continue
                 val centerX = (column + HALF) * cellWidth
                 val centerY = (row + HALF) * cellHeight
                 for (neighbor in NEIGHBORS) {
@@ -133,6 +140,9 @@ class GroundPlaneSceneLocator(
 
         /** Beyond this a foot point is several cells past where the map can place anything, and the field would not care. */
         const val DEFAULT_MAX_RANGE_METERS = 20.0
+
+        /** Walls and building faces. Stairs wait for the classroom recording, see the class comment. */
+        val DEFAULT_PLACED_STRUCTURES: Set<ObstacleClass> = setOf(ObstacleClass.BUILDING, ObstacleClass.WALL)
 
         private const val HALF = 0.5
         private val NEIGHBORS = listOf(Neighbor(0, 1), Neighbor(0, -1), Neighbor(1, 0), Neighbor(-1, 0))
