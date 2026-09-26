@@ -21,10 +21,10 @@ import kotlin.math.sin
  * is where the sum is lowest.
  *
  * For one obstacle and one candidate heading, four probabilities multiply into the chance of a
- * collision: that the object is in the path, from how far off that line it sits; that contact
- * comes within the class's horizon, from the time to contact; that the object exists at all,
- * the detector's confidence calibrated so a middling score already counts as certain; and that
- * touching it would matter, one minus the class's contact acceptability. The surprise is minus
+ * collision: that the object is in the path (from how far off that line it sits), that contact
+ * comes within the class's horizon (from the time to contact), that the object exists at all
+ * (the detector's confidence, calibrated so a middling score already counts as certain), and
+ * that touching it would matter (one minus the class's contact acceptability). The surprise is minus
  * log2 of the chance of no collision. Independent objects multiply their no-collision chances,
  * so their surprises add exactly.
  *
@@ -121,10 +121,11 @@ class PushFieldGuidance(
         val missMeters = obstacle.rangeMeters * sin(relativeBearing)
         val clearance = profile.clearanceMeters
         val inPath = exp(-(missMeters * missMeters) / (2.0 * clearance * clearance))
-        // A measured closing speed at or below zero means the gap is not shrinking, so contact
-        // never comes. Only an unmeasured one falls back to the walker's own speed.
-        val closingSpeed = obstacle.closingSpeedMetersPerSecond ?: walkerSpeed
-        if (closingSpeed <= 0.0) return 0.0
+        // A measured closing speed may raise the urgency, never lower it. The estimate comes from
+        // a range that moves with every degree of pitch, and on the outdoor walk a fifth of
+        // standing objects read as not closing at all, so a low or negative reading is noise far
+        // more often than a person walking away, and the walker's own speed is the floor.
+        val closingSpeed = max(obstacle.closingSpeedMetersPerSecond ?: walkerSpeed, walkerSpeed)
         val timeToContact = max(alongMeters / closingSpeed, parameters.minimumTimeToContactSeconds)
         val urgency = profile.horizonSeconds / timeToContact
         // The complement of this term is a Gaussian in urgency, so for an object on the line

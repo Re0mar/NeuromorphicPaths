@@ -153,12 +153,17 @@ class PushFieldProbabilityTest {
     }
 
     @Test
-    fun anObjectThatIsNotClosingCannotBeHit() {
-        val walkingAway = obstacleAt(0.0, 2.0, ObstacleClass.PERSON).copy(closingSpeedMetersPerSecond = -0.5)
-        val level = obstacleAt(0.0, 2.0, ObstacleClass.PERSON).copy(closingSpeedMetersPerSecond = 0.0)
+    fun aMeasuredClosingSpeedBelowTheWalkersOwnIsTreatedAsStanding() {
+        // The closing estimate is noisy enough that a low or negative reading is usually a
+        // standing object misread, so it can only make an object more urgent, never less.
+        val standing = obstacleAt(0.0, 2.0, ObstacleClass.PERSON).copy(closingSpeedMetersPerSecond = walkerSpeed)
+        val readAsWalkingAway = standing.copy(closingSpeedMetersPerSecond = -0.5)
+        val readAsSlow = standing.copy(closingSpeedMetersPerSecond = 0.2)
 
-        assertEquals(0.0, field.obstacleSurpriseBits(walkingAway, 0.0, walkerSpeed), 0.0)
-        assertEquals(0.0, field.obstacleSurpriseBits(level, 0.0, walkerSpeed), 0.0)
+        val standingBits = field.obstacleSurpriseBits(standing, 0.0, walkerSpeed)
+        assertEquals(standingBits, field.obstacleSurpriseBits(readAsWalkingAway, 0.0, walkerSpeed), 1e-12)
+        assertEquals(standingBits, field.obstacleSurpriseBits(readAsSlow, 0.0, walkerSpeed), 1e-12)
+        assertTrue(standingBits > 0.0)
     }
 
     @Test

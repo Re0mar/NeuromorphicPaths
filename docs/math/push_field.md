@@ -149,15 +149,18 @@ The field itself has no memory. What it remembers arrives in the obstacles. A tr
 each box from frame to frame by overlap and gives it an id, and a box the detector misses is
 carried through for two frames at a fading confidence, so the "it exists" term shrinks rather
 than dropping to zero and the heading does not flip on one missed detection. The range of a
-track over its last two seconds, fitted with a straight line, gives the closing speed that
-sets τ. A standing object closes at the walker's own speed. A person walking toward the
-walker closes faster and counts for more. A person walking away has a closing speed at or
-below zero, and then contact never comes and the object costs nothing. Fewer than three fresh
-ranges in the window leave the closing speed unknown, and the walker's own speed stands in.
+track over its last two seconds, fitted with a straight line, gives a closing speed. A
+standing object closes at the walker's own speed. A person walking toward the walker closes
+faster and counts for more. Fewer than three fresh ranges in the window leave the closing
+speed unknown, and the walker's own speed stands in.
 
 The range behind that estimate comes from where a box meets the ground, which moves with
-every degree of camera pitch, so the closing speed is a noisy number at two or three frames
-a second. How noisy, on the real walk, is written in the project record beside the replay.
+every degree of camera pitch, so the closing speed is a noisy number at two or three frames a
+second. On the outdoor walk the estimate for things that do not move has a median of 0.63 m/s
+where the walker was doing 1.24, and a fifth of them read as not closing at all. So the
+measured closing speed is only allowed to raise the urgency, never to lower it below the
+walker's own speed. A person walking away therefore still counts as a standing person until
+the estimate is good enough to tell the two apart, which is the safe side to err on.
 
 ## The walker's own speed
 
