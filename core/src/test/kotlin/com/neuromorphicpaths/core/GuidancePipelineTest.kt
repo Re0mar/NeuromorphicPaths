@@ -42,7 +42,7 @@ class GuidancePipelineTest {
     }
 
     private object StraightAheadField : GuidanceField {
-        override fun evaluate(obstacles: List<Obstacle>, walker: WalkerState, timestampNanos: Long): Guidance =
+        override fun evaluate(obstacles: List<Obstacle>, walker: WalkerState, timestampNanos: Long, surfaces: GroundSurfaceMap): Guidance =
             Guidance(0.0, 0.0, obstacles.map { ObstacleSurprise(it, 0.0, Push(0.0, 0.0)) })
     }
 

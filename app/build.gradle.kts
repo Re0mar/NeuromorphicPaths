@@ -15,6 +15,11 @@ android {
         targetSdk = 37
         versionCode = 1
         versionName = "0.1"
+        // The devices this runs on are the Pixel 8 and the x86_64 emulator. ONNX Runtime ships a
+        // 33 MB native library per ABI, so the two 32-bit ABIs nobody carries cost 100 MB of APK.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
     }
 
     buildTypes {

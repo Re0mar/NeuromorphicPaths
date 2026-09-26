@@ -20,3 +20,28 @@ dependencies {
     api(project(":core"))
     testImplementation(libs.junit)
 }
+
+// Tools under the test source set re-run the field over logged replays. They are not tests, so
+// the ordinary test task leaves them out and each has a task of its own that passes the paths in.
+tasks.test {
+    filter {
+        excludeTestsMatching("*Tool")
+    }
+}
+
+tasks.register<Test>("priorSweep") {
+    description = "Re-runs the field over a replay log with several turn priors and scores each against the walker's real turns."
+    group = "tools"
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    filter {
+        includeTestsMatching("*.PriorSweepTool")
+    }
+    outputs.upToDateWhen { false }
+    for (name in listOf("replay.log", "orientation.csv", "out.dir", "video.offset.seconds")) {
+        project.findProperty(name)?.let { systemProperty(name, it) }
+    }
+    testLogging {
+        showStandardStreams = true
+    }
+}

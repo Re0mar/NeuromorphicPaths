@@ -4,12 +4,14 @@ import com.neuromorphicpaths.core.WalkerState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.PI
 import kotlin.math.sin
 
 private const val SECOND_NANOS = 1_000_000_000L
 
+/** The wobble is measured and reported. The tolerance is a parameter and nothing moves it. */
 class PushFieldTurnToleranceTest {
 
     /** Twenty seconds of a walker swaying plus and minus [amplitudeDegrees], at 30 Hz. */
@@ -32,37 +34,24 @@ class PushFieldTurnToleranceTest {
     }
 
     @Test
-    fun byDefaultTheWobbleIsReportedButTheToleranceStaysPut() {
+    fun theWobbleIsReportedAndTheToleranceStaysPut() {
         val field = PushFieldGuidance()
         feedSway(field, amplitudeDegrees = 5.0)
         val guidance = field.evaluate(emptyList(), WalkerState.ALIGNED_WITH_CAMERA, 21 * SECOND_NANOS)
 
-        assertNotNull(guidance.walkerWobbleRadians)
+        val wobble = guidance.walkerWobbleRadians
+        assertNotNull(wobble)
+        assertTrue("a 5 degree sway should read a few degrees of wobble, was ${Math.toDegrees(wobble!!)}", wobble > Math.toRadians(2.0) && wobble < Math.toRadians(5.0))
         assertEquals(Math.toRadians(30.0), guidance.turnToleranceRadians!!, 1e-12)
         assertEquals(Math.toRadians(30.0), field.turnToleranceRadians, 1e-12)
     }
 
     @Test
-    fun whenSwitchedOnTheToleranceIsTheWobbleTimesTheRatio() {
-        val parameters = PushFieldParameters(turnToleranceFromWobble = true, minimumTurnToleranceRadians = Math.toRadians(1.0))
-        val field = PushFieldGuidance(parameters)
-        feedSway(field, amplitudeDegrees = 5.0)
-        val guidance = field.evaluate(emptyList(), WalkerState.ALIGNED_WITH_CAMERA, 21 * SECOND_NANOS)
+    fun aDifferentToleranceIsAParameterAndChangesTheTurnCost() {
+        val narrow = PushFieldGuidance(PushFieldParameters(turnToleranceRadians = Math.toRadians(15.0)))
+        val wide = PushFieldGuidance(PushFieldParameters(turnToleranceRadians = Math.toRadians(45.0)))
 
-        val wobble = guidance.walkerWobbleRadians!!
-        assertEquals(wobble * PushFieldParameters.WELFORD_BAND_Z, guidance.turnToleranceRadians!!, 1e-12)
-    }
-
-    @Test
-    fun theFloorAndTheSearchRangeBoundTheTolerance() {
-        val stiff = PushFieldGuidance(PushFieldParameters(turnToleranceFromWobble = true))
-        feedSway(stiff, amplitudeDegrees = 0.5)
-        val stiffGuidance = stiff.evaluate(emptyList(), WalkerState.ALIGNED_WITH_CAMERA, 21 * SECOND_NANOS)
-        assertEquals(Math.toRadians(5.0), stiffGuidance.turnToleranceRadians!!, 1e-12)
-
-        val loose = PushFieldGuidance(PushFieldParameters(turnToleranceFromWobble = true))
-        feedSway(loose, amplitudeDegrees = 80.0)
-        val looseGuidance = loose.evaluate(emptyList(), WalkerState.ALIGNED_WITH_CAMERA, 21 * SECOND_NANOS)
-        assertEquals(Math.toRadians(60.0), looseGuidance.turnToleranceRadians!!, 1e-12)
+        assertTrue(narrow.turnCostBits(Math.toRadians(20.0)) > wide.turnCostBits(Math.toRadians(20.0)))
+        assertEquals(Math.toRadians(15.0), narrow.evaluate(emptyList(), WalkerState.ALIGNED_WITH_CAMERA, 0L).turnToleranceRadians!!, 1e-12)
     }
 }

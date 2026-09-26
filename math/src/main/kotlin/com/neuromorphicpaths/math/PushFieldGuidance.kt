@@ -1,5 +1,6 @@
 package com.neuromorphicpaths.math
 
+import com.neuromorphicpaths.core.GroundSurfaceMap
 import com.neuromorphicpaths.core.Guidance
 import com.neuromorphicpaths.core.GuidanceField
 import com.neuromorphicpaths.core.Obstacle
@@ -23,17 +24,19 @@ import kotlin.math.sin
  * collision: that the object is in the path, from how far off that line it sits; that contact
  * comes within the class's horizon, from the time to contact; that the object exists at all,
  * the detector's confidence calibrated so a middling score already counts as certain; and that
- * touching it would matter, one minus the class's contact acceptability. The surprise is
- * minus log2 of the chance of no collision. Independent objects multiply their no-collision
- * chances, so their surprises add exactly.
+ * touching it would matter, one minus the class's contact acceptability. The surprise is minus
+ * log2 of the chance of no collision. Independent objects multiply their no-collision chances,
+ * so their surprises add exactly.
  *
  * The turn away from straight ahead has a Gaussian prior, so a turn costs a little on its own
- * and with nothing in view the answer is straight ahead. The cost of a heading is the prior
- * cost plus every object's surprise, and two things come out of the grid of costs. The lowest
- * one is the desired heading. Two to the minus cost, normalized over the grid, is a posterior
- * over headings, and its entropy says how spread the field's belief is: near zero when one
- * heading is clearly best, near log2 of the grid size when every heading is about as good.
- * Picking the heading with the lowest expected surprise is one step of active inference.
+ * and with nothing in view the answer is straight ahead. The ground ahead on a heading costs a
+ * little per meter for each surface the walker prefers not to be on, so grass is crossed to
+ * get away from a wall and left alone otherwise. The cost of a heading is the prior cost plus
+ * every object's surprise plus the surface cost, and two things come out of the grid of costs.
+ * The lowest one is the desired heading. Two to the minus cost, normalized over the grid, is a
+ * posterior over headings, and its entropy says how spread the field's belief is: near zero
+ * when one heading is clearly best, near log2 of the grid size when every heading is about as
+ * good. Picking the heading with the lowest expected surprise is one step of active inference.
  *
  * The overall surprise is the cost at the walker's actual heading minus the cost at the desired
  * heading. It is zero when the walker is already doing the best thing, whatever is in view. It
@@ -56,9 +59,8 @@ class PushFieldGuidance(
     private val wobble: HeadingWobbleEstimator = HeadingWobbleEstimator(),
 ) : GuidanceField {
 
-    /** The tolerance turns are charged against right now. Follows the wobble only when the parameters say so. */
-    var turnToleranceRadians: Double = parameters.turnToleranceRadians
-        private set
+    /** The spread of the prior on the heading, which turns are charged against. Fixed by the parameters. */
+    val turnToleranceRadians: Double = parameters.turnToleranceRadians
 
     // Straight ahead first, then outward in steps, right before left at each step, so a scan
     // that only accepts a strictly lower cost resolves a symmetric scene to the smallest turn,
@@ -73,14 +75,15 @@ class PushFieldGuidance(
         }
     }.toDoubleArray()
 
-    override fun evaluate(obstacles: List<Obstacle>, walker: WalkerState, timestampNanos: Long): Guidance {
+    override fun evaluate(obstacles: List<Obstacle>, walker: WalkerState, timestampNanos: Long, surfaces: GroundSurfaceMap): Guidance {
         walker.azimuthRadians?.let { wobble.add(timestampNanos, it) }
-        turnToleranceRadians = currentTurnTolerance()
-        val speed = walker.speedMetersPerSecond ?: parameters.defaultWalkerSpeedMetersPerSecond
-        val costs = DoubleArray(candidateHeadings.size) { totalCostBits(obstacles, candidateHeadings[it], speed) }
+        // A measured speed is floored so a standing walker still gets a heading on the first step.
+        val speed = walker.speedMetersPerSecond?.coerceAtLeast(parameters.minimumWalkerSpeedMetersPerSecond)
+            ?: parameters.defaultWalkerSpeedMetersPerSecond
+        val costs = DoubleArray(candidateHeadings.size) { totalCostBits(obstacles, candidateHeadings[it], speed, surfaces) }
         val bestIndex = lowestCostIndex(costs)
         val desiredHeading = candidateHeadings[bestIndex]
-        val excess = totalCostBits(obstacles, walker.headingRadians, speed) - costs[bestIndex]
+        val excess = totalCostBits(obstacles, walker.headingRadians, speed, surfaces) - costs[bestIndex]
         val perObstacle = obstacles.map { obstacle ->
             val surprise = obstacleSurpriseBits(obstacle, walker.headingRadians, speed)
             ObstacleSurprise(
@@ -101,13 +104,6 @@ class PushFieldGuidance(
             turnToleranceRadians = turnToleranceRadians,
             headingEntropyBits = posteriorEntropyBits(costs, costs[bestIndex]),
         )
-    }
-
-    private fun currentTurnTolerance(): Double {
-        if (!parameters.turnToleranceFromWobble) return parameters.turnToleranceRadians
-        val measured = wobble.wobbleRadians ?: return parameters.turnToleranceRadians
-        return (measured * parameters.wobbleToToleranceRatio)
-            .coerceIn(parameters.minimumTurnToleranceRadians, parameters.maxHeadingRadians)
     }
 
     /**
@@ -156,8 +152,35 @@ class PushFieldGuidance(
         return HALF * ratio * ratio / LN_2
     }
 
-    fun totalCostBits(obstacles: List<Obstacle>, headingRadians: Double, walkerSpeed: Double): Double =
-        turnCostBits(headingRadians) + obstacles.sumOf { obstacleSurpriseBits(it, headingRadians, walkerSpeed) }
+    /**
+     * What the ground along [headingRadians] costs over the next lookahead, in bits.
+     *
+     * The line is sampled every step out to the distance the walker covers in the lookahead
+     * time, and each step is charged the per-meter cost of the surface it lands on. Ground
+     * nobody has classified costs nothing, so without a segmenter this term is zero everywhere.
+     */
+    fun surfaceCostBits(headingRadians: Double, walkerSpeed: Double, surfaces: GroundSurfaceMap): Double {
+        val lookaheadMeters = walkerSpeed * parameters.surfaceLookaheadSeconds
+        val step = parameters.surfaceStepMeters
+        var cost = 0.0
+        var along = step
+        while (along <= lookaheadMeters) {
+            val surface = surfaces.surfaceAt(along * cos(headingRadians), along * sin(headingRadians))
+            cost += step * parameters.surfaceCostOf(surface)
+            along += step
+        }
+        return cost
+    }
+
+    fun totalCostBits(
+        obstacles: List<Obstacle>,
+        headingRadians: Double,
+        walkerSpeed: Double,
+        surfaces: GroundSurfaceMap = GroundSurfaceMap.UNKNOWN_EVERYWHERE,
+    ): Double =
+        turnCostBits(headingRadians) +
+            obstacles.sumOf { obstacleSurpriseBits(it, headingRadians, walkerSpeed) } +
+            surfaceCostBits(headingRadians, walkerSpeed, surfaces)
 
     /**
      * Entropy of the posterior over candidate headings, in bits.

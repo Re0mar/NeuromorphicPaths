@@ -16,6 +16,7 @@ import com.neuromorphicpaths.core.FrameSource
 import com.neuromorphicpaths.core.GuidancePipeline
 import com.neuromorphicpaths.core.ObstacleDetector
 import com.neuromorphicpaths.core.WalkerState
+import com.neuromorphicpaths.input.AccelerometerCadenceSpeed
 import com.neuromorphicpaths.input.CameraXFrameSource
 import com.neuromorphicpaths.input.GpsGroundSpeed
 import com.neuromorphicpaths.input.Recording
@@ -46,6 +47,7 @@ class MainActivity : ComponentActivity() {
     private val detectorChoice = MutableStateFlow(DetectorChoice.NONE)
     private lateinit var poseProvider: SensorPoseProvider
     private lateinit var groundSpeed: GpsGroundSpeed
+    private lateinit var cadenceSpeed: AccelerometerCadenceSpeed
     private var pipelineJob: Job? = null
     private var activeSource: FrameSource? = null
     private var activeDetector: ObstacleDetector? = null
@@ -72,6 +74,9 @@ class MainActivity : ComponentActivity() {
         poseProvider = SensorPoseProvider(this, heightMeters = AppDefaults.CAMERA_HEIGHT_METERS)
         poseProvider.start()
         groundSpeed = GpsGroundSpeed(this)
+        // Steps need no permission and work indoors, so they are the speed the field uses.
+        cadenceSpeed = AccelerometerCadenceSpeed(this)
+        cadenceSpeed.start()
         val yoloWorldAvailable = OnnxYoloWorldDetector.isAvailable(this)
         // The real detector is the point of the app, so it is the default whenever its model is bundled.
         if (yoloWorldAvailable) detectorChoice.value = DetectorChoice.YOLO_WORLD
@@ -104,6 +109,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         stopPipeline()
+        cadenceSpeed.close()
         groundSpeed.close()
         poseProvider.close()
         screenDisplay.close()
@@ -114,13 +120,14 @@ class MainActivity : ComponentActivity() {
         CameraXFrameSource(this, this, poseProvider, AppDefaults.CAMERA_INTRINSICS)
 
     private fun startRecording(recording: Recording) {
-        Log.i(TAG, "Replaying ${recording.videoUri.lastPathSegment}, logged pose: ${recording.hasLoggedPose}")
+        Log.i(TAG, "Replaying ${recording.videoUri.lastPathSegment}, logged pose: ${recording.hasLoggedPose}, logged speed: ${recording.hasLoggedSpeed}")
         val walker: (Frame) -> WalkerState = { frame ->
+            val positionMillis = frame.timestampNanos / NANOS_PER_MILLI
             WalkerState(
                 headingRadians = 0.0,
-                // A recording has no GPS track yet, so the field keeps its default speed.
-                speedMetersPerSecond = null,
-                azimuthRadians = recording.azimuthForPosition(frame.timestampNanos / NANOS_PER_MILLI),
+                // From the walker's steps in the acceleration log. Null without one, and the field keeps its default.
+                speedMetersPerSecond = recording.speedForPosition(positionMillis),
+                azimuthRadians = recording.azimuthForPosition(positionMillis),
             )
         }
         startPipeline(
@@ -171,11 +178,11 @@ class MainActivity : ComponentActivity() {
         pipelineJob = lifecycleScope.launch { pipeline.run() }
     }
 
-    /** Head forward, with whatever speed and azimuth the live sensors have measured so far. */
+    /** Head forward, with whatever speed and azimuth the live sensors have measured so far. Steps first, GPS as the fallback. */
     @Suppress("UNUSED_PARAMETER")
     private fun liveWalkerState(frame: Frame): WalkerState = WalkerState(
         headingRadians = 0.0,
-        speedMetersPerSecond = groundSpeed.metersPerSecond.value,
+        speedMetersPerSecond = cadenceSpeed.metersPerSecond.value ?: groundSpeed.metersPerSecond.value,
         azimuthRadians = poseProvider.currentAzimuthRadians(),
     )
 

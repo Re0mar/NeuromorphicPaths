@@ -162,6 +162,21 @@ class PushFieldProbabilityTest {
     }
 
     @Test
+    fun aStandingWalkerSeesStandingObjectsFadeButNotAnApproachingPerson() {
+        val stopped = WalkerState(headingRadians = 0.0, speedMetersPerSecond = 0.0)
+        val bin = obstacleAt(0.0, 2.5, ObstacleClass.TRASH_CAN)
+        val approaching = obstacleAt(0.0, 2.5, ObstacleClass.PERSON).copy(closingSpeedMetersPerSecond = 1.4)
+
+        val binAlone = field.evaluate(listOf(bin), stopped, 0L)
+        val personAlone = field.evaluate(listOf(approaching), stopped, 0L)
+
+        // Floored at 0.3 m/s the bin is over eight seconds away, so it is worth almost nothing.
+        assertTrue("bin should fade, was ${binAlone.perObstacle.single().surpriseBits}", binAlone.perObstacle.single().surpriseBits < 0.05)
+        assertTrue("person should still count, was ${personAlone.perObstacle.single().surpriseBits}", personAlone.perObstacle.single().surpriseBits > 0.3)
+        assertTrue("and still steer", personAlone.desiredHeadingRadians != 0.0)
+    }
+
+    @Test
     fun everyObstacleClassHasAProfile() {
         for (obstacleClass in ObstacleClass.entries) {
             val profile = PushFieldParameters().profileOf(obstacleClass)

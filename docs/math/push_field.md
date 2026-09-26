@@ -159,24 +159,53 @@ The range behind that estimate comes from where a box meets the ground, which mo
 every degree of camera pitch, so the closing speed is a noisy number at two or three frames
 a second. How noisy, on the real walk, is written in the project record beside the replay.
 
+## The walker's own speed
+
+The walker's speed comes from their steps. Each step lands as a bump in the accelerometer,
+the bumps are counted, the cadence is one over the mean of the last three step intervals, and
+the speed is cadence times a 0.7 m step, smoothed over a second. No step for a second and a
+half means the walker has stopped, and the speed decays to zero. The field floors a measured
+speed at 0.3 m/s, so a walker standing still is treated as barely moving: a bin 2.5 m away is
+then over eight seconds off and worth almost nothing, while a person walking toward the walker
+keeps their own closing speed and still counts, and the arrow still points somewhere on the
+first step. GPS speed, outdoors and with permission, is kept as a cross-check. Live and replay
+run the same estimator, live off the phone's accelerometer and replay off the recording's
+acceleration log. The 0.7 m step is a constant, and a taller or hurrying walker takes a longer
+one. The GPS cross-check is what would calibrate it.
+
 ## What is not in it yet
 
-The walker's own speed comes from GPS when the app has location permission and is outdoors,
-smoothed over one second, and is 1.4 m/s otherwise. Surfaces, the second half of what each
-class means, wait on region input.
+Nothing produces a surface map yet, so the ground term is written and tested but idle until
+the segmenter lands.
+
+## The ground ahead
+
+Where a segmenter has said what the ground is, each candidate heading is also charged for the
+ground it crosses. The line is sampled every 0.25 m out to the distance the walker covers in
+2 s, and each sample is charged the per-meter cost of the surface it lands on: nothing for
+pavement, 0.1 bits per meter for grass, 0.15 for dirt, 0.6 for a road. Read as a probability,
+each meter of grass is fine with probability 0.93. Ground nobody has classified costs nothing,
+so until a segmenter exists this term is zero everywhere and the field behaves as if it were
+not there.
+
+The effect is a preference, not a rule. A walker with a wall along the pavement's edge crosses
+the grass to get away from it, since a few tenths of a bit of grass are cheaper than the wall's
+berth, and a walker with nothing in the way stays on the pavement, since any turn onto the
+grass costs more than staying put. Given the choice, grass beats a road by a wide margin.
 
 ## The walker's own wobble
 
 The field keeps a running spread of the walker's heading over the ground, from the phone's
 rotation vector, weighted so the last second counts most. That number is shown on screen and
-logged. It is meant to set the prior's spread σ from data, as the wobble times 2.07, which is
-the band that holds 96 percent of a walker's headings.
+logged as a measurement of the walker. It does not set the prior's spread σ, and that was
+decided on the first outdoor recording rather than by argument.
 
-That switch is off. On the first outdoor recording the one-second wobble has a median of 4
-degrees, and it only passes 20 degrees through corners. As a tolerance, 4 degrees times 2.07
-is about 8 degrees, and a 20 degree turn would then cost about 4 bits, against 0.7 bits for an
-obstacle two seconds ahead. The field would hold its line into most things. Something in the
-mapping is off, the window, the ratio, or the idea that sway and tolerance are the same
-quantity, and that is a decision to make with the team rather than by tuning until it looks
-right. The switch is `turnToleranceFromWobble` in the parameters, with a floor of 5 degrees
-and the 60 degree search range as the ceiling.
+The idea was that σ should be the walker's sway times 2.07, the band that holds 96 percent of
+a walker's headings. The one-second sway on that walk has a median of 4 degrees, so that gives
+about 8 degrees. Re-running the field over the logged walk with σ at 8 degrees, it made no
+calls at all and missed the cone the walker swerved around. Fixed values of 15, 20, 30 and 45
+degrees made 15, 36, 59 and 88 calls, of which 4, 6, 12 and 15 agreed with the walker's next
+two seconds, and every mapping from the measured sway with a floor landed between the fixed
+values with more noise. Sway is how much a walker wanders while holding a line. The prior's
+spread is how far they are willing to turn to avoid something. They are different quantities,
+and σ stays a parameter at 30 degrees.

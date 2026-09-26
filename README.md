@@ -50,7 +50,10 @@ with rather than queuing them, so what the walker sees is never older than one d
 - **Input.** `CameraXFrameSource` streams the back camera. `VideoFileFrameSource` steps through a
   recording at a fixed interval, which is how phone and glasses recordings are replayed.
   `SensorPoseProvider` reads camera pitch and azimuth from the rotation vector sensor.
-  `GpsGroundSpeed` smooths the walker's speed from GPS fixes when location permission is granted.
+  `AccelerometerCadenceSpeed` counts the walker's steps off the accelerometer and turns the
+  cadence into a speed, live, and `Recording` does the same from a Sensor Logger
+  `TotalAcceleration.csv` on replay. `GpsGroundSpeed` smooths the speed from GPS fixes when
+  location permission is granted, as the outdoor cross-check.
 - **Model.** `EmptyObstacleDetector` returns nothing. `ScriptedObstacleDetector` returns a fixed
   list every frame, for exercising the display. `OnnxYoloWorldDetector` runs YOLO-World with
   this project's class list through ONNX Runtime. Its model file is not committed. See *The
@@ -60,9 +63,11 @@ with rather than queuing them, so what the walker sees is never older than one d
   the box bottom is cut off it falls back to a typical height per class. `PushFieldGuidance` is
   the push field: per obstacle, the probability of a collision on a candidate heading from
   miss distance, time to contact, detector confidence and what the class is, turned into a
-  surprise and summed over candidate headings, lowest sum wins. It also reports the entropy
-  of its belief over headings. `docs/math/push_field.md` explains it, including the running
-  heading wobble it measures and why that does not yet set the turn tolerance.
+  surprise and summed over candidate headings, lowest sum wins, with a small charge per meter
+  for ground the walker would rather not cross once a segmenter says what the ground is. It
+  also reports the entropy of its belief over headings. `docs/math/push_field.md` explains it,
+  including the running heading wobble it measures and why that does not set the turn
+  tolerance.
   `NoGuidanceField` is the straight-ahead stand-in for tests.
 - **Tracking.** `DetectionTracker` in `math` follows a box from frame to frame by overlap and
   gives it a track id. A box the detector misses for a frame or two is carried through at a
@@ -83,9 +88,10 @@ Open the repository root in Android Studio and run the `app` configuration, or f
 
 The app has two buttons. **Camera** asks for permission and starts the live pipeline. **Open
 recording** picks a folder holding a video and, if Sensor Logger ran beside it, its
-`Orientation.csv`. With the log, replay uses the pitch the camera really had at each frame,
-lined up through the video's own end time and duration, and feeds the logged azimuth to the
-wobble estimate. Without it, replay takes the pose from the live sensor. The detector row picks
+`Orientation.csv` and `TotalAcceleration.csv`. With the logs, replay uses the pitch the camera
+really had at each frame, lined up through the video's own end time and duration, feeds the
+logged azimuth to the wobble estimate, and takes the walker's speed from their steps. Without
+them, replay takes the pose from the live sensor and the field's default speed. The detector row picks
 what runs, YOLO-World by default when its model is bundled, and changing it restarts the source.
 
 To replay from a shell without touching the screen, put the folder in the app's own storage and
@@ -94,9 +100,11 @@ name it in the launch intent:
 ```
 adb push recording.mp4 /data/local/tmp/outdoor1/
 adb push Orientation.csv /data/local/tmp/outdoor1/
+adb push TotalAcceleration.csv /data/local/tmp/outdoor1/
 adb shell run-as com.neuromorphicpaths mkdir -p files/recordings/outdoor1
 adb shell run-as com.neuromorphicpaths cp /data/local/tmp/outdoor1/recording.mp4 files/recordings/outdoor1/
 adb shell run-as com.neuromorphicpaths cp /data/local/tmp/outdoor1/Orientation.csv files/recordings/outdoor1/
+adb shell run-as com.neuromorphicpaths cp /data/local/tmp/outdoor1/TotalAcceleration.csv files/recordings/outdoor1/
 adb shell am start -n com.neuromorphicpaths/.app.MainActivity --es recording outdoor1
 adb logcat -s Guidance:D
 ```
