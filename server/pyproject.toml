@@ -25,9 +25,13 @@ glasses = [
 web = [
     "aiohttp",
 ]
+# No test imports torch, depth_anything_3 or pupil_labs. Every estimator test uses a stub, and the
+# Neon check is a script run by hand. Leaving glasses out keeps those three genuinely absent from
+# the environment the suite runs in, which is the whole reason the layering test exists. web stays
+# because test_web_sink.py starts a real server and connects a client to it.
+# Working on the estimator means installing ".[dev,glasses]".
 dev = [
     "pytest",
-    "nav[glasses]",
     "nav[web]",
 ]
 
