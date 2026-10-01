@@ -56,6 +56,23 @@ class FrameDecodeError(FrameCodecError):
     """What arrived is not a valid frame. The receiving loop drops the frame and carries on."""
 
 
+class StreamClosedError(FrameDecodeError):
+    """The other side went away. Carries how much of the current read was still owed.
+
+    A close with every byte of a message still owed is a clean disconnect between frames. A close
+    part way through is a truncated frame. Both end the stream, and only one is worth a warning.
+    """
+
+    def __init__(self, bytes_unread: int, bytes_wanted: int) -> None:
+        super().__init__(f"stream closed with {bytes_unread} of {bytes_wanted} bytes unread")
+        self.bytes_unread = bytes_unread
+        self.bytes_wanted = bytes_wanted
+
+    @property
+    def at_message_boundary(self) -> bool:
+        return self.bytes_unread == self.bytes_wanted
+
+
 class DepthWireDtype(Enum):
     """How depth is laid out on the wire.
 
@@ -255,7 +272,7 @@ def read_exactly(stream: socket.socket, byte_count: int) -> bytes:
     while remaining > 0:
         chunk = stream.recv(remaining)
         if not chunk:
-            raise FrameDecodeError(f"stream closed with {remaining} of {byte_count} bytes unread")
+            raise StreamClosedError(bytes_unread=remaining, bytes_wanted=byte_count)
         chunks.append(chunk)
         remaining -= len(chunk)
     return b"".join(chunks)

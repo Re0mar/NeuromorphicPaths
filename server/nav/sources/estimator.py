@@ -7,6 +7,7 @@ here and nowhere else. A guard test enforces that the torch import does not spre
 
 # Standard library imports
 import logging
+import os
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -17,10 +18,6 @@ import numpy as np
 from nav.sources.config import EstimatorConfig
 
 log = logging.getLogger(__name__)
-
-# The old script's fallback when the model returns no intrinsics: roughly a 100 degree horizontal
-# field of view, which is about what the Neon's scene camera has.
-FALLBACK_HALF_FIELD_OF_VIEW_DEGREES = 50.0
 
 
 @dataclass(frozen=True)
@@ -42,7 +39,7 @@ class DepthEstimatorProtocol(Protocol):
     def estimate(self, image_rgb: np.ndarray) -> DepthEstimate: ...
 
 
-def fallback_intrinsics(height: int, width: int) -> np.ndarray:
+def fallback_intrinsics(height: int, width: int, half_field_of_view_degrees: float = 50.0) -> np.ndarray:
     """
     Build a pinhole camera matrix from an assumed field of view.
 
@@ -51,10 +48,11 @@ def fallback_intrinsics(height: int, width: int) -> np.ndarray:
 
     :param height: Depth image height in pixels.
     :param width: Depth image width in pixels.
+    :param half_field_of_view_degrees: Half the horizontal field of view to assume.
     :return: A (3, 3) camera matrix.
     :rtype: np.ndarray
     """
-    focal_length = (width / 2.0) / np.tan(np.radians(FALLBACK_HALF_FIELD_OF_VIEW_DEGREES))
+    focal_length = (width / 2.0) / np.tan(np.radians(half_field_of_view_degrees))
     return np.array(
         [
             [focal_length, 0.0, width / 2.0],
@@ -98,14 +96,13 @@ class DepthEstimator:
     """Depth Anything 3, loaded once and run per frame."""
 
     def __init__(self, config: EstimatorConfig) -> None:
-        # Heavy C extension. Deferred so that importing nav.sources costs nothing for a run that
-        # never touches an RGB camera, and so the shared layers can be proved to import without it.
-        import os
-
         # The one environment write in the package, and it is a write rather than a read. The
-        # accelerated downloader is not always present and falls over on partial downloads.
+        # accelerated downloader is not always present and falls over on partial downloads. It has
+        # to happen before the Hugging Face client is imported, which the model import does.
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 
+        # Heavy C extensions. Deferred so that importing nav.sources costs nothing for a run that
+        # never touches an RGB camera, and so the shared layers can be proved to import without them.
         import torch
 
         from depth_anything_3.api import DepthAnything3
@@ -136,12 +133,12 @@ class DepthEstimator:
         if prediction.intrinsics is not None:
             intrinsics = np.asarray(prediction.intrinsics[0], dtype=np.float64)
         else:
-            intrinsics = fallback_intrinsics(*depth_meters.shape)
+            intrinsics = fallback_intrinsics(*depth_meters.shape, self._config.fallback_half_field_of_view_degrees)
             if not self._warned_about_fallback_intrinsics:
                 log.warning(
                     "%s returned no intrinsics, assuming a %.0f degree half field of view",
                     self._config.model_name,
-                    FALLBACK_HALF_FIELD_OF_VIEW_DEGREES,
+                    self._config.fallback_half_field_of_view_degrees,
                 )
                 self._warned_about_fallback_intrinsics = True
 

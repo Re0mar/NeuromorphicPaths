@@ -16,13 +16,14 @@ from pathlib import Path
 # Local package imports
 from conftest import MINIMUM_FILE_COUNT, NAV_ROOT
 
-# Top-level package name to the one file in nav/ allowed to import it, written as a path relative
-# to nav/. Anything else importing one of these is the defect.
-ALLOWED_IMPORTER = {
-    "torch": Path("sources/estimator.py"),
-    "depth_anything_3": Path("sources/estimator.py"),
-    "pupil_labs": Path("sources/neon_live.py"),
-    "aiohttp": Path("sinks/web.py"),
+# Top-level package name to the files in nav/ allowed to import it, as paths relative to nav/.
+# Anything else importing one of these is the defect.
+ALLOWED_IMPORTERS = {
+    "torch": {Path("sources/estimator.py")},
+    "depth_anything_3": {Path("sources/estimator.py")},
+    # The live client and the recording reader are one distribution with two entry points.
+    "pupil_labs": {Path("sources/neon_live.py"), Path("sources/neon_plugin.py")},
+    "aiohttp": {Path("sinks/web.py")},
 }
 
 # The kind enums are the command line's vocabulary. Past config.py the pipeline holds built
@@ -61,9 +62,10 @@ def test_optional_packages_are_imported_in_one_file_each() -> None:
         relative = path.relative_to(NAV_ROOT)
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for package, line in _top_level_imports(tree):
-            allowed = ALLOWED_IMPORTER.get(package)
-            if allowed is not None and relative != allowed:
-                offenders.append(f"{relative}:{line} imports {package}, allowed only in {allowed}")
+            allowed = ALLOWED_IMPORTERS.get(package)
+            if allowed is not None and relative not in allowed:
+                names = ", ".join(str(path) for path in sorted(allowed))
+                offenders.append(f"{relative}:{line} imports {package}, allowed only in {names}")
     assert offenders == [], "\n".join(offenders)
 
 

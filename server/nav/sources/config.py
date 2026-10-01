@@ -7,6 +7,7 @@ a layer reading one it did not expect is reading a mistake rather than a stale d
 
 # Standard library imports
 from dataclasses import dataclass
+from enum import Enum
 
 
 @dataclass(frozen=True)
@@ -32,9 +33,29 @@ class NeonConfig:
 
 @dataclass(frozen=True)
 class ArCoreConfig:
-    """The port the laptop listens on for the Pixel app's depth frames."""
+    """The socket the laptop listens on for the Pixel app's depth frames."""
 
     port: int = 9000
+    bind_address: str = "0.0.0.0"  # Every interface, so the phone reaches it over the hotspot.
+    accept_timeout_seconds: float = 30.0  # Long enough to launch the app, short enough to notice it never came.
+
+
+class NeonPluginModel(Enum):
+    """The models the Neon Player depth plugin offers, spelled as it spells its cache file names."""
+
+    METRIC_LARGE = "DA3Metric-Large"
+    SMALL = "DA3-Small"
+    BASE = "DA3-Base"
+
+    @property
+    def is_metric(self) -> bool:
+        # Only the metric model's values are meters. The others cache relative inverse depth that
+        # the plugin scales to 0 to 255 for display, which the planner cannot use for clearance.
+        return self is NeonPluginModel.METRIC_LARGE
+
+    @property
+    def cache_stem(self) -> str:
+        return self.value.replace(" ", "_")
 
 
 @dataclass(frozen=True)
@@ -42,6 +63,8 @@ class NeonPluginConfig:
     """A Neon recording folder that the Neon Player depth plugin has already run over."""
 
     recording_dir: str
+    model: NeonPluginModel = NeonPluginModel.METRIC_LARGE
+    sample_tolerance_seconds: float = 0.05  # How far an IMU or gaze sample may sit from a scene frame.
 
 
 @dataclass(frozen=True)
@@ -61,6 +84,10 @@ class EstimatorConfig:
     model_name: str = "depth-anything/DA3METRIC-LARGE"
     process_resolution: int = 504  # The old file's --res default. Lower is faster.
     confidence_drop_percentile: float = 30.0  # The old file's conf_pct. Drops the least certain pixels.
+    # Used only when the model returns no intrinsics, which the metric model does for a plain video.
+    # The old file assumed about 100 degrees horizontal. A phone camera is nearer 75, so a run on
+    # phone footage should set this to match, or the cloud is stretched sideways.
+    fallback_half_field_of_view_degrees: float = 50.0
 
 
 @dataclass(frozen=True)

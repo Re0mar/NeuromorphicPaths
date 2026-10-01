@@ -1,5 +1,12 @@
 """The entry point named by pyproject's console script and by python -m nav."""
 
+# Standard library imports
+import logging
+
+# Local package imports
+from nav.config import build_run_config
+from nav.runtime.loop import run
+
 
 def main(argv: list[str] | None = None) -> int:
     """
@@ -9,6 +16,13 @@ def main(argv: list[str] | None = None) -> int:
     :return: Process exit code.
     :rtype: int
     """
-    # Stubbed the same way the factory arms in config.py are, so the entry points pyproject
-    # declares resolve to something that says where the body is rather than to nothing at all.
-    raise NotImplementedError("the frame loop and entry point land in STEP_09")
+    config = build_run_config(argv)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    # --verbose is about this pipeline's per-stage timings and floor fits. Setting the root to
+    # DEBUG instead drowns them in every HTTP library's request headers during the model download.
+    logging.getLogger("nav").setLevel(logging.DEBUG if config.verbose else logging.INFO)
+    return run(config)

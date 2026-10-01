@@ -24,6 +24,7 @@ class PlannerConfig:
     time_step_seconds: float = 0.1  # His dt.
     horizon_seconds: float = 3.8  # His horizon.
     clearance_epsilon_meters: float = 0.06  # His epsilon, the floor under S.
+    noise_epsilon_meters: float = 1.0e-6  # His numeric floor under N, so a zero N is a zero surprise, not a NaN.
     lateral_kinetic_weight: float = 0.055  # His weight on the lateral kinetic term.
     surprise_cap: float = 2.0e4  # His cap on a single point's surprise.
     walking_speed_mps: float = 1.4  # Ours. Average walking pace, against his 5.0 for a cyclist.

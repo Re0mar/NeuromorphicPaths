@@ -41,6 +41,10 @@ class VideoFileRgbSource:
             raise FileNotFoundError(f"no video file at {self._path_or_url}")
 
         capture = cv2.VideoCapture(self._path_or_url)
+        # A phone held upright writes landscape frames with a rotation tag. Without this OpenCV
+        # hands them over sideways, the floor's normal points along the camera's x axis, and the
+        # floor fit rejects every frame as too tilted. Found on the first outdoor recording.
+        capture.set(cv2.CAP_PROP_ORIENTATION_AUTO, 1)
         if not capture.isOpened():
             capture.release()
             if is_url:

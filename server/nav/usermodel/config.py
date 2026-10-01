@@ -8,5 +8,5 @@ from dataclasses import dataclass
 class UserModelConfig:
     """How the walker's turning is modeled."""
 
-    seconds_per_bit: float = 0.25  # Placeholder until a walker is actually measured. See BUG-004.
+    seconds_per_bit: float = 0.25  # Placeholder until a walker is actually measured.
     heading_tolerance_radians: float = 0.05  # About three degrees. Inside this, a turn is finished.

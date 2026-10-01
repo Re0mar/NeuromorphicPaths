@@ -20,6 +20,9 @@ dependencies = [
 glasses = [
     "torch",
     "depth-anything-3",
+    # depth-anything-3 0.1.1 imports addict in its model module and does not declare it, so a
+    # clean install fails on the first model load. Declared here until their wheel does.
+    "addict",
     "pupil-labs-realtime-api",
 ]
 web = [

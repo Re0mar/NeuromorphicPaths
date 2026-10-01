@@ -27,6 +27,10 @@ class SceneConfig:
     noise_window_seconds: float = 0.5  # Half a second of history is what N is measured over.
     min_history_samples: int = 3  # Below this a standard deviation says nothing.
     noise_floor_meters: float = 0.01  # N never goes below this, or surprise divides by almost zero.
+    floor_candidate_min_below_camera_meters: float = 0.5  # Old file: only points this far below the camera vote for floor.
+    floor_min_candidate_points: int = 200  # Old file: fewer candidates than this and the previous plane is kept.
+    floor_ransac_distance_meters: float = 0.05  # Old file's RANSAC inlier distance.
+    floor_ransac_iterations: int = 300  # Old file's RANSAC iteration count.
     floor_max_tilt_degrees: float = 35.0  # Old file's floor sanity check.
     floor_min_offset_meters: float = 0.3  # Old file's floor sanity check.
     wall_cell_min_height_meters: float = 1.5  # A cell with points this tall is treated as a wall.

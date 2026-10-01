@@ -20,19 +20,26 @@ from pathlib import Path
 from nav.planner.config import GoalMode, PlannerConfig
 from nav.runtime.tap import RecordingTap
 from nav.scene.config import SceneConfig
-from nav.sinks.config import PhoneAppConfig, WebConfig
+from nav.sinks.config import DebugWindowConfig, PhoneAppConfig, WebConfig
+from nav.sinks.debug_window import DebugWindowSink
+from nav.sinks.none import NullSink
+from nav.sinks.phone_app import PhoneAppSink
+from nav.sinks.web import WebSink
+from nav.sources.arcore_tcp import ArCoreTcpSource
 from nav.sources.config import (
     ArCoreConfig,
     EstimatorConfig,
     LoggedConfig,
     NeonConfig,
     NeonPluginConfig,
+    NeonPluginModel,
     TapConfig,
     VideoConfig,
 )
 from nav.sources.estimated_depth import EstimatedDepthSource
 from nav.sources.estimator import DepthEstimator, DepthEstimatorProtocol
 from nav.sources.logged import LoggedDepthFrameSource
+from nav.sources.neon_plugin import NativeNeonRecordingReader, NeonPluginDepthFrameSource
 from nav.sources.rgb import RgbSource
 from nav.sources.video_file import VideoFileRgbSource
 from nav.types import DepthFrameSource, PathSink
@@ -84,6 +91,7 @@ class RunConfig:
     estimator: EstimatorConfig | None = None
     web: WebConfig | None = None
     phone_app: PhoneAppConfig | None = None
+    debug_window: DebugWindowConfig = field(default_factory=DebugWindowConfig)
     reconnect: bool = False
     realtime_replay: bool = False
     verbose: bool = False
@@ -155,6 +163,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     neon_plugin = parser.add_argument_group("neon_plugin source")
     neon_plugin.add_argument("--recording-dir", help="a Neon recording the depth plugin has run over")
+    neon_plugin.add_argument(
+        "--plugin-model",
+        choices=[model.value for model in NeonPluginModel],
+        default=NeonPluginModel.METRIC_LARGE.value,
+        help="which model's cache to read. Only the metric one gives meters",
+    )
 
     logged = parser.add_argument_group("logged source")
     logged.add_argument("--log-dir", help="a frame log written by --record-to")
@@ -165,9 +179,23 @@ def build_parser() -> argparse.ArgumentParser:
     estimator.add_argument("--model", default=EstimatorConfig.model_name, help="Depth Anything 3 checkpoint")
     estimator.add_argument("--process-resolution", type=_positive_int, default=504)
     estimator.add_argument("--confidence-drop-percentile", type=_percentile, default=30.0)
+    estimator.add_argument(
+        "--fallback-fov",
+        type=_positive_float,
+        default=2 * EstimatorConfig.fallback_half_field_of_view_degrees,
+        help="horizontal field of view in degrees, used when the model returns no intrinsics. A phone is about 75",
+    )
 
     tap = parser.add_argument_group("recording tap")
     tap.add_argument("--record-to", help="write every frame to this directory as it passes")
+
+    scene = parser.add_argument_group("scene")
+    scene.add_argument(
+        "--floor-max-tilt",
+        type=_positive_float,
+        default=SceneConfig.floor_max_tilt_degrees,
+        help="degrees from camera up a fitted floor may lean before it is rejected. Head-mounted 35, a hand-held phone pointed down needs more",
+    )
 
     walker = parser.add_argument_group("walker")
     walker.add_argument("--walker-radius", type=_positive_float, default=0.35, help="footprint radius in meters")
@@ -221,7 +249,10 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
             arcore = ArCoreConfig(port=arguments.arcore_port)
         case SourceKind.NEON_PLUGIN:
             _require(parser, arguments.recording_dir, "--recording-dir", source_kind)
-            neon_plugin = NeonPluginConfig(recording_dir=arguments.recording_dir)
+            neon_plugin = NeonPluginConfig(
+                recording_dir=arguments.recording_dir,
+                model=NeonPluginModel(arguments.plugin_model),
+            )
         case SourceKind.LOGGED:
             _require(parser, arguments.log_dir, "--log-dir", source_kind)
             logged = LoggedConfig(log_dir=arguments.log_dir)
@@ -230,12 +261,17 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
             # forgetting this function fails loudly instead of leaving every config None.
             raise ValueError(f"no argument handling for {source_kind}")
 
+    # The loop acts on the flag alone and never names a kind, so the kind check lives here.
+    if arguments.reconnect and source_kind is not SourceKind.ARCORE_TCP:
+        parser.error(f"--reconnect only applies to {SourceKind.ARCORE_TCP.value}, not {source_kind.value}")
+
     estimator = None
     if source_kind in ESTIMATOR_BACKED_SOURCES:
         estimator = EstimatorConfig(
             model_name=arguments.model,
             process_resolution=arguments.process_resolution,
             confidence_drop_percentile=arguments.confidence_drop_percentile,
+            fallback_half_field_of_view_degrees=arguments.fallback_fov / 2.0,
         )
 
     web = None
@@ -256,6 +292,7 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
         source_kind=source_kind,
         sink_kind=sink_kind,
         goal_mode=goal_mode,
+        scene=SceneConfig(floor_max_tilt_degrees=arguments.floor_max_tilt),
         walker=WalkerConfig(radius_meters=arguments.walker_radius),
         tap=TapConfig(log_dir=arguments.record_to),
         video=video,
@@ -328,9 +365,13 @@ def _build_inner_source(config: RunConfig) -> DepthFrameSource:
                 raise ValueError("logged needs a logged config and none was built")
             return LoggedDepthFrameSource(Path(config.logged.log_dir), realtime=config.realtime_replay)
         case SourceKind.ARCORE_TCP:
-            raise NotImplementedError("arcore_tcp source lands in STEP_04")
+            if config.arcore is None:
+                raise ValueError("arcore_tcp needs an arcore config and none was built")
+            return ArCoreTcpSource(config.arcore)
         case SourceKind.NEON_PLUGIN:
-            raise NotImplementedError("neon_plugin source lands in STEP_04")
+            if config.neon_plugin is None:
+                raise ValueError("neon_plugin needs a neon_plugin config and none was built")
+            return NeonPluginDepthFrameSource(config.neon_plugin, reader_factory=NativeNeonRecordingReader)
         case _:
             # Every member must be handled above. A missing case is a bug, not a reason to guess
             # at a source, and guessing is what the old script's hardware detection did.
@@ -347,13 +388,17 @@ def build_sink(config: RunConfig) -> PathSink:
     """
     match config.sink_kind:
         case SinkKind.DEBUG_WINDOW:
-            raise NotImplementedError("debug_window sink lands in STEP_08")
+            return DebugWindowSink(config.debug_window)
         case SinkKind.WEB:
-            raise NotImplementedError("web sink lands in STEP_08")
+            if config.web is None:
+                raise ValueError("web needs a web config and none was built")
+            return WebSink(config.web)
         case SinkKind.PHONE_APP:
-            raise NotImplementedError("phone_app sink lands in STEP_08")
+            if config.phone_app is None:
+                raise ValueError("phone_app needs a phone_app config and none was built")
+            return PhoneAppSink(config.phone_app)
         case SinkKind.NONE:
-            raise NotImplementedError("none sink lands in STEP_08")
+            return NullSink()
         case _:
             raise ValueError(f"no sink constructor for {config.sink_kind}")
 

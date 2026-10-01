@@ -22,8 +22,18 @@ from nav.config import (
     build_sink,
     build_source,
 )
-from nav.sources.config import EstimatorConfig, LoggedConfig, NeonConfig, TapConfig, VideoConfig
+from nav.sources.config import (
+    ArCoreConfig,
+    EstimatorConfig,
+    LoggedConfig,
+    NeonConfig,
+    NeonPluginConfig,
+    TapConfig,
+    VideoConfig,
+)
 from nav.runtime.tap import RecordingTap
+from nav.scene.config import SceneConfig
+from nav.sinks.config import PhoneAppConfig, WebConfig
 from nav.types import DepthFrame, PlannedPath, Pose
 
 from stubs import StubDepthEstimator
@@ -105,15 +115,15 @@ def test_unknown_kind_is_refused(argv: list[str]) -> None:
         build_run_config(argv)
 
 
-# Sources that are built for real, and the configs each one needs to be built from. The rest are
-# still stubs naming the step that fills them. Keeping both lists here, rather than only testing
-# what works, is what makes the completeness check below possible.
+# Every source kind and the config it needs. Having the full set in one table is what makes the
+# completeness check below possible.
 BUILT_SOURCE_KINDS = {
     SourceKind.VIDEO_FILE: {"video": VideoConfig(path="scene.mp4")},
     SourceKind.NEON_LIVE: {"neon": NeonConfig()},
     SourceKind.LOGGED: {"logged": LoggedConfig(log_dir="a_log")},
+    SourceKind.ARCORE_TCP: {"arcore": ArCoreConfig(port=0)},
+    SourceKind.NEON_PLUGIN: {"neon_plugin": NeonPluginConfig(recording_dir="a_recording")},
 }
-PENDING_SOURCE_KINDS = {SourceKind.ARCORE_TCP, SourceKind.NEON_PLUGIN}
 
 
 def _run_config_for(source_kind: SourceKind) -> RunConfig:
@@ -129,10 +139,9 @@ def _run_config_for(source_kind: SourceKind) -> RunConfig:
 
 
 def test_every_source_kind_is_accounted_for() -> None:
-    # The point of the two lists. A new member that nobody classified fails here rather than
-    # slipping past both tests below by being in neither.
-    assert set(BUILT_SOURCE_KINDS) | PENDING_SOURCE_KINDS == set(SourceKind)
-    assert not set(BUILT_SOURCE_KINDS) & PENDING_SOURCE_KINDS
+    # A new member that nobody wired fails here rather than slipping past the test below by
+    # not being in the table.
+    assert set(BUILT_SOURCE_KINDS) == set(SourceKind)
 
 
 @pytest.mark.parametrize("source_kind", sorted(BUILT_SOURCE_KINDS, key=lambda kind: kind.value))
@@ -142,17 +151,6 @@ def test_built_source_kinds_return_a_source(source_kind: SourceKind) -> None:
     # Constructing must not touch the device or the file. Both open lazily inside frames().
     assert hasattr(source, "frames")
     assert hasattr(source, "close")
-
-
-@pytest.mark.parametrize("source_kind", sorted(PENDING_SOURCE_KINDS, key=lambda kind: kind.value))
-def test_pending_source_kinds_name_their_step(source_kind: SourceKind) -> None:
-    config = RunConfig(source_kind=source_kind, sink_kind=SinkKind.NONE, goal_mode=GoalMode.AHEAD)
-
-    # NotImplementedError means the arm exists and names the step that fills it. ValueError would
-    # mean the member fell through to the catch-all, which is the failure this is watching for.
-    with pytest.raises(NotImplementedError):
-        build_source(config)
-
 
 
 def test_the_tap_wraps_whatever_source_was_built(tmp_path) -> None:
@@ -200,21 +198,64 @@ def test_estimator_backed_source_refuses_a_missing_estimator_config() -> None:
         build_source(config)
 
 
-@pytest.mark.parametrize("sink_kind", list(SinkKind))
-def test_every_sink_kind_reaches_an_arm(sink_kind: SinkKind) -> None:
-    config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kind=sink_kind, goal_mode=GoalMode.AHEAD)
+BUILT_SINK_KINDS = {
+    SinkKind.NONE: {},
+    SinkKind.DEBUG_WINDOW: {},
+    SinkKind.WEB: {"web": WebConfig(port=0)},
+    SinkKind.PHONE_APP: {"phone_app": PhoneAppConfig(address="127.0.0.1", port=1)},
+}
 
-    with pytest.raises(NotImplementedError):
+
+def test_every_sink_kind_is_accounted_for() -> None:
+    assert set(BUILT_SINK_KINDS) == set(SinkKind)
+
+
+@pytest.mark.parametrize("sink_kind", sorted(BUILT_SINK_KINDS, key=lambda kind: kind.value))
+def test_built_sink_kinds_return_a_sink_without_opening_anything(sink_kind: SinkKind) -> None:
+    config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kind=sink_kind, goal_mode=GoalMode.AHEAD, **BUILT_SINK_KINDS[sink_kind])
+
+    sink = build_sink(config)
+
+    # Construction must not open a window, bind a port or connect to a phone. All of that happens
+    # on the first publish, so this test runs with no display and nothing listening on port 1.
+    assert hasattr(sink, "publish")
+    assert hasattr(sink, "close")
+    sink.close()
+
+
+def test_a_built_sink_refuses_a_missing_config() -> None:
+    config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kind=SinkKind.PHONE_APP, goal_mode=GoalMode.AHEAD)
+
+    with pytest.raises(ValueError, match="phone_app needs"):
         build_sink(config)
 
 
 
 def test_default_checkpoint_is_a_metric_one() -> None:
-    # BUG-003. The old script defaulted to DA3NESTED-GIANT-LARGE, which returns relative depth,
-    # so every clearance in meters was wrong by an unknown scale and the file carried a
-    # cam_height rescale to paper over it. Asserts the property rather than the exact name, so a
-    # version bump passes and a swap back to a relative checkpoint does not.
+    # The old script defaulted to DA3NESTED-GIANT-LARGE, which returns relative depth, so every
+    # clearance in meters was wrong by an unknown scale and the file carried a cam_height rescale
+    # to paper over it. Asserts the property rather than the exact name, so a version bump passes
+    # and a swap back to a relative checkpoint does not.
     assert "METRIC" in EstimatorConfig.model_name.upper()
+
+def test_the_floor_tilt_and_fallback_fov_flags_reach_their_layers() -> None:
+    # The first real recording was refused frame after frame by the floor gate the glasses
+    # script shipped with, and the cloud was stretched by its 100 degree fallback field of view.
+    # A tuning run has to reach both without editing code.
+    config = build_run_config([*MINIMAL_VIDEO_ARGV, "--floor-max-tilt", "65", "--fallback-fov", "75"])
+
+    assert config.scene.floor_max_tilt_degrees == pytest.approx(65.0)
+    assert config.estimator is not None
+    assert config.estimator.fallback_half_field_of_view_degrees == pytest.approx(37.5)
+
+
+def test_the_floor_tilt_and_fallback_fov_defaults_match_their_configs() -> None:
+    config = build_run_config(MINIMAL_VIDEO_ARGV)
+
+    assert config.scene.floor_max_tilt_degrees == SceneConfig.floor_max_tilt_degrees
+    assert config.estimator is not None
+    assert config.estimator.fallback_half_field_of_view_degrees == EstimatorConfig.fallback_half_field_of_view_degrees
+
 
 def test_neon_without_an_address_is_left_to_discovery() -> None:
     # Omitting the address is the normal case, not a missing argument. The source discovers the

@@ -12,7 +12,7 @@ import added here reaches all of them.
 # Standard library imports
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 # Third party imports
 import numpy as np
@@ -139,6 +139,7 @@ class PathSink(Protocol):
     def close(self) -> None: ...
 
 
+@runtime_checkable
 class DebugSink(PathSink, Protocol):
     """A sink that can also draw the surprise field.
 
@@ -146,4 +147,4 @@ class DebugSink(PathSink, Protocol):
     only go somewhere local. A phone over TCP and a browser over a websocket get the path alone.
     """
 
-    def publish_debug(self, path: PlannedPath, field: np.ndarray) -> None: ...
+    def publish_debug(self, path: PlannedPath, field: np.ndarray, grid: np.ndarray) -> None: ...
