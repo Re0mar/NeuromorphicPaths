@@ -59,7 +59,18 @@ class Cfg:
 # --------------------------------------------------------------------------- depth model
 class DepthModel:
     def __init__(self, name: str, res: int):
+        import os
         import torch
+
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+        try:
+            import huggingface_hub.utils as hf_utils
+            hf_utils.logging.set_verbosity_info()
+            if hasattr(hf_utils, "enable_progress_bars"):
+                hf_utils.enable_progress_bars()
+        except ImportError:
+            pass
+
         from depth_anything_3.api import DepthAnything3
 
         self.torch, self.res = torch, res
@@ -68,8 +79,11 @@ class DepthModel:
             else "mps" if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()
             else "cpu"
         )
-        print(f"Loading {name} on {dev}...")
+        print(f"Loading/downloading {name} on {dev}...")
         self.model = DepthAnything3.from_pretrained(name).to(dev)
+        print(f"Model {name} loaded successfully.")
+
+
 
     def infer(self, rgb):
         """Returns depth (H, W), intrinsics K (3, 3) at that depth resolution, conf (H, W) or None."""
@@ -217,7 +231,7 @@ class NavPipeline:
     def __init__(self, depth_model, cfg: Cfg):
         self.depth, self.cfg = depth_model, cfg
         self.plane = (UP_CAM.copy(), cfg.cam_height or 1.6)
-        self.vec = np.array([0.0, 1.0])  # smoothed (sin theta, cos theta)
+        self.vec = np.array([0.0, 1.0])
 
     def step(self, bgr, gaze=None):
         cfg = self.cfg
