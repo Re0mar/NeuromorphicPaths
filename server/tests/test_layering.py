@@ -17,7 +17,18 @@ import sys
 # estimator, pupil_labs to the Neon source, aiohttp to the web sink.
 BLOCKED_PACKAGES = ("torch", "depth_anything_3", "pupil_labs", "aiohttp")
 
-SHARED_LAYERS = ("nav.types", "nav.config", "nav.scene", "nav.planner", "nav.usermodel")
+SHARED_LAYERS = (
+    "nav.types",
+    "nav.config",
+    "nav.scene",
+    "nav.planner",
+    "nav.usermodel",
+    "nav.walker",
+    # The composed source and the estimator module itself. Both must import with torch gone,
+    # because the torch import is inside DepthEstimator.__init__ and nothing else may need it.
+    "nav.sources.estimated_depth",
+    "nav.sources.estimator",
+)
 
 
 def test_shared_layers_import_without_device_packages() -> None:

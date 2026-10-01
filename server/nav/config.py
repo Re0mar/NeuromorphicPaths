@@ -16,7 +16,25 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 # Local package imports
+from nav.planner.config import GoalMode, PlannerConfig
+from nav.scene.config import SceneConfig
+from nav.sinks.config import PhoneAppConfig, WebConfig
+from nav.sources.config import (
+    ArCoreConfig,
+    EstimatorConfig,
+    LoggedConfig,
+    NeonConfig,
+    NeonPluginConfig,
+    TapConfig,
+    VideoConfig,
+)
+from nav.sources.estimated_depth import EstimatedDepthSource
+from nav.sources.estimator import DepthEstimator, DepthEstimatorProtocol
+from nav.sources.rgb import RgbSource
+from nav.sources.video_file import VideoFileRgbSource
 from nav.types import DepthFrameSource, PathSink
+from nav.usermodel.config import UserModelConfig
+from nav.walker import WalkerConfig
 
 
 class SourceKind(Enum):
@@ -38,142 +56,9 @@ class SinkKind(Enum):
     NONE = "none"
 
 
-class GoalMode(Enum):
-    """What the planner aims at when nothing is in the way."""
-
-    AHEAD = "ahead"
-    GAZE = "gaze"
-
-
 # These two sources carry RGB only, so they need the depth estimator composed in behind them.
 # The other three already deliver depth, so asking them for a model name would be meaningless.
 ESTIMATOR_BACKED_SOURCES = frozenset({SourceKind.VIDEO_FILE, SourceKind.NEON_LIVE})
-
-
-@dataclass(frozen=True)
-class VideoConfig:
-    """A recording on disk, or an IP camera app's stream URL. OpenCV opens both the same way."""
-
-    path: str
-
-
-@dataclass(frozen=True)
-class NeonConfig:
-    """A Pupil Labs Neon on the network. The address was a constant in the old script."""
-
-    address: str
-    port: int = 8080  # The Neon real-time API's documented default.
-
-
-@dataclass(frozen=True)
-class ArCoreConfig:
-    """The port the laptop listens on for the Pixel app's depth frames."""
-
-    port: int = 9000
-
-
-@dataclass(frozen=True)
-class NeonPluginConfig:
-    """A Neon recording folder that the Neon Player depth plugin has already run over."""
-
-    recording_dir: str
-
-
-@dataclass(frozen=True)
-class LoggedConfig:
-    """A frame log written by the recording tap on an earlier run."""
-
-    log_dir: str
-
-
-@dataclass(frozen=True)
-class EstimatorConfig:
-    """The depth estimator. model_name has no default until the metric checkpoint is verified."""
-
-    model_name: str
-    process_resolution: int = 504  # The old file's --res default. Lower is faster.
-    confidence_drop_percentile: float = 30.0  # The old file's conf_pct. Drops the least certain pixels.
-
-
-@dataclass(frozen=True)
-class SceneConfig:
-    """Depth pixels to grouped ground obstacles. Defaults from the old file where it had one."""
-
-    depth_stride: int = 2  # Old file's stride.
-    voxel_size_meters: float = 0.05  # Old file's voxel.
-    ankle_height_meters: float = 0.20  # Old file's h_min. Below this is floor, not obstacle.
-    head_height_meters: float = 2.00  # Old file's h_max. Above this the walker passes under it.
-    cell_size_meters: float = 0.25  # Coarser than the old file's 0.10 grid, because a cell is now one obstacle.
-    grid_half_width_meters: float = 3.0  # Old file's x_half.
-    grid_forward_meters: float = 6.0  # Old file's z_max.
-    min_points_per_cell: int = 2  # One point is as likely to be depth noise as an object.
-    noise_window_seconds: float = 0.5  # Half a second of history is what N is measured over.
-    min_history_samples: int = 3  # Below this a standard deviation says nothing.
-    noise_floor_meters: float = 0.01  # N never goes below this, or surprise divides by almost zero.
-    floor_max_tilt_degrees: float = 35.0  # Old file's floor sanity check.
-    floor_min_offset_meters: float = 0.3  # Old file's floor sanity check.
-    wall_cell_min_height_meters: float = 1.5  # A cell with points this tall is treated as a wall.
-
-
-@dataclass(frozen=True)
-class PlannerConfig:
-    """The surprise field and the dynamic program over it.
-
-    Four of these are the professor's values from the lecture and the paper, and are marked. The
-    rest are walking values we chose and expect to tune once there are real recordings.
-    """
-
-    time_step_seconds: float = 0.1  # His dt.
-    horizon_seconds: float = 3.8  # His horizon.
-    clearance_epsilon_meters: float = 0.06  # His epsilon, the floor under S.
-    lateral_kinetic_weight: float = 0.055  # His weight on the lateral kinetic term.
-    surprise_cap: float = 2.0e4  # His cap on a single point's surprise.
-    walking_speed_mps: float = 1.4  # Ours. Average walking pace, against his 5.0 for a cyclist.
-    grid_half_width_meters: float = 3.0  # Ours. Matches the scene grid.
-    grid_spacing_meters: float = 0.1  # Ours.
-    max_lateral_speed_mps: float = 1.0  # Ours. How fast a walker can sidestep.
-    wall_noise_multiplier: float = 3.0  # Ours. A wall is worth avoiding further out than a post.
-    predict_motion: bool = False  # Off until the scene's group velocities are trusted.
-    alarm_time_to_contact_seconds: float = 1.0  # Under a second to contact turns the display red.
-    goal_distance_meters: float = 4.0  # Old file's goal_dist.
-    goal_tolerance_meters: float = 1.5  # Half the corridor width, so the goal term picks among safe paths.
-
-
-@dataclass(frozen=True)
-class UserModelConfig:
-    """How the walker is modeled. Measures only, never steers."""
-
-    seconds_per_bit: float = 0.25  # Placeholder until a walker is actually measured. See BUG-004.
-    heading_tolerance_radians: float = 0.05  # About three degrees. Inside this, a turn is finished.
-
-
-@dataclass(frozen=True)
-class WalkerConfig:
-    """The walker's footprint. The one home of the radius, read by the scene and the planner."""
-
-    radius_meters: float = 0.35  # Shoulder half-width plus a margin.
-
-
-@dataclass(frozen=True)
-class TapConfig:
-    """The recording tap. log_dir None means frames are not written."""
-
-    log_dir: str | None = None
-
-
-@dataclass(frozen=True)
-class WebConfig:
-    """The websocket server the browser page connects to."""
-
-    port: int = 8765
-
-
-@dataclass(frozen=True)
-class PhoneAppConfig:
-    """The Pixel app's listening socket, which the phone sink connects out to."""
-
-    address: str
-    port: int
 
 
 @dataclass(frozen=True)
@@ -199,7 +84,7 @@ class RunConfig:
     reconnect: bool = False
     realtime_replay: bool = False
     verbose: bool = False
-    estimator_factory: Callable[..., object] | None = None
+    estimator_factory: Callable[[EstimatorConfig], DepthEstimatorProtocol] | None = None
     """Composition-root hook, set by tests to inject a stub estimator instead of loading a model.
 
     Deliberately has no command line flag. A run started from the command line always gets the
@@ -258,7 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
     video.add_argument("--path", help="recording on disk, or an IP camera stream URL")
 
     neon = parser.add_argument_group("neon_live source")
-    neon.add_argument("--neon-address", help="the Neon's address on the network")
+    neon.add_argument("--neon-address", help="the Neon's address, or omit it to discover the device")
     neon.add_argument("--neon-port", type=_port_number, default=8080)
 
     arcore = parser.add_argument_group("arcore_tcp source")
@@ -273,7 +158,8 @@ def build_parser() -> argparse.ArgumentParser:
     logged.add_argument("--realtime", action="store_true", help="replay at the recorded frame rate")
 
     estimator = parser.add_argument_group("depth estimator")
-    estimator.add_argument("--model", help="Depth Anything 3 checkpoint, required for an RGB source")
+    # Defaulted from the dataclass rather than restated, so the checkpoint has one home.
+    estimator.add_argument("--model", default=EstimatorConfig.model_name, help="Depth Anything 3 checkpoint")
     estimator.add_argument("--process-resolution", type=_positive_int, default=504)
     estimator.add_argument("--confidence-drop-percentile", type=_percentile, default=30.0)
 
@@ -326,7 +212,7 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
             _require(parser, arguments.path, "--path", source_kind)
             video = VideoConfig(path=arguments.path)
         case SourceKind.NEON_LIVE:
-            _require(parser, arguments.neon_address, "--neon-address", source_kind)
+            # No address is the normal case. The source discovers the device instead.
             neon = NeonConfig(address=arguments.neon_address, port=arguments.neon_port)
         case SourceKind.ARCORE_TCP:
             arcore = ArCoreConfig(port=arguments.arcore_port)
@@ -343,7 +229,6 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
 
     estimator = None
     if source_kind in ESTIMATOR_BACKED_SOURCES:
-        _require(parser, arguments.model, "--model", source_kind)
         estimator = EstimatorConfig(
             model_name=arguments.model,
             process_resolution=arguments.process_resolution,
@@ -384,6 +269,26 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
     )
 
 
+def build_estimated_depth_source(rgb_source: RgbSource, config: RunConfig) -> EstimatedDepthSource:
+    """
+    Compose an RGB source with the depth estimator.
+
+    The one place an estimator is constructed. Tests inject a stub through
+    RunConfig.estimator_factory rather than patching an import, so the production path and the
+    test path differ by one value instead of by a monkeypatch.
+
+    :param rgb_source: The camera to read from.
+    :param config: The run configuration, whose estimator field must be set.
+    :return: A source of DepthFrame objects.
+    :rtype: EstimatedDepthSource
+    """
+    if config.estimator is None:
+        raise ValueError(f"{config.source_kind.value} needs an estimator config and none was built")
+
+    build = config.estimator_factory if config.estimator_factory is not None else DepthEstimator
+    return EstimatedDepthSource(rgb_source, build(config.estimator), config.estimator)
+
+
 def build_source(config: RunConfig) -> DepthFrameSource:
     """
     Turn the chosen source kind into a source.
@@ -394,9 +299,17 @@ def build_source(config: RunConfig) -> DepthFrameSource:
     """
     match config.source_kind:
         case SourceKind.VIDEO_FILE:
-            raise NotImplementedError("video_file source lands in STEP_02")
+            if config.video is None:
+                raise ValueError("video_file needs a video config and none was built")
+            return build_estimated_depth_source(VideoFileRgbSource(config.video.path), config)
         case SourceKind.NEON_LIVE:
-            raise NotImplementedError("neon_live source lands in STEP_02")
+            if config.neon is None:
+                raise ValueError("neon_live needs a neon config and none was built")
+            # Imported here rather than at module scope so this module stays importable without
+            # the Pupil Labs client. That is the lazy-import rule's optional-dependency case.
+            from nav.sources.neon_live import NeonLiveRgbSource
+
+            return build_estimated_depth_source(NeonLiveRgbSource(config.neon), config)
         case SourceKind.LOGGED:
             raise NotImplementedError("logged source lands in STEP_03")
         case SourceKind.ARCORE_TCP:

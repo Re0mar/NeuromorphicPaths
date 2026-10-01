@@ -22,7 +22,10 @@ from nav.config import (
     build_sink,
     build_source,
 )
+from nav.sources.config import EstimatorConfig, NeonConfig, VideoConfig
 from nav.types import DepthFrame, PlannedPath, Pose
+
+from stubs import StubDepthEstimator
 
 ORIENTATION_ONLY_POSE = Pose(orientation=np.array([1.0, 0.0, 0.0, 0.0]), position=None, has_position=False)
 PINHOLE_INTRINSICS = np.array([[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]])
@@ -41,7 +44,7 @@ def _depth_frame(**overrides: object) -> DepthFrame:
     fields.update(overrides)
     return DepthFrame(**fields)
 
-MINIMAL_VIDEO_ARGV = ["--source", "video_file", "--path", "scene.mp4", "--model", "a/model", "--sink", "none"]
+MINIMAL_VIDEO_ARGV = ["--source", "video_file", "--path", "scene.mp4", "--sink", "none"]
 
 
 def test_minimal_command_line_builds_a_config() -> None:
@@ -53,7 +56,7 @@ def test_minimal_command_line_builds_a_config() -> None:
     assert config.video is not None
     assert config.video.path == "scene.mp4"
     assert config.estimator is not None
-    assert config.estimator.model_name == "a/model"
+    assert config.estimator.model_name == EstimatorConfig.model_name
     # A config for a source that was not chosen stays None, so a later layer reading one is
     # reading a mistake rather than a stale default.
     assert config.neon is None
@@ -75,12 +78,10 @@ def test_defaults_land_where_they_belong() -> None:
 @pytest.mark.parametrize(
     ("argv", "expected_in_message"),
     [
-        (["--source", "video_file", "--model", "a/model", "--sink", "none"], "--path"),
-        (["--source", "neon_live", "--model", "a/model", "--sink", "none"], "--neon-address"),
+        (["--source", "video_file", "--sink", "none"], "--path"),
         (["--source", "neon_plugin", "--sink", "none"], "--recording-dir"),
         (["--source", "logged", "--sink", "none"], "--log-dir"),
-        (["--source", "video_file", "--path", "scene.mp4", "--sink", "none"], "--model"),
-        (["--source", "video_file", "--path", "scene.mp4", "--model", "a/model", "--sink", "phone_app"], "--phone-address"),
+        (["--source", "video_file", "--path", "scene.mp4", "--sink", "phone_app"], "--phone-address"),
     ],
 )
 def test_missing_required_argument_names_it(argv: list[str], expected_in_message: str, capsys: pytest.CaptureFixture[str]) -> None:
@@ -94,8 +95,8 @@ def test_missing_required_argument_names_it(argv: list[str], expected_in_message
     "argv",
     [
         ["--source", "bogus", "--sink", "none"],
-        ["--source", "video_file", "--path", "scene.mp4", "--model", "a/model", "--sink", "bogus"],
-        ["--source", "video_file", "--path", "scene.mp4", "--model", "a/model", "--sink", "none", "--goal", "bogus"],
+        ["--source", "video_file", "--path", "scene.mp4", "--sink", "bogus"],
+        ["--source", "video_file", "--path", "scene.mp4", "--sink", "none", "--goal", "bogus"],
     ],
 )
 def test_unknown_kind_is_refused(argv: list[str]) -> None:
@@ -103,13 +104,72 @@ def test_unknown_kind_is_refused(argv: list[str]) -> None:
         build_run_config(argv)
 
 
-@pytest.mark.parametrize("source_kind", list(SourceKind))
-def test_every_source_kind_reaches_an_arm(source_kind: SourceKind) -> None:
+# Sources that are built for real, and the configs each one needs to be built from. The rest are
+# still stubs naming the step that fills them. Keeping both lists here, rather than only testing
+# what works, is what makes the completeness check below possible.
+BUILT_SOURCE_KINDS = {
+    SourceKind.VIDEO_FILE: {"video": VideoConfig(path="scene.mp4")},
+    SourceKind.NEON_LIVE: {"neon": NeonConfig()},
+}
+PENDING_SOURCE_KINDS = {SourceKind.ARCORE_TCP, SourceKind.NEON_PLUGIN, SourceKind.LOGGED}
+
+
+def _run_config_for(source_kind: SourceKind) -> RunConfig:
+    return RunConfig(
+        source_kind=source_kind,
+        sink_kind=SinkKind.NONE,
+        goal_mode=GoalMode.AHEAD,
+        estimator=EstimatorConfig(),
+        # Injected at the composition root, so no test ever loads 1.3 GB of weights.
+        estimator_factory=lambda estimator_config: StubDepthEstimator(),
+        **BUILT_SOURCE_KINDS[source_kind],
+    )
+
+
+def test_every_source_kind_is_accounted_for() -> None:
+    # The point of the two lists. A new member that nobody classified fails here rather than
+    # slipping past both tests below by being in neither.
+    assert set(BUILT_SOURCE_KINDS) | PENDING_SOURCE_KINDS == set(SourceKind)
+    assert not set(BUILT_SOURCE_KINDS) & PENDING_SOURCE_KINDS
+
+
+@pytest.mark.parametrize("source_kind", sorted(BUILT_SOURCE_KINDS, key=lambda kind: kind.value))
+def test_built_source_kinds_return_a_source(source_kind: SourceKind) -> None:
+    source = build_source(_run_config_for(source_kind))
+
+    # Constructing must not touch the device or the file. Both open lazily inside frames().
+    assert hasattr(source, "frames")
+    assert hasattr(source, "close")
+
+
+@pytest.mark.parametrize("source_kind", sorted(PENDING_SOURCE_KINDS, key=lambda kind: kind.value))
+def test_pending_source_kinds_name_their_step(source_kind: SourceKind) -> None:
     config = RunConfig(source_kind=source_kind, sink_kind=SinkKind.NONE, goal_mode=GoalMode.AHEAD)
 
     # NotImplementedError means the arm exists and names the step that fills it. ValueError would
     # mean the member fell through to the catch-all, which is the failure this is watching for.
     with pytest.raises(NotImplementedError):
+        build_source(config)
+
+
+def test_a_built_source_refuses_a_missing_config() -> None:
+    # RunConfig does not validate across its own fields, so a kind whose config was never built is
+    # reachable. The factory must say which one rather than construct a source around a None.
+    config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kind=SinkKind.NONE, goal_mode=GoalMode.AHEAD)
+
+    with pytest.raises(ValueError, match="video_file needs a video config"):
+        build_source(config)
+
+
+def test_estimator_backed_source_refuses_a_missing_estimator_config() -> None:
+    config = RunConfig(
+        source_kind=SourceKind.VIDEO_FILE,
+        sink_kind=SinkKind.NONE,
+        goal_mode=GoalMode.AHEAD,
+        video=VideoConfig(path="scene.mp4"),
+    )
+
+    with pytest.raises(ValueError, match="needs an estimator config"):
         build_source(config)
 
 
@@ -119,6 +179,33 @@ def test_every_sink_kind_reaches_an_arm(sink_kind: SinkKind) -> None:
 
     with pytest.raises(NotImplementedError):
         build_sink(config)
+
+
+
+def test_default_checkpoint_is_a_metric_one() -> None:
+    # BUG-003. The old script defaulted to DA3NESTED-GIANT-LARGE, which returns relative depth,
+    # so every clearance in meters was wrong by an unknown scale and the file carried a
+    # cam_height rescale to paper over it. Asserts the property rather than the exact name, so a
+    # version bump passes and a swap back to a relative checkpoint does not.
+    assert "METRIC" in EstimatorConfig.model_name.upper()
+
+def test_neon_without_an_address_is_left_to_discovery() -> None:
+    # Omitting the address is the normal case, not a missing argument. The source discovers the
+    # device over mDNS, and an explicit address is the fallback for a network that blocks it.
+    config = build_run_config(["--source", "neon_live", "--sink", "none"])
+
+    assert config.neon is not None
+    assert config.neon.address is None
+    assert config.neon.port == 8080
+
+
+def test_neon_address_is_carried_through_when_given() -> None:
+    config = build_run_config(
+        ["--source", "neon_live", "--sink", "none", "--neon-address", "10.0.0.5"]
+    )
+
+    assert config.neon is not None
+    assert config.neon.address == "10.0.0.5"
 
 
 @pytest.mark.parametrize(
