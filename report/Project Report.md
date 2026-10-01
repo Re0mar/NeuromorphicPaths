@@ -18,6 +18,9 @@ A pair of [Pupil Labs Neon smart glasses](https://pupil-labs.com/products/neon) 
 
 # Methodology
 
+![Pipeline](pipeline.drawio.png)
+
+
 Glasses ((NTH) live feed or recording) → Laptop → Depth Anything 3 → Open3D gives point cloud → lagrangian + hamiltonian calculation → (NTH) navigation overlay
 
 ## Motivation
