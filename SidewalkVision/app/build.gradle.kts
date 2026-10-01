@@ -38,11 +38,16 @@ android {
     buildFeatures {
         compose = true
     }
+    // Keep depth_model.onnx uncompressed in the APK for faster install/first-load.
+    androidResources {
+        noCompress += "onnx"
+    }
 }
 
 dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.appcompat)
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)
@@ -57,12 +62,10 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
     implementation("androidx.camera:camera-view:$cameraxVersion")
 
-    // TensorFlow Lite
-    implementation("org.tensorflow:tensorflow-lite:2.16.1")
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
     implementation("androidx.compose.material:material-icons-extended")
 
     testImplementation(libs.junit)
-    androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
