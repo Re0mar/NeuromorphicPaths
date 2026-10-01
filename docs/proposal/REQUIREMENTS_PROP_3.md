@@ -54,8 +54,12 @@ gates a later requirement. "The planner" means the Hamiltonian planner from his
   Neon IMU quaternion. Position comes from a monocular-inertial SLAM or is absent.
 - R13. The pose record carries a `has_position` flag. When false, the cloud lives in the body
   frame and is rebuilt each frame. When true, points are placed in a world frame.
-- R14. Depth pixels are unprojected into points and floor points are dropped using the ground
-  plane. Everything left is an obstacle point.
+- R14. Depth pixels are unprojected into 3D points. Using the ground plane, points below ankle
+  height are dropped as floor and points above head height are dropped as ceiling or overhang.
+  Everything in the band between is an obstacle point. The two heights are parameters.
+- R14a. Surviving points are flattened to the planner's 2D ground plane by dropping height.
+  The planner never sees a height. Stairs, curbs and holes are therefore invisible to it,
+  which is the flat-ground limit below.
 - R15. Points are grouped into clouds by a spatial rule, a voxel or ground grid cell, never by
   what they are. The grouping rule is a parameter.
 - R16. Each point keeps a distance history over the noise window, either through Open3D's
