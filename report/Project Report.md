@@ -37,7 +37,14 @@ https://www.nature.com/articles/s41598-025-08475-4
 *If you did an experiment, write about the motivation, earlier experiments in literature and why they didn't show what you are showing, used apparatus, participants and methods, results (just plain results in tables with statistical tests described in text), and a discussion of the results in light of the prior literature.*
 
 *If you did a system, follow the same procedure but instead of results you describe 3 scenarios in which the system could be used in the future. When you write the scenario, imagine you are a user using the system and describe all the little details that demonstrate how well your interactions were thought through and how it solves an existing usability problem.*
+
 # Scenarios
+
+1. You want to walk in a straight line but there is an object in the middle of the hallway.
+
+2. The user is walking and another pedestrian is approaching from the front and on route for collision.
+
+3. Visually impaired person will not see an object but the product will help the user avoid it by showing it in a way the person can perceive.
 
 # Discussion
 
