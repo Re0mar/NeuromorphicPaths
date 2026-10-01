@@ -4,13 +4,13 @@ import numpy as np
 cv2.imshow("cv/av bug", np.zeros(1))
 cv2.destroyAllWindows()
 
-from pupil_labs.realtime_api.simple import discover_one_device  # noqa: E402
+from pupil_labs.realtime_api.simple import discover_one_device, Device  # noqa: E402
 
 
 def main():
     # Look for devices. Returns as soon as it has found the first device.
     print("Looking for the next best device...")
-    device = discover_one_device(max_search_duration_seconds=10)
+    device = Device(address="145.137.153.144", port=8080)
     if device is None:
         print("No device found.")
         raise SystemExit(-1)
