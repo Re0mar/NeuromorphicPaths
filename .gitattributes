@@ -1,0 +1,4 @@
+* text=auto eol=lf
+
+# The Gradle wrapper is run by cmd.exe, which needs CRLF.
+*.bat text eol=crlf

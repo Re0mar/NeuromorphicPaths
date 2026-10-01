@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nav"
+version = "0.1.0"
+requires-python = ">=3.12"
+description = "Turns a depth stream from any sensor into a planned walking path for a display to show."
+dependencies = [
+    "numpy",
+    "opencv-python",
+    "open3d>=0.19",
+]
+
+[project.optional-dependencies]
+# depth-anything-3 declares numpy<2 and pulls open3d and opencv-python of its own, so installing
+# this extra pins the whole environment to numpy 1.x. Not restated as a pin here, because the
+# constraint belongs to that package and a copy of it here would drift.
+glasses = [
+    "torch",
+    "depth-anything-3",
+    "pupil-labs-realtime-api",
+]
+web = [
+    "aiohttp",
+]
+dev = [
+    "pytest",
+    "nav[glasses]",
+    "nav[web]",
+]
+
+[project.scripts]
+nav = "nav.main:main"
+
+[tool.setuptools.packages.find]
+include = ["nav*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# -rs prints the reason for every skip, so a hardware-gated test that quietly stopped running
+# is visible in the summary rather than looking like a pass.
+addopts = "-rs"
