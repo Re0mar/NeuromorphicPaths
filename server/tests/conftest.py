@@ -22,7 +22,7 @@ NAV_ROOT = Path(nav.__file__).parent
 # Floor count of .py files under nav/. The grep tests assert they scanned at least this many,
 # because a glob that silently matched nothing reports no violations and reads exactly like a
 # clean package. Raise this when files are added.
-MINIMUM_FILE_COUNT = 25
+MINIMUM_FILE_COUNT = 29
 
 
 # Frames in the synthetic video every source test reads. Small enough to write in milliseconds,

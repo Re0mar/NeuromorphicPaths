@@ -22,7 +22,8 @@ from nav.config import (
     build_sink,
     build_source,
 )
-from nav.sources.config import EstimatorConfig, NeonConfig, VideoConfig
+from nav.sources.config import EstimatorConfig, LoggedConfig, NeonConfig, TapConfig, VideoConfig
+from nav.runtime.tap import RecordingTap
 from nav.types import DepthFrame, PlannedPath, Pose
 
 from stubs import StubDepthEstimator
@@ -110,8 +111,9 @@ def test_unknown_kind_is_refused(argv: list[str]) -> None:
 BUILT_SOURCE_KINDS = {
     SourceKind.VIDEO_FILE: {"video": VideoConfig(path="scene.mp4")},
     SourceKind.NEON_LIVE: {"neon": NeonConfig()},
+    SourceKind.LOGGED: {"logged": LoggedConfig(log_dir="a_log")},
 }
-PENDING_SOURCE_KINDS = {SourceKind.ARCORE_TCP, SourceKind.NEON_PLUGIN, SourceKind.LOGGED}
+PENDING_SOURCE_KINDS = {SourceKind.ARCORE_TCP, SourceKind.NEON_PLUGIN}
 
 
 def _run_config_for(source_kind: SourceKind) -> RunConfig:
@@ -151,6 +153,31 @@ def test_pending_source_kinds_name_their_step(source_kind: SourceKind) -> None:
     with pytest.raises(NotImplementedError):
         build_source(config)
 
+
+
+def test_the_tap_wraps_whatever_source_was_built(tmp_path) -> None:
+    # The tap wraps the built source rather than being a source of its own, so every source
+    # records the same way and the replay reads one format back.
+    config = RunConfig(
+        source_kind=SourceKind.LOGGED,
+        sink_kind=SinkKind.NONE,
+        goal_mode=GoalMode.AHEAD,
+        logged=LoggedConfig(log_dir="a_log"),
+        tap=TapConfig(log_dir=str(tmp_path / "recorded")),
+    )
+
+    assert isinstance(build_source(config), RecordingTap)
+
+
+def test_without_record_to_the_source_is_not_wrapped() -> None:
+    config = RunConfig(
+        source_kind=SourceKind.LOGGED,
+        sink_kind=SinkKind.NONE,
+        goal_mode=GoalMode.AHEAD,
+        logged=LoggedConfig(log_dir="a_log"),
+    )
+
+    assert not isinstance(build_source(config), RecordingTap)
 
 def test_a_built_source_refuses_a_missing_config() -> None:
     # RunConfig does not validate across its own fields, so a kind whose config was never built is

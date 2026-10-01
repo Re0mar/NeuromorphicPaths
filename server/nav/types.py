@@ -117,6 +117,10 @@ class PlannedPath:
             raise ValueError("times_seconds contains a non-finite value")
         if not np.all(np.isfinite(self.lateral_offsets_meters)):
             raise ValueError("lateral_offsets_meters contains a non-finite value")
+        if not np.isfinite(self.first_heading_radians):
+            raise ValueError(f"first_heading_radians must be finite, got {self.first_heading_radians}")
+        if not np.isfinite(self.cumulative_cost_bits):
+            raise ValueError(f"cumulative_cost_bits must be finite, got {self.cumulative_cost_bits}")
 
 
 class DepthFrameSource(Protocol):

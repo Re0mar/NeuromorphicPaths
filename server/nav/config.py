@@ -14,9 +14,11 @@ import argparse
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 
 # Local package imports
 from nav.planner.config import GoalMode, PlannerConfig
+from nav.runtime.tap import RecordingTap
 from nav.scene.config import SceneConfig
 from nav.sinks.config import PhoneAppConfig, WebConfig
 from nav.sources.config import (
@@ -30,6 +32,7 @@ from nav.sources.config import (
 )
 from nav.sources.estimated_depth import EstimatedDepthSource
 from nav.sources.estimator import DepthEstimator, DepthEstimatorProtocol
+from nav.sources.logged import LoggedDepthFrameSource
 from nav.sources.rgb import RgbSource
 from nav.sources.video_file import VideoFileRgbSource
 from nav.types import DepthFrameSource, PathSink
@@ -291,12 +294,22 @@ def build_estimated_depth_source(rgb_source: RgbSource, config: RunConfig) -> Es
 
 def build_source(config: RunConfig) -> DepthFrameSource:
     """
-    Turn the chosen source kind into a source.
+    Turn the chosen source kind into a source, wrapped in the recording tap when asked for.
+
+    The tap wraps whatever was built, so every source records the same way and the replay reads
+    one format back.
 
     :param config: The run configuration.
     :return: A source yielding DepthFrame objects.
     :rtype: DepthFrameSource
     """
+    source = _build_inner_source(config)
+    if config.tap.log_dir is None:
+        return source
+    return RecordingTap(source, Path(config.tap.log_dir))
+
+
+def _build_inner_source(config: RunConfig) -> DepthFrameSource:
     match config.source_kind:
         case SourceKind.VIDEO_FILE:
             if config.video is None:
@@ -311,7 +324,9 @@ def build_source(config: RunConfig) -> DepthFrameSource:
 
             return build_estimated_depth_source(NeonLiveRgbSource(config.neon), config)
         case SourceKind.LOGGED:
-            raise NotImplementedError("logged source lands in STEP_03")
+            if config.logged is None:
+                raise ValueError("logged needs a logged config and none was built")
+            return LoggedDepthFrameSource(Path(config.logged.log_dir), realtime=config.realtime_replay)
         case SourceKind.ARCORE_TCP:
             raise NotImplementedError("arcore_tcp source lands in STEP_04")
         case SourceKind.NEON_PLUGIN:
