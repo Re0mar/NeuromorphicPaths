@@ -5,7 +5,10 @@ In recent years, more and more preventable traffic accidents keep happening on D
 
 # Background
 A 2017 thesis published at the Radboud University concluded that reminding drivers to pay attention to the road has a significant effect on subsequent accidents [[1](#references)]. Many of these are preventable one-sided accidents caused by drivers, cyclists and pedestrians leaving or crossing the road by accident or at the wrong moment. Our leading theory is that using wearable computer vision found in commercial products like smart glasses, we could detect these dangerous situations and subsequently direct the users attention to the road to greatly decrease the likelihood for an incident to occur.
+
 # Motivation
+
+We noticed that there are a lot of visually impaired people ([27% to be precise](https://www.who.int/news-room/fact-sheets/detail/blindness-and-visual-impairment)) who struggle with finding their way, there are some solutions to help those people but they are [heavy duty and cost a lot of resources](https://www.bemyeyes.com/business/blog/essential-accessibility-tools-for-visually-impaired/). Our goal is a more light-weight product that could assist the visually impaired. The system could later be adapted to specific visual conditions by changing how the computed safe route is presented, for example through different visual encodings, contrast settings, or non-visual modalities such as audio. In its current form, the output is a single guidance line that the user follows, which serves as a proof of concept. The long-term objective is to support visually impaired people in their daily lives by reducing the risk of collisions with obstacles, and thereby to increase their mobility and independence.
 
 # Materials
 ## Neon smart glasses
@@ -22,9 +25,6 @@ A pair of [Pupil Labs Neon smart glasses](https://pupil-labs.com/products/neon) 
 
 
 Glasses ((NTH) live feed or recording) → Laptop → Depth Anything 3 → Open3D gives point cloud → lagrangian + hamiltonian calculation → (NTH) navigation overlay
-
-## Motivation
-
 
 ## Literature
 https://www.nature.com/articles/s41598-025-08475-4
