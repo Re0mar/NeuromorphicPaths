@@ -17,6 +17,9 @@ A pair of [Pupil Labs Neon smart glasses](https://pupil-labs.com/products/neon) 
 [YOLO](https://github.com/ultralytics/) is an open-source library that is used among other things to perform object detection in images. It is used in combination with a data set to optimize for detecting sidewalks, by training the model on [a relevant labeled data set](https://universe.roboflow.com/sidewalk/sidewalk-segmentation) that primarily contains urban sidewalks in Belgium. 
 
 # Methodology
+
+Glasses ((NTH) live feed or recording) → Laptop → Depth Anything 3 → Open3D gives point cloud → lagrangian + hamiltonian calculation → (NTH) navigation overlay
+
 ## Motivation
 
 
