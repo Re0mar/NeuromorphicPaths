@@ -75,10 +75,15 @@ def synthetic_frames(count: int, depth_shape: tuple[int, int] = DEFAULT_DEPTH_SH
             timestamp_seconds=index * FRAME_INTERVAL_SECONDS,
             depth_meters=depth,
             intrinsics=intrinsics,
+            # The app's convention, which the wire format states: the world has y up, so a level
+            # camera's orientation is a half turn about x, and walking forward is along world -z.
+            # A fake that sent an identity orientation would describe a world with y down, and
+            # the floor fit, which reads gravity from this pose, would look for the floor overhead.
             pose=Pose(
-                orientation=np.array([1.0, 0.0, 0.0, 0.0]),
-                position=np.array([0.0, 0.0, index * FORWARD_STEP_METERS_PER_FRAME]),
+                orientation=np.array([0.0, 1.0, 0.0, 0.0]),
+                position=np.array([0.0, 0.0, -index * FORWARD_STEP_METERS_PER_FRAME]),
                 has_position=True,
+                orientation_is_gravity_aligned=True,
             ),
             ground_plane=ground_plane,
             gaze_pixel=None,

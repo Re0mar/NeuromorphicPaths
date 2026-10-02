@@ -12,6 +12,7 @@ import added here reaches all of them.
 # Standard library imports
 from collections.abc import Iterator
 from dataclasses import dataclass
+from enum import Enum
 from typing import Protocol, runtime_checkable
 
 # Third party imports
@@ -26,13 +27,37 @@ class Plane:
     offset_meters: float
 
 
+class FloorSource(Enum):
+    """Where the scene's floor for a frame came from. Values are the words the debug line prints."""
+
+    SUPPLIED = "supplied"  # The source sent a plane and it passed the gate.
+    FITTED = "fitted"  # Fitted from this frame's cloud, because no plane came or the one that came was refused.
+    PREVIOUS = "previous"  # Neither of the above produced a floor, so the last frame's stands.
+
+
+# Up in the world frame a positioned pose describes. ARCore's world, the only one a source supplies
+# today, has y up, and docs/arcore_wire_format.md states it so the next source can match. The
+# floor fit measures "level" and "below the camera" against this once a pose places the camera.
+WORLD_UP = np.array([0.0, 1.0, 0.0])
+
+
 @dataclass(frozen=True)
 class Pose:
-    """Where the camera is pointing, and where it is when anything knows that."""
+    """Where the camera is pointing, and where it is when anything knows that.
+
+    The orientation rotates camera-frame vectors into the world. When has_position is true that
+    world is one with WORLD_UP up, which is how the scene knows which way gravity points on a
+    phone held sideways.
+    """
 
     orientation: np.ndarray
     position: np.ndarray | None
     has_position: bool
+    # Whether the orientation rotates into a world whose up is WORLD_UP, which is what lets the
+    # scene read gravity from it. True for a device that tracks against gravity, by its own pose
+    # or by an IMU. False is the conservative answer, and it means the scene falls back to the
+    # image's own up, so a source that does not say gets what a plain video file gets.
+    orientation_is_gravity_aligned: bool = False
 
     def __post_init__(self) -> None:
         # has_position is what every downstream branch reads to decide between the body frame and
@@ -83,6 +108,9 @@ class ObstaclePoint:
     closing_rate_mps: float | None
     velocity_mps: np.ndarray | None
     is_wall: bool
+    # The nearest point as the camera saw it, (3,) camera frame. For the depth view only. The
+    # planner never reads it, and a test that builds a point by hand gives it zeros.
+    camera_point: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -92,6 +120,24 @@ class ObstacleSet:
     timestamp_seconds: float
     points: tuple[ObstaclePoint, ...]
     groups_in_view: int
+
+
+@dataclass(frozen=True)
+class DebugView:
+    """
+    What a person tuning the planner needs to see beside the path: the planner's input.
+
+    The frame the path was planned for, the obstacles the scene found in it, the floor the scene
+    used and where it came from, and the walking speed the planner assumed. The floor is here
+    because a renderer lays the path on it, and the speed because a path is offsets against time
+    and the floor is meters.
+    """
+
+    frame: DepthFrame
+    obstacles: ObstacleSet
+    floor: Plane
+    floor_source: FloorSource
+    walking_speed_mps: float
 
 
 @dataclass(frozen=True)
@@ -132,7 +178,15 @@ class DepthFrameSource(Protocol):
 
 
 class PathSink(Protocol):
-    """What every display is, seen from the loop."""
+    """What every display is, seen from the loop.
+
+    start is called once, before the source yields its first frame, so a sink that listens is
+    listening from the start of the run. A page or a phone that arrives before the first planned
+    frame would otherwise find nothing to connect to, and on a still phone the first frame can
+    be minutes away.
+    """
+
+    def start(self) -> None: ...
 
     def publish(self, path: PlannedPath) -> None: ...
 
@@ -141,10 +195,11 @@ class PathSink(Protocol):
 
 @runtime_checkable
 class DebugSink(PathSink, Protocol):
-    """A sink that can also draw the surprise field.
+    """A sink that can also draw the surprise field and the planner's input.
 
-    Separate from PathSink so the field, which is a grid the size of the planner's horizon, can
-    only go somewhere local. A phone over TCP and a browser over a websocket get the path alone.
+    Separate from PathSink so the field, which is a grid the size of the planner's horizon, and
+    the view, which carries a whole depth frame, only go where a person is looking at them. A
+    phone over TCP gets the path alone.
     """
 
-    def publish_debug(self, path: PlannedPath, field: np.ndarray, grid: np.ndarray) -> None: ...
+    def publish_debug(self, path: PlannedPath, field: np.ndarray, grid: np.ndarray, view: DebugView) -> None: ...

@@ -4,10 +4,12 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.opengl.GLSurfaceView
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -35,23 +37,32 @@ import com.google.ar.core.exceptions.FatalException
 import com.google.ar.core.exceptions.UnavailableException
 import com.neuromorphicpaths.pixel.ar.CaptureState
 import com.neuromorphicpaths.pixel.ar.DepthCaptureRenderer
+import com.neuromorphicpaths.pixel.ui.ArrowOverlay
 import com.neuromorphicpaths.pixel.wire.ConnectionStatus
 import com.neuromorphicpaths.pixel.wire.LaptopConnection
+import com.neuromorphicpaths.pixel.wire.PathConnection
+import com.neuromorphicpaths.pixel.wire.PathConnectionStatus
+import com.neuromorphicpaths.pixel.wire.ReceivedPath
 import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
- * Sends the Pixel's ARCore depth to the laptop pipeline. One screen, two numbers that matter:
- * whether depth frames are flowing and whether the laptop is receiving them.
+ * Sends the Pixel's ARCore depth to the laptop pipeline and receives the paths it plans. One
+ * screen, three lines that matter: whether depth frames are flowing, whether the laptop is
+ * receiving them, and whether paths are coming back.
  */
 class MainActivity : ComponentActivity() {
     private var session: Session? = null
     private var connection: LaptopConnection? = null
+    private var pathConnection: PathConnection? = null
     private var surface: GLSurfaceView? = null
     private val captureState = MutableStateFlow<CaptureState>(CaptureState.CameraUnavailable)
     private val connectionStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Disconnected("not started"))
+    private val pathStatus = MutableStateFlow<PathConnectionStatus>(PathConnectionStatus.Disconnected("not started"))
+    private val latestPath = MutableStateFlow<ReceivedPath?>(null)
     private var installRequested = false
     private var startupHost = DEFAULT_HOST
     private var startupPort = DEFAULT_PORT
+    private var startupPathPort = DEFAULT_PATH_PORT
 
     private val cameraPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) startSession() else connectionStatus.value = ConnectionStatus.Disconnected("camera permission refused")
@@ -65,7 +76,8 @@ class MainActivity : ComponentActivity() {
         if (hostExtra != null) {
             startupHost = hostExtra
             startupPort = intent.getIntExtra(EXTRA_PORT, DEFAULT_PORT)
-            connect(startupHost, startupPort)
+            startupPathPort = intent.getIntExtra(EXTRA_PATH_PORT, DEFAULT_PATH_PORT)
+            connect(startupHost, startupPort, startupPathPort)
         }
         setContent {
             MaterialTheme {
@@ -73,7 +85,9 @@ class MainActivity : ComponentActivity() {
                     Screen(
                         captureState = captureState,
                         connectionStatus = connectionStatus,
-                        onConnect = { host, port -> connect(host, port) },
+                        pathStatus = pathStatus,
+                        latestPath = latestPath,
+                        onConnect = { host, port, pathPort -> connect(host, port, pathPort) },
                         glSurface = { view -> surface = view },
                     )
                 }
@@ -99,6 +113,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         connection?.stop()
+        pathConnection?.stop()
         session?.close()
         session = null
         super.onDestroy()
@@ -148,9 +163,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun connect(host: String, port: Int) {
+    /** Both connections go to the one laptop address. The phone opens both, the laptop listens on both. */
+    private fun connect(host: String, port: Int, pathPort: Int) {
         connection?.stop()
+        pathConnection?.stop()
         connection = LaptopConnection(host, port) { status -> connectionStatus.value = status }.also { it.start() }
+        pathConnection = PathConnection(
+            host = host,
+            port = pathPort,
+            onStatus = { status -> pathStatus.value = status },
+            onPath = { path -> latestPath.value = path },
+        ).also { it.start() }
     }
 
     private fun renderer(): DepthCaptureRenderer = DepthCaptureRenderer(
@@ -163,38 +186,56 @@ class MainActivity : ComponentActivity() {
     private fun Screen(
         captureState: MutableStateFlow<CaptureState>,
         connectionStatus: MutableStateFlow<ConnectionStatus>,
-        onConnect: (String, Int) -> Unit,
+        pathStatus: MutableStateFlow<PathConnectionStatus>,
+        latestPath: MutableStateFlow<ReceivedPath?>,
+        onConnect: (String, Int, Int) -> Unit,
         glSurface: (GLSurfaceView) -> Unit,
     ) {
         val capture by captureState.collectAsState()
         val status by connectionStatus.collectAsState()
+        val paths by pathStatus.collectAsState()
+        val path by latestPath.collectAsState()
         var host by remember { mutableStateOf(startupHost) }
         var port by remember { mutableStateOf(startupPort.toString()) }
+        var pathPort by remember { mutableStateOf(startupPathPort.toString()) }
 
         Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
             Text("Depth to the laptop", style = MaterialTheme.typography.titleLarge)
             Row(modifier = Modifier.fillMaxWidth().padding(top = 12.dp)) {
                 OutlinedTextField(value = host, onValueChange = { host = it }, label = { Text("laptop address") }, modifier = Modifier.weight(2f))
-                OutlinedTextField(value = port, onValueChange = { port = it }, label = { Text("port") }, modifier = Modifier.weight(1f).padding(start = 8.dp))
+                OutlinedTextField(value = port, onValueChange = { port = it }, label = { Text("depth port") }, modifier = Modifier.weight(1f).padding(start = 8.dp))
+                OutlinedTextField(value = pathPort, onValueChange = { pathPort = it }, label = { Text("path port") }, modifier = Modifier.weight(1f).padding(start = 8.dp))
             }
-            Button(onClick = { port.toIntOrNull()?.let { onConnect(host, it) } }, modifier = Modifier.padding(top = 8.dp)) {
+            Button(
+                onClick = {
+                    val depthPort = port.toIntOrNull()
+                    val pathsPort = pathPort.toIntOrNull()
+                    if (depthPort != null && pathsPort != null) onConnect(host, depthPort, pathsPort)
+                },
+                modifier = Modifier.padding(top = 8.dp),
+            ) {
                 Text("Connect")
             }
             Text(describe(status), modifier = Modifier.padding(top = 12.dp))
             Text(describe(capture), modifier = Modifier.padding(top = 4.dp))
-            // The GL surface is what drives ARCore. It draws black. The two lines above are the
-            // display, and the arrow is on the laptop's web page in the browser.
-            AndroidView(
-                factory = { context ->
-                    GLSurfaceView(context).apply {
-                        setEGLContextClientVersion(2)
-                        setRenderer(renderer())
-                        renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
-                        glSurface(this)
-                    }
-                },
-                modifier = Modifier.fillMaxWidth().weight(1f).padding(top = 12.dp),
-            )
+            Text(describe(paths), modifier = Modifier.padding(top = 4.dp))
+            // The GL surface drives ARCore and draws the camera. The arrow is Compose over it,
+            // which keeps display code out of the renderer and makes its arithmetic testable.
+            Box(modifier = Modifier.fillMaxWidth().weight(1f).padding(top = 12.dp)) {
+                AndroidView(
+                    factory = { context ->
+                        GLSurfaceView(context).apply {
+                            setEGLContextClientVersion(2)
+                            setRenderer(renderer())
+                            renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
+                            glSurface(this)
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                )
+                // The same clock the connection stamps paths with, so the age is one clock's difference.
+                ArrowOverlay(received = path, nowMillis = { SystemClock.elapsedRealtime() }, modifier = Modifier.fillMaxSize())
+            }
         }
     }
 
@@ -202,6 +243,15 @@ class MainActivity : ComponentActivity() {
         is ConnectionStatus.Connecting -> "Connecting to ${status.host}:${status.port}."
         is ConnectionStatus.Connected -> "Connected to ${status.host}:${status.port}. Sent ${status.framesSent}, dropped ${status.framesDropped} as stale."
         is ConnectionStatus.Disconnected -> "Not connected: ${status.reason}."
+    }
+
+    private fun describe(status: PathConnectionStatus): String = when (status) {
+        is PathConnectionStatus.Connecting -> "Paths: connecting to ${status.host}:${status.port}."
+        is PathConnectionStatus.Connected -> buildString {
+            append("Paths: connected, ${status.received} received, ${status.refused} refused.")
+            status.lastRefusal?.let { append(" Last refusal: $it") }
+        }
+        is PathConnectionStatus.Disconnected -> "Paths: not connected: ${status.reason}."
     }
 
     private fun describe(state: CaptureState): String = when (state) {
@@ -218,8 +268,11 @@ class MainActivity : ComponentActivity() {
         const val TAG = "MainActivity"
         const val EXTRA_HOST = "host"
         const val EXTRA_PORT = "port"
+        const val EXTRA_PATH_PORT = "path_port"
         // The laptop on a phone hotspot is usually the first client. Edit on screen when not.
         const val DEFAULT_HOST = "192.168.43.1"
         const val DEFAULT_PORT = 9000
+        // The laptop's --phone-port default. Its own number, not derived from the depth port.
+        const val DEFAULT_PATH_PORT = 9100
     }
 }

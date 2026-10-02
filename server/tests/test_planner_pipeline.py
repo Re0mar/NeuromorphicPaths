@@ -16,7 +16,8 @@ WALKER = WalkerConfig(radius_meters=0.35)
 
 def _point(lateral: float, forward: float, group: int, noise: float = 0.2, closing: float | None = None, is_wall: bool = False) -> ObstaclePoint:
     clearance = max(0.0, float(np.hypot(lateral, forward)) - WALKER.radius_meters)
-    return ObstaclePoint(lateral, forward, group, clearance, noise, closing, None, is_wall)
+    # A point built by hand has no camera frame. The planner never reads camera_point.
+    return ObstaclePoint(lateral, forward, group, clearance, noise, closing, None, is_wall, np.zeros(3))
 
 
 def _set(*points: ObstaclePoint, timestamp: float = 0.0) -> ObstacleSet:

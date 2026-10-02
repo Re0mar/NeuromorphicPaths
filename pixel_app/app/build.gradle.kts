@@ -62,7 +62,14 @@ dependencies {
 }
 
 // The encoder test writes the frame the laptop's suite decodes. Point it at that suite's fixtures
-// directory with -PwireFixturePath=... so one run regenerates the committed fixture.
+// directory with -PwireFixturePath=... so one run regenerates the committed fixture. The decoder
+// test reads the path the laptop's suite wrote, by an absolute path so the working directory
+// never decides which file it is.
 tasks.withType<Test>().configureEach {
     systemProperty("wireFixturePath", (project.findProperty("wireFixturePath") as String?) ?: "build/pixel_app_frame.bin")
+    systemProperty(
+        "laptopPathFixturePath",
+        (project.findProperty("laptopPathFixturePath") as String?)
+            ?: rootProject.projectDir.resolve("../server/tests/fixtures/laptop_path.bin").absolutePath,
+    )
 }

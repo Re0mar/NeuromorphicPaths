@@ -5,12 +5,14 @@ Every negative test sends a valid frame through the same sender first and assert
 test that only puts garbage on the wire and asserts nothing came out cannot tell a refused message
 from a message that never arrived.
 
-The real Pixel app does not exist yet. Until it does, this source is proven only against the fake
-sender, and the Android task owns running the positive case here against the real app.
+The cross-language wire contract is tested via committed fixtures in test_pixel_app_fixture.py.
+The TCP source here is proven against the fake sender, which encodes with the same codec.
 """
 
 # Standard library imports
+import socket
 import threading
+import time
 from collections.abc import Callable
 
 # Third party imports
@@ -18,7 +20,7 @@ import numpy as np
 import pytest
 
 # Local package imports
-from nav.sources.arcore_tcp import ArCoreTcpSource
+from nav.sources.arcore_tcp import ACCEPT_POLL_SECONDS, ArCoreTcpSource
 from nav.sources.config import ArCoreConfig
 from nav.sources.framecodec import LENGTH_PREFIX, encode_frame
 from nav.types import DepthFrame
@@ -150,11 +152,43 @@ def test_a_clean_disconnect_between_frames_ends_the_stream_quietly(caplog: pytes
 
 def test_no_sender_within_the_accept_timeout_raises() -> None:
     source = _listening_source(accept_timeout_seconds=0.2)
+    started = time.monotonic()
     try:
         with pytest.raises(ConnectionError, match="no sender connected"):
             list(source.frames())
     finally:
         source.close()
+
+    # A timeout shorter than one poll is still that short. The poll exists to keep a long wait
+    # interruptible, not to round every wait up to it.
+    assert time.monotonic() - started < 0.5
+
+
+def test_a_long_wait_for_the_sender_is_broken_into_short_polls() -> None:
+    # Launching the app by hand needs a ten minute accept timeout, and waiting it out inside one
+    # socket call leaves the run deaf to Ctrl-C for ten minutes: a console interrupt is only
+    # acted on between bytecodes. The user had to kill the terminal. The socket's own timeout is
+    # the mechanism that fixes it, so that is what this asserts.
+    source = _listening_source(accept_timeout_seconds=600.0)
+    timeouts: list[float | None] = []
+
+    def watch_then_connect() -> None:
+        # Let a couple of polls go by, then connect so the test does not wait ten minutes.
+        for _ in range(3):
+            time.sleep(0.1)
+            timeouts.append(source._listener.gettimeout() if source._listener is not None else None)
+        socket.create_connection(("127.0.0.1", source.port), timeout=TEST_TIMEOUT_SECONDS).close()
+
+    watcher = threading.Thread(target=watch_then_connect, daemon=True)
+    watcher.start()
+    try:
+        list(source.frames())
+    finally:
+        watcher.join(TEST_TIMEOUT_SECONDS)
+        source.close()
+
+    assert timeouts, "the listener was never observed waiting"
+    assert all(waited is not None and waited <= ACCEPT_POLL_SECONDS for waited in timeouts), timeouts
 
 
 def test_an_absurd_length_prefix_ends_the_connection_rather_than_allocating(caplog: pytest.LogCaptureFixture) -> None:
@@ -208,7 +242,9 @@ def test_a_second_listener_on_the_same_port_is_refused() -> None:
     first = _listening_source()
     second = ArCoreTcpSource(ArCoreConfig(port=first.port, bind_address="127.0.0.1"))
     try:
-        with pytest.raises(OSError):
+        # The message names the source and the port, so a bind failure on one of the run's three
+        # ports says which one rather than only that a socket address is in use.
+        with pytest.raises(OSError, match=f"depth source could not listen on 127.0.0.1:{first.port}"):
             second._listen()
     finally:
         second.close()

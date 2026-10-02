@@ -66,7 +66,7 @@ def test_minimal_command_line_builds_a_config() -> None:
     config = build_run_config(MINIMAL_VIDEO_ARGV)
 
     assert config.source_kind is SourceKind.VIDEO_FILE
-    assert config.sink_kind is SinkKind.NONE
+    assert config.sink_kinds == (SinkKind.NONE,)
     assert config.goal_mode is GoalMode.AHEAD
     assert config.video is not None
     assert config.video.path == STREAM_URL
@@ -96,7 +96,6 @@ def test_defaults_land_where_they_belong() -> None:
         (["--source", "video_file", "--sink", "none"], "--path"),
         (["--source", "neon_plugin", "--sink", "none"], "--recording-dir"),
         (["--source", "logged", "--sink", "none"], "--log-dir"),
-        (["--source", "video_file", "--path", STREAM_URL, "--sink", "phone_app"], "--phone-address"),
     ],
 )
 def test_missing_required_argument_names_it(argv: list[str], expected_in_message: str, capsys: pytest.CaptureFixture[str]) -> None:
@@ -176,7 +175,7 @@ BUILT_SOURCE_KINDS = {
 def _run_config_for(source_kind: SourceKind) -> RunConfig:
     return RunConfig(
         source_kind=source_kind,
-        sink_kind=SinkKind.NONE,
+        sink_kinds=(SinkKind.NONE,),
         goal_mode=GoalMode.AHEAD,
         estimator=EstimatorConfig(),
         # Injected at the composition root, so no test ever loads 1.3 GB of weights.
@@ -205,7 +204,7 @@ def test_the_tap_wraps_whatever_source_was_built(tmp_path) -> None:
     # records the same way and the replay reads one format back.
     config = RunConfig(
         source_kind=SourceKind.LOGGED,
-        sink_kind=SinkKind.NONE,
+        sink_kinds=(SinkKind.NONE,),
         goal_mode=GoalMode.AHEAD,
         logged=LoggedConfig(log_dir="a_log"),
         tap=TapConfig(log_dir=str(tmp_path / "recorded")),
@@ -217,7 +216,7 @@ def test_the_tap_wraps_whatever_source_was_built(tmp_path) -> None:
 def test_without_record_to_the_source_is_not_wrapped() -> None:
     config = RunConfig(
         source_kind=SourceKind.LOGGED,
-        sink_kind=SinkKind.NONE,
+        sink_kinds=(SinkKind.NONE,),
         goal_mode=GoalMode.AHEAD,
         logged=LoggedConfig(log_dir="a_log"),
     )
@@ -227,7 +226,7 @@ def test_without_record_to_the_source_is_not_wrapped() -> None:
 def test_a_built_source_refuses_a_missing_config() -> None:
     # RunConfig does not validate across its own fields, so a kind whose config was never built is
     # reachable. The factory must say which one rather than construct a source around a None.
-    config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kind=SinkKind.NONE, goal_mode=GoalMode.AHEAD)
+    config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kinds=(SinkKind.NONE,), goal_mode=GoalMode.AHEAD)
 
     with pytest.raises(ValueError, match="video_file needs a video config"):
         build_source(config)
@@ -236,7 +235,7 @@ def test_a_built_source_refuses_a_missing_config() -> None:
 def test_estimator_backed_source_refuses_a_missing_estimator_config() -> None:
     config = RunConfig(
         source_kind=SourceKind.VIDEO_FILE,
-        sink_kind=SinkKind.NONE,
+        sink_kinds=(SinkKind.NONE,),
         goal_mode=GoalMode.AHEAD,
         video=VideoConfig(path="scene.mp4"),
     )
@@ -249,7 +248,7 @@ BUILT_SINK_KINDS = {
     SinkKind.NONE: {},
     SinkKind.DEBUG_WINDOW: {},
     SinkKind.WEB: {"web": WebConfig(port=0)},
-    SinkKind.PHONE_APP: {"phone_app": PhoneAppConfig(address="127.0.0.1", port=1)},
+    SinkKind.PHONE_APP: {"phone_app": PhoneAppConfig(port=1)},
 }
 
 
@@ -259,7 +258,7 @@ def test_every_sink_kind_is_accounted_for() -> None:
 
 @pytest.mark.parametrize("sink_kind", sorted(BUILT_SINK_KINDS, key=lambda kind: kind.value))
 def test_built_sink_kinds_return_a_sink_without_opening_anything(sink_kind: SinkKind) -> None:
-    config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kind=sink_kind, goal_mode=GoalMode.AHEAD, **BUILT_SINK_KINDS[sink_kind])
+    config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kinds=(sink_kind,), goal_mode=GoalMode.AHEAD, **BUILT_SINK_KINDS[sink_kind])
 
     sink = build_sink(config)
 
@@ -270,8 +269,57 @@ def test_built_sink_kinds_return_a_sink_without_opening_anything(sink_kind: Sink
     sink.close()
 
 
+def test_several_sinks_build_one_fan_out_over_them_all() -> None:
+    # A walk puts the arrow on the phone and the depth view in a browser at the same time, and
+    # the loop still receives one sink.
+    from nav.sinks.fan_out import FanOutSink
+    from nav.sinks.phone_app import PhoneAppSink
+    from nav.sinks.web import WebSink
+
+    config = build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "phone_app", "--sink", "web"])
+
+    assert config.sink_kinds == (SinkKind.PHONE_APP, SinkKind.WEB)
+    assert config.phone_app is not None and config.web is not None
+    sink = build_sink(config)
+    try:
+        assert isinstance(sink, FanOutSink)
+        assert [type(each) for each in sink.sinks] == [PhoneAppSink, WebSink]
+    finally:
+        sink.close()
+
+
+def test_all_three_displays_can_run_together() -> None:
+    config = build_run_config(
+        [*MINIMAL_VIDEO_ARGV[:-2], "--sink", "phone_app", "--sink", "web", "--sink", "debug_window"]
+    )
+
+    sink = build_sink(config)
+    try:
+        assert len(sink.sinks) == 3
+    finally:
+        sink.close()
+
+
+def test_one_sink_is_not_wrapped_in_a_fan_out() -> None:
+    # The common case stays exactly what it was, so a single-display run has nothing extra in it.
+    from nav.sinks.none import NullSink
+
+    sink = build_sink(build_run_config(MINIMAL_VIDEO_ARGV))
+
+    assert isinstance(sink, NullSink)
+
+
+def test_naming_the_same_display_twice_is_refused(capsys: pytest.CaptureFixture[str]) -> None:
+    # Two web sinks is two servers on one port. The second would fail at start with a bind error
+    # that reads as another program holding it, which is the wrong thing to make someone debug.
+    with pytest.raises(SystemExit):
+        build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "web", "--sink", "web"])
+
+    assert "given more than once" in capsys.readouterr().err
+
+
 def test_a_built_sink_refuses_a_missing_config() -> None:
-    config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kind=SinkKind.PHONE_APP, goal_mode=GoalMode.AHEAD)
+    config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kinds=(SinkKind.PHONE_APP,), goal_mode=GoalMode.AHEAD)
 
     with pytest.raises(ValueError, match="phone_app needs"):
         build_sink(config)
@@ -296,10 +344,19 @@ def test_the_floor_tilt_and_fallback_fov_flags_reach_their_layers() -> None:
     assert config.estimator.fallback_half_field_of_view_degrees == pytest.approx(37.5)
 
 
+def test_the_floor_max_height_flag_reaches_the_scene() -> None:
+    # The first Pixel walk's false plane put the camera 2.3 m up, and the ceiling that refuses it
+    # is the one gate that has bitten on real data, so it has to be tunable without editing code.
+    config = build_run_config([*MINIMAL_VIDEO_ARGV, "--floor-max-height", "1.9"])
+
+    assert config.scene.floor_max_offset_meters == pytest.approx(1.9)
+
+
 def test_the_floor_tilt_and_fallback_fov_defaults_match_their_configs() -> None:
     config = build_run_config(MINIMAL_VIDEO_ARGV)
 
     assert config.scene.floor_max_tilt_degrees == SceneConfig.floor_max_tilt_degrees
+    assert config.scene.floor_max_offset_meters == SceneConfig.floor_max_offset_meters
     assert config.estimator is not None
     assert config.estimator.fallback_half_field_of_view_degrees == EstimatorConfig.fallback_half_field_of_view_degrees
 
@@ -310,6 +367,7 @@ def test_every_parsed_default_is_the_dataclass_default() -> None:
     config = build_run_config(MINIMAL_VIDEO_ARGV)
     assert config.estimator is not None
     assert config.walker.radius_meters == WalkerConfig.radius_meters
+    assert config.scene.floor_max_offset_meters == SceneConfig.floor_max_offset_meters
     assert config.estimator.process_resolution == EstimatorConfig.process_resolution
     assert config.estimator.confidence_drop_percentile == EstimatorConfig.confidence_drop_percentile
     assert config.estimator.model_name == EstimatorConfig.model_name
@@ -332,8 +390,17 @@ def test_the_accept_timeout_flag_reaches_the_phone_source() -> None:
     web = build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "web"]).web
     assert web is not None and web.port == WebConfig.port
 
-    phone = build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "phone_app", "--phone-address", "10.0.0.2"]).phone_app
+    phone = build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "phone_app"]).phone_app
     assert phone is not None and phone.port == PhoneAppConfig.port
+
+
+def test_phone_address_is_no_longer_an_argument(capsys: pytest.CaptureFixture[str]) -> None:
+    # The phone connects to the laptop now, with the laptop address it already has. A flag for
+    # the phone's address would be a flag nothing reads, and the parser must say so.
+    with pytest.raises(SystemExit):
+        build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "phone_app", "--phone-address", "10.0.0.2"])
+
+    assert "unrecognized arguments: --phone-address" in capsys.readouterr().err
 
 
 def test_neon_without_an_address_is_left_to_discovery() -> None:
@@ -360,6 +427,8 @@ def test_neon_address_is_carried_through_when_given() -> None:
     [
         ("--walker-radius", "0"),
         ("--walker-radius", "-0.35"),
+        ("--floor-max-height", "0"),
+        ("--floor-max-height", "-2.2"),
         ("--process-resolution", "0"),
         ("--process-resolution", "-504"),
         ("--confidence-drop-percentile", "-1"),
@@ -382,12 +451,12 @@ def test_out_of_range_number_is_refused(flag: str, bad_value: str, capsys: pytes
 def test_factory_refuses_a_kind_it_does_not_handle() -> None:
     # RunConfig does not validate its own fields, so this is reachable the day someone adds an
     # enum member and forgets the factory. The catch-all must say so rather than return None.
-    config = RunConfig(source_kind="not_a_kind", sink_kind=SinkKind.NONE, goal_mode=GoalMode.AHEAD)
+    config = RunConfig(source_kind="not_a_kind", sink_kinds=(SinkKind.NONE,), goal_mode=GoalMode.AHEAD)
 
     with pytest.raises(ValueError, match="no source constructor"):
         build_source(config)
 
-    sink_config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kind="not_a_kind", goal_mode=GoalMode.AHEAD)
+    sink_config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kinds=("not_a_kind",), goal_mode=GoalMode.AHEAD)
     with pytest.raises(ValueError, match="no sink constructor"):
         build_sink(sink_config)
 

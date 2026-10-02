@@ -27,7 +27,7 @@ from nav.runtime.tap import RecordingTap
 from nav.runtime.worker import NewestFrameWorker
 from nav.sources.config import ArCoreConfig, LoggedConfig, TapConfig
 from nav.sources.framecodec import INDEX_FILENAME
-from nav.types import PlannedPath
+from nav.types import DebugView, DepthFrame, FloorSource, ObstacleSet, Plane, PlannedPath, Pose
 from nav.usermodel.config import UserModelConfig
 from nav.usermodel.work import WorkMeter
 from fake_arcore_sender import send_frames, synthetic_frames
@@ -44,6 +44,54 @@ def _free_port() -> int:
 
 def _path(heading: float = 0.0, cost: float = 1.0) -> PlannedPath:
     return PlannedPath(0.0, np.array([0.0, 0.1]), np.array([0.0, 0.0]), heading, False, cost)
+
+
+def _view() -> DebugView:
+    """The smallest view a result can carry: a 2 by 2 frame, no obstacles, a level floor."""
+    frame = DepthFrame(
+        timestamp_seconds=0.0,
+        depth_meters=np.ones((2, 2), dtype=np.float32),
+        intrinsics=np.array([[1.0, 0.0, 1.0], [0.0, 1.0, 1.0], [0.0, 0.0, 1.0]]),
+        pose=Pose(orientation=np.array([1.0, 0.0, 0.0, 0.0]), position=None, has_position=False),
+        ground_plane=None,
+        gaze_pixel=None,
+    )
+    return DebugView(frame, ObstacleSet(0.0, (), 0), Plane(np.array([0.0, -1.0, 0.0]), 1.6), FloorSource.FITTED, 1.4)
+
+
+def test_the_sink_is_started_before_the_source_yields_a_frame(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Both listening sinks used to open their port on their first publish, so a browser or the
+    # phone's path connection found nothing until the first planned frame, which on a still
+    # phone is minutes away. The page would not load on the first display run for that reason.
+    order: list[str] = []
+
+    class RecordingSink:
+        def start(self) -> None:
+            order.append("sink started")
+
+        def publish(self, path: PlannedPath) -> None:
+            order.append("published")
+
+        def close(self) -> None:
+            order.append("sink closed")
+
+    class OneFrameSource:
+        def frames(self):
+            order.append("first frame yielded")
+            yield next(synthetic_frames(1))
+
+        def close(self) -> None:
+            pass
+
+    import nav.runtime.loop as loop_module
+
+    monkeypatch.setattr(loop_module, "build_sink", lambda config: RecordingSink())
+    monkeypatch.setattr(loop_module, "build_source", lambda config: OneFrameSource())
+
+    assert run(build_run_config(["--source", "arcore_tcp", "--sink", "none"])) == 0
+    assert "sink started" in order and "first frame yielded" in order
+    assert order.index("sink started") < order.index("first frame yielded")
+    assert order[-1] == "sink closed"
 
 
 def test_a_source_that_fails_inside_the_loop_is_reported_as_known_not_unexpected(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
@@ -66,6 +114,9 @@ def test_a_source_that_fails_inside_the_loop_is_reported_as_known_not_unexpected
 
 def test_a_sink_that_raises_an_unexpected_error_ends_the_run_with_exit_one_and_a_traceback(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     class BrokenSink:
+        def start(self) -> None:
+            pass
+
         def publish(self, path: PlannedPath) -> None:
             raise RuntimeError("a bug, not bad input")
 
@@ -74,7 +125,7 @@ def test_a_sink_that_raises_an_unexpected_error_ends_the_run_with_exit_one_and_a
 
     log_dir = tmp_path / "log"
     _record_synthetic_log(log_dir, count=3)
-    config = RunConfig(source_kind=SourceKind.LOGGED, sink_kind=SinkKind.NONE, goal_mode=GoalMode.AHEAD, logged=LoggedConfig(log_dir=str(log_dir)))
+    config = RunConfig(source_kind=SourceKind.LOGGED, sink_kinds=(SinkKind.NONE,), goal_mode=GoalMode.AHEAD, logged=LoggedConfig(log_dir=str(log_dir)))
 
     # The sink is swapped under the factory by building the config the loop would build, then
     # running with a sink the factory cannot produce. The loop takes what build_sink returns, so
@@ -110,7 +161,7 @@ def test_reconnect_with_a_recording_keeps_one_log_and_the_totals_across_connecti
     log_dir = tmp_path / "walk"
     config = RunConfig(
         source_kind=SourceKind.ARCORE_TCP,
-        sink_kind=SinkKind.NONE,
+        sink_kinds=(SinkKind.NONE,),
         goal_mode=GoalMode.AHEAD,
         # Short enough that the run ends soon after the second sender, long enough for both.
         arcore=ArCoreConfig(port=port, bind_address="127.0.0.1", accept_timeout_seconds=2.0),
@@ -148,6 +199,9 @@ def test_a_result_is_published_once_however_many_frames_arrive_while_it_is_the_n
     published: list[PlannedPath] = []
 
     class CountingSink:
+        def start(self) -> None:
+            pass
+
         def publish(self, path: PlannedPath) -> None:
             published.append(path)
 
@@ -158,7 +212,7 @@ def test_a_result_is_published_once_however_many_frames_arrive_while_it_is_the_n
         """Holds one result for as long as the test likes, like a worker mid-way through a slow frame."""
 
         def __init__(self) -> None:
-            self.result = FrameResult(_path(0.1), np.zeros((1, 3)), np.array([-1.0, 0.0, 1.0]))
+            self.result = FrameResult(_path(0.1), np.zeros((1, 3)), np.array([-1.0, 0.0, 1.0]), _view())
 
         def latest_result(self):
             return self.result
@@ -169,7 +223,7 @@ def test_a_result_is_published_once_however_many_frames_arrive_while_it_is_the_n
         publisher.publish(worker)
     assert len(published) == 1, "six source frames with one result is one publish"
 
-    worker.result = FrameResult(_path(0.2), np.zeros((1, 3)), np.array([-1.0, 0.0, 1.0]))
+    worker.result = FrameResult(_path(0.2), np.zeros((1, 3)), np.array([-1.0, 0.0, 1.0]), _view())
     publisher.publish(worker)
     publisher.publish(worker)
     assert [path.first_heading_radians for path in published] == pytest.approx([0.1, 0.2])

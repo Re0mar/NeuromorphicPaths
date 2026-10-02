@@ -10,6 +10,7 @@ reconnects forever can never be run to completion in a test.
 # Standard library imports
 import logging
 import socket
+import time
 from collections.abc import Iterator
 
 # Local package imports
@@ -18,6 +19,13 @@ from nav.sources.framecodec import FrameDecodeError, StreamClosedError, decode_f
 from nav.types import DepthFrame
 
 log = logging.getLogger(__name__)
+
+# How long one accept waits before returning to Python. Waiting out the whole accept timeout in
+# one call makes the run deaf to Ctrl-C for as long as it lasts: a console interrupt is only
+# acted on between bytecodes, and a socket call blocked in the operating system is not between
+# bytecodes. Launching the app by hand needs a ten minute wait, and ten minutes of a process that
+# cannot be stopped is not a wait anybody will sit through.
+ACCEPT_POLL_SECONDS = 0.5
 
 
 class ArCoreTcpSource:
@@ -52,9 +60,15 @@ class ArCoreTcpSource:
             # use without this, which reads as the phone being unreachable rather than as a
             # stale socket. A second listener is still refused, which is what the test asserts.
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listener.bind((self._config.bind_address, self._config.port))
-        listener.listen(1)
-        listener.settimeout(self._config.accept_timeout_seconds)
+        try:
+            listener.bind((self._config.bind_address, self._config.port))
+            listener.listen(1)
+        except OSError as taken:
+            # Same reasoning as the phone sink's. The bare WinError names no port, and a run has
+            # three of them.
+            listener.close()
+            raise OSError(f"the depth source could not listen on {self._config.bind_address}:{self._config.port}: {taken}") from taken
+        listener.settimeout(ACCEPT_POLL_SECONDS)
         self._listener = listener
         log.info("listening for the Pixel app on %s:%d", self._config.bind_address, self.port)
         return listener
@@ -62,12 +76,7 @@ class ArCoreTcpSource:
     def frames(self) -> Iterator[DepthFrame]:
         listener = self._listen()
 
-        try:
-            client, peer = listener.accept()
-        except TimeoutError as timeout_error:
-            raise ConnectionError(
-                f"no sender connected to port {self.port} within {self._config.accept_timeout_seconds:.0f} s"
-            ) from timeout_error
+        client, peer = self._accept_within_timeout(listener)
         self._client = client
         log.info("sender connected from %s:%d", peer[0], peer[1])
 
@@ -109,6 +118,34 @@ class ArCoreTcpSource:
             # The listener stays open, so frames() can be called again for the next connection
             # without holding a dead socket per reconnect until the run ends.
             self._end_connection()
+
+    def _accept_within_timeout(self, listener: socket.socket) -> tuple[socket.socket, tuple]:
+        """
+        Wait for the sender, in short slices, up to the configured accept timeout.
+
+        Each slice hands control back to Python, which is the only moment a Ctrl-C can be acted
+        on, so the wait is interruptible however long it is.
+
+        :param listener: The bound, listening socket.
+        :return: The accepted connection and its peer address.
+        :rtype: tuple[socket.socket, tuple]
+        :raises ConnectionError: When nobody connects within the accept timeout.
+        """
+        deadline = time.monotonic() + self._config.accept_timeout_seconds
+        last_timeout: TimeoutError | None = None
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ConnectionError(
+                    f"no sender connected to port {self.port} within {self._config.accept_timeout_seconds:.0f} s"
+                ) from last_timeout
+            # The shorter of the two, so a long wait stays interruptible and a short one is still
+            # as short as it was asked to be.
+            listener.settimeout(min(ACCEPT_POLL_SECONDS, remaining))
+            try:
+                return listener.accept()
+            except TimeoutError as timeout_error:
+                last_timeout = timeout_error
 
     def _end_connection(self) -> None:
         if self._client is not None:

@@ -25,7 +25,7 @@ from nav.runtime.worker import NewestFrameWorker
 from nav.scene.floor import ground_axes
 from nav.scene.pipeline import ScenePipeline
 from nav.scene.transform import rotation_matrix_from_quaternion_wxyz
-from nav.types import DebugSink, DepthFrame, PlannedPath
+from nav.types import DebugSink, DebugView, DepthFrame, PlannedPath
 from nav.usermodel.work import WorkMeter
 
 log = logging.getLogger(__name__)
@@ -40,11 +40,12 @@ CAMERA_FORWARD = np.array([0.0, 0.0, 1.0])
 
 @dataclass(frozen=True)
 class FrameResult:
-    """What one frame produced, kept together so the debug sink draws a field and its own path."""
+    """What one frame produced, kept together so the debug sink draws a field, a view and their own path."""
 
     path: PlannedPath
     field: np.ndarray
     grid: np.ndarray
+    view: DebugView
 
 
 def yaw_from_quaternion(orientation_wxyz: np.ndarray) -> float:
@@ -148,7 +149,20 @@ def run(config: RunConfig) -> int:
             " ALARM" if path.alarm else "",
         )
         field = planner.last_field
-        return FrameResult(path=path, field=field if field is not None else np.zeros((1, len(planner.grid))), grid=planner.grid)
+        # Built here, on the worker thread, right after the scene ran, so the floor the view
+        # names is the one this frame used and not a later frame's.
+        floor = scene.previous_plane
+        floor_source = scene.last_floor_source
+        if floor is None or floor_source is None:
+            raise RuntimeError("the scene processed a frame and has no floor to show for it")
+        view = DebugView(
+            frame=frame,
+            obstacles=obstacles,
+            floor=floor,
+            floor_source=floor_source,
+            walking_speed_mps=config.planner.walking_speed_mps,
+        )
+        return FrameResult(path=path, field=field if field is not None else np.zeros((1, len(planner.grid))), grid=planner.grid, view=view)
 
     sink = build_sink(config)
     source = build_source(config)
@@ -159,6 +173,10 @@ def run(config: RunConfig) -> int:
     exit_code = 0
     frames_in = 0
     try:
+        # The sink listens before the source has a frame, so a browser or the phone's path
+        # connection finds something to connect to from the start. A port it cannot bind is a
+        # ConnectionError, caught below as the OSError it is, and the run ends with the reason.
+        sink.start()
         while True:
             try:
                 for frame in source.frames():
@@ -217,7 +235,7 @@ class NewestResultPublisher:
             return
         self._last = result
         if isinstance(self._sink, DebugSink):
-            self._sink.publish_debug(result.path, result.field, result.grid)
+            self._sink.publish_debug(result.path, result.field, result.grid, result.view)
         else:
             self._sink.publish(result.path)
 
@@ -259,6 +277,10 @@ def _config_as_json(config: RunConfig) -> dict:
             return {name: plain(getattr(value, name)) for name in value.__dataclass_fields__ if name != "estimator_factory"}
         if isinstance(value, Enum):
             return value.value
+        if isinstance(value, (tuple, list)):
+            # The sinks a run named. Without this the enums inside reach the JSON encoder, which
+            # refuses them, and a recording loses the configuration it is supposed to carry.
+            return [plain(item) for item in value]
         return value
 
     return plain(config)

@@ -34,7 +34,14 @@ def pose_from_imu(orientation_wxyz: np.ndarray) -> Pose:
     if not np.isfinite(length) or length == 0.0:
         raise ValueError(f"orientation must be a non-zero finite quaternion, got {orientation_wxyz}")
 
-    return Pose(orientation=orientation_wxyz / length, position=None, has_position=False)
+    # An IMU's orientation is measured against gravity, which is the whole reason it is worth
+    # carrying without a position. The scene reads the floor's up from it.
+    return Pose(
+        orientation=orientation_wxyz / length,
+        position=None,
+        has_position=False,
+        orientation_is_gravity_aligned=True,
+    )
 
 
 def identity_pose() -> Pose:
@@ -42,9 +49,15 @@ def identity_pose() -> Pose:
     The pose for a source with no orientation at all, such as a plain video file.
 
     Downstream then works in the camera's own axes, so the floor fit has to find the ground
-    rather than being told roughly where it is.
+    rather than being told roughly where it is. Nothing here knows which way gravity points, so
+    the scene falls back to the image's own up and assumes the camera is held roughly level.
 
-    :return: Pose with no rotation and no position.
+    :return: Pose with no rotation, no position, and no gravity.
     :rtype: Pose
     """
-    return Pose(orientation=IDENTITY_ORIENTATION_WXYZ.copy(), position=None, has_position=False)
+    return Pose(
+        orientation=IDENTITY_ORIENTATION_WXYZ.copy(),
+        position=None,
+        has_position=False,
+        orientation_is_gravity_aligned=False,
+    )
