@@ -22,6 +22,7 @@ from nav.runtime.tap import RecordingTap
 from nav.scene.config import SceneConfig
 from nav.sinks.config import DebugWindowConfig, PhoneAppConfig, WebConfig
 from nav.sinks.debug_window import DebugWindowSink
+from nav.sinks.fan_out import FanOutSink
 from nav.sinks.none import NullSink
 from nav.sinks.phone_app import PhoneAppSink
 from nav.sinks.web import WebSink
@@ -76,7 +77,7 @@ class RunConfig:
     """One whole run. Everything the factories and the loop need, and nothing they have to find."""
 
     source_kind: SourceKind
-    sink_kind: SinkKind
+    sink_kinds: tuple[SinkKind, ...]
     goal_mode: GoalMode
     scene: SceneConfig = field(default_factory=SceneConfig)
     planner: PlannerConfig = field(default_factory=PlannerConfig)
@@ -147,7 +148,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     pipeline = parser.add_argument_group("pipeline")
     pipeline.add_argument("--source", required=True, choices=[kind.value for kind in SourceKind])
-    pipeline.add_argument("--sink", required=True, choices=[kind.value for kind in SinkKind])
+    pipeline.add_argument(
+        "--sink",
+        required=True,
+        action="append",
+        choices=[kind.value for kind in SinkKind],
+        help="where the path goes. Repeat it for more than one display, as in --sink phone_app --sink web",
+    )
     pipeline.add_argument("--goal", choices=[mode.value for mode in GoalMode], default=GoalMode.AHEAD.value)
 
     video = parser.add_argument_group("video_file source")
@@ -246,8 +253,14 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
     arguments = parser.parse_args(argv)
 
     source_kind = SourceKind(arguments.source)
-    sink_kind = SinkKind(arguments.sink)
+    sink_kinds = tuple(SinkKind(name) for name in arguments.sink)
     goal_mode = GoalMode(arguments.goal)
+
+    # Two of the same display is two servers on one port, or two windows with one name. The
+    # second would fail at start with a bind error that reads as another program holding it.
+    repeated = [kind.value for kind in SinkKind if sink_kinds.count(kind) > 1]
+    if repeated:
+        parser.error(f"--sink {' and '.join(repeated)} given more than once, name each display at most once")
 
     # The loop and the replay act on these flags alone and never name a kind, so the kind checks
     # live here, before anything that opens a path.
@@ -305,19 +318,20 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
     web = None
     phone_app = None
 
-    match sink_kind:
-        case SinkKind.WEB:
-            web = WebConfig(port=arguments.web_port)
-        case SinkKind.PHONE_APP:
-            phone_app = PhoneAppConfig(port=arguments.phone_port)
-        case SinkKind.DEBUG_WINDOW | SinkKind.NONE:
-            pass
-        case _:
-            raise ValueError(f"no argument handling for {sink_kind}")
+    for sink_kind in sink_kinds:
+        match sink_kind:
+            case SinkKind.WEB:
+                web = WebConfig(port=arguments.web_port)
+            case SinkKind.PHONE_APP:
+                phone_app = PhoneAppConfig(port=arguments.phone_port)
+            case SinkKind.DEBUG_WINDOW | SinkKind.NONE:
+                pass
+            case _:
+                raise ValueError(f"no argument handling for {sink_kind}")
 
     return RunConfig(
         source_kind=source_kind,
-        sink_kind=sink_kind,
+        sink_kinds=sink_kinds,
         goal_mode=goal_mode,
         scene=SceneConfig(floor_max_tilt_degrees=arguments.floor_max_tilt, floor_max_offset_meters=arguments.floor_max_height),
         walker=WalkerConfig(radius_meters=arguments.walker_radius),
@@ -407,13 +421,23 @@ def _build_inner_source(config: RunConfig) -> DepthFrameSource:
 
 def build_sink(config: RunConfig) -> PathSink:
     """
-    Turn the chosen sink kind into a sink.
+    Turn the chosen sink kinds into one sink.
+
+    A run names one display or several. With several the loop still receives one sink, a fan-out
+    that hands every path to each of them, so nothing upstream counts displays.
 
     :param config: The run configuration.
     :return: A sink accepting PlannedPath objects.
     :rtype: PathSink
     """
-    match config.sink_kind:
+    sinks = [_build_one_sink(kind, config) for kind in config.sink_kinds]
+    if len(sinks) == 1:
+        return sinks[0]
+    return FanOutSink(sinks)
+
+
+def _build_one_sink(sink_kind: SinkKind, config: RunConfig) -> PathSink:
+    match sink_kind:
         case SinkKind.DEBUG_WINDOW:
             return DebugWindowSink(config.debug_window)
         case SinkKind.WEB:
@@ -427,7 +451,7 @@ def build_sink(config: RunConfig) -> PathSink:
         case SinkKind.NONE:
             return NullSink()
         case _:
-            raise ValueError(f"no sink constructor for {config.sink_kind}")
+            raise ValueError(f"no sink constructor for {sink_kind}")
 
 
 def _require(

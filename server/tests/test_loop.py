@@ -125,7 +125,7 @@ def test_a_sink_that_raises_an_unexpected_error_ends_the_run_with_exit_one_and_a
 
     log_dir = tmp_path / "log"
     _record_synthetic_log(log_dir, count=3)
-    config = RunConfig(source_kind=SourceKind.LOGGED, sink_kind=SinkKind.NONE, goal_mode=GoalMode.AHEAD, logged=LoggedConfig(log_dir=str(log_dir)))
+    config = RunConfig(source_kind=SourceKind.LOGGED, sink_kinds=(SinkKind.NONE,), goal_mode=GoalMode.AHEAD, logged=LoggedConfig(log_dir=str(log_dir)))
 
     # The sink is swapped under the factory by building the config the loop would build, then
     # running with a sink the factory cannot produce. The loop takes what build_sink returns, so
@@ -161,7 +161,7 @@ def test_reconnect_with_a_recording_keeps_one_log_and_the_totals_across_connecti
     log_dir = tmp_path / "walk"
     config = RunConfig(
         source_kind=SourceKind.ARCORE_TCP,
-        sink_kind=SinkKind.NONE,
+        sink_kinds=(SinkKind.NONE,),
         goal_mode=GoalMode.AHEAD,
         # Short enough that the run ends soon after the second sender, long enough for both.
         arcore=ArCoreConfig(port=port, bind_address="127.0.0.1", accept_timeout_seconds=2.0),

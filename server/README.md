@@ -73,12 +73,28 @@ run ends when the phone disconnects. Launching the app by hand takes longer than
 | `phone_app` | the Pixel app over TCP. The phone connects to the laptop, on this port | `--phone-port` (9100) |
 | `none` | nowhere. For recording and for tests | |
 
+**`--sink` can be repeated, and a walk usually repeats it.** The arrow belongs on the phone, where
+the walker is looking, and the depth view belongs in a browser, where whoever is watching the
+laptop is looking. Name both and both are served from the one run:
+
+```
+--sink phone_app --sink web
+```
+
+Any combination works, all three included. Each display is named at most once, since two of the
+same means two servers on one port. One display named is exactly what it always was.
+
 The depth view is the depth image the planner saw, colored by distance, with each obstacle
 group's nearest point as a ring sized by its clearance, magenta for a wall, the chosen path laid
 on the floor as a white line, and one line of text: groups in view, the nearest clearance, where
 the floor came from (`supplied` by the source, `fitted` from the cloud, or the `previous`
 frame's), and `ALARM` when set. It is what a person tuning the planner looks at, and the window
 and the browser draw it from the same code. The phone never gets it.
+
+A display that cannot start ends the run with its own message, because a display asked for and
+silently missing is worse than a run that says why it stopped. A display that fails once it is
+running is dropped with its traceback and the rest keep going, because by then a walker is
+looking at one of them.
 
 ### The flags a phone needs
 
@@ -123,14 +139,15 @@ The TCP source, with the test sender standing in for the Pixel app from a second
 .venv/Scripts/python tests/fake_arcore_sender.py --port 9000 --count 100
 ```
 
-The Pixel over wifi, the phone as the display, recording the walk:
+The Pixel over wifi, the arrow on the phone and the depth view in a browser, recording the walk:
 
 ```
-.venv/Scripts/python -m nav --source arcore_tcp --arcore-accept-timeout 600 --reconnect --sink phone_app --floor-max-tilt 50 --record-to frame_logs/walk --verbose
+.venv/Scripts/python -m nav --source arcore_tcp --arcore-accept-timeout 600 --reconnect --sink phone_app --sink web --floor-max-tilt 50 --record-to frame_logs/walk --verbose
 ```
 
-The same with the browser as the display, `--sink web`, and the page at `http://<laptop>:8765`.
-Both ports the laptop listens on, 9000 for depth and 9100 for paths (8765 for the page), need an
+The page is at `http://<laptop>:8765` and serves from the moment the run starts, before the phone
+has connected. All three ports the laptop listens on, 9000 for depth, 9100 for paths and 8765 for
+the page, need an
 inbound rule in the Windows firewall, and the rule has to name the Python that owns the socket.
 With a venv that is the base interpreter the venv was made from, not the venv's `python.exe`,
 which is a launcher. In an elevated PowerShell, once per port:
@@ -142,6 +159,26 @@ New-NetFirewallRule -DisplayName "nav pipeline, path port" -Direction Inbound -A
 
 Over USB instead, `adb reverse tcp:9000 tcp:9000` and `adb reverse tcp:9100 tcp:9100` on the
 laptop, and the app connects to `127.0.0.1`.
+
+### Reserve the three ports on Windows
+
+A run that ends with `could not listen on 0.0.0.0:9100` is a port another process holds, and the
+other process is usually not a server. Windows hands out a local port for every outbound
+connection from its dynamic range, and this laptop's range is the whole of 1024 to 65534, so a
+browser, a Flutter tool or any other program can be given 9000, 9100 or 8765 and keep it for as
+long as its connection lasts. Check with `netsh int ipv4 show dynamicport tcp`.
+
+Reserve the three so Windows stops handing them out. Once, in an elevated PowerShell:
+
+```powershell
+netsh int ipv4 add excludedportrange protocol=tcp startport=9000 numberofports=1 store=persistent
+netsh int ipv4 add excludedportrange protocol=tcp startport=9100 numberofports=1 store=persistent
+netsh int ipv4 add excludedportrange protocol=tcp startport=8765 numberofports=1 store=persistent
+```
+
+`netsh int ipv4 show excludedportrange protocol=tcp` lists them afterwards. A port already held
+by a running process has to be given up first, and `Get-NetTCPConnection -LocalPort 9100` names
+the process holding it.
 
 The live glasses. Discovery finds the Neon on the local network. University wifi usually blocks
 that between subnets, in which case read the address off the Companion app's streaming screen:

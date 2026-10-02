@@ -20,10 +20,12 @@ app on the `restart` branch: Gradle 9.6, AGP 9.4.1, Kotlin 2.2.10, minSdk 34.
 ## Run
 
 1. Start the laptop listening, from `server/`:
-   `python -m nav --source arcore_tcp --arcore-accept-timeout 600 --reconnect --sink phone_app --floor-max-tilt 50`.
-   It listens on two ports, 9000 for depth and 9100 for paths. Both need an inbound firewall
-   rule on the laptop, and the rule has to name the Python that owns the socket, which with a
-   venv is the base interpreter and not the venv's launcher. See `server/README.md`.
+   `python -m nav --source arcore_tcp --arcore-accept-timeout 600 --reconnect --sink phone_app --sink web --floor-max-tilt 50`.
+   That serves the arrow to this app and the depth view to a browser at `http://<laptop>:8765` in
+   the same run. It listens on three ports, 9000 for depth, 9100 for paths and 8765 for the page.
+   Each needs an inbound firewall rule on the laptop, and the rule has to name the Python that
+   owns the socket, which with a venv is the base interpreter and not the venv's launcher. See
+   `server/README.md`.
 2. Install and open the app. It asks for the camera, then for ARCore if the phone lacks it.
 3. Type the laptop's address, leave the two ports unless the laptop was started with others,
    and tap Connect. The app opens both connections to that one address.

@@ -153,7 +153,9 @@ def test_a_second_sink_on_the_same_port_is_refused() -> None:
     first = _listening_sink()
     second = PhoneAppSink(PhoneAppConfig(port=first.port, bind_address="127.0.0.1"))
     try:
-        with pytest.raises(OSError):
+        # The message names the sink and the port. A run listens on three, and the operating
+        # system's own text says only that some socket address is in use.
+        with pytest.raises(OSError, match=f"phone sink could not listen on 127.0.0.1:{first.port}"):
             second.start()
     finally:
         second.close()

@@ -277,6 +277,10 @@ def _config_as_json(config: RunConfig) -> dict:
             return {name: plain(getattr(value, name)) for name in value.__dataclass_fields__ if name != "estimator_factory"}
         if isinstance(value, Enum):
             return value.value
+        if isinstance(value, (tuple, list)):
+            # The sinks a run named. Without this the enums inside reach the JSON encoder, which
+            # refuses them, and a recording loses the configuration it is supposed to carry.
+            return [plain(item) for item in value]
         return value
 
     return plain(config)

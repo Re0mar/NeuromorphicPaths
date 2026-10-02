@@ -122,6 +122,76 @@ def test_a_logged_replay_reaches_a_phone_through_main(tmp_path: Path) -> None:
     assert np.isfinite(received[0].first_heading_radians)
 
 
+def test_a_logged_replay_serves_a_phone_and_a_browser_in_the_same_run(tmp_path: Path) -> None:
+    # A walk puts the arrow on the phone and the depth view in a browser at once. One display
+    # proves nothing about the other, so this drives both through the entry point a person types.
+    import socket
+    import threading
+    import urllib.request
+
+    from nav.sources.framecodec import decode_path, read_message
+
+    video = _write_video(tmp_path / "walk.avi")
+    log_dir = tmp_path / "log"
+    config = build_run_config(["--source", "video_file", "--path", str(video), "--sink", "none", "--record-to", str(log_dir)])
+    config = dataclasses.replace(config, estimator_factory=lambda estimator_config: StubDepthEstimator())
+    assert run(config) == 0
+
+    def _free_port() -> int:
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()
+        return port
+
+    phone_port, web_port = _free_port(), _free_port()
+    paths: list = []
+    pages: list[str] = []
+
+    def phone() -> None:
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            try:
+                connection = socket.create_connection(("127.0.0.1", phone_port), timeout=5.0)
+            except OSError:
+                time.sleep(0.05)
+                continue
+            try:
+                paths.append(decode_path(read_message(connection)))
+            finally:
+                connection.close()
+            return
+
+    def browser() -> None:
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{web_port}/", timeout=5.0) as response:
+                    pages.append(response.read().decode("utf-8"))
+                return
+            except OSError:
+                time.sleep(0.05)
+
+    watchers = [threading.Thread(target=phone, daemon=True), threading.Thread(target=browser, daemon=True)]
+    for watcher in watchers:
+        watcher.start()
+
+    assert main(
+        [
+            "--source", "logged", "--log-dir", str(log_dir),
+            "--sink", "phone_app", "--phone-port", str(phone_port),
+            "--sink", "web", "--web-port", str(web_port),
+            "--realtime",
+        ]
+    ) == 0
+    for watcher in watchers:
+        watcher.join(5.0)
+
+    assert paths, "the phone never read a path from the run"
+    assert np.isfinite(paths[0].first_heading_radians)
+    assert pages and "<canvas" in pages[0], "the browser never got the page from the same run"
+
+
 def test_a_missing_video_is_refused_by_the_parser_naming_the_path(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     # Refused before run() exists, so no estimator is built for a typo. The loop's own handling
     # of a source that fails after the parser let it through is in test_loop.py.

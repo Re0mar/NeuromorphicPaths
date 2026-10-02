@@ -81,8 +81,16 @@ class PhoneAppSink:
             # Everywhere else a restart within a minute of the last run fails with the port in
             # use without this. A second listener is still refused.
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listener.bind((self._config.bind_address, self._config.port))
-        listener.listen(1)
+        try:
+            listener.bind((self._config.bind_address, self._config.port))
+            listener.listen(1)
+        except OSError as taken:
+            # Named, because the bare WinError says only that a socket address is in use and the
+            # run has three ports. A port can be held by a second run, or by any outbound
+            # connection the machine gave that number to, which on Windows means any port inside
+            # the dynamic range. server/README.md says how to reserve these three.
+            listener.close()
+            raise OSError(f"the phone sink could not listen on {self._config.bind_address}:{self._config.port}: {taken}") from taken
         listener.settimeout(ACCEPT_POLL_SECONDS)
         self._listener = listener
         self._running = True
