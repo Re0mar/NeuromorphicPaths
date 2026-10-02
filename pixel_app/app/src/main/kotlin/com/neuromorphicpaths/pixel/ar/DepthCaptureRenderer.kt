@@ -13,12 +13,14 @@ import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
 /**
- * Drives the ARCore session from a GL surface and hands each frame's depth to a callback.
+ * Drives the ARCore session from a GL surface, draws the camera, and hands each new frame's depth
+ * to a callback.
  *
- * ARCore wants a GL texture to render the camera into and an update call per drawn frame, so the
- * simplest honest host is a GLSurfaceView whose renderer draws nothing. The screen stays black
- * on purpose. The walker reads the arrow from the laptop's web page in the browser, and this app
- * has one job, which is to get depth off the phone.
+ * Two rates on purpose. The picture is drawn on every draw, at the display rate, because ARCore's
+ * texture is valid on every draw and the display expects a picture every refresh. A depth message
+ * is sent once per ARCore frame, which [NewFrameGate] decides, because the first phone run sent
+ * sixty copies a second of frames that arrived at thirty. The gate guards the message, not the
+ * picture.
  */
 class DepthCaptureRenderer(
     private val sessionProvider: () -> Session?,
@@ -29,6 +31,7 @@ class DepthCaptureRenderer(
     private var frames = 0
     private var framesWithDepth = 0
     private val newFrames = NewFrameGate()
+    private var background: CameraBackground? = null
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         val textures = IntArray(1)
@@ -38,6 +41,8 @@ class DepthCaptureRenderer(
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
         GLES20.glClearColor(0f, 0f, 0f, 1f)
+        // A new surface means a new GL context, so the program is built again with the texture.
+        background = CameraBackground().also { it.createOnGlThread(cameraTexture) }
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
@@ -58,7 +63,9 @@ class DepthCaptureRenderer(
             onState(CaptureState.CameraUnavailable)
             return
         }
-        // A draw that got the frame the previous draw already handled sends nothing.
+        // The picture first, on every draw. Then the gate: a draw that got the frame the
+        // previous draw already handled sends nothing.
+        background?.draw(frame)
         if (!newFrames.isNew(frame.timestamp)) return
         frames += 1
         val camera = frame.camera

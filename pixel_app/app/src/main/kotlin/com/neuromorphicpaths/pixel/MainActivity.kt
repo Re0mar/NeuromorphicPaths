@@ -4,10 +4,12 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.opengl.GLSurfaceView
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -35,6 +37,7 @@ import com.google.ar.core.exceptions.FatalException
 import com.google.ar.core.exceptions.UnavailableException
 import com.neuromorphicpaths.pixel.ar.CaptureState
 import com.neuromorphicpaths.pixel.ar.DepthCaptureRenderer
+import com.neuromorphicpaths.pixel.ui.ArrowOverlay
 import com.neuromorphicpaths.pixel.wire.ConnectionStatus
 import com.neuromorphicpaths.pixel.wire.LaptopConnection
 import com.neuromorphicpaths.pixel.wire.PathConnection
@@ -83,6 +86,7 @@ class MainActivity : ComponentActivity() {
                         captureState = captureState,
                         connectionStatus = connectionStatus,
                         pathStatus = pathStatus,
+                        latestPath = latestPath,
                         onConnect = { host, port, pathPort -> connect(host, port, pathPort) },
                         glSurface = { view -> surface = view },
                     )
@@ -183,12 +187,14 @@ class MainActivity : ComponentActivity() {
         captureState: MutableStateFlow<CaptureState>,
         connectionStatus: MutableStateFlow<ConnectionStatus>,
         pathStatus: MutableStateFlow<PathConnectionStatus>,
+        latestPath: MutableStateFlow<ReceivedPath?>,
         onConnect: (String, Int, Int) -> Unit,
         glSurface: (GLSurfaceView) -> Unit,
     ) {
         val capture by captureState.collectAsState()
         val status by connectionStatus.collectAsState()
         val paths by pathStatus.collectAsState()
+        val path by latestPath.collectAsState()
         var host by remember { mutableStateOf(startupHost) }
         var port by remember { mutableStateOf(startupPort.toString()) }
         var pathPort by remember { mutableStateOf(startupPathPort.toString()) }
@@ -213,19 +219,23 @@ class MainActivity : ComponentActivity() {
             Text(describe(status), modifier = Modifier.padding(top = 12.dp))
             Text(describe(capture), modifier = Modifier.padding(top = 4.dp))
             Text(describe(paths), modifier = Modifier.padding(top = 4.dp))
-            // The GL surface is what drives ARCore. It draws black. The two lines above are the
-            // display, and the arrow is on the laptop's web page in the browser.
-            AndroidView(
-                factory = { context ->
-                    GLSurfaceView(context).apply {
-                        setEGLContextClientVersion(2)
-                        setRenderer(renderer())
-                        renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
-                        glSurface(this)
-                    }
-                },
-                modifier = Modifier.fillMaxWidth().weight(1f).padding(top = 12.dp),
-            )
+            // The GL surface drives ARCore and draws the camera. The arrow is Compose over it,
+            // which keeps display code out of the renderer and makes its arithmetic testable.
+            Box(modifier = Modifier.fillMaxWidth().weight(1f).padding(top = 12.dp)) {
+                AndroidView(
+                    factory = { context ->
+                        GLSurfaceView(context).apply {
+                            setEGLContextClientVersion(2)
+                            setRenderer(renderer())
+                            renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
+                            glSurface(this)
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                )
+                // The same clock the connection stamps paths with, so the age is one clock's difference.
+                ArrowOverlay(received = path, nowMillis = { SystemClock.elapsedRealtime() }, modifier = Modifier.fillMaxSize())
+            }
         }
     }
 
