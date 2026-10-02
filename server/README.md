@@ -54,32 +54,49 @@ is the whole configuration, and `--verbose` prints per-stage timings.
 |---|---|---|
 | `video_file` | a recording, or an IP camera app's stream URL, through the depth estimator | `--path`, checked before the model loads |
 | `neon_live` | the Pupil Labs Neon over the network, through the depth estimator | `--neon-address` only if discovery is blocked |
-| `arcore_tcp` | the Pixel app's depth frames over TCP | `--arcore-port` (9000), `--reconnect` |
+| `arcore_tcp` | the Pixel app's depth frames over TCP | `--arcore-port` (9000), `--arcore-accept-timeout` (30), `--reconnect` |
+| `neon_plugin` | a Neon recording the Neon Player depth plugin has run over | `--recording-dir`, `--plugin-model` |
+| `logged` | a frame log this pipeline recorded earlier | `--log-dir`, `--realtime` |
 
 `--reconnect` keeps the same listener open after the phone disconnects, so a walk recorded with
 `--record-to` continues in the same log with the frame numbers running on. It waits up to the
-accept timeout, 30 seconds, for the phone to come back, and then ends the run normally. Without
-the flag the run ends when the phone disconnects.
-| `neon_plugin` | a Neon recording the Neon Player depth plugin has run over | `--recording-dir`, `--plugin-model` |
-| `logged` | a frame log this pipeline recorded earlier | `--log-dir`, `--realtime` |
+accept timeout for the phone to come back, and then ends the run normally. Without the flag the
+run ends when the phone disconnects. Launching the app by hand takes longer than the default
+30 seconds, so a live run usually sets `--arcore-accept-timeout 600`.
 
 ### Sinks
 
 | Sink | Where the path goes | Flags |
 |---|---|---|
-| `debug_window` | an OpenCV window with the arrow, the alarm and the surprise field | |
-| `web` | a page in any browser on the network, arrow and alarm, no video | `--web-port` (8765) |
+| `debug_window` | an OpenCV window with the arrow, the alarm, the surprise field and the depth view | |
+| `web` | a page in any browser on the network: the arrow, the alarm, and the depth view under them | `--web-port` (8765) |
 | `phone_app` | the Pixel app over TCP. The phone connects to the laptop, on this port | `--phone-port` (9100) |
 | `none` | nowhere. For recording and for tests | |
 
-### Two flags a phone recording needs
+The depth view is the depth image the planner saw, colored by distance, with each obstacle
+group's nearest point as a ring sized by its clearance, magenta for a wall, the chosen path laid
+on the floor as a white line, and one line of text: groups in view, the nearest clearance, where
+the floor came from (`supplied` by the source, `fitted` from the cloud, or the `previous`
+frame's), and `ALARM` when set. It is what a person tuning the planner looks at, and the window
+and the browser draw it from the same code. The phone never gets it.
 
-The floor fit refuses a plane that leans more than `--floor-max-tilt` degrees from camera up,
-35 by default, which suits head-mounted glasses. A phone held in the hand and pointed at the
-pavement leans about 40, so set it higher. The metric model returns no camera intrinsics for a
+### The flags a phone needs
+
+The floor gate refuses a plane, fitted or supplied by the source, that leans more than
+`--floor-max-tilt` degrees from up (35 by default), that puts the camera under 0.3 m above it, or
+that puts the camera more than `--floor-max-height` meters above it (2.2 by default). Up is
+gravity, read from the pose, whenever the source places the camera in a world, which the Pixel
+does. It has to be: the Pixel's depth image arrives in the sensor's landscape orientation
+however the phone is held, so with the phone in portrait the image's own up points sideways, and
+measured against it every floor leans 90 degrees. Sources with no position, a plain video, get the
+image's up. The ceiling came from the first Pixel walk, where ARCore handed over a plane 2.3 m
+down, a meter below the real floor, and nothing refused it.
+
+A phone held in the hand and pointed at the pavement still leans about 40 degrees from gravity,
+so the live runs set `--floor-max-tilt 50`. The metric model returns no camera intrinsics for a
 plain video, so the pipeline assumes `--fallback-fov` degrees of horizontal field of view, 100
 by default for the Neon. A phone is nearer 75, and the wrong value stretches the cloud sideways
-and overstates the camera's height. Both were found on the first outdoor recording, where the
+and overstates the camera's height. That one was found on the first outdoor recording, where the
 estimator read the camera 2.27 m above the floor at 100 degrees and 1.84 m at 75.
 
 Phone videos also carry a rotation tag. The video source applies it, so a portrait recording
@@ -106,6 +123,26 @@ The TCP source, with the test sender standing in for the Pixel app from a second
 .venv/Scripts/python tests/fake_arcore_sender.py --port 9000 --count 100
 ```
 
+The Pixel over wifi, the phone as the display, recording the walk:
+
+```
+.venv/Scripts/python -m nav --source arcore_tcp --arcore-accept-timeout 600 --reconnect --sink phone_app --floor-max-tilt 50 --record-to frame_logs/walk --verbose
+```
+
+The same with the browser as the display, `--sink web`, and the page at `http://<laptop>:8765`.
+Both ports the laptop listens on, 9000 for depth and 9100 for paths (8765 for the page), need an
+inbound rule in the Windows firewall, and the rule has to name the Python that owns the socket.
+With a venv that is the base interpreter the venv was made from, not the venv's `python.exe`,
+which is a launcher. In an elevated PowerShell, once per port:
+
+```
+New-NetFirewallRule -DisplayName "nav pipeline, depth port" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 9000 -Program "C:\Users\<you>\AppData\Local\Programs\Python\Python312\python.exe" -Profile Any
+New-NetFirewallRule -DisplayName "nav pipeline, path port" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 9100 -Program "C:\Users\<you>\AppData\Local\Programs\Python\Python312\python.exe" -Profile Any
+```
+
+Over USB instead, `adb reverse tcp:9000 tcp:9000` and `adb reverse tcp:9100 tcp:9100` on the
+laptop, and the app connects to `127.0.0.1`.
+
 The live glasses. Discovery finds the Neon on the local network. University wifi usually blocks
 that between subnets, in which case read the address off the Companion app's streaming screen:
 
@@ -116,9 +153,10 @@ that between subnets, in which case read the address off the Companion app's str
 ```
 
 `check_neon.py` connects, receives one frame and exits 0, or says which path it tried and exits
-1. The `neon_live`, `neon_plugin` and `phone_app` commands above were not run while building
-this, because there were no glasses, no plugin recording and no Pixel app on hand. Everything
-else was.
+1. The `neon_live` and `neon_plugin` commands above were not run while building this, because
+there were no glasses and no plugin recording on hand. The Pixel runs on 2026-10-02 used the
+`web` sink over wifi and USB. The `phone_app` sink has been run against the suite's fake phone,
+through the same entry point, and not yet with the Pixel. Everything else was run as shown.
 
 ## Recording and replaying
 
@@ -152,9 +190,13 @@ Each layer owns its configuration in its own `config.py`. The footprint radius l
 ## The ARCore contract
 
 `docs/arcore_wire_format.md` is the contract the Pixel app implements: framing, every header
-field, the depth encoding, the path message that comes back, a worked example, and what the
-laptop does on each kind of malformed message. The test sender in `tests/fake_arcore_sender.py`
-sends frames in that format with the same encoder the laptop decodes with.
+field, the depth encoding, which way is up in the world the pose describes, the path message
+that comes back with its own per-field table, a worked example, and what each side does on each
+kind of malformed message. The test sender in `tests/fake_arcore_sender.py` sends frames in that
+format with the same encoder the laptop decodes with. Two committed fixtures check the contract
+across the language boundary: `tests/fixtures/pixel_app_frame.bin`, written by the app's encoder
+and decoded here, and `tests/fixtures/laptop_path.bin`, written by `encode_path` from stated
+values in `tests/test_laptop_path_fixture.py` and decoded by the app's test.
 
 ## Known limits
 
