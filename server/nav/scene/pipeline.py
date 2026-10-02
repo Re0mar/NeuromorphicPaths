@@ -18,7 +18,7 @@ import numpy as np
 
 # Local package imports
 from nav.scene.config import SceneConfig
-from nav.scene.floor import fit_floor, ground_axes, height_above_floor
+from nav.scene.floor import CAMERA_UP, fit_floor, ground_axes, height_above_floor, normalize_plane, plane_is_a_floor
 from nav.scene.grouping import (
     GroupSummary,
     assign_groups,
@@ -31,7 +31,7 @@ from nav.scene.grouping import (
 from nav.scene.history import ClearanceHistory
 from nav.scene.transform import camera_to_world_plane, camera_to_world_points, rotation_matrix_from_quaternion_wxyz
 from nav.scene.unproject import downsample, unproject_depth
-from nav.types import DepthFrame, ObstaclePoint, ObstacleSet, Plane
+from nav.types import WORLD_UP, DepthFrame, FloorSource, ObstaclePoint, ObstacleSet, Plane
 from nav.walker import WalkerConfig
 
 log = logging.getLogger(__name__)
@@ -46,6 +46,7 @@ class ScenePipeline:
         self._config = config
         self._walker = walker
         self._previous_plane: Plane | None = None
+        self._last_floor_source: FloorSource | None = None
         self._history = ClearanceHistory(
             window_seconds=config.noise_window_seconds,
             min_samples=config.min_history_samples,
@@ -56,6 +57,11 @@ class ScenePipeline:
     def previous_plane(self) -> Plane | None:
         """The last floor used, in the camera frame. The runtime reads it to put the gaze on the ground."""
         return self._previous_plane
+
+    @property
+    def last_floor_source(self) -> FloorSource | None:
+        """Where the last frame's floor came from. None before the first frame."""
+        return self._last_floor_source
 
     def process(self, frame: DepthFrame) -> ObstacleSet:
         """
@@ -72,17 +78,17 @@ class ScenePipeline:
         points = downsample(points, config.voxel_size_meters)
         after_cloud = time.perf_counter()
 
-        # A source that knows the ground says so. The rest get a fit, falling back to last frame's.
-        plane_camera = frame.ground_plane if frame.ground_plane is not None else fit_floor(points, self._previous_plane, config)
+        plane_camera, floor_source = self._choose_floor(frame, points)
         self._previous_plane = plane_camera
+        self._last_floor_source = floor_source
         after_floor = time.perf_counter()
         # The offset is the camera's height above the floor. On a real walk it should sit near eye
         # height, and this line is how that gets checked against a metric depth model.
         log.debug(
-            "floor: camera %.2f m above it, normal %.1f deg from camera up, %s",
+            "floor: camera %.2f m above it, normal %.1f deg from up, %s",
             plane_camera.offset_meters,
-            np.degrees(np.arccos(np.clip(-plane_camera.normal[1], -1.0, 1.0))),
-            "supplied" if frame.ground_plane is not None else "fitted",
+            np.degrees(np.arccos(np.clip(plane_camera.normal @ self._up_in_camera_frame(frame), -1.0, 1.0))),
+            floor_source.value,
         )
 
         pose = frame.pose
@@ -155,6 +161,33 @@ class ScenePipeline:
             points=obstacle_points,
             groups_in_view=len(obstacle_points),
         )
+
+    @staticmethod
+    def _up_in_camera_frame(frame: DepthFrame) -> np.ndarray:
+        # Gravity, once a source has placed the camera in a world whose up is known. Image-up
+        # otherwise, which assumes the camera is held roughly level and is all a plain video
+        # file can offer. The Pixel in portrait sends its depth image sideways, and measured
+        # against image-up its floor leaned 89 degrees on every frame of the first walk.
+        if not frame.pose.has_position:
+            return CAMERA_UP
+        return rotation_matrix_from_quaternion_wxyz(frame.pose.orientation).T @ WORLD_UP
+
+    def _choose_floor(self, frame: DepthFrame, points: np.ndarray) -> tuple[Plane, FloorSource]:
+        # A source that knows the ground says so, but it is not believed on its word. The first
+        # Pixel walk sent a plane a meter below the real floor on every frame, and the fit is the
+        # second opinion. A refused plane takes the path a frame with no plane takes.
+        up_camera = self._up_in_camera_frame(frame)
+        if frame.ground_plane is not None:
+            supplied = normalize_plane(frame.ground_plane, up_camera)
+            refusal = plane_is_a_floor(supplied, self._config, up_camera)
+            if refusal is None:
+                return supplied, FloorSource.SUPPLIED
+            log.debug("supplied floor refused: %s, fitting instead", refusal)
+        fitted = fit_floor(points, self._previous_plane, self._config, up_camera)
+        # fit_floor hands back the previous object itself when it falls back, so identity is the test.
+        if fitted is self._previous_plane:
+            return fitted, FloorSource.PREVIOUS
+        return fitted, FloorSource.FITTED
 
     def _history_centroid(self, summary: GroupSummary, world_ground: np.ndarray | None, group_ids: np.ndarray) -> np.ndarray:
         # In the world frame the centroid for velocity has to be in world coordinates, or every

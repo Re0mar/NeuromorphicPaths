@@ -12,6 +12,7 @@ import added here reaches all of them.
 # Standard library imports
 from collections.abc import Iterator
 from dataclasses import dataclass
+from enum import Enum
 from typing import Protocol, runtime_checkable
 
 # Third party imports
@@ -26,9 +27,28 @@ class Plane:
     offset_meters: float
 
 
+class FloorSource(Enum):
+    """Where the scene's floor for a frame came from. Values are the words the debug line prints."""
+
+    SUPPLIED = "supplied"  # The source sent a plane and it passed the gate.
+    FITTED = "fitted"  # Fitted from this frame's cloud, because no plane came or the one that came was refused.
+    PREVIOUS = "previous"  # Neither of the above produced a floor, so the last frame's stands.
+
+
+# Up in the world frame a positioned pose describes. ARCore's world, the only one a source supplies
+# today, has y up, and docs/arcore_wire_format.md states it so the next source can match. The
+# floor fit measures "level" and "below the camera" against this once a pose places the camera.
+WORLD_UP = np.array([0.0, 1.0, 0.0])
+
+
 @dataclass(frozen=True)
 class Pose:
-    """Where the camera is pointing, and where it is when anything knows that."""
+    """Where the camera is pointing, and where it is when anything knows that.
+
+    The orientation rotates camera-frame vectors into the world. When has_position is true that
+    world is one with WORLD_UP up, which is how the scene knows which way gravity points on a
+    phone held sideways.
+    """
 
     orientation: np.ndarray
     position: np.ndarray | None

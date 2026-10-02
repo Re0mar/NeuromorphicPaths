@@ -33,4 +33,5 @@ class SceneConfig:
     floor_ransac_iterations: int = 300  # Old file's RANSAC iteration count.
     floor_max_tilt_degrees: float = 35.0  # Old file's floor sanity check.
     floor_min_offset_meters: float = 0.3  # Old file's floor sanity check.
+    floor_max_offset_meters: float = 2.2  # A head-worn or hand-held camera is under about two meters. The first Pixel walk's false plane put it at 2.3.
     wall_cell_min_height_meters: float = 1.5  # A cell with points this tall is treated as a wall.

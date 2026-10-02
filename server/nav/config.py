@@ -203,6 +203,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=SceneConfig.floor_max_tilt_degrees,
         help="degrees from camera up a fitted floor may lean before it is rejected. Head-mounted 35, a hand-held phone pointed down needs more",
     )
+    scene.add_argument(
+        "--floor-max-height",
+        type=_positive_float,
+        default=SceneConfig.floor_max_offset_meters,
+        help="meters a fitted or supplied floor may lie below the camera before it is refused. The first Pixel walk's false plane was 2.3 down",
+    )
 
     walker = parser.add_argument_group("walker")
     walker.add_argument("--walker-radius", type=_positive_float, default=WalkerConfig.radius_meters, help="footprint radius in meters")
@@ -310,7 +316,7 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
         source_kind=source_kind,
         sink_kind=sink_kind,
         goal_mode=goal_mode,
-        scene=SceneConfig(floor_max_tilt_degrees=arguments.floor_max_tilt),
+        scene=SceneConfig(floor_max_tilt_degrees=arguments.floor_max_tilt, floor_max_offset_meters=arguments.floor_max_height),
         walker=WalkerConfig(radius_meters=arguments.walker_radius),
         tap=TapConfig(log_dir=arguments.record_to),
         video=video,

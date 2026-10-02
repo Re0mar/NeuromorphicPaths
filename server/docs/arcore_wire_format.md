@@ -90,6 +90,14 @@ tell that happened.
 
 Orientation is always required, even when position is not.
 
+**The world has y up.** The orientation rotates the laptop's camera axes (x right, y down, z
+forward) into ARCore's world, where +y is straight up and the other two axes are horizontal. The
+laptop reads gravity from that whenever `has_position` is true, and uses it to tell which way is
+down when it looks for the floor. It has to, because the depth image arrives in the sensor's
+landscape orientation whatever way the phone is held, so with the phone in portrait the image's
+own up points sideways. A sender that does not know which way gravity is sends `has_position`
+false and the laptop falls back to the image's up.
+
 ---
 
 ## Versioning

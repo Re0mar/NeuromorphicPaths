@@ -296,10 +296,19 @@ def test_the_floor_tilt_and_fallback_fov_flags_reach_their_layers() -> None:
     assert config.estimator.fallback_half_field_of_view_degrees == pytest.approx(37.5)
 
 
+def test_the_floor_max_height_flag_reaches_the_scene() -> None:
+    # The first Pixel walk's false plane put the camera 2.3 m up, and the ceiling that refuses it
+    # is the one gate that has bitten on real data, so it has to be tunable without editing code.
+    config = build_run_config([*MINIMAL_VIDEO_ARGV, "--floor-max-height", "1.9"])
+
+    assert config.scene.floor_max_offset_meters == pytest.approx(1.9)
+
+
 def test_the_floor_tilt_and_fallback_fov_defaults_match_their_configs() -> None:
     config = build_run_config(MINIMAL_VIDEO_ARGV)
 
     assert config.scene.floor_max_tilt_degrees == SceneConfig.floor_max_tilt_degrees
+    assert config.scene.floor_max_offset_meters == SceneConfig.floor_max_offset_meters
     assert config.estimator is not None
     assert config.estimator.fallback_half_field_of_view_degrees == EstimatorConfig.fallback_half_field_of_view_degrees
 
@@ -310,6 +319,7 @@ def test_every_parsed_default_is_the_dataclass_default() -> None:
     config = build_run_config(MINIMAL_VIDEO_ARGV)
     assert config.estimator is not None
     assert config.walker.radius_meters == WalkerConfig.radius_meters
+    assert config.scene.floor_max_offset_meters == SceneConfig.floor_max_offset_meters
     assert config.estimator.process_resolution == EstimatorConfig.process_resolution
     assert config.estimator.confidence_drop_percentile == EstimatorConfig.confidence_drop_percentile
     assert config.estimator.model_name == EstimatorConfig.model_name
@@ -360,6 +370,8 @@ def test_neon_address_is_carried_through_when_given() -> None:
     [
         ("--walker-radius", "0"),
         ("--walker-radius", "-0.35"),
+        ("--floor-max-height", "0"),
+        ("--floor-max-height", "-2.2"),
         ("--process-resolution", "0"),
         ("--process-resolution", "-504"),
         ("--confidence-drop-percentile", "-1"),

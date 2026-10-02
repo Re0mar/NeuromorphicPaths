@@ -82,15 +82,19 @@ class DepthCaptureRenderer(
     }
 
     /**
-     * The lowest upward-facing plane ARCore is tracking, which is the floor when there is one.
+     * The largest upward-facing plane ARCore is tracking, which is the floor when there is one.
      *
-     * Table tops are upward facing too. Taking the lowest keeps a table from being sent as the
-     * ground, and the laptop fits its own floor when this is null.
+     * The choice itself is [FloorChoice.chooseFloorIndex], a pure function with its own tests. This
+     * only builds its input and maps the winning index back to the plane. The laptop fits its own
+     * floor when this is null, and gates whatever is sent, so neither side has to be right alone.
      */
-    private fun chooseFloor(session: Session): Plane? =
-        session.getAllTrackables(Plane::class.java)
+    private fun chooseFloor(session: Session): Plane? {
+        val planes = session.getAllTrackables(Plane::class.java)
             .filter { it.trackingState == TrackingState.TRACKING && it.type == Plane.Type.HORIZONTAL_UPWARD_FACING }
-            .minByOrNull { it.centerPose.ty() }
+        val candidates = planes.map { FloorCandidate(it.extentX, it.extentZ, it.centerPose.ty()) }
+        val index = FloorChoice.chooseFloorIndex(candidates) ?: return null
+        return planes[index]
+    }
 
     private companion object {
         const val TAG = "DepthCaptureRenderer"
