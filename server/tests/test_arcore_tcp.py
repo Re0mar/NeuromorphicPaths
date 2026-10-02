@@ -202,6 +202,19 @@ def test_frames_can_be_called_again_for_the_next_connection() -> None:
     assert len(second) == 3
 
 
+def test_a_second_listener_on_the_same_port_is_refused() -> None:
+    # Two laptop runs on one port must not both report "listening". On Windows SO_REUSEADDR
+    # allowed exactly that, and the phone's frames went to the run that was meant to be dead.
+    first = _listening_source()
+    second = ArCoreTcpSource(ArCoreConfig(port=first.port, bind_address="127.0.0.1"))
+    try:
+        with pytest.raises(OSError):
+            second._listen()
+    finally:
+        second.close()
+        first.close()
+
+
 def test_closing_twice_and_closing_before_listening_do_not_raise() -> None:
     ArCoreTcpSource(ArCoreConfig(port=0)).close()
 

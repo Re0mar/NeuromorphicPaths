@@ -319,6 +319,15 @@ def test_every_parsed_default_is_the_dataclass_default() -> None:
 
     arcore = build_run_config(["--source", "arcore_tcp", "--sink", "none"]).arcore
     assert arcore is not None and arcore.port == ArCoreConfig.port
+    assert arcore.accept_timeout_seconds == ArCoreConfig.accept_timeout_seconds
+
+
+def test_the_accept_timeout_flag_reaches_the_phone_source() -> None:
+    # Launching the app by hand on a phone took longer than the default wait, and the laptop
+    # ended the run before the phone connected. The wait has to be settable from the command line.
+    arcore = build_run_config(["--source", "arcore_tcp", "--sink", "none", "--arcore-accept-timeout", "300"]).arcore
+
+    assert arcore is not None and arcore.accept_timeout_seconds == pytest.approx(300.0)
 
     web = build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "web"]).web
     assert web is not None and web.port == WebConfig.port

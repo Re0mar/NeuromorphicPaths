@@ -4,6 +4,7 @@ import android.util.Log
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
@@ -63,12 +64,22 @@ class LaptopConnection(
                 socket = opened
                 opened.tcpNoDelay = true
                 opened.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MILLIS)
+                opened.soTimeout = PEER_PROBE_MILLIS
                 val output = opened.getOutputStream()
+                val input = opened.getInputStream()
                 onStatus(ConnectionStatus.Connected(host, port, sent.get(), dropped.get()))
                 while (running) {
                     val message = pending.getAndSet(null)
                     if (message == null) {
-                        Thread.sleep(IDLE_SLEEP_MILLIS)
+                        // Nothing to send, so read instead. The laptop never writes on this
+                        // socket, which makes a byte or the end of the stream here the far end
+                        // going away. Without the probe a dead laptop was only noticed on the
+                        // next frame, and a phone with no depth yet has no next frame.
+                        try {
+                            if (input.read() == -1) throw IOException("laptop closed the connection")
+                        } catch (alive: SocketTimeoutException) {
+                            // Nothing to read within the probe window. The connection is up.
+                        }
                         continue
                     }
                     output.write(FrameEncoder.encode(message))
@@ -105,7 +116,8 @@ class LaptopConnection(
         const val TAG = "LaptopConnection"
         const val CONNECT_TIMEOUT_MILLIS = 3_000
         const val RECONNECT_PAUSE_MILLIS = 1_000L
-        const val IDLE_SLEEP_MILLIS = 2L
+        // The longest a frame can wait while the idle probe is reading. Well under a frame interval.
+        const val PEER_PROBE_MILLIS = 20
     }
 }
 

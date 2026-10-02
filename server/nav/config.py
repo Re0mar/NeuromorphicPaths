@@ -160,6 +160,12 @@ def build_parser() -> argparse.ArgumentParser:
     arcore = parser.add_argument_group("arcore_tcp source")
     arcore.add_argument("--arcore-port", type=_port_number, default=ArCoreConfig.port)
     arcore.add_argument("--reconnect", action="store_true", help="keep listening after the phone disconnects")
+    arcore.add_argument(
+        "--arcore-accept-timeout",
+        type=_positive_float,
+        default=ArCoreConfig.accept_timeout_seconds,
+        help="seconds to wait for the phone to connect. Launching the app by hand takes longer than the default",
+    )
 
     neon_plugin = parser.add_argument_group("neon_plugin source")
     neon_plugin.add_argument("--recording-dir", help="a Neon recording the depth plugin has run over")
@@ -258,7 +264,7 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
             # No address is the normal case. The source discovers the device instead.
             neon = NeonConfig(address=arguments.neon_address, port=arguments.neon_port)
         case SourceKind.ARCORE_TCP:
-            arcore = ArCoreConfig(port=arguments.arcore_port)
+            arcore = ArCoreConfig(port=arguments.arcore_port, accept_timeout_seconds=arguments.arcore_accept_timeout)
         case SourceKind.NEON_PLUGIN:
             _require(parser, arguments.recording_dir, "--recording-dir", source_kind)
             if not Path(arguments.recording_dir).is_dir():

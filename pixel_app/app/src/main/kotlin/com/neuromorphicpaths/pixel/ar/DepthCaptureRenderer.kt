@@ -28,6 +28,7 @@ class DepthCaptureRenderer(
     private var cameraTexture = 0
     private var frames = 0
     private var framesWithDepth = 0
+    private val newFrames = NewFrameGate()
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         val textures = IntArray(1)
@@ -57,6 +58,8 @@ class DepthCaptureRenderer(
             onState(CaptureState.CameraUnavailable)
             return
         }
+        // A draw that got the frame the previous draw already handled sends nothing.
+        if (!newFrames.isNew(frame.timestamp)) return
         frames += 1
         val camera = frame.camera
         val tracking = camera.trackingState == TrackingState.TRACKING

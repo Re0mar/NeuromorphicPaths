@@ -92,6 +92,47 @@ class LaptopConnectionTest {
     }
 
     @Test
+    fun aLaptopThatGoesAwayWhileTheAppIsIdleIsNoticedWithoutAFrame() {
+        // On the first phone run the laptop process was killed while the phone had no depth to
+        // send. The screen said Connected for minutes, because nothing ever wrote to the socket.
+        val server = ServerSocket(0, 1, loopback)
+        val accepted = java.util.concurrent.CountDownLatch(1)
+        var connection: java.net.Socket? = null
+        thread(isDaemon = true) { connection = server.accept(); accepted.countDown() }
+        val statuses = CopyOnWriteArrayList<ConnectionStatus>()
+        val app = LaptopConnection("127.0.0.1", server.localPort) { statuses.add(it) }
+        try {
+            app.start()
+            assertTrue(accepted.await(3, TimeUnit.SECONDS), "the app never connected")
+            assertTrue(waitUntil { statuses.any { it is ConnectionStatus.Connected } })
+            connection?.close()
+            server.close()
+
+            assertTrue(waitUntil(2_000) { statuses.any { it is ConnectionStatus.Disconnected } }, "the closed laptop was not noticed, saw $statuses")
+        } finally {
+            app.stop()
+        }
+    }
+
+    @Test
+    fun aQuietLaptopThatIsStillThereIsNotMistakenForAGoneOne() {
+        val server = ServerSocket(0, 1, loopback)
+        thread(isDaemon = true) { runCatching { server.accept(); Thread.sleep(3_000) } }
+        val statuses = CopyOnWriteArrayList<ConnectionStatus>()
+        val app = LaptopConnection("127.0.0.1", server.localPort) { statuses.add(it) }
+        try {
+            app.start()
+            assertTrue(waitUntil { statuses.any { it is ConnectionStatus.Connected } })
+            Thread.sleep(600)
+
+            assertTrue(statuses.none { it is ConnectionStatus.Disconnected }, "a silent but open laptop read as gone: $statuses")
+        } finally {
+            app.stop()
+            server.close()
+        }
+    }
+
+    @Test
     fun theNewestMessageWinsAndReplacedOnesAreCounted() {
         // No server yet, so nothing is taken from the slot and every offer but the first replaces.
         val connection = LaptopConnection("127.0.0.1", 1) { }

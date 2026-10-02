@@ -56,7 +56,11 @@ session, connection to the laptop at `10.0.2.2`. Three things have to be right f
   position is worse than none.
 - The lowest upward-facing plane as the floor, in the camera frame, or `null` when ARCore has
   none yet. The laptop fits its own floor in that case.
-- Intrinsics scaled from the camera image to the depth image's size.
+- Intrinsics scaled from the GPU camera texture to the depth image's size. The depth image
+  covers the texture's 16:9 view, not the 4:3 CPU image, and scaling the wrong one made the
+  horizontal focal length a third too long on the first run.
+- One message per ARCore frame. The surface draws at the display rate, and a draw that gets the
+  frame the previous draw already sent is skipped.
 
 ## Tests
 

@@ -31,12 +31,13 @@ object ArCoreToWire {
     fun convert(frame: Frame, camera: Camera, groundPlane: Plane?): DepthMessage? {
         val depth = DepthImageReader.read(frame) ?: return null
 
-        val cameraIntrinsics = camera.imageIntrinsics
+        // The depth image covers the view of the GPU camera texture, not the CPU image. The CPU
+        // image is 4:3 and the texture 16:9 on the Pixel 8, and scaling the CPU intrinsics onto
+        // the 16:9 depth image axis by axis gave fx a third larger than fy on the first run.
+        val cameraIntrinsics = camera.textureIntrinsics
         val imageDimensions = cameraIntrinsics.imageDimensions
         val focal = cameraIntrinsics.focalLength
         val principal = cameraIntrinsics.principalPoint
-        // The depth image is smaller than the camera image and covers the same view, so the
-        // intrinsics scale by the ratio of the two sizes, axis by axis.
         val scaleX = depth.columns.toDouble() / imageDimensions[0]
         val scaleY = depth.rows.toDouble() / imageDimensions[1]
         val intrinsics = doubleArrayOf(

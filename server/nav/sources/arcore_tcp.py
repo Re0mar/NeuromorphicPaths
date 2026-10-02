@@ -40,9 +40,18 @@ class ArCoreTcpSource:
             return self._listener
 
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        # Without this a restart within a minute of the last run fails with the port in use,
-        # which reads as the phone being unreachable rather than as a stale socket.
-        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            # Windows. SO_REUSEADDR there lets a second process bind a port another process is
+            # listening on, and the phone's connection then lands on whichever one the kernel
+            # picks. A second laptop run did exactly that on the first Pixel session, reporting
+            # "listening" while every frame went to the run it was meant to replace. Windows also
+            # rebinds a port in TIME_WAIT without any option, so nothing is lost here.
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            # Everywhere else a restart within a minute of the last run fails with the port in
+            # use without this, which reads as the phone being unreachable rather than as a
+            # stale socket. A second listener is still refused, which is what the test asserts.
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listener.bind((self._config.bind_address, self._config.port))
         listener.listen(1)
         listener.settimeout(self._config.accept_timeout_seconds)
