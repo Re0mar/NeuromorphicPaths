@@ -37,6 +37,9 @@ class DebugWindowSink:
         self._latest_inset: np.ndarray | None = None
         self._latest_depth_view: np.ndarray | None = None
 
+    def start(self) -> None:
+        """Nothing to open ahead of time. The window opens on the first publish, because an empty window is a question."""
+
     def publish_debug(self, path: PlannedPath, field: np.ndarray, grid: np.ndarray, view: DebugView) -> None:
         """
         Draw the path with the surprise field inset and the depth view under it.

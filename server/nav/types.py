@@ -173,7 +173,15 @@ class DepthFrameSource(Protocol):
 
 
 class PathSink(Protocol):
-    """What every display is, seen from the loop."""
+    """What every display is, seen from the loop.
+
+    start is called once, before the source yields its first frame, so a sink that listens is
+    listening from the start of the run. A page or a phone that arrives before the first planned
+    frame would otherwise find nothing to connect to, and on a still phone the first frame can
+    be minutes away.
+    """
+
+    def start(self) -> None: ...
 
     def publish(self, path: PlannedPath) -> None: ...
 

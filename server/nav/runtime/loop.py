@@ -173,6 +173,10 @@ def run(config: RunConfig) -> int:
     exit_code = 0
     frames_in = 0
     try:
+        # The sink listens before the source has a frame, so a browser or the phone's path
+        # connection finds something to connect to from the start. A port it cannot bind is a
+        # ConnectionError, caught below as the OSError it is, and the run ends with the reason.
+        sink.start()
         while True:
             try:
                 for frame in source.frames():

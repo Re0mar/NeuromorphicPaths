@@ -59,6 +59,41 @@ def _view() -> DebugView:
     return DebugView(frame, ObstacleSet(0.0, (), 0), Plane(np.array([0.0, -1.0, 0.0]), 1.6), FloorSource.FITTED, 1.4)
 
 
+def test_the_sink_is_started_before_the_source_yields_a_frame(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Both listening sinks used to open their port on their first publish, so a browser or the
+    # phone's path connection found nothing until the first planned frame, which on a still
+    # phone is minutes away. The page would not load on the first display run for that reason.
+    order: list[str] = []
+
+    class RecordingSink:
+        def start(self) -> None:
+            order.append("sink started")
+
+        def publish(self, path: PlannedPath) -> None:
+            order.append("published")
+
+        def close(self) -> None:
+            order.append("sink closed")
+
+    class OneFrameSource:
+        def frames(self):
+            order.append("first frame yielded")
+            yield next(synthetic_frames(1))
+
+        def close(self) -> None:
+            pass
+
+    import nav.runtime.loop as loop_module
+
+    monkeypatch.setattr(loop_module, "build_sink", lambda config: RecordingSink())
+    monkeypatch.setattr(loop_module, "build_source", lambda config: OneFrameSource())
+
+    assert run(build_run_config(["--source", "arcore_tcp", "--sink", "none"])) == 0
+    assert "sink started" in order and "first frame yielded" in order
+    assert order.index("sink started") < order.index("first frame yielded")
+    assert order[-1] == "sink closed"
+
+
 def test_a_source_that_fails_inside_the_loop_is_reported_as_known_not_unexpected(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     # A directory that exists and is not a frame log passes the parser and fails in the source.
     # That is a refusal with a name, and the log must say so without a traceback.
@@ -79,6 +114,9 @@ def test_a_source_that_fails_inside_the_loop_is_reported_as_known_not_unexpected
 
 def test_a_sink_that_raises_an_unexpected_error_ends_the_run_with_exit_one_and_a_traceback(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     class BrokenSink:
+        def start(self) -> None:
+            pass
+
         def publish(self, path: PlannedPath) -> None:
             raise RuntimeError("a bug, not bad input")
 
@@ -161,6 +199,9 @@ def test_a_result_is_published_once_however_many_frames_arrive_while_it_is_the_n
     published: list[PlannedPath] = []
 
     class CountingSink:
+        def start(self) -> None:
+            pass
+
         def publish(self, path: PlannedPath) -> None:
             published.append(path)
 
