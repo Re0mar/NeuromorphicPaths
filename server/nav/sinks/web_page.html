@@ -36,7 +36,9 @@
     const tipY = centerY - length * Math.cos(headingRadians);
     context.lineWidth = 14;
     context.lineCap = "round";
-    context.strokeStyle = alarm ? "#ff5050" : getComputedStyle(document.documentElement).getPropertyValue("--arrow");
+    // trim(): the custom property comes back with its leading space, and a canvas ignores a color
+    // it cannot parse and keeps drawing in the previous one, which is black on this background.
+    context.strokeStyle = alarm ? "#ff5050" : getComputedStyle(document.documentElement).getPropertyValue("--arrow").trim();
     context.beginPath();
     context.moveTo(centerX, centerY);
     context.lineTo(tipX, tipY);
