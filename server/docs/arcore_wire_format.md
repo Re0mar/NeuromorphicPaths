@@ -44,6 +44,7 @@ stream is out of step rather than that a real frame is that big.
 | `pose.orientation_wxyz` | 4 numbers | | yes | Quaternion, w first. ARCore gives you x, y, z, w, so reorder it |
 | `pose.position_xyz` | 3 numbers or `null` | meters | yes | `null` when tracking is lost |
 | `pose.has_position` | boolean | | yes | Must agree with whether `position_xyz` is present |
+| `pose.orientation_is_gravity_aligned` | boolean | | yes | True when the orientation rotates into a world whose +y is straight up. Send `true` |
 | `ground_plane` | object or `null` | | yes | `null` if you have no plane. The laptop fits one itself in that case |
 | `ground_plane.normal` | 3 numbers | | when present | Unit vector |
 | `ground_plane.offset_meters` | number | meters | when present | Signed, so that `normal · point + offset == 0` on the plane |
@@ -92,13 +93,21 @@ tell that happened.
 
 Orientation is always required, even when position is not.
 
-**The world has y up.** The orientation rotates the laptop's camera axes (x right, y down, z
-forward) into ARCore's world, where +y is straight up and the other two axes are horizontal. The
-laptop reads gravity from that whenever `has_position` is true, and uses it to tell which way is
-down when it looks for the floor. It has to, because the depth image arrives in the sensor's
-landscape orientation whatever way the phone is held, so with the phone in portrait the image's
-own up points sideways. A sender that does not know which way gravity is sends `has_position`
-false and the laptop falls back to the image's up.
+**The world has y up, and you say so.** The orientation rotates the laptop's camera axes (x right,
+y down, z forward) into ARCore's world, where +y is straight up and the other two axes are
+horizontal. Send `orientation_is_gravity_aligned` as `true` to say that, and the laptop reads
+gravity from your orientation and uses it to decide which way is down when it looks for the floor.
+
+Send it whether or not you have a position. The two fields answer different questions:
+`has_position` says whether points can be placed in a world that persists between frames, and
+`orientation_is_gravity_aligned` says whether your orientation can be trusted to point at the sky.
+A phone that has lost tracking still knows which way is down, and the floor needs only that.
+
+The laptop needs it because the depth image arrives in the sensor's landscape orientation whatever
+way the phone is held, so with the phone in portrait the image's own up points sideways and every
+floor measured against it leans ninety degrees. A sender whose orientation means nothing, such as a
+plain video file, sends `false` and the laptop falls back to the image's own up and assumes the
+camera is held level.
 
 ---
 
@@ -110,6 +119,10 @@ by number.
 When the format changes in a way that would break an older reader, the version goes up and both
 sides change together. Adding a new optional field does not need a version bump, because an older
 reader ignores keys it does not know. Changing the meaning or the unit of an existing field does.
+
+`orientation_is_gravity_aligned` is the one key added this way so far, and it is the one key the
+laptop will accept as absent. An absent key is read as `true`, because every frame log that existed
+when it was added came from this app. Send it anyway.
 
 ---
 
@@ -162,13 +175,13 @@ Every key is required and every number is finite. Per field, who produces it and
 A 2 by 2 depth frame with a known ground plane and no gaze. Produced by the encoder, not written
 by hand, so it is exactly what you will receive.
 
-Total message, 401 bytes. Length prefix:
+Total message, 441 bytes. Length prefix:
 
 ```
-00 00 01 8d
+00 00 01 b5
 ```
 
-That is 397, the number of bytes that follow. Then the header, 380 bytes of UTF-8, shown here with
+That is 437, the number of bytes that follow. Then the header, 420 bytes of UTF-8, shown here with
 indentation it does not have on the wire:
 
 ```json
@@ -177,7 +190,7 @@ indentation it does not have on the wire:
   "timestamp_seconds": 12.345,
   "depth": {"dtype": "float32", "shape": [2, 2], "byte_length": 16},
   "intrinsics": [[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]],
-  "pose": {"orientation_wxyz": [1.0, 0.0, 0.0, 0.0], "position_xyz": [0.0, 0.0, 0.0], "has_position": true},
+  "pose": {"orientation_wxyz": [1.0, 0.0, 0.0, 0.0], "position_xyz": [0.0, 0.0, 0.0], "has_position": true, "orientation_is_gravity_aligned": true},
   "ground_plane": {"normal": [0.0, 1.0, 0.0], "offset_meters": -1.6},
   "gaze_pixel": null
 }
@@ -216,6 +229,7 @@ this table is that nothing is aligned by assuming both sides derive from the sam
 | `pose.orientation_wxyz` | ARCore pose, reordered | JSON array of 4 | scene frame transform | finite, non-zero | decoder checks shape, pose construction checks the rest |
 | `pose.position_xyz` | ARCore pose | JSON array of 3 or null | scene frame choice | finite when present | decoder, and consistency against `has_position` |
 | `pose.has_position` | ARCore tracking state | JSON boolean | scene, chooses body or world frame | true or false | decoder, must match whether position is present |
+| `pose.orientation_is_gravity_aligned` | Android, constant for this app | JSON boolean | scene, picks gravity or image-up for the floor | true or false | decoder, defaulting to true for a recording older than the key |
 | `ground_plane` | ARCore plane, when found | JSON object or null | scene floor fit | null means fit one here | decoder, scene falls back |
 | `gaze_pixel` | not sent by the Pixel | JSON null | planner goal | null | decoder |
 

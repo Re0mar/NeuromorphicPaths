@@ -83,6 +83,7 @@ def synthetic_frames(count: int, depth_shape: tuple[int, int] = DEFAULT_DEPTH_SH
                 orientation=np.array([0.0, 1.0, 0.0, 0.0]),
                 position=np.array([0.0, 0.0, -index * FORWARD_STEP_METERS_PER_FRAME]),
                 has_position=True,
+                orientation_is_gravity_aligned=True,
             ),
             ground_plane=ground_plane,
             gaze_pixel=None,

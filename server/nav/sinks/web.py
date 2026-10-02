@@ -29,6 +29,11 @@ log = logging.getLogger(__name__)
 PAGE_PATH = Path(__file__).parent / "web_page.html"
 STARTUP_TIMEOUT_SECONDS = 5.0
 SHUTDOWN_TIMEOUT_SECONDS = 2.0
+# How many messages may wait for the browsers. A depth view is about 128 KB, so this is a couple of
+# megabytes at worst. The queue has to be bounded: the pipeline hands over a path and a picture per
+# planned frame and never waits, while one browser that stops reading suspends the send loop for
+# every browser, so an unbounded queue grows for as long as that lasts.
+OUTGOING_QUEUE_LIMIT = 32
 
 
 class WebSink:
@@ -42,6 +47,12 @@ class WebSink:
         self._bound_port: int | None = None
         self._ready = threading.Event()
         self._startup_error: BaseException | None = None
+        self._dropped = 0
+
+    @property
+    def dropped(self) -> int:
+        """Messages discarded because the browsers were not keeping up."""
+        return self._dropped
 
     @property
     def port(self) -> int | None:
@@ -92,13 +103,33 @@ class WebSink:
         self._thread = None
         self._loop = None
         self._outgoing = None
+        if self._dropped:
+            log.info("%d messages were dropped because the browsers were not keeping up", self._dropped)
 
     def _enqueue(self, message: str | bytes | None) -> None:
         # publish runs on the publisher's thread. The queue belongs to the server's loop, so the
         # put is handed to that loop rather than touched from here.
         if self._loop is None or self._outgoing is None:
             return
-        self._loop.call_soon_threadsafe(self._outgoing.put_nowait, message)
+        self._loop.call_soon_threadsafe(self._offer, message)
+
+    def _offer(self, message: str | bytes | None) -> None:
+        """
+        Put the message on the queue, making room by discarding the oldest when it is full.
+
+        Runs on the server's loop, which is the only thread allowed to touch the queue. Dropping
+        the oldest rather than refusing the newest is what a display wants: a frame nobody has
+        managed to send yet is already out of date, and the next one replaces it anyway.
+        """
+        if self._outgoing is None:
+            return
+        while self._outgoing.full():
+            try:
+                self._outgoing.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            self._dropped += 1
+        self._outgoing.put_nowait(message)
 
     def _serve(self) -> None:
         # Optional dependency, present only with the web extra. Imported where it is used so the
@@ -119,7 +150,7 @@ class WebSink:
 
     async def _run(self, web) -> None:
         self._loop = asyncio.get_running_loop()
-        self._outgoing = asyncio.Queue()
+        self._outgoing = asyncio.Queue(maxsize=OUTGOING_QUEUE_LIMIT)
         sockets: set = set()
         page = PAGE_PATH.read_text(encoding="utf-8")
         # The newest of each kind, written by the send loop below and read when a browser

@@ -409,7 +409,8 @@ def test_the_format_document_contains_the_generated_example() -> None:
         timestamp_seconds=12.345,
         depth_meters=np.array([[1.5, 2.0], [2.5, 3.0]], dtype=np.float32),
         intrinsics=INTRINSICS,
-        pose=Pose(orientation=np.array([1.0, 0.0, 0.0, 0.0]), position=np.zeros(3), has_position=True),
+        # The document's example is a phone's frame, so its orientation is gravity-aligned.
+        pose=Pose(np.array([1.0, 0.0, 0.0, 0.0]), np.zeros(3), True, orientation_is_gravity_aligned=True),
         ground_plane=Plane(normal=np.array([0.0, 1.0, 0.0]), offset_meters=-1.6),
         gaze_pixel=None,
     )
@@ -442,8 +443,8 @@ def test_the_format_document_carries_the_path_field_table() -> None:
 
 @pytest.mark.parametrize("field", ["first_heading_radians", "cumulative_cost_bits"])
 def test_a_path_with_a_non_finite_scalar_never_reaches_the_encoder(field: str) -> None:
-    # PlannedPath refuses this itself, so encode_path's allow_nan=False is defence in depth that no
-    # real PlannedPath can reach. This is the test that proves the first line of defence holds.
+    # PlannedPath refuses this itself, so encode_path's allow_nan=False is defense in depth that no
+    # real PlannedPath can reach. This is the test that proves the first line of defense holds.
     fields = {
         "timestamp_seconds": 1.0,
         "times_seconds": np.array([0.0, 0.1]),
@@ -456,3 +457,40 @@ def test_a_path_with_a_non_finite_scalar_never_reaches_the_encoder(field: str) -
 
     with pytest.raises(ValueError, match=field):
         PlannedPath(**fields)
+
+
+def _header_and_body(frame: DepthFrame) -> tuple[dict, bytes]:
+    """The encoder's header as a dict and the bytes after it, for a test that edits one key."""
+    header, _, body = _payload_of(encode_frame(frame)).partition(HEADER_TERMINATOR)
+    return json.loads(header), body
+
+
+def _rebuild(header: dict, body: bytes) -> bytes:
+    return json.dumps(header).encode("utf-8") + HEADER_TERMINATOR + body
+
+
+def test_whether_the_orientation_is_gravity_aligned_survives_a_round_trip() -> None:
+    # The scene reads the floor's up from this, so a recording that loses it replays with the
+    # defect the flag exists to prevent.
+    aligned = _frame(pose=Pose(np.array([1.0, 0.0, 0.0, 0.0]), np.zeros(3), True, orientation_is_gravity_aligned=True))
+    unaligned = _frame(pose=Pose(np.array([1.0, 0.0, 0.0, 0.0]), None, False, orientation_is_gravity_aligned=False))
+
+    assert decode_frame(_payload_of(encode_frame(aligned))).pose.orientation_is_gravity_aligned is True
+    assert decode_frame(_payload_of(encode_frame(unaligned))).pose.orientation_is_gravity_aligned is False
+
+
+def test_a_header_without_the_gravity_key_is_read_as_the_phones() -> None:
+    # Every frame log that existed when the key was added came from the phone, and those are what
+    # the planner is tuned against. Reading them as un-aligned would reintroduce the defect.
+    header, body = _header_and_body(_frame())
+    del header["pose"]["orientation_is_gravity_aligned"]
+
+    assert decode_frame(_rebuild(header, body)).pose.orientation_is_gravity_aligned is True
+
+
+def test_a_gravity_flag_that_is_not_a_boolean_is_refused_by_name() -> None:
+    header, body = _header_and_body(_frame())
+    header["pose"]["orientation_is_gravity_aligned"] = 1
+
+    with pytest.raises(FrameDecodeError, match="pose.orientation_is_gravity_aligned must be true or false"):
+        decode_frame(_rebuild(header, body))

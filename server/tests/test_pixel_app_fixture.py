@@ -35,6 +35,10 @@ def test_the_pixel_apps_frame_decodes_with_the_laptops_decoder() -> None:
     assert frame.intrinsics[0, 0] == pytest.approx(500.0)
     assert frame.pose.has_position is True
     assert frame.pose.position == pytest.approx(np.zeros(3))
+    # The app says its orientation is measured against gravity, which is what lets the scene read
+    # the floor's up from it rather than from the image. Without this the key could stop being
+    # sent and the fixture would still decode, with the floor gate quietly back on image-up.
+    assert frame.pose.orientation_is_gravity_aligned is True
     assert frame.ground_plane is not None
     assert frame.ground_plane.normal == pytest.approx(np.array([0.0, -1.0, 0.0]))
     assert frame.ground_plane.offset_meters == pytest.approx(1.6)

@@ -146,9 +146,23 @@ class ArCoreToWireTest {
     fun repackRefusesStridesThatCannotHoldTheImage() {
         val buffer = ByteBuffer.allocate(16)
 
-        assertFailsWith<IllegalArgumentException> { ArCoreToWire.DepthImageReader.repack(buffer, 2, 2, rowStride = 2, pixelStride = 2) }
-        assertFailsWith<IllegalArgumentException> { ArCoreToWire.DepthImageReader.repack(buffer, 2, 2, rowStride = 8, pixelStride = 1) }
-        assertFailsWith<IllegalArgumentException> { ArCoreToWire.DepthImageReader.repack(buffer, 0, 2, rowStride = 8, pixelStride = 2) }
+        // Each case breaks one rule with everything else valid, and each asserts which rule it
+        // broke. The exception type alone is satisfied by any of the three, so a merged or
+        // renamed check would have left all of this green.
+        val tooNarrowARow = assertFailsWith<IllegalArgumentException> {
+            ArCoreToWire.DepthImageReader.repack(buffer, 2, 2, rowStride = 2, pixelStride = 2)
+        }
+        assertTrue(tooNarrowARow.message!!.contains("row stride 2 cannot hold 2 pixels"), tooNarrowARow.message)
+
+        val pixelTooSmall = assertFailsWith<IllegalArgumentException> {
+            ArCoreToWire.DepthImageReader.repack(buffer, 2, 2, rowStride = 8, pixelStride = 1)
+        }
+        assertTrue(pixelTooSmall.message!!.contains("DEPTH16 pixels are two bytes"), pixelTooSmall.message)
+
+        val noRows = assertFailsWith<IllegalArgumentException> {
+            ArCoreToWire.DepthImageReader.repack(buffer, 0, 2, rowStride = 8, pixelStride = 2)
+        }
+        assertTrue(noRows.message!!.contains("positive size, got 0x2"), noRows.message)
     }
 
     @Test

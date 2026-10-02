@@ -42,6 +42,9 @@ MILLIMETERS_PER_METER = 1000.0
 # The frame log's layout. One framed message per file, plus a line per frame in the index.
 INDEX_FILENAME = "index.jsonl"
 FRAME_FILENAME_TEMPLATE = "frame_{sequence:06d}.bin"
+# The same names, for asking whether a directory already holds frames. Beside the template so the
+# layout has one home and the two cannot drift.
+FRAME_FILENAME_GLOB = "frame_*.bin"
 
 
 class FrameCodecError(ValueError):
@@ -129,6 +132,7 @@ def encode_frame(frame: DepthFrame) -> bytes:
             "orientation_wxyz": frame.pose.orientation.tolist(),
             "position_xyz": None if frame.pose.position is None else frame.pose.position.tolist(),
             "has_position": frame.pose.has_position,
+            "orientation_is_gravity_aligned": frame.pose.orientation_is_gravity_aligned,
         },
         "ground_plane": (
             None
@@ -389,11 +393,22 @@ def _decode_pose(block: object) -> Pose:
     raw_position = _required(block, "position_xyz")
     position = None if raw_position is None else _vector(raw_position, "pose.position_xyz", length=3)
 
+    # The one optional key in the header, and the only one with a default that is not simply the
+    # safe answer. Every frame log that existed when this key was added was recorded from the
+    # phone, whose world is gravity-aligned, and those recordings are what the planner is tuned
+    # against. Reading them as un-aligned would reintroduce the defect the key exists to fix, so
+    # an absent key means the sender predates it and is assumed to be the phone. Everything
+    # written from now on says so explicitly, including a video file's un-aligned identity pose.
+    gravity_aligned = True
+    if "orientation_is_gravity_aligned" in block:
+        gravity_aligned = _boolean(block["orientation_is_gravity_aligned"], "pose.orientation_is_gravity_aligned")
+
     try:
         return Pose(
             orientation=_vector(_required(block, "orientation_wxyz"), "pose.orientation_wxyz", length=4),
             position=position,
             has_position=has_position,
+            orientation_is_gravity_aligned=gravity_aligned,
         )
     except ValueError as inconsistent_error:
         if isinstance(inconsistent_error, FrameDecodeError):

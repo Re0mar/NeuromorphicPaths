@@ -127,7 +127,7 @@ def test_recording_into_a_directory_with_files_is_refused(tmp_path: Path) -> Non
     tap = RecordingTap(ListDepthSource(_frames()), log_dir)
 
     # Two runs interleaved in one log read back as one recording and are not one.
-    with pytest.raises(FileExistsError, match="already has files"):
+    with pytest.raises(FileExistsError, match="already holds a recording"):
         next(iter(tap.frames()))
 
 

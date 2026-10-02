@@ -105,7 +105,12 @@ def _pitched_pose(level_position: np.ndarray, yaw_degrees: float = 0.0, roll_deg
 
     if yaw_degrees == 0.0 and roll_degrees == 0.0:
         assert rotation_matrix_from_quaternion_wxyz(orientation) == pytest.approx(HALF_TURN_ABOUT_X @ pitch_rotation(PITCH_DEGREES).T, abs=1e-9)
-    return Pose(orientation=orientation, position=HALF_TURN_ABOUT_X @ level_position, has_position=True)
+    return Pose(
+        orientation=orientation,
+        position=HALF_TURN_ABOUT_X @ level_position,
+        has_position=True,
+        orientation_is_gravity_aligned=True,
+    )
 
 
 def _rolled_image(scene) -> tuple[np.ndarray, np.ndarray]:
@@ -267,6 +272,25 @@ def test_each_obstacle_point_carries_its_camera_frame_position() -> None:
     nearest_body = min(body.points, key=lambda point: point.clearance_meters).camera_point
     nearest_world = min(world.points, key=lambda point: point.clearance_meters).camera_point
     assert nearest_body == pytest.approx(nearest_world, abs=1e-6)
+
+
+def test_a_gravity_aligned_orientation_is_used_for_up_even_with_no_position() -> None:
+    # The glasses report an orientation measured against gravity and deliberately no position, so
+    # a gate that asked for a position threw their gravity away and gave them image-up. On a rolled
+    # head that is ninety degrees wrong, which is the whole defect this gate was built to remove.
+    scene = clean_scene(box_lateral_meters=0.5, box_forward_meters=3.0, box_height_meters=1.0, box_half_width_meters=0.1)
+    depth, intrinsics = _rolled_image(scene)
+    rolled = _pitched_pose(np.zeros(3), roll_degrees=90.0)
+    orientation_only = Pose(orientation=rolled.orientation, position=None, has_position=False, orientation_is_gravity_aligned=True)
+    pipeline = ScenePipeline(CONFIG, WALKER)
+
+    pipeline.process(DepthFrame(0.0, depth, intrinsics, orientation_only, None, None))
+
+    assert pipeline.last_floor_source is FloorSource.FITTED
+    assert pipeline.previous_plane is not None
+    assert pipeline.previous_plane.offset_meters == pytest.approx(CAMERA_HEIGHT_METERS, abs=0.03)
+    # Against image-up the same floor leans ninety degrees, which is what a position-keyed gate saw.
+    assert abs(pipeline.previous_plane.normal[1]) < 0.1
 
 
 def test_a_supplied_plane_with_its_normal_pointing_down_is_read_the_right_way_up() -> None:

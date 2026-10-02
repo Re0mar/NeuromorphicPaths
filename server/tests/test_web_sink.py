@@ -17,7 +17,7 @@ import pytest
 
 # Local package imports
 from nav.sinks.config import WebConfig
-from nav.sinks.web import WebSink
+from nav.sinks.web import OUTGOING_QUEUE_LIMIT, WebSink
 from nav.sources.framecodec import encode_path
 from nav.types import DebugSink, DebugView, DepthFrame, FloorSource, ObstacleSet, Plane, PlannedPath, Pose
 
@@ -149,6 +149,33 @@ def test_a_port_already_in_use_is_reported_rather_than_hung() -> None:
 
 def test_closing_an_unstarted_sink_does_not_raise() -> None:
     WebSink(WebConfig(port=0)).close()
+
+
+def test_a_browser_that_stops_reading_cannot_grow_the_queue_without_bound(sink: WebSink, caplog: pytest.LogCaptureFixture) -> None:
+    # The pipeline hands over a path and a 128 KB picture per planned frame and never waits, while
+    # one browser whose window has closed suspends the send loop for every browser. Unbounded, a
+    # backgrounded phone browser grew that queue by hundreds of megabytes over a walk.
+    async def scenario() -> int:
+        import aiohttp
+
+        async with aiohttp.ClientSession() as session:
+            async with session.ws_connect(f"ws://127.0.0.1:{sink.port}/ws"):
+                await asyncio.sleep(0.3)
+                # The client never reads from here on.
+                for _ in range(300):
+                    sink.publish_debug(_path(), *_field(), _view())
+                await asyncio.sleep(1.0)
+                assert sink._outgoing is not None
+                return sink._outgoing.qsize()
+
+    depth = asyncio.run(scenario())
+
+    assert depth <= OUTGOING_QUEUE_LIMIT, f"the queue grew to {depth}"
+    assert sink.dropped > 0, "600 messages through a queue of 32 must have dropped some"
+
+    with caplog.at_level("INFO", logger="nav.sinks.web"):
+        sink.close()
+    assert any("were dropped because the browsers were not keeping up" in record.message for record in caplog.records)
 
 
 def test_the_web_sink_is_a_debug_sink() -> None:

@@ -67,7 +67,6 @@ class ScenePipeline:
         """
         Turn one depth frame into the obstacles the planner scores.
 
-        :param frame: The frame.
         :return: One ObstaclePoint per group in view, at the group's nearest point.
         :rtype: ObstacleSet
         """
@@ -168,11 +167,15 @@ class ScenePipeline:
 
     @staticmethod
     def _up_in_camera_frame(frame: DepthFrame) -> np.ndarray:
-        # Gravity, once a source has placed the camera in a world whose up is known. Image-up
-        # otherwise, which assumes the camera is held roughly level and is all a plain video
-        # file can offer. The Pixel in portrait sends its depth image sideways, and measured
-        # against image-up its floor leaned 89 degrees on every frame of the first walk.
-        if not frame.pose.has_position:
+        # Gravity, whenever the source says its orientation is aligned to it. Image-up otherwise,
+        # which assumes the camera is held roughly level and is all a plain video file can offer.
+        # The Pixel in portrait sends its depth image sideways, and measured against image-up its
+        # floor leaned 89 degrees on every frame of the first walk.
+        #
+        # The question is about the orientation, not the position. The glasses report a
+        # gravity-aligned orientation and no position at all, and asking for a position threw
+        # their gravity away and gave them the very defect this gate was built to fix.
+        if not frame.pose.orientation_is_gravity_aligned:
             return CAMERA_UP
         return rotation_matrix_from_quaternion_wxyz(frame.pose.orientation).T @ WORLD_UP
 

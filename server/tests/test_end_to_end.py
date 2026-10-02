@@ -8,7 +8,12 @@ and needs no estimator at all.
 
 # Standard library imports
 import dataclasses
+import json
+import logging
+import socket
+import threading
 import time
+import urllib.request
 from pathlib import Path
 
 # Third party imports
@@ -19,15 +24,24 @@ import pytest
 # Local package imports
 from nav.config import build_run_config
 from nav.main import main
-from nav.runtime.loop import HeadingBaseline, gaze_on_the_ground, wrap_angle, yaw_from_quaternion
+from nav.runtime.loop import RUN_CONFIG_FILENAME, HeadingBaseline, gaze_on_the_ground, wrap_angle, yaw_from_quaternion
 from nav.runtime.loop import run
 from nav.scene.pipeline import ScenePipeline
-from nav.sources.framecodec import INDEX_FILENAME
+from nav.sources.framecodec import INDEX_FILENAME, decode_path, read_message
 from nav.sources.logged import LoggedDepthFrameSource
 from nav.types import DepthFrame, Plane, Pose
 from stubs import StubDepthEstimator
 
 FRAME_COUNT = 30
+
+
+def _free_port() -> int:
+    """A port nothing is listening on, for a test that needs a real one it can bind later."""
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    return port
 
 
 def _write_video(target: Path, frame_count: int = FRAME_COUNT) -> Path:
@@ -56,9 +70,6 @@ def test_video_to_log_to_replay_round_trip(tmp_path: Path) -> None:
 
     # The configuration rides with the frames. A replay given a different floor gate refused
     # every frame of the first real recording, and this is how the right flags are found again.
-    import json
-    from nav.runtime.loop import RUN_CONFIG_FILENAME
-
     recorded = json.loads((log_dir / RUN_CONFIG_FILENAME).read_text(encoding="utf-8"))
     assert recorded["source_kind"] == "video_file"
     assert recorded["scene"]["floor_max_tilt_degrees"] == config.scene.floor_max_tilt_degrees
@@ -85,11 +96,6 @@ def test_a_logged_replay_reaches_a_phone_through_main(tmp_path: Path) -> None:
     config = build_run_config(["--source", "video_file", "--path", str(video), "--sink", "none", "--record-to", str(log_dir)])
     config = dataclasses.replace(config, estimator_factory=lambda estimator_config: StubDepthEstimator())
     assert run(config) == 0
-
-    import socket
-    import threading
-
-    from nav.sources.framecodec import decode_path, read_message
 
     probe = socket.socket()
     probe.bind(("127.0.0.1", 0))
@@ -125,24 +131,11 @@ def test_a_logged_replay_reaches_a_phone_through_main(tmp_path: Path) -> None:
 def test_a_logged_replay_serves_a_phone_and_a_browser_in_the_same_run(tmp_path: Path) -> None:
     # A walk puts the arrow on the phone and the depth view in a browser at once. One display
     # proves nothing about the other, so this drives both through the entry point a person types.
-    import socket
-    import threading
-    import urllib.request
-
-    from nav.sources.framecodec import decode_path, read_message
-
     video = _write_video(tmp_path / "walk.avi")
     log_dir = tmp_path / "log"
     config = build_run_config(["--source", "video_file", "--path", str(video), "--sink", "none", "--record-to", str(log_dir)])
     config = dataclasses.replace(config, estimator_factory=lambda estimator_config: StubDepthEstimator())
     assert run(config) == 0
-
-    def _free_port() -> int:
-        probe = socket.socket()
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
-        probe.close()
-        return port
 
     phone_port, web_port = _free_port(), _free_port()
     paths: list = []
@@ -190,6 +183,30 @@ def test_a_logged_replay_serves_a_phone_and_a_browser_in_the_same_run(tmp_path: 
     assert paths, "the phone never read a path from the run"
     assert np.isfinite(paths[0].first_heading_radians)
     assert pages and "<canvas" in pages[0], "the browser never got the page from the same run"
+
+
+def test_a_run_that_recorded_nothing_leaves_its_directory_usable(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    # The runtime writes run_config.json into the log directory at the end of every run, including
+    # one that recorded nothing because nobody connected. While the tap judged the directory by
+    # whether it was empty, that config made every later run with the same --record-to fail, and
+    # the refusal named the directory the user had chosen rather than the leftover. It cost a real
+    # walk on 2026-10-02.
+    log_dir = tmp_path / "log"
+    argv = ["--source", "arcore_tcp", "--arcore-port", str(_free_port()), "--arcore-accept-timeout", "1", "--sink", "none", "--record-to", str(log_dir)]
+
+    assert main(argv) == 1, "nobody connects, so the run ends on the accept timeout"
+    assert (log_dir / "run_config.json").is_file(), "the run wrote its configuration, which is what used to poison the directory"
+    assert not list(log_dir.glob("frame_*.bin")), "and recorded no frames"
+
+    # The exit code cannot tell these two runs apart: a refused directory and a spent accept
+    # timeout both end the run at 1. What distinguishes them is whether the tap accepted the
+    # directory at all, which it announces, so that is what this asserts.
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        assert main(argv) == 1
+
+    assert any("recording frames to" in record.message for record in caplog.records), "the tap refused the directory"
+    assert not any("FileExistsError" in record.message for record in caplog.records), [record.message for record in caplog.records]
 
 
 def test_a_missing_video_is_refused_by_the_parser_naming_the_path(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

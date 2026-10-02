@@ -53,6 +53,11 @@ class Pose:
     orientation: np.ndarray
     position: np.ndarray | None
     has_position: bool
+    # Whether the orientation rotates into a world whose up is WORLD_UP, which is what lets the
+    # scene read gravity from it. True for a device that tracks against gravity, by its own pose
+    # or by an IMU. False is the conservative answer, and it means the scene falls back to the
+    # image's own up, so a source that does not say gets what a plain video file gets.
+    orientation_is_gravity_aligned: bool = False
 
     def __post_init__(self) -> None:
         # has_position is what every downstream branch reads to decide between the body frame and
