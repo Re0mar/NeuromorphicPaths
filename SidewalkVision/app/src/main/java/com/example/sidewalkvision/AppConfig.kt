@@ -103,4 +103,19 @@ object AppConfig {
         const val COLOR_HUD_YELLOW = "#FFCC00"
         const val COLOR_HUD_BG_SLATE = 200 // Alpha
     }
+
+    object PupilNeon {
+        const val DEFAULT_HOST = "192.168.42.1"
+        const val DEFAULT_PORT = 8080
+        const val DEFAULT_RTSP_PORT = 8554
+        const val GAZE_ALPHA = 0.25f // Exponential smoothing factor for gaze coords
+        const val PREF_NEON_HOST = "neon_host"
+        const val PREF_NEON_PORT = "neon_port"
+        const val PREF_VISION_SOURCE = "vision_source"
+        const val GAZE_RETICLE_RADIUS_PX = 32f
+        const val COLOR_GAZE_NEON = "#FF007F" // Neon Magenta
+        const val COLOR_GAZE_GLOW = "#80FF007F"
+        const val COLOR_GAZE_RING = "#00FFCC" // Neon Turquoise
+        const val COLOR_GAZE_TEXT = "#00E5FF"
+    }
 }

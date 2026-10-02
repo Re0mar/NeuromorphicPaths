@@ -12,15 +12,19 @@ import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Bundle
+import android.text.InputType
 import android.util.AttributeSet
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
+import android.widget.CheckBox
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -256,8 +260,9 @@ class VisualSlamTracker {
 }
 
 /**
- * Computes the surprise landscape based on static depth elevation and
- * Roel Vertegaal's work on visual attention and approaching motion surprise potential.
+ * Computes the surprise landscape based on static depth elevation,
+ * Roel Vertegaal's work on visual attention and approaching motion surprise potential,
+ * and user gaze focus points from smartglasses.
  */
 class VertegaalSurpriseField {
 
@@ -267,7 +272,8 @@ class VertegaalSurpriseField {
         sigma: Float,
         landmarks: List<SlamLandmark>,
         gridRows: Int = AppConfig.CameraGeometry.GRID_ROWS,
-        gridCols: Int = AppConfig.CameraGeometry.GRID_COLS
+        gridCols: Int = AppConfig.CameraGeometry.GRID_COLS,
+        gazePoint: GazePoint? = null
     ): Array<FloatArray> {
         val near = AppConfig.CameraGeometry.GRID_NEAR_M
         val far = AppConfig.CameraGeometry.GRID_FAR_M
@@ -303,7 +309,15 @@ class VertegaalSurpriseField {
                     }
                 }
 
-                staticSurprise + motionSurprise
+                var gazeAttention = 0f
+                if (gazePoint != null) {
+                    val gazeR = (gazePoint.y * (gridRows - 1)).roundToInt().coerceIn(0, gridRows - 1)
+                    val gazeC = (gazePoint.x * (gridCols - 1)).roundToInt().coerceIn(0, gridCols - 1)
+                    val distSq = ((r - gazeR) * (r - gazeR) + (c - gazeC) * (c - gazeC)).toFloat()
+                    gazeAttention = exp(-distSq / 12.0f) * 1.2f
+                }
+
+                staticSurprise + motionSurprise + gazeAttention
             }
         }
     }
@@ -467,7 +481,7 @@ class LagrangianPathPlanner {
 
 /**
  * AR Camera Overlay View rendering projected Lagrangian path ribbons, warning highlights,
- * and prominent guidance navigation arrows directly over the live camera preview.
+ * eye-tracking gaze target reticles from Pupil Neon smartglasses, and guidance arrows.
  */
 class CameraGuidanceOverlayView(context: Context, attrs: AttributeSet? = null) : View(context, attrs) {
 
@@ -477,6 +491,9 @@ class CameraGuidanceOverlayView(context: Context, attrs: AttributeSet? = null) :
     private var steerAngleRad: Float = 0f
     private var pitchDeg: Float = AppConfig.CameraGeometry.FALLBACK_PITCH_DEG
     private var aspect: Float = 4f / 3f
+    private var currentGaze: GazePoint? = null
+    private var isGlassesMode: Boolean = false
+    private var gazePulseAnim = 0f
 
     private val pathRibbonPaint = Paint().apply {
         color = Color.parseColor(AppConfig.GuidanceUi.COLOR_PATH_CYAN)
@@ -534,13 +551,41 @@ class CameraGuidanceOverlayView(context: Context, attrs: AttributeSet? = null) :
         isAntiAlias = true
     }
 
+    private val gazeDotPaint = Paint().apply {
+        color = Color.parseColor(AppConfig.PupilNeon.COLOR_GAZE_NEON)
+        style = Paint.Style.FILL
+        isAntiAlias = true
+    }
+
+    private val gazeGlowPaint = Paint().apply {
+        color = Color.parseColor(AppConfig.PupilNeon.COLOR_GAZE_GLOW)
+        style = Paint.Style.FILL
+        isAntiAlias = true
+    }
+
+    private val gazeRingPaint = Paint().apply {
+        color = Color.parseColor(AppConfig.PupilNeon.COLOR_GAZE_RING)
+        strokeWidth = 4f
+        style = Paint.Style.STROKE
+        isAntiAlias = true
+    }
+
+    private val gazeTextPaint = Paint().apply {
+        color = Color.parseColor(AppConfig.PupilNeon.COLOR_GAZE_TEXT)
+        textSize = 28f
+        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        isAntiAlias = true
+    }
+
     fun update(
         path: List<Pair<Float, Float>>,
         instruction: String,
         steerAngle: Float,
         slamLandmarks: List<SlamLandmark>,
         pitch: Float,
-        cameraAspect: Float
+        cameraAspect: Float,
+        gaze: GazePoint? = null,
+        glassesActive: Boolean = false
     ) {
         metricPath = path
         steerInstruction = instruction
@@ -548,6 +593,8 @@ class CameraGuidanceOverlayView(context: Context, attrs: AttributeSet? = null) :
         landmarks = slamLandmarks
         pitchDeg = pitch
         aspect = cameraAspect
+        currentGaze = gaze
+        isGlassesMode = glassesActive
         invalidate()
     }
 
@@ -590,8 +637,46 @@ class CameraGuidanceOverlayView(context: Context, attrs: AttributeSet? = null) :
             }
         }
 
+        if (isGlassesMode && currentGaze != null) {
+            drawGazeReticle(canvas, w, h)
+        }
+
         drawGuidanceArrow(canvas, w, h)
         drawHudBanner(canvas, w)
+    }
+
+    private fun drawGazeReticle(canvas: Canvas, w: Float, h: Float) {
+        val gaze = currentGaze ?: return
+        val px = gaze.x * w
+        val py = gaze.y * h
+
+        gazePulseAnim = (gazePulseAnim + 0.12f) % (2f * Math.PI.toFloat())
+        val pulseRadius = AppConfig.PupilNeon.GAZE_RETICLE_RADIUS_PX + 6f * sin(gazePulseAnim)
+
+        // Outer aura
+        canvas.drawCircle(px, py, pulseRadius * 1.6f, gazeGlowPaint)
+
+        // Target Ring
+        canvas.drawCircle(px, py, pulseRadius, gazeRingPaint)
+
+        // Reticle Crosshairs
+        val chSize = pulseRadius * 0.75f
+        canvas.drawLine(px - chSize, py, px + chSize, py, gazeRingPaint)
+        canvas.drawLine(px, py - chSize, px, py + chSize, gazeRingPaint)
+
+        // Center Dot
+        canvas.drawCircle(px, py, 10f, gazeDotPaint)
+
+        // Gaze Position Label
+        val simTag = if (gaze.isSimulated) " (Simulated)" else " (Live)"
+        val label = "GAZE Target: (%.2f, %.2f)%s".format(gaze.x, gaze.y, simTag)
+        val textWidth = gazeTextPaint.measureText(label)
+        val textX = (px + pulseRadius + 14f).coerceIn(10f, w - textWidth - 10f)
+        val textY = (py - pulseRadius - 10f).coerceIn(40f, h - 20f)
+
+        val textBgRect = RectF(textX - 10f, textY - 26f, textX + textWidth + 10f, textY + 8f)
+        canvas.drawRoundRect(textBgRect, 10f, 10f, badgeBgPaint)
+        canvas.drawText(label, textX, textY, gazeTextPaint)
     }
 
     private fun drawGuidanceArrow(canvas: Canvas, w: Float, h: Float) {
@@ -632,8 +717,17 @@ class CameraGuidanceOverlayView(context: Context, attrs: AttributeSet? = null) :
         canvas.drawRoundRect(rect, 20f, 20f, badgeBgPaint)
 
         val activeLooming = landmarks.count { it.excessApproachingSpeed > AppConfig.VisualSlam.MIN_EXCESS_SPEED }
-        val titleText = "SURPRISE: $steerInstruction"
-        val statusText = "SLAM Landmarks: ${landmarks.size} | Looming Threats: $activeLooming"
+        val modeTitle = if (isGlassesMode) "NEON GLASSES" else "SURPRISE"
+        val titleText = "$modeTitle: $steerInstruction"
+
+        val gazeInfo = if (isGlassesMode && currentGaze != null) {
+            val g = currentGaze!!
+            "Gaze: (%.2f, %.2f) %s".format(g.x, g.y, if (g.isSimulated) "[SIM]" else "[LIVE]")
+        } else {
+            "SLAM Landmarks: ${landmarks.size}"
+        }
+
+        val statusText = "$gazeInfo | Looming Threats: $activeLooming"
 
         canvas.drawText(titleText, 40f, 70f, textPaint)
         canvas.drawText(statusText, 40f, 110f, subTextPaint)
@@ -669,7 +763,7 @@ class CameraGuidanceOverlayView(context: Context, attrs: AttributeSet? = null) :
 /**
  * Main Activity integrating Visual SLAM, Depth-Anything-V2 ONNX inference,
  * Roel Vertegaal's approaching motion surprise landscape, discrete Lagrangian trajectory optimization,
- * and live AR guidance rendering.
+ * Pupil Labs Neon smartglasses eye-gaze tracking, and live AR guidance rendering.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -711,8 +805,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var overlayView: SurpriseOverlayView
     private lateinit var scaleLabel: TextView
     private lateinit var pitchLabel: TextView
+    private lateinit var sourceButton: Button
+    private lateinit var neonConfigButton: Button
+    private lateinit var hintLabel: TextView
+
     private lateinit var cameraExecutor: ExecutorService
     private lateinit var sensorManager: SensorManager
+    private lateinit var pupilNeonManager: PupilNeonManager
+
+    private var visionSource = VisionSource.ATTACHED_CAMERA
     private var ortEnvironment: OrtEnvironment? = null
     private var session: OrtSession? = null
     private var lastAnalysisTimeMs = 0L
@@ -751,36 +852,53 @@ class MainActivity : AppCompatActivity() {
         depthScale = prefs.getFloat(PREF_DEPTH_SCALE, DEFAULT_DEPTH_SCALE)
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
 
+        pupilNeonManager = PupilNeonManager(this)
+        val savedSourceOrdinal = prefs.getInt(AppConfig.PupilNeon.PREF_VISION_SOURCE, VisionSource.ATTACHED_CAMERA.ordinal)
+        visionSource = VisionSource.entries.getOrElse(savedSourceOrdinal) { VisionSource.ATTACHED_CAMERA }
+        pupilNeonManager.host = prefs.getString(AppConfig.PupilNeon.PREF_NEON_HOST, AppConfig.PupilNeon.DEFAULT_HOST) ?: AppConfig.PupilNeon.DEFAULT_HOST
+        pupilNeonManager.port = prefs.getInt(AppConfig.PupilNeon.PREF_NEON_PORT, AppConfig.PupilNeon.DEFAULT_PORT)
+
         previewView = PreviewView(this)
         cameraGuidanceOverlay = CameraGuidanceOverlayView(this)
         overlayView = SurpriseOverlayView(this)
 
         scaleLabel = TextView(this).apply {
             text = "Scale: %.3f".format(depthScale)
-            setPadding(24, 0, 0, 0)
+            setPadding(12, 0, 0, 0)
         }
         pitchLabel = TextView(this).apply {
             text = "Pitch: --"
-            setPadding(24, 0, 0, 0)
+            setPadding(12, 0, 0, 0)
+        }
+        sourceButton = Button(this).apply {
+            setOnClickListener { toggleVisionSource() }
+        }
+        neonConfigButton = Button(this).apply {
+            text = "⚙️ Neon"
+            setOnClickListener { showNeonConfigDialog() }
         }
         val calibrateButton = Button(this).apply {
             text = "Calibrate"
             setOnClickListener { calibrateDepthScale() }
         }
+
         val controlBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(16, 16, 16, 16)
+            setPadding(12, 12, 12, 12)
+            addView(sourceButton)
+            addView(neonConfigButton)
             addView(calibrateButton)
             addView(scaleLabel)
             addView(pitchLabel)
         }
-        val hint = TextView(this).apply {
-            text = "Hold phone ~%.1f m up | SLAM & Vertegaal Surprise Active"
-                .format(CAMERA_HEIGHT)
+
+        hintLabel = TextView(this).apply {
             setPadding(24, 0, 24, 16)
             textSize = 12f
         }
+
+        updateSourceModeUI()
 
         val cameraContainer = FrameLayout(this).apply {
             addView(previewView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
@@ -789,7 +907,7 @@ class MainActivity : AppCompatActivity() {
 
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(controlBar)
-        root.addView(hint)
+        root.addView(hintLabel)
         root.addView(
             cameraContainer,
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 0.55f)
@@ -814,6 +932,93 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun toggleVisionSource() {
+        visionSource = if (visionSource == VisionSource.ATTACHED_CAMERA) {
+            VisionSource.PUPIL_NEON_GLASSES
+        } else {
+            VisionSource.ATTACHED_CAMERA
+        }
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putInt(AppConfig.PupilNeon.PREF_VISION_SOURCE, visionSource.ordinal)
+            .apply()
+
+        updateSourceModeUI()
+    }
+
+    private fun updateSourceModeUI() {
+        if (visionSource == VisionSource.PUPIL_NEON_GLASSES) {
+            sourceButton.text = "Source: Neon Glasses 👓"
+            neonConfigButton.visibility = View.VISIBLE
+            pupilNeonManager.start()
+            hintLabel.text = "Pupil Neon Smartglasses Active | Gaze Tracking Enabled"
+            Toast.makeText(this, "Switched to Pupil Neon Smartglasses", Toast.LENGTH_SHORT).show()
+        } else {
+            sourceButton.text = "Source: Camera 📷"
+            neonConfigButton.visibility = View.GONE
+            pupilNeonManager.stop()
+            hintLabel.text = "Attached Camera Active | Hold phone ~%.1f m up".format(CAMERA_HEIGHT)
+            Toast.makeText(this, "Switched to Attached Camera", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun showNeonConfigDialog() {
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(40, 20, 40, 10)
+        }
+
+        val hostLabel = TextView(this).apply { text = "Pupil Companion IP / Host:" }
+        val hostInput = EditText(this).apply {
+            setText(pupilNeonManager.host)
+            hint = AppConfig.PupilNeon.DEFAULT_HOST
+        }
+
+        val portLabel = TextView(this).apply { text = "API Port:" }
+        val portInput = EditText(this).apply {
+            setText(pupilNeonManager.port.toString())
+            inputType = InputType.TYPE_CLASS_NUMBER
+        }
+
+        val simCheckBox = CheckBox(this).apply {
+            text = "Use Simulated Gaze Feed (Demo / Test)"
+            isChecked = pupilNeonManager.isSimulated()
+        }
+
+        val statusText = TextView(this).apply {
+            text = "Status: ${pupilNeonManager.getStatusText()}"
+            setPadding(0, 16, 0, 16)
+        }
+
+        layout.addView(hostLabel)
+        layout.addView(hostInput)
+        layout.addView(portLabel)
+        layout.addView(portInput)
+        layout.addView(simCheckBox)
+        layout.addView(statusText)
+
+        AlertDialog.Builder(this)
+            .setTitle("Pupil Neon Smartglasses Settings")
+            .setView(layout)
+            .setPositiveButton("Apply") { _, _ ->
+                val newHost = hostInput.text.toString().trim().ifEmpty { AppConfig.PupilNeon.DEFAULT_HOST }
+                val newPort = portInput.text.toString().toIntOrNull() ?: AppConfig.PupilNeon.DEFAULT_PORT
+                val useSim = simCheckBox.isChecked
+
+                pupilNeonManager.host = newHost
+                pupilNeonManager.port = newPort
+                pupilNeonManager.setSimulationMode(useSim)
+
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                    .putString(AppConfig.PupilNeon.PREF_NEON_HOST, newHost)
+                    .putInt(AppConfig.PupilNeon.PREF_NEON_PORT, newPort)
+                    .apply()
+
+                Toast.makeText(this, "Neon settings updated", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     override fun onResume() {
         super.onResume()
         val sensor = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
@@ -821,18 +1026,23 @@ class MainActivity : AppCompatActivity() {
         if (sensor != null) {
             sensorManager.registerListener(pitchListener, sensor, SensorManager.SENSOR_DELAY_GAME)
         }
+        if (visionSource == VisionSource.PUPIL_NEON_GLASSES) {
+            pupilNeonManager.start()
+        }
     }
 
     override fun onPause() {
         super.onPause()
         sensorManager.unregisterListener(pitchListener)
         sensorPitchDeg = null
+        pupilNeonManager.stop()
     }
 
     override fun onDestroy() {
         super.onDestroy()
         cameraExecutor.shutdown()
         session?.close()
+        pupilNeonManager.stop()
     }
 
     private fun loadOrtSession(env: OrtEnvironment): OrtSession? = try {
@@ -931,19 +1141,30 @@ class MainActivity : AppCompatActivity() {
             val elevation = depthToElevation(depth, pitchDeg)
             val grid = toTopDownGrid(elevation, pitchDeg, aspect)
             val reference = updateReferenceElevation(grid)
-            val surprise = vertegaalSurpriseField.computeSurpriseGrid(grid, reference, SIGMA, slamLandmarks)
+
+            val gaze = if (visionSource == VisionSource.PUPIL_NEON_GLASSES) pupilNeonManager.getCurrentGaze() else null
+            val surprise = vertegaalSurpriseField.computeSurpriseGrid(grid, reference, SIGMA, slamLandmarks, gazePoint = gaze)
             val start = Pair(grid.size - 1, grid[0].size / 2)
             val lagrangianResult = lagrangianPlanner.planOptimalRoute(surprise, start)
 
             runOnUiThread {
-                overlayView.update(grid, lagrangianResult.gridPath, start, slamLandmarks)
+                overlayView.update(
+                    newGrid = grid,
+                    newPath = lagrangianResult.gridPath,
+                    newStart = start,
+                    slamLandmarks = slamLandmarks,
+                    gaze = gaze,
+                    glassesActive = (visionSource == VisionSource.PUPIL_NEON_GLASSES)
+                )
                 cameraGuidanceOverlay.update(
                     path = lagrangianResult.metricPath,
                     instruction = lagrangianResult.steerInstruction,
                     steerAngle = lagrangianResult.steerAngleRad,
                     slamLandmarks = slamLandmarks,
                     pitch = pitchDeg,
-                    cameraAspect = aspect
+                    cameraAspect = aspect,
+                    gaze = gaze,
+                    glassesActive = (visionSource == VisionSource.PUPIL_NEON_GLASSES)
                 )
                 pitchLabel.text = "Pitch: %.1f°%s".format(pitchDeg, if (usingSensor) "" else " (fixed)")
                 scaleLabel.text = "Scale: %.3f | Act: %.1f".format(depthScale, lagrangianResult.actionCost)
@@ -1145,7 +1366,7 @@ class MainActivity : AppCompatActivity() {
 
 /**
  * Top-down surprise landscape map view overlay with active SLAM feature velocities,
- * elevation + Vertegaal motion surprise heat map, and Lagrangian path curves.
+ * elevation + Vertegaal motion surprise heat map, Pupil Neon gaze target, and Lagrangian path curves.
  */
 class SurpriseOverlayView(context: Context, attrs: AttributeSet? = null) : View(context, attrs) {
 
@@ -1153,6 +1374,8 @@ class SurpriseOverlayView(context: Context, attrs: AttributeSet? = null) : View(
     private var path: List<Pair<Int, Int>> = emptyList()
     private var start: Pair<Int, Int>? = null
     private var landmarks: List<SlamLandmark> = emptyList()
+    private var currentGaze: GazePoint? = null
+    private var isGlassesMode: Boolean = false
 
     private val cellPaint = Paint()
     private val pathPaint = Paint().apply {
@@ -1172,16 +1395,38 @@ class SurpriseOverlayView(context: Context, attrs: AttributeSet? = null) : View(
     }
     private val startPaint = Paint().apply { color = Color.GREEN }
 
+    private val gazeDotPaint = Paint().apply {
+        color = Color.parseColor(AppConfig.PupilNeon.COLOR_GAZE_NEON)
+        style = Paint.Style.FILL
+        isAntiAlias = true
+    }
+    private val gazeRingPaint = Paint().apply {
+        color = Color.parseColor(AppConfig.PupilNeon.COLOR_GAZE_RING)
+        strokeWidth = 3f
+        style = Paint.Style.STROKE
+        isAntiAlias = true
+    }
+    private val gazeTextPaint = Paint().apply {
+        color = Color.parseColor(AppConfig.PupilNeon.COLOR_GAZE_TEXT)
+        textSize = 22f
+        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        isAntiAlias = true
+    }
+
     fun update(
         newGrid: Array<FloatArray>,
         newPath: List<Pair<Int, Int>>,
         newStart: Pair<Int, Int>,
-        slamLandmarks: List<SlamLandmark> = emptyList()
+        slamLandmarks: List<SlamLandmark> = emptyList(),
+        gaze: GazePoint? = null,
+        glassesActive: Boolean = false
     ) {
         grid = newGrid
         path = newPath
         start = newStart
         landmarks = slamLandmarks
+        currentGaze = gaze
+        isGlassesMode = glassesActive
         invalidate()
     }
 
@@ -1219,6 +1464,18 @@ class SurpriseOverlayView(context: Context, attrs: AttributeSet? = null) : View(
                 val vzPx = -lm.vz * cellH * 3f
                 canvas.drawLine(px, py, px + vxPx, py + vzPx, arrowPaint)
             }
+        }
+
+        if (isGlassesMode && currentGaze != null) {
+            val gaze = currentGaze!!
+            val gazeR = (gaze.y * (rows - 1)).roundToInt().coerceIn(0, rows - 1)
+            val gazeC = (gaze.x * (cols - 1)).roundToInt().coerceIn(0, cols - 1)
+            val px = (gazeC + 0.5f) * cellW
+            val py = (gazeR + 0.5f) * cellH
+
+            canvas.drawCircle(px, py, 16f, gazeRingPaint)
+            canvas.drawCircle(px, py, 7f, gazeDotPaint)
+            canvas.drawText("GAZE", px + 12f, py + 6f, gazeTextPaint)
         }
 
         if (path.size > 1) {
