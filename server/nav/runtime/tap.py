@@ -32,19 +32,28 @@ class RecordingTap:
         self._inner = inner
         self._log_dir = Path(log_dir)
         self._index_path = self._log_dir / INDEX_FILENAME
+        self._prepared = False
+        self._next_sequence = 0
 
     def _prepare_directory(self) -> None:
+        if self._prepared:
+            # A second frames() call is this run continuing after its source came back, so the
+            # files already here are its own and the sequence carries on from where it was.
+            return
         if self._log_dir.exists() and any(self._log_dir.iterdir()):
             # Two runs interleaved in one log produce a sequence that reads back as one recording
             # and is not one. Refusing is cheaper than discovering that during analysis.
             raise FileExistsError(f"{self._log_dir} already has files in it, pick an empty directory")
         self._log_dir.mkdir(parents=True, exist_ok=True)
+        self._prepared = True
 
     def frames(self) -> Iterator[DepthFrame]:
         self._prepare_directory()
         log.info("recording frames to %s", self._log_dir)
 
-        for sequence, frame in enumerate(self._inner.frames()):
+        for frame in self._inner.frames():
+            sequence = self._next_sequence
+            self._next_sequence += 1
             filename = FRAME_FILENAME_TEMPLATE.format(sequence=sequence)
             write_message_to_file(self._log_dir / filename, encode_frame(frame))
             append_text_lf(

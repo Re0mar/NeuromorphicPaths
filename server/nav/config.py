@@ -41,7 +41,7 @@ from nav.sources.estimator import DepthEstimator, DepthEstimatorProtocol
 from nav.sources.logged import LoggedDepthFrameSource
 from nav.sources.neon_plugin import NativeNeonRecordingReader, NeonPluginDepthFrameSource
 from nav.sources.rgb import RgbSource
-from nav.sources.video_file import VideoFileRgbSource
+from nav.sources.video_file import URL_MARKER, VideoFileRgbSource
 from nav.types import DepthFrameSource, PathSink
 from nav.usermodel.config import UserModelConfig
 from nav.walker import WalkerConfig
@@ -155,10 +155,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     neon = parser.add_argument_group("neon_live source")
     neon.add_argument("--neon-address", help="the Neon's address, or omit it to discover the device")
-    neon.add_argument("--neon-port", type=_port_number, default=8080)
+    neon.add_argument("--neon-port", type=_port_number, default=NeonConfig.port)
 
     arcore = parser.add_argument_group("arcore_tcp source")
-    arcore.add_argument("--arcore-port", type=_port_number, default=9000)
+    arcore.add_argument("--arcore-port", type=_port_number, default=ArCoreConfig.port)
     arcore.add_argument("--reconnect", action="store_true", help="keep listening after the phone disconnects")
 
     neon_plugin = parser.add_argument_group("neon_plugin source")
@@ -175,10 +175,11 @@ def build_parser() -> argparse.ArgumentParser:
     logged.add_argument("--realtime", action="store_true", help="replay at the recorded frame rate")
 
     estimator = parser.add_argument_group("depth estimator")
-    # Defaulted from the dataclass rather than restated, so the checkpoint has one home.
+    # Every default below is read from its dataclass rather than restated, so each value has one
+    # home and a test can check the parser against it.
     estimator.add_argument("--model", default=EstimatorConfig.model_name, help="Depth Anything 3 checkpoint")
-    estimator.add_argument("--process-resolution", type=_positive_int, default=504)
-    estimator.add_argument("--confidence-drop-percentile", type=_percentile, default=30.0)
+    estimator.add_argument("--process-resolution", type=_positive_int, default=EstimatorConfig.process_resolution)
+    estimator.add_argument("--confidence-drop-percentile", type=_percentile, default=EstimatorConfig.confidence_drop_percentile)
     estimator.add_argument(
         "--fallback-fov",
         type=_positive_float,
@@ -198,14 +199,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     walker = parser.add_argument_group("walker")
-    walker.add_argument("--walker-radius", type=_positive_float, default=0.35, help="footprint radius in meters")
+    walker.add_argument("--walker-radius", type=_positive_float, default=WalkerConfig.radius_meters, help="footprint radius in meters")
 
     web = parser.add_argument_group("web sink")
-    web.add_argument("--web-port", type=_port_number, default=8765)
+    web.add_argument("--web-port", type=_port_number, default=WebConfig.port)
 
     phone = parser.add_argument_group("phone_app sink")
     phone.add_argument("--phone-address", help="the Pixel app's address")
-    phone.add_argument("--phone-port", type=_port_number, default=9100)
+    phone.add_argument("--phone-port", type=_port_number, default=PhoneAppConfig.port)
 
     logging_group = parser.add_argument_group("logging")
     logging_group.add_argument("--verbose", action="store_true")
@@ -232,6 +233,13 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
     sink_kind = SinkKind(arguments.sink)
     goal_mode = GoalMode(arguments.goal)
 
+    # The loop and the replay act on these flags alone and never name a kind, so the kind checks
+    # live here, before anything that opens a path.
+    if arguments.reconnect and source_kind is not SourceKind.ARCORE_TCP:
+        parser.error(f"--reconnect only applies to {SourceKind.ARCORE_TCP.value}, not {source_kind.value}")
+    if arguments.realtime and source_kind is not SourceKind.LOGGED:
+        parser.error(f"--realtime only applies to {SourceKind.LOGGED.value}, not {source_kind.value}")
+
     video = None
     neon = None
     arcore = None
@@ -241,6 +249,10 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
     match source_kind:
         case SourceKind.VIDEO_FILE:
             _require(parser, arguments.path, "--path", source_kind)
+            # Checked here rather than when the source opens, because the estimator loads its
+            # 1.3 GB model before the first frame is asked for, and a typo should cost nothing.
+            if URL_MARKER not in arguments.path and not Path(arguments.path).is_file():
+                parser.error(f"--path {arguments.path} is not a file. A camera stream needs a URL with a scheme")
             video = VideoConfig(path=arguments.path)
         case SourceKind.NEON_LIVE:
             # No address is the normal case. The source discovers the device instead.
@@ -249,21 +261,21 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
             arcore = ArCoreConfig(port=arguments.arcore_port)
         case SourceKind.NEON_PLUGIN:
             _require(parser, arguments.recording_dir, "--recording-dir", source_kind)
+            if not Path(arguments.recording_dir).is_dir():
+                parser.error(f"--recording-dir {arguments.recording_dir} is not a directory")
             neon_plugin = NeonPluginConfig(
                 recording_dir=arguments.recording_dir,
                 model=NeonPluginModel(arguments.plugin_model),
             )
         case SourceKind.LOGGED:
             _require(parser, arguments.log_dir, "--log-dir", source_kind)
+            if not Path(arguments.log_dir).is_dir():
+                parser.error(f"--log-dir {arguments.log_dir} is not a directory")
             logged = LoggedConfig(log_dir=arguments.log_dir)
         case _:
             # Unreachable while every member above is handled. Here so that adding a member and
             # forgetting this function fails loudly instead of leaving every config None.
             raise ValueError(f"no argument handling for {source_kind}")
-
-    # The loop acts on the flag alone and never names a kind, so the kind check lives here.
-    if arguments.reconnect and source_kind is not SourceKind.ARCORE_TCP:
-        parser.error(f"--reconnect only applies to {SourceKind.ARCORE_TCP.value}, not {source_kind.value}")
 
     estimator = None
     if source_kind in ESTIMATOR_BACKED_SOURCES:

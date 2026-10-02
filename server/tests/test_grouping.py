@@ -13,6 +13,7 @@ import pytest
 from nav.scene.config import SceneConfig
 from nav.scene.floor import height_above_floor
 from nav.scene.grouping import (
+    WORLD_GRID_INDEX_OFFSET,
     GroupSummary,
     assign_groups,
     assign_world_groups,
@@ -145,6 +146,15 @@ def test_world_group_ids_do_not_change_when_the_walker_moves() -> None:
 
 def test_world_group_ids_are_non_negative_for_points_behind_the_origin() -> None:
     assert np.all(assign_world_groups(np.array([[-3.0, -7.0], [0.0, 0.0]]), CONFIG) >= 0)
+
+
+def test_a_point_beyond_the_world_grids_reach_is_refused_rather_than_aliased() -> None:
+    # Past the index range the row arithmetic wraps and two different places share an id, which
+    # the clearance history would then treat as one obstacle. Refusing is the only visible answer.
+    too_far = np.array([[(WORLD_GRID_INDEX_OFFSET + 1) * CONFIG.cell_size_meters, 0.0]])
+
+    with pytest.raises(ValueError, match="world grid"):
+        assign_world_groups(too_far, CONFIG)
 
 
 def test_the_planning_window_matches_the_body_grid_bounds() -> None:

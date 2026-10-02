@@ -76,18 +76,16 @@ def test_video_to_log_to_replay_round_trip(tmp_path: Path) -> None:
     assert main(["--source", "logged", "--log-dir", str(log_dir), "--sink", "none"]) == 0
 
 
-def test_a_missing_video_exits_non_zero_with_the_path_in_the_error(tmp_path: Path, caplog: pytest.CaptureFixture) -> None:
-    config = build_run_config(["--source", "video_file", "--path", str(tmp_path / "nothing.avi"), "--sink", "none"])
-    config = dataclasses.replace(config, estimator_factory=lambda estimator_config: StubDepthEstimator())
+def test_a_missing_video_is_refused_by_the_parser_naming_the_path(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # Refused before run() exists, so no estimator is built for a typo. The loop's own handling
+    # of a source that fails after the parser let it through is in test_loop.py.
+    with pytest.raises(SystemExit):
+        main(["--source", "video_file", "--path", str(tmp_path / "nothing.avi"), "--sink", "none"])
 
-    with caplog.at_level("ERROR"):
-        exit_code = run(config)
-
-    assert exit_code == 1
-    assert any("nothing.avi" in record.message or "nothing.avi" in str(record.exc_info) for record in caplog.records)
+    assert "nothing.avi" in capsys.readouterr().err
 
 
-def test_recording_into_a_used_directory_fails_rather_than_interleaving(tmp_path: Path) -> None:
+def test_recording_into_a_used_directory_fails_rather_than_interleaving(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     video = _write_video(tmp_path / "walk.avi", frame_count=3)
     log_dir = tmp_path / "log"
     log_dir.mkdir()
@@ -95,7 +93,15 @@ def test_recording_into_a_used_directory_fails_rather_than_interleaving(tmp_path
     config = build_run_config(["--source", "video_file", "--path", str(video), "--sink", "none", "--record-to", str(log_dir)])
     config = dataclasses.replace(config, estimator_factory=lambda estimator_config: StubDepthEstimator())
 
-    assert run(config) == 1
+    with caplog.at_level("ERROR"):
+        assert run(config) == 1
+
+    # A used directory is a known refusal, reported by name and never as a defect in the pipeline.
+    errors = [record for record in caplog.records if record.levelname == "ERROR"]
+    assert len(errors) == 1
+    assert "FileExistsError" in errors[0].message and str(log_dir) in errors[0].message
+    assert "UNEXPECTED" not in errors[0].message
+    assert errors[0].exc_info is None
 
 
 def test_reconnect_is_refused_for_a_source_that_is_not_the_phone(capsys: pytest.CaptureFixture[str]) -> None:

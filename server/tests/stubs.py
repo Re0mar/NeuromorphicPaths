@@ -23,6 +23,10 @@ class StubDepthEstimator:
     The floor is computed from the pinhole model rather than painted as a gradient, so a plane fit
     recovers a real plane from it and the height band means what it says. A stub that returned an
     arbitrary ramp would let a broken floor fit pass.
+
+    One deviation from the real estimator, named here because it is where it is configured: this
+    stub always returns intrinsics. The metric model returns none for a plain video, and the
+    fallback-intrinsics branch of DepthEstimator.estimate runs only with the real model loaded.
     """
 
     height: int = 48

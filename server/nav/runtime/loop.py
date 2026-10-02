@@ -154,30 +154,40 @@ def run(config: RunConfig) -> int:
     source = build_source(config)
     worker: NewestFrameWorker[FrameResult] = NewestFrameWorker(process)
     worker.start()
+    publisher = NewestResultPublisher(sink)
 
     exit_code = 0
     frames_in = 0
     try:
         while True:
-            for frame in source.frames():
-                frames_in += 1
-                worker.submit(frame)
-                _publish_newest(worker, sink)
-            # Wait for the worker to finish the last frame it was handed, then publish it.
-            worker.stop()
-            _publish_newest(worker, sink)
+            try:
+                for frame in source.frames():
+                    frames_in += 1
+                    worker.submit(frame)
+                    publisher.publish(worker)
+            except ConnectionError as nobody_came_back:
+                if not (config.reconnect and frames_in > 0):
+                    raise
+                # The phone had connected before and did not come back within the accept timeout.
+                # Waiting was what --reconnect asked for, so this is the walk ending, not a fault.
+                log.info("no further connection, ending the run: %s", nobody_came_back)
+                break
+            # The source ended. Let the worker finish the frame it holds, then publish it.
+            worker.wait_until_idle()
+            publisher.publish(worker)
 
             if not config.reconnect:
                 break
-            # The phone disconnected and the user asked to wait for it. A source that has ended
-            # cannot be reused, so build a fresh one and a fresh worker.
-            log.info("source ended, rebuilding it to wait for the next connection")
-            source.close()
-            source = build_source(config)
-            worker = NewestFrameWorker(process)
-            worker.start()
+            # The same source accepts the next connection, and the same worker keeps its counts.
+            log.info("source ended, waiting for the next connection")
     except KeyboardInterrupt:
         log.info("interrupted")
+    except (OSError, ValueError) as refused:
+        # The source or the sink refused its input: a file that is not there, a port nobody sent
+        # to, a phone that is unreachable, a recording in the wrong format. Known and named, and
+        # the run cannot go on without it, so it ends with the message and no traceback.
+        log.error("%s: %s", type(refused).__name__, refused)
+        exit_code = 1
     except Exception as unexpected_error:
         # The worker's stored failure, re-raised by latest_result, or anything else nobody
         # predicted. Logged as such, and the exit code says the run did not finish on its own terms.
@@ -192,14 +202,24 @@ def run(config: RunConfig) -> int:
     return exit_code
 
 
-def _publish_newest(worker: NewestFrameWorker, sink) -> None:
-    result = worker.latest_result()
-    if result is None:
-        return
-    if isinstance(sink, DebugSink):
-        sink.publish_debug(result.path, result.field, result.grid)
-    else:
-        sink.publish(result.path)
+class NewestResultPublisher:
+    """Hands each new result to the sink once, however many source frames arrive while it is new."""
+
+    def __init__(self, sink) -> None:
+        self._sink = sink
+        self._last: FrameResult | None = None
+
+    def publish(self, worker: NewestFrameWorker) -> None:
+        result = worker.latest_result()
+        # Identity, not equality. The worker hands out the same object until it has a new one,
+        # and a web or phone sink sent the same path six times over per planned frame without this.
+        if result is None or result is self._last:
+            return
+        self._last = result
+        if isinstance(self._sink, DebugSink):
+            self._sink.publish_debug(result.path, result.field, result.grid)
+        else:
+            self._sink.publish(result.path)
 
 
 def _report(worker: NewestFrameWorker, meter: WorkMeter, frames_in: int, config: RunConfig) -> None:

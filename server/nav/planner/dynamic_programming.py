@@ -18,10 +18,16 @@ import numpy as np
 from nav.planner.config import PlannerConfig
 
 
+# linspace puts the grid spacing a few ulp off the configured value, so an exact ratio such as 2.0
+# cells per step floored to 1 without this. A millionth of a cell is far below any real speed.
+REACH_ROUNDING_TOLERANCE_CELLS = 1e-6
+
+
 def reachable_cell_offset(config: PlannerConfig, grid: np.ndarray) -> int:
     """How many cells sideways one time step may move, at most. Never less than one."""
     spacing = float(grid[1] - grid[0]) if len(grid) > 1 else config.grid_spacing_meters
-    return max(1, int(np.floor(config.max_lateral_speed_mps * config.time_step_seconds / spacing)))
+    cells_per_step = config.max_lateral_speed_mps * config.time_step_seconds / spacing
+    return max(1, int(np.floor(cells_per_step + REACH_ROUNDING_TOLERANCE_CELLS)))
 
 
 def plan(field: np.ndarray, start_lateral_meters: float, grid: np.ndarray, config: PlannerConfig) -> tuple[np.ndarray, float]:

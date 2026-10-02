@@ -63,38 +63,48 @@ class ArCoreTcpSource:
         log.info("sender connected from %s:%d", peer[0], peer[1])
 
         received = 0
-        while True:
-            try:
-                payload = read_message(client)
-            except StreamClosedError as closed:
-                if closed.at_message_boundary:
-                    log.info("sender disconnected after %d frames", received)
-                else:
-                    log.warning("sender disconnected part way through a frame, after %d frames: %s", received, closed)
-                return
-            except FrameDecodeError as framing_error:
-                # A zero or over-limit length prefix. The stream is out of step, so the next bytes
-                # are not a frame either. Dropping the connection is the only honest recovery, and
-                # the runtime decides whether to wait for the phone to reconnect.
-                log.warning("stream desynchronised after %d frames, dropping the connection: %s", received, framing_error)
-                return
-            except OSError as socket_error:
-                # Reset by peer, or the interface went away. The connection is gone either way.
-                log.info("connection lost after %d frames: %s", received, socket_error)
-                return
+        try:
+            while True:
+                try:
+                    payload = read_message(client)
+                except StreamClosedError as closed:
+                    if closed.at_message_boundary:
+                        log.info("sender disconnected after %d frames", received)
+                    else:
+                        log.warning("sender disconnected part way through a frame, after %d frames: %s", received, closed)
+                    return
+                except FrameDecodeError as framing_error:
+                    # A zero or over-limit length prefix. The stream is out of step, so the next
+                    # bytes are not a frame either. Dropping the connection is the only honest
+                    # recovery, and the runtime decides whether to wait for the phone to reconnect.
+                    log.warning("stream desynchronised after %d frames, dropping the connection: %s", received, framing_error)
+                    return
+                except OSError as socket_error:
+                    # Reset by peer, or the interface went away. The connection is gone either way.
+                    log.info("connection lost after %d frames: %s", received, socket_error)
+                    return
 
-            try:
-                frame = decode_frame(payload)
-            except FrameDecodeError as decode_error:
-                # One bad frame on the wire. Expected on a hotspot, costs one frame, and the
-                # connection stays up. Dropping the connection for it would cost every frame after.
-                log.warning("frame dropped (caught %s, expected): %s", type(decode_error).__name__, decode_error)
-                continue
+                try:
+                    frame = decode_frame(payload)
+                except FrameDecodeError as decode_error:
+                    # One bad frame on the wire. Expected on a hotspot, costs one frame, and the
+                    # connection stays up. Dropping the connection for it would cost every frame after.
+                    log.warning("frame dropped (caught %s, expected): %s", type(decode_error).__name__, decode_error)
+                    continue
 
-            if received == 0:
-                log.info("first frame: depth %s, has_position=%s", frame.depth_meters.shape, frame.pose.has_position)
-            received += 1
-            yield frame
+                if received == 0:
+                    log.info("first frame: depth %s, has_position=%s", frame.depth_meters.shape, frame.pose.has_position)
+                received += 1
+                yield frame
+        finally:
+            # The listener stays open, so frames() can be called again for the next connection
+            # without holding a dead socket per reconnect until the run ends.
+            self._end_connection()
+
+    def _end_connection(self) -> None:
+        if self._client is not None:
+            self._client.close()
+            self._client = None
 
     def close(self) -> None:
         for name in ("_client", "_listener"):

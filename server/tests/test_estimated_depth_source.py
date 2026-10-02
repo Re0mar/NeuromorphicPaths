@@ -16,7 +16,7 @@ import pytest
 from conftest import SYNTHETIC_VIDEO_FRAME_COUNT
 from nav.sources.config import EstimatorConfig
 from nav.sources.estimated_depth import EstimatedDepthSource
-from nav.sources.estimator import DepthEstimate, apply_confidence_filter
+from nav.sources.estimator import DepthEstimate, apply_confidence_filter, fallback_intrinsics
 from nav.sources.rgb import RgbFrame
 from nav.sources.video_file import VideoFileRgbSource
 from stubs import StubDepthEstimator, WrongShapeDepthEstimator
@@ -115,6 +115,21 @@ def test_an_estimator_returning_the_wrong_shape_is_refused() -> None:
     # it as a broadcasting error inside unprojection.
     with pytest.raises(ValueError, match="depth_meters"):
         next(iter(source.frames()))
+
+
+def test_fallback_intrinsics_put_the_principal_point_at_the_centre_with_the_focal_from_the_field_of_view() -> None:
+    # Ninety degrees of horizontal field of view means the image edge is at 45 degrees, so the
+    # focal length in pixels equals half the width. This is the camera every stub frame and every
+    # estimator frame without model intrinsics is unprojected through.
+    camera = fallback_intrinsics(480, 640, half_field_of_view_degrees=45.0)
+
+    assert camera[0, 0] == pytest.approx(320.0)
+    assert camera[1, 1] == pytest.approx(320.0)
+    assert camera[0, 2] == pytest.approx(320.0)
+    assert camera[1, 2] == pytest.approx(240.0)
+    assert camera[2] == pytest.approx([0.0, 0.0, 1.0])
+    # A narrower view is a longer focal length, which is the whole reason the flag exists.
+    assert fallback_intrinsics(480, 640, half_field_of_view_degrees=37.5)[0, 0] > camera[0, 0]
 
 
 def test_confidence_filter_drops_exactly_the_requested_percentile() -> None:

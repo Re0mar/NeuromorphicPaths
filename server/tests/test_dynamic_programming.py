@@ -152,3 +152,11 @@ def test_reachable_offset_is_at_least_one_cell() -> None:
     crawl = PlannerConfig(max_lateral_speed_mps=0.0001)
 
     assert reachable_cell_offset(crawl, GRID) == 1
+
+
+@pytest.mark.parametrize(("speed", "cells"), [(1.0, 1), (2.0, 2), (3.0, 3), (2.5, 2)])
+def test_reachable_offset_is_exact_at_whole_cells_per_step(speed: float, cells: int) -> None:
+    # linspace puts the grid spacing a few ulp above 0.1, and a whole-number ratio floored
+    # through that came out one cell short: 2.0 m/s at 0.1 s over 0.1 m gave 1 cell, not 2. The
+    # default 1.0 m/s only looked right because of the clamp at one.
+    assert reachable_cell_offset(PlannerConfig(max_lateral_speed_mps=speed), GRID) == cells

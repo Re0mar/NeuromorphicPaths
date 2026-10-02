@@ -35,6 +35,7 @@ from nav.runtime.tap import RecordingTap
 from nav.scene.config import SceneConfig
 from nav.sinks.config import PhoneAppConfig, WebConfig
 from nav.types import DepthFrame, PlannedPath, Pose
+from nav.walker import WalkerConfig
 
 from stubs import StubDepthEstimator
 
@@ -55,7 +56,10 @@ def _depth_frame(**overrides: object) -> DepthFrame:
     fields.update(overrides)
     return DepthFrame(**fields)
 
-MINIMAL_VIDEO_ARGV = ["--source", "video_file", "--path", "scene.mp4", "--sink", "none"]
+# A stream URL rather than a file name, because the parser now checks that a file path exists and
+# these tests are about the parser, not about a file on disk.
+STREAM_URL = "rtsp://camera.local/scene"
+MINIMAL_VIDEO_ARGV = ["--source", "video_file", "--path", STREAM_URL, "--sink", "none"]
 
 
 def test_minimal_command_line_builds_a_config() -> None:
@@ -65,7 +69,7 @@ def test_minimal_command_line_builds_a_config() -> None:
     assert config.sink_kind is SinkKind.NONE
     assert config.goal_mode is GoalMode.AHEAD
     assert config.video is not None
-    assert config.video.path == "scene.mp4"
+    assert config.video.path == STREAM_URL
     assert config.estimator is not None
     assert config.estimator.model_name == EstimatorConfig.model_name
     # A config for a source that was not chosen stays None, so a later layer reading one is
@@ -92,7 +96,7 @@ def test_defaults_land_where_they_belong() -> None:
         (["--source", "video_file", "--sink", "none"], "--path"),
         (["--source", "neon_plugin", "--sink", "none"], "--recording-dir"),
         (["--source", "logged", "--sink", "none"], "--log-dir"),
-        (["--source", "video_file", "--path", "scene.mp4", "--sink", "phone_app"], "--phone-address"),
+        (["--source", "video_file", "--path", STREAM_URL, "--sink", "phone_app"], "--phone-address"),
     ],
 )
 def test_missing_required_argument_names_it(argv: list[str], expected_in_message: str, capsys: pytest.CaptureFixture[str]) -> None:
@@ -102,12 +106,55 @@ def test_missing_required_argument_names_it(argv: list[str], expected_in_message
     assert expected_in_message in capsys.readouterr().err
 
 
+def test_a_video_path_that_is_not_a_file_is_refused_before_anything_loads(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    # The estimator loads 1.3 GB of weights before the first frame is asked for. A typo in the
+    # path has to be refused by the parser, where it costs nothing, and the message names the path.
+    missing = tmp_path / "nothing_here.mp4"
+
+    with pytest.raises(SystemExit):
+        build_run_config(["--source", "video_file", "--path", str(missing), "--sink", "none"])
+
+    assert "nothing_here.mp4" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("flag", "argv"),
+    [
+        ("--log-dir", ["--source", "logged", "--log-dir", "no_such_log", "--sink", "none"]),
+        ("--recording-dir", ["--source", "neon_plugin", "--recording-dir", "no_such_recording", "--sink", "none"]),
+    ],
+)
+def test_a_directory_argument_that_is_not_a_directory_is_refused(flag: str, argv: list[str], capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        build_run_config(argv)
+
+    assert flag in capsys.readouterr().err
+
+
+def test_a_video_path_that_exists_is_accepted(tmp_path) -> None:
+    video = tmp_path / "walk.avi"
+    video.write_bytes(b"not really a video, the parser only checks that it exists")
+
+    config = build_run_config(["--source", "video_file", "--path", str(video), "--sink", "none"])
+
+    assert config.video is not None and config.video.path == str(video)
+
+
+def test_realtime_is_refused_for_a_source_that_is_not_the_replay(capsys: pytest.CaptureFixture[str]) -> None:
+    # The same rule --reconnect already had. A flag the chosen source silently ignores is a run
+    # that does something other than what was typed.
+    with pytest.raises(SystemExit):
+        build_run_config([*MINIMAL_VIDEO_ARGV, "--realtime"])
+
+    assert "--realtime" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize(
     "argv",
     [
         ["--source", "bogus", "--sink", "none"],
-        ["--source", "video_file", "--path", "scene.mp4", "--sink", "bogus"],
-        ["--source", "video_file", "--path", "scene.mp4", "--sink", "none", "--goal", "bogus"],
+        ["--source", "video_file", "--path", STREAM_URL, "--sink", "bogus"],
+        ["--source", "video_file", "--path", STREAM_URL, "--sink", "none", "--goal", "bogus"],
     ],
 )
 def test_unknown_kind_is_refused(argv: list[str]) -> None:
@@ -255,6 +302,29 @@ def test_the_floor_tilt_and_fallback_fov_defaults_match_their_configs() -> None:
     assert config.scene.floor_max_tilt_degrees == SceneConfig.floor_max_tilt_degrees
     assert config.estimator is not None
     assert config.estimator.fallback_half_field_of_view_degrees == EstimatorConfig.fallback_half_field_of_view_degrees
+
+
+def test_every_parsed_default_is_the_dataclass_default() -> None:
+    # Each knob has one home, its layer's dataclass. The parser reads from there rather than
+    # restating the number, so this is what catches a copy that drifted.
+    config = build_run_config(MINIMAL_VIDEO_ARGV)
+    assert config.estimator is not None
+    assert config.walker.radius_meters == WalkerConfig.radius_meters
+    assert config.estimator.process_resolution == EstimatorConfig.process_resolution
+    assert config.estimator.confidence_drop_percentile == EstimatorConfig.confidence_drop_percentile
+    assert config.estimator.model_name == EstimatorConfig.model_name
+
+    neon = build_run_config(["--source", "neon_live", "--sink", "none"]).neon
+    assert neon is not None and neon.port == NeonConfig.port
+
+    arcore = build_run_config(["--source", "arcore_tcp", "--sink", "none"]).arcore
+    assert arcore is not None and arcore.port == ArCoreConfig.port
+
+    web = build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "web"]).web
+    assert web is not None and web.port == WebConfig.port
+
+    phone = build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "phone_app", "--phone-address", "10.0.0.2"]).phone_app
+    assert phone is not None and phone.port == PhoneAppConfig.port
 
 
 def test_neon_without_an_address_is_left_to_discovery() -> None:

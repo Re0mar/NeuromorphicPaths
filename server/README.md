@@ -52,9 +52,14 @@ is the whole configuration, and `--verbose` prints per-stage timings.
 
 | Source | What it reads | Flags |
 |---|---|---|
-| `video_file` | a recording, or an IP camera app's stream URL, through the depth estimator | `--path` |
+| `video_file` | a recording, or an IP camera app's stream URL, through the depth estimator | `--path`, checked before the model loads |
 | `neon_live` | the Pupil Labs Neon over the network, through the depth estimator | `--neon-address` only if discovery is blocked |
 | `arcore_tcp` | the Pixel app's depth frames over TCP | `--arcore-port` (9000), `--reconnect` |
+
+`--reconnect` keeps the same listener open after the phone disconnects, so a walk recorded with
+`--record-to` continues in the same log with the frame numbers running on. It waits up to the
+accept timeout, 30 seconds, for the phone to come back, and then ends the run normally. Without
+the flag the run ends when the phone disconnects.
 | `neon_plugin` | a Neon recording the Neon Player depth plugin has run over | `--recording-dir`, `--plugin-model` |
 | `logged` | a frame log this pipeline recorded earlier | `--log-dir`, `--realtime` |
 

@@ -1,6 +1,7 @@
 """Covers the recording and IP camera source, which is the only source with no hardware behind it."""
 
 # Standard library imports
+import time
 from pathlib import Path
 
 # Third party imports
@@ -10,6 +11,49 @@ import pytest
 # Local package imports
 from conftest import SYNTHETIC_VIDEO_FPS, SYNTHETIC_VIDEO_FRAME_COUNT, SYNTHETIC_VIDEO_SIZE
 from nav.sources.video_file import VideoFileRgbSource
+
+
+class CaptureWithNoClock:
+    """Stands in for a live stream that reports neither a position nor a frame rate."""
+
+    def __init__(self, frame_count: int) -> None:
+        self._remaining = frame_count
+        self.released = False
+
+    def get(self, property_id: int) -> float:
+        return 0.0
+
+    def read(self):
+        if self._remaining == 0:
+            return False, None
+        self._remaining -= 1
+        # Each frame takes real time to arrive, so a timestamp that follows the wall clock and
+        # one made up from a frame rate come apart.
+        time.sleep(0.05)
+        return True, np.zeros((8, 8, 3), dtype=np.uint8)
+
+    def release(self) -> None:
+        self.released = True
+
+
+def test_a_stream_with_no_timestamp_and_no_frame_rate_uses_the_wall_clock_and_warns_once(caplog: pytest.LogCaptureFixture) -> None:
+    # The scene's noise window is in seconds. A made-up frame rate here would quietly scale N,
+    # so the only honest fallback is the wall clock, said once rather than on every frame.
+    source = VideoFileRgbSource("rtsp://camera.local/stream")
+    source._capture = CaptureWithNoClock(frame_count=3)
+
+    with caplog.at_level("WARNING"):
+        frames = list(source.frames())
+
+    timestamps = [frame.timestamp_seconds for frame in frames]
+    assert len(frames) == 3
+    assert timestamps == sorted(timestamps) and timestamps[0] >= 0.04
+    # Three reads of fifty milliseconds each. A made-up frame rate would put the third frame at
+    # a fraction of that, and the epoch would put it at a billion.
+    assert 0.12 <= timestamps[-1] < 1.0, "wall clock seconds since the stream opened"
+    warnings = [record for record in caplog.records if record.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "wall clock" in warnings[0].message
 
 
 def test_reads_every_frame_with_increasing_timestamps(synthetic_video: Path) -> None:

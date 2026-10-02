@@ -54,7 +54,7 @@ class ScenePipeline:
 
     @property
     def previous_plane(self) -> Plane | None:
-        """The last floor used, in the camera frame. Read by the debug sink, nothing else."""
+        """The last floor used, in the camera frame. The runtime reads it to put the gaze on the ground."""
         return self._previous_plane
 
     def process(self, frame: DepthFrame) -> ObstacleSet:

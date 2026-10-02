@@ -108,6 +108,39 @@ def test_an_unexpected_exception_ends_the_thread_and_surfaces_through_latest_res
         worker.latest_result()
 
 
+def test_wait_until_idle_returns_once_the_frame_in_flight_is_done_and_its_result_is_visible() -> None:
+    def slow(frame: DepthFrame) -> float:
+        time.sleep(0.05)
+        return frame.timestamp_seconds
+
+    worker = NewestFrameWorker(slow)
+    worker.start()
+    try:
+        worker.submit(_frame(1))
+        worker.submit(_frame(2))
+        assert worker.wait_until_idle(timeout_seconds=2.0) is True
+        # Idle means the result is already in place, so the loop can publish it straight away.
+        assert worker.latest_result() == 2.0
+        assert worker.is_alive(), "waiting is not stopping, the same worker serves the next connection"
+    finally:
+        worker.stop()
+
+
+def test_wait_until_idle_reports_a_timeout_while_a_frame_is_still_running() -> None:
+    def glacial(frame: DepthFrame) -> float:
+        time.sleep(1.0)
+        return frame.timestamp_seconds
+
+    worker = NewestFrameWorker(glacial)
+    worker.start()
+    try:
+        worker.submit(_frame(1))
+        time.sleep(0.05)
+        assert worker.wait_until_idle(timeout_seconds=0.1) is False
+    finally:
+        worker.stop()
+
+
 def test_latest_result_is_none_before_anything_was_processed() -> None:
     worker = NewestFrameWorker(lambda frame: frame.timestamp_seconds)
     assert worker.latest_result() is None

@@ -37,6 +37,7 @@ class NewestFrameWorker(threading.Thread, Generic[Result]):
         self._pending: DepthFrame | None = None
         self._latest: Result | None = None
         self._failure: BaseException | None = None
+        self._busy = False
         self._stopping = threading.Event()
         self.submitted = 0
         self.processed = 0
@@ -68,10 +69,36 @@ class NewestFrameWorker(threading.Thread, Generic[Result]):
         if self.is_alive():
             self.join(timeout_seconds)
 
+    def wait_until_idle(self, timeout_seconds: float = 5.0) -> bool:
+        """
+        Block until no frame is pending and none is being processed, or the timeout passes.
+
+        The loop calls this when a source ends, so the last frame the source produced is planned
+        and published before the loop waits for the next connection. Stopping the worker instead
+        would end the thread, and a reconnect would need a new one with fresh counters.
+
+        :param timeout_seconds: How long to wait at most.
+        :return: True once idle, or once the thread has ended. False when the timeout passed first.
+        :rtype: bool
+        """
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            with self._lock:
+                idle = self._pending is None and not self._busy
+            if idle or not self.is_alive():
+                return True
+            time.sleep(IDLE_SLEEP_SECONDS)
+        return False
+
+    def _set_idle(self) -> None:
+        with self._lock:
+            self._busy = False
+
     def run(self) -> None:
         while True:
             with self._lock:
                 frame, self._pending = self._pending, None
+                self._busy = frame is not None
             if frame is None:
                 # Stopping drains: a frame handed over just before stop() is still processed,
                 # so the loop can publish the last thing the source produced. Only an empty
@@ -93,12 +120,16 @@ class NewestFrameWorker(threading.Thread, Generic[Result]):
                     log.warning("%d consecutive frames skipped (caught ValueError, expected): %s", self._consecutive_skips, degenerate_error)
                 else:
                     log.debug("frame skipped (caught ValueError, expected): %s", degenerate_error)
+                self._set_idle()
                 continue
             except Exception as unexpected_error:
                 log.error("UNEXPECTED %s in the worker, may need a handler", type(unexpected_error).__name__, exc_info=True)
                 self._failure = unexpected_error
+                self._set_idle()
                 return
 
             self._consecutive_skips = 0
             self.processed += 1
             self._latest = result
+            # Idle is declared after the result is in place, so a waiter that wakes up finds it.
+            self._set_idle()

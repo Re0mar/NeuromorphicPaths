@@ -131,6 +131,23 @@ def test_recording_into_a_directory_with_files_is_refused(tmp_path: Path) -> Non
         next(iter(tap.frames()))
 
 
+def test_a_second_frames_call_continues_the_same_log(tmp_path: Path) -> None:
+    # The runtime calls frames() again after the phone reconnects. That is the same run, so the
+    # directory the tap already filled is its own and the sequence carries on. Refusing it, as a
+    # second tap on the same directory rightly would, ended every reconnecting recording.
+    log_dir = tmp_path / "run"
+    inner = ListDepthSource(_frames(3))
+    tap = RecordingTap(inner, log_dir)
+    list(tap.frames())
+    list(tap.frames())
+
+    names = sorted(path.name for path in log_dir.glob("frame_*.bin"))
+    assert names == [f"frame_{index:06d}.bin" for index in range(6)]
+    sequences = [json.loads(line)["sequence"] for line in (log_dir / INDEX_FILENAME).read_text(encoding="utf-8").splitlines()]
+    assert sequences == list(range(6))
+    assert len(list(LoggedDepthFrameSource(log_dir).frames())) == 6
+
+
 def test_recording_into_an_empty_existing_directory_is_allowed(tmp_path: Path) -> None:
     log_dir = tmp_path / "run"
     log_dir.mkdir()

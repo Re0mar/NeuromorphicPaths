@@ -28,6 +28,45 @@ def _angle_between_degrees(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.degrees(np.arccos(np.clip(a @ b / (np.linalg.norm(a) * np.linalg.norm(b)), -1.0, 1.0))))
 
 
+def _points_on_plane(normal: np.ndarray, offset: float, lateral: np.ndarray, forward: np.ndarray) -> np.ndarray:
+    """Camera-frame points (x, y, z) on normal . p + offset == 0, for given x and z, solving y."""
+    normal = normal / np.linalg.norm(normal)
+    x, z = np.meshgrid(lateral, forward)
+    y = (-offset - normal[0] * x - normal[2] * z) / normal[1]
+    return np.column_stack((x.ravel(), y.ravel(), z.ravel()))
+
+
+def test_a_wall_ahead_with_more_points_than_the_floor_does_not_win_the_vote() -> None:
+    # Only points clearly below the camera vote. A wall two meters ahead has more points than
+    # the sparse floor here, and without the candidate cut RANSAC fits the wall, the tilt gate
+    # rejects it, and there is no floor at all.
+    # 2025 floor points against 2400 on the wall, of which about 1300 sit below the candidate
+    # line. The cut leaves the floor in the majority; without it the wall is.
+    generator = np.random.default_rng(1)
+    floor = _points_on_plane(np.array([0.0, -1.0, 0.0]), CAMERA_HEIGHT_METERS, np.linspace(-2.0, 2.0, 45), np.linspace(1.5, 6.0, 45))
+    wall_x = generator.uniform(-2.0, 2.0, 2400)
+    wall_y = generator.uniform(-0.4, 1.55, 2400)  # from head height down to just above the floor
+    wall = np.column_stack((wall_x, wall_y, np.full(2400, 2.0)))
+
+    fitted = fit_floor(np.vstack((floor, wall)), previous=None, config=CONFIG)
+
+    assert _angle_between_degrees(fitted.normal, CAMERA_UP) < 2.0
+    assert fitted.offset_meters == pytest.approx(CAMERA_HEIGHT_METERS, abs=0.05)
+
+
+def test_a_level_enough_plane_that_sits_too_close_to_the_camera_is_rejected() -> None:
+    # Thirty degrees of tilt passes the tilt gate. Passing 0.25 m from the camera does not pass
+    # the offset gate, which is what keeps a table top or a held bag from becoming the floor.
+    # The plane slopes down and away, so the points ahead are well below the camera and vote.
+    tilt = np.radians(30.0)
+    normal = np.array([0.0, -np.cos(tilt), np.sin(tilt)])
+    close_plane = _points_on_plane(normal, 0.25, np.linspace(-2.0, 2.0, 25), np.linspace(2.0, 6.0, 40))
+    assert (close_plane[:, 1] > CONFIG.floor_candidate_min_below_camera_meters).sum() >= CONFIG.floor_min_candidate_points
+    previous = Plane(normal=np.array([0.0, -1.0, 0.0]), offset_meters=1.6)
+
+    assert fit_floor(close_plane, previous=previous, config=CONFIG) is previous
+
+
 def test_the_analytic_floor_is_recovered() -> None:
     scene = clean_scene()
 

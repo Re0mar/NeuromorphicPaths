@@ -157,9 +157,9 @@ def test_no_sender_within_the_accept_timeout_raises() -> None:
         source.close()
 
 
-def test_an_absurd_length_prefix_ends_the_stream_rather_than_allocating() -> None:
+def test_an_absurd_length_prefix_ends_the_connection_rather_than_allocating(caplog: pytest.LogCaptureFixture) -> None:
     source = _listening_source()
-    frames = list(synthetic_frames(1))
+    frames = list(synthetic_frames(2))
 
     def send() -> None:
         sender = FakeArCoreSender("127.0.0.1", source.port)
@@ -167,18 +167,39 @@ def test_an_absurd_length_prefix_ends_the_stream_rather_than_allocating() -> Non
         try:
             sender.send_frame(frames[0])
             sender.send_raw(LENGTH_PREFIX.pack(0xFFFFFFFF))
+            # A good frame after the bad prefix. The stream is out of step, so it must not arrive:
+            # a reader that kept the connection would read it as the next message and yield it.
+            sender.send_frame(frames[1])
         finally:
             sender.close()
 
     try:
         _in_background(send)
-        received = _collect(source)
+        with caplog.at_level("WARNING"):
+            received = _collect(source)
     finally:
         source.close()
 
-    # The over-limit prefix is a FrameDecodeError, so it is logged and skipped. The sender then
-    # closes, which ends the stream. Either way the good frame arrived and nothing hung.
-    assert len(received) == 1
+    assert [frame.timestamp_seconds for frame in received] == pytest.approx([frames[0].timestamp_seconds])
+    assert any("desynchronised" in record.message for record in caplog.records)
+
+
+def test_frames_can_be_called_again_for_the_next_connection() -> None:
+    # The listener outlives a connection, so the runtime's --reconnect reuses the source rather
+    # than rebuilding it, and the recording tap around it keeps writing to one log.
+    source = _listening_source()
+    try:
+        _in_background(lambda: send_frames("127.0.0.1", source.port, synthetic_frames(2)))
+        first = _collect(source)
+        assert source._client is None, "the finished connection's socket must be closed, not kept until close()"
+
+        _in_background(lambda: send_frames("127.0.0.1", source.port, synthetic_frames(3)))
+        second = _collect(source)
+    finally:
+        source.close()
+
+    assert len(first) == 2
+    assert len(second) == 3
 
 
 def test_closing_twice_and_closing_before_listening_do_not_raise() -> None:

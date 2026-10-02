@@ -264,11 +264,23 @@ def test_an_absurd_length_prefix_is_refused_rather_than_allocated() -> None:
     sender, receiver = socket.socketpair()
     try:
         sender.sendall(struct.pack(">I", MAXIMUM_MESSAGE_BYTES + 1))
+        # The sender closes right after the prefix. Without the limit check the reader would then
+        # fail on the closed stream rather than block forever, so this test fails instead of hanging.
+        sender.close()
         with pytest.raises(FrameDecodeError, match="limit"):
             read_message(receiver)
     finally:
         sender.close()
         receiver.close()
+
+
+def test_encoding_a_frame_over_the_message_limit_is_refused() -> None:
+    # 4096 by 4096 float32 is exactly 64 MB of depth, and the header puts it over the limit the
+    # reader enforces. Refused on this side, so the two sides agree on what can be sent at all.
+    huge = _frame(depth_meters=np.zeros((4096, 4096), dtype=np.float32))
+
+    with pytest.raises(FrameEncodeError, match="limit"):
+        encode_frame(huge)
 
 
 def test_a_zero_length_prefix_is_refused() -> None:

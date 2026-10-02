@@ -25,4 +25,4 @@ class PhoneAppConfig:
     """The Pixel app's listening socket, which the phone sink connects out to."""
 
     address: str
-    port: int
+    port: int = 9100  # Beside the depth port the laptop listens on, so the two never collide.
