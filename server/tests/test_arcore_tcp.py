@@ -5,8 +5,8 @@ Every negative test sends a valid frame through the same sender first and assert
 test that only puts garbage on the wire and asserts nothing came out cannot tell a refused message
 from a message that never arrived.
 
-The real Pixel app does not exist yet. Until it does, this source is proven only against the fake
-sender, and the Android task owns running the positive case here against the real app.
+The cross-language wire contract is tested via committed fixtures in test_pixel_app_fixture.py.
+The TCP source here is proven against the fake sender, which encodes with the same codec.
 """
 
 # Standard library imports
