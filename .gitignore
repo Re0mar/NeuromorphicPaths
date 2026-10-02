@@ -17,3 +17,9 @@ build/
 # Frame logs written by the recording tap at runtime. Recordings are large and
 # are shared as files, not through git.
 server/frame_logs/
+
+# Android Studio writes the SDK path here per machine.
+local.properties
+
+# Kotlin 2 session data beside each Gradle project.
+.kotlin/

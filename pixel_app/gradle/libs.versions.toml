@@ -1,0 +1,28 @@
+[versions]
+agp = "9.4.1"
+kotlin = "2.2.10"
+coroutines = "1.10.2"
+coreKtx = "1.19.1"
+activityCompose = "1.13.0"
+composeBom = "2026.02.01"
+# Depth API, acquireDepthImage16Bits and Config.DepthMode have been in ARCore since 1.31.
+arcore = "1.50.0"
+# JVM unit tests run against android.jar stubs, where org.json throws. The real library on the
+# test classpath makes the encoder testable off the device.
+orgjson = "20240303"
+
+[libraries]
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
+androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+androidx-compose-foundation = { group = "androidx.compose.foundation", name = "foundation" }
+androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+androidx-compose-ui = { group = "androidx.compose.ui", name = "ui" }
+kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
+arcore = { group = "com.google.ar", name = "core", version.ref = "arcore" }
+kotlin-test-junit = { group = "org.jetbrains.kotlin", name = "kotlin-test-junit", version.ref = "kotlin" }
+org-json = { group = "org.json", name = "json", version.ref = "orgjson" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
