@@ -1,0 +1,84 @@
+# The laptop pipeline by component. One source and one sink are chosen by configuration,
+# everything between them is shared and never knows which were picked.
+
+direction: right
+
+device: Device {
+  shape: oval
+}
+
+sources: sources {
+  reader: device reader
+  pose: pose provider\n(device, IMU, or SLAM later)
+  reader -> frame
+  pose -> frame
+  frame: DepthFrame {
+    shape: document
+  }
+}
+
+runtime: runtime {
+  tap: recording tap
+}
+
+scene: scene {
+  work: |md
+    unproject to 3D
+    floor fit if none given
+    height band
+    flatten to 2D
+    group into cells
+    distance history, N
+  |
+}
+
+planner: planner {
+  work: |md
+    goal
+    surprise 1/2 (N/S)^2
+    max per group, sum
+    dynamic programming over (time, lateral)
+  |
+}
+
+usermodel: usermodel {
+  work: |md
+    Lagrangian relaxation
+    turn time, work per avoidance
+    measures only
+  |
+}
+
+sinks: sinks {
+  out: phone app, web page, or debug window
+}
+
+arrow: Arrow {
+  shape: oval
+}
+
+log: frame log {
+  shape: cylinder
+}
+
+metrics: metrics {
+  shape: cylinder
+}
+
+device -> sources
+sources -> runtime: DepthFrame
+runtime -> scene: DepthFrame
+runtime -> log: every frame
+log -> sources: replays as a source {
+  style.stroke-dash: 3
+}
+scene -> planner: ObstacleSet
+planner -> sinks: PlannedPath
+planner -> usermodel: PlannedPath
+usermodel -> metrics
+sinks -> arrow
+
+config: config.py picks one source and one sink {
+  shape: text
+  near: top-center
+}

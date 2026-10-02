@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Walking path</title>
+<style>
+  :root { --bg: #181818; --fg: #eeeeee; --arrow: #3fdf5f; --alarm-bg: #7a1010; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font-family: system-ui, sans-serif; }
+  body.alarm { background: var(--alarm-bg); }
+  main { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 16px; padding: 0 16px; }
+  canvas { max-width: 100%; }
+  #status { font-size: 1.1rem; }
+  #link { font-size: 0.9rem; opacity: 0.7; }
+</style>
+</head>
+<body>
+<main>
+  <canvas id="arrow" width="320" height="320"></canvas>
+  <div id="status">Waiting for the laptop.</div>
+  <div id="link">Not connected.</div>
+</main>
+<script>
+  // Draws the arrow the planner chose. Red background when something is under a second away.
+  // Reconnects on its own, because the laptop restarts more often than the page reloads.
+  const canvas = document.getElementById("arrow");
+  const context = canvas.getContext("2d");
+  const status = document.getElementById("status");
+  const link = document.getElementById("link");
+
+  function drawArrow(headingRadians, alarm) {
+    const width = canvas.width, height = canvas.height;
+    context.clearRect(0, 0, width, height);
+    const centerX = width / 2, centerY = height * 0.75, length = height * 0.5;
+    const tipX = centerX + length * Math.sin(headingRadians);
+    const tipY = centerY - length * Math.cos(headingRadians);
+    context.lineWidth = 14;
+    context.lineCap = "round";
+    // trim(): the custom property comes back with its leading space, and a canvas ignores a color
+    // it cannot parse and keeps drawing in the previous one, which is black on this background.
+    context.strokeStyle = alarm ? "#ff5050" : getComputedStyle(document.documentElement).getPropertyValue("--arrow").trim();
+    context.beginPath();
+    context.moveTo(centerX, centerY);
+    context.lineTo(tipX, tipY);
+    context.stroke();
+    const headAngle = Math.atan2(tipY - centerY, tipX - centerX);
+    context.beginPath();
+    context.moveTo(tipX, tipY);
+    context.lineTo(tipX - 30 * Math.cos(headAngle - 0.5), tipY - 30 * Math.sin(headAngle - 0.5));
+    context.moveTo(tipX, tipY);
+    context.lineTo(tipX - 30 * Math.cos(headAngle + 0.5), tipY - 30 * Math.sin(headAngle + 0.5));
+    context.stroke();
+  }
+
+  function showPath(message) {
+    const degrees = (message.first_heading_radians * 180 / Math.PI).toFixed(0);
+    document.body.classList.toggle("alarm", Boolean(message.alarm));
+    drawArrow(message.first_heading_radians, message.alarm);
+    status.textContent = (message.alarm ? "Obstacle close. " : "") + "Heading " + (degrees >= 0 ? "+" : "") + degrees + " degrees.";
+  }
+
+  function connect() {
+    const protocol = location.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(protocol + "://" + location.host + "/ws");
+    socket.onopen = () => { link.textContent = "Connected to " + location.host + "."; };
+    socket.onmessage = (event) => {
+      try { showPath(JSON.parse(event.data)); }
+      catch (error) { status.textContent = "Bad message from the laptop."; }
+    };
+    socket.onclose = () => {
+      link.textContent = "Connection lost. Retrying.";
+      setTimeout(connect, 1000);
+    };
+    socket.onerror = () => { socket.close(); };
+  }
+
+  drawArrow(0, false);
+  connect();
+</script>
+</body>
+</html>

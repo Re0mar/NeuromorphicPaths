@@ -1,0 +1,224 @@
+"""
+Covers the frame loop's behavior around the sources and sinks: how it reports a failure, how it
+reconnects, and that a result reaches a sink exactly once.
+
+The round trip from a video through a frame log is in test_end_to_end.py. This file is the
+loop's own contract, driven through run() with a stub estimator and the fake sender.
+"""
+
+# Standard library imports
+import dataclasses
+import json
+import logging
+import socket
+import threading
+import time
+from pathlib import Path
+
+# Third party imports
+import numpy as np
+import pytest
+
+# Local package imports
+from nav.config import GoalMode, RunConfig, SinkKind, SourceKind, build_run_config
+from nav.main import main
+from nav.runtime.loop import EPISODES_FILENAME, RUN_CONFIG_FILENAME, FrameResult, NewestResultPublisher, _report, run
+from nav.runtime.tap import RecordingTap
+from nav.runtime.worker import NewestFrameWorker
+from nav.sources.config import ArCoreConfig, LoggedConfig, TapConfig
+from nav.sources.framecodec import INDEX_FILENAME
+from nav.types import PlannedPath
+from nav.usermodel.config import UserModelConfig
+from nav.usermodel.work import WorkMeter
+from fake_arcore_sender import send_frames, synthetic_frames
+from stubs import StubDepthEstimator
+
+
+def _free_port() -> int:
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    return port
+
+
+def _path(heading: float = 0.0, cost: float = 1.0) -> PlannedPath:
+    return PlannedPath(0.0, np.array([0.0, 0.1]), np.array([0.0, 0.0]), heading, False, cost)
+
+
+def test_a_source_that_fails_inside_the_loop_is_reported_as_known_not_unexpected(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    # A directory that exists and is not a frame log passes the parser and fails in the source.
+    # That is a refusal with a name, and the log must say so without a traceback.
+    empty = tmp_path / "not_a_log"
+    empty.mkdir()
+    config = build_run_config(["--source", "logged", "--log-dir", str(empty), "--sink", "none"])
+
+    with caplog.at_level("ERROR"):
+        assert run(config) == 1
+
+    errors = [record for record in caplog.records if record.levelname == "ERROR"]
+    assert len(errors) == 1
+    assert "FileNotFoundError" in errors[0].message
+    assert INDEX_FILENAME in errors[0].message
+    assert "UNEXPECTED" not in errors[0].message
+    assert errors[0].exc_info is None
+
+
+def test_a_sink_that_raises_an_unexpected_error_ends_the_run_with_exit_one_and_a_traceback(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    class BrokenSink:
+        def publish(self, path: PlannedPath) -> None:
+            raise RuntimeError("a bug, not bad input")
+
+        def close(self) -> None:
+            pass
+
+    log_dir = tmp_path / "log"
+    _record_synthetic_log(log_dir, count=3)
+    config = RunConfig(source_kind=SourceKind.LOGGED, sink_kind=SinkKind.NONE, goal_mode=GoalMode.AHEAD, logged=LoggedConfig(log_dir=str(log_dir)))
+
+    # The sink is swapped under the factory by building the config the loop would build, then
+    # running with a sink the factory cannot produce. The loop takes what build_sink returns, so
+    # the swap goes through the module's factory name.
+    import nav.runtime.loop as loop_module
+
+    original = loop_module.build_sink
+    loop_module.build_sink = lambda run_config: BrokenSink()
+    try:
+        with caplog.at_level("ERROR"):
+            exit_code = run(config)
+    finally:
+        loop_module.build_sink = original
+
+    assert exit_code == 1
+    errors = [record for record in caplog.records if record.levelname == "ERROR"]
+    assert any("UNEXPECTED RuntimeError" in record.message and record.exc_info is not None for record in errors)
+
+
+def _record_synthetic_log(log_dir: Path, count: int) -> None:
+    class ListSource:
+        def frames(self):
+            yield from synthetic_frames(count)
+
+        def close(self) -> None:
+            pass
+
+    list(RecordingTap(ListSource(), log_dir).frames())
+
+
+def test_reconnect_with_a_recording_keeps_one_log_and_the_totals_across_connections(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    port = _free_port()
+    log_dir = tmp_path / "walk"
+    config = RunConfig(
+        source_kind=SourceKind.ARCORE_TCP,
+        sink_kind=SinkKind.NONE,
+        goal_mode=GoalMode.AHEAD,
+        # Short enough that the run ends soon after the second sender, long enough for both.
+        arcore=ArCoreConfig(port=port, bind_address="127.0.0.1", accept_timeout_seconds=2.0),
+        tap=TapConfig(log_dir=str(log_dir)),
+        reconnect=True,
+    )
+
+    def two_connections() -> None:
+        time.sleep(0.3)
+        send_frames("127.0.0.1", port, synthetic_frames(3))
+        time.sleep(0.3)
+        send_frames("127.0.0.1", port, synthetic_frames(3))
+
+    sender = threading.Thread(target=two_connections, daemon=True)
+    sender.start()
+    with caplog.at_level("INFO"):
+        exit_code = run(config)
+    sender.join(5.0)
+
+    # The phone came back once and then did not. Waiting was what was asked, so that is exit 0.
+    assert exit_code == 0
+    assert not any("UNEXPECTED" in record.message for record in caplog.records)
+    # One log, six frames, numbered straight through. The second connection did not start over.
+    assert sorted(path.name for path in log_dir.glob("frame_*.bin")) == [f"frame_{index:06d}.bin" for index in range(6)]
+    assert len((log_dir / INDEX_FILENAME).read_text(encoding="utf-8").splitlines()) == 6
+    # The totals cover both connections rather than only the last one.
+    summary = next(record.message for record in caplog.records if "frames in" in record.message)
+    assert summary.startswith("6 frames in")
+    processed = int(summary.split("frames in, ")[1].split(" processed")[0])
+    dropped = int(summary.split("processed, ")[1].split(" dropped")[0])
+    assert processed + dropped == 6
+
+
+def test_a_result_is_published_once_however_many_frames_arrive_while_it_is_the_newest() -> None:
+    published: list[PlannedPath] = []
+
+    class CountingSink:
+        def publish(self, path: PlannedPath) -> None:
+            published.append(path)
+
+        def close(self) -> None:
+            pass
+
+    class StuckWorker:
+        """Holds one result for as long as the test likes, like a worker mid-way through a slow frame."""
+
+        def __init__(self) -> None:
+            self.result = FrameResult(_path(0.1), np.zeros((1, 3)), np.array([-1.0, 0.0, 1.0]))
+
+        def latest_result(self):
+            return self.result
+
+    worker = StuckWorker()
+    publisher = NewestResultPublisher(CountingSink())
+    for _ in range(6):
+        publisher.publish(worker)
+    assert len(published) == 1, "six source frames with one result is one publish"
+
+    worker.result = FrameResult(_path(0.2), np.zeros((1, 3)), np.array([-1.0, 0.0, 1.0]))
+    publisher.publish(worker)
+    publisher.publish(worker)
+    assert [path.first_heading_radians for path in published] == pytest.approx([0.1, 0.2])
+
+
+def test_run_config_json_carries_every_field_of_the_run_configuration(tmp_path: Path) -> None:
+    # A knob added to any layer must ride with the recording, or a replay cannot be given the
+    # same flags. Every top-level field except the test hook has to be in the file by name.
+    log_dir = tmp_path / "log"
+    config = build_run_config(["--source", "arcore_tcp", "--sink", "none", "--record-to", str(log_dir)])
+    log_dir.mkdir()
+
+    _report(NewestFrameWorker(lambda frame: None), WorkMeter(UserModelConfig()), 0, config)
+
+    recorded = json.loads((log_dir / RUN_CONFIG_FILENAME).read_text(encoding="utf-8"))
+    expected = {field.name for field in dataclasses.fields(RunConfig)} - {"estimator_factory"}
+    assert set(recorded) == expected
+    assert set(recorded["scene"]) == {field.name for field in dataclasses.fields(config.scene)}
+    assert set(recorded["planner"]) == {field.name for field in dataclasses.fields(config.planner)}
+
+
+def test_completed_episodes_are_written_beside_the_frames(tmp_path: Path) -> None:
+    log_dir = tmp_path / "log"
+    log_dir.mkdir()
+    config = build_run_config(["--source", "arcore_tcp", "--sink", "none", "--record-to", str(log_dir)])
+    meter = WorkMeter(UserModelConfig())
+    # One avoidance: the planner asks for a turn at cost 9, then settles at cost 2.
+    meter.observe(_path(heading=0.3, cost=9.0), 0.0, 0.0)
+    meter.observe(_path(heading=0.0, cost=2.0), 0.0, 0.5)
+    assert len(meter.completed_episodes()) == 1
+
+    _report(NewestFrameWorker(lambda frame: None), meter, 0, config)
+
+    lines = (log_dir / EPISODES_FILENAME).read_bytes()
+    assert b"\r" not in lines
+    episode = json.loads(lines.decode("utf-8").splitlines()[0])
+    assert episode["work_bits"] == pytest.approx(7.0)
+    assert episode["start_seconds"] == pytest.approx(0.0)
+
+
+def test_verbose_raises_only_the_pipelines_loggers(tmp_path: Path) -> None:
+    # The root at DEBUG drowned the per-stage timings in every HTTP library's request headers
+    # during the model download. --verbose is for nav's loggers and nothing else.
+    log_dir = tmp_path / "log"
+    _record_synthetic_log(log_dir, count=2)
+    root_level_before = logging.getLogger().level
+
+    assert main(["--source", "logged", "--log-dir", str(log_dir), "--sink", "none", "--verbose"]) == 0
+
+    assert logging.getLogger("nav").level == logging.DEBUG
+    assert logging.getLogger().level == root_level_before
+    logging.getLogger("nav").setLevel(logging.NOTSET)
