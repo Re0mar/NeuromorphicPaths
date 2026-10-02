@@ -92,6 +92,9 @@ class ScenePipeline:
         )
 
         pose = frame.pose
+        # The camera-frame copy outlives the world transform so each group's nearest point can be
+        # handed to the depth view where the camera saw it. Same rows as points, kept in step.
+        points_camera = points
         if pose.has_position:
             points = camera_to_world_points(points, pose)
             plane = camera_to_world_plane(plane_camera, pose)
@@ -103,7 +106,8 @@ class ScenePipeline:
             forward_hint = CAMERA_FORWARD
 
         heights = height_above_floor(points, plane)
-        points, heights = filter_height_band(points, heights, config)
+        points, heights, in_band = filter_height_band(points, heights, config)
+        points_camera = points_camera[in_band]
 
         # Walker-relative ground coordinates, which is what the planner and the clearances use.
         lateral_axis, forward_axis = ground_axes(plane, forward_hint)
@@ -140,7 +144,7 @@ class ScenePipeline:
         self._history.forget_unseen(frame.timestamp_seconds)
 
         obstacle_points = tuple(
-            self._obstacle_point(summary, clearance_meters, world_to_walker)
+            self._obstacle_point(summary, clearance_meters, world_to_walker, points_camera)
             for summary, clearance_meters in zip(summaries, clearances, strict=True)
         )
         finished = time.perf_counter()
@@ -198,7 +202,13 @@ class ScenePipeline:
         members = world_ground[group_ids == summary.group_id]
         return members.mean(axis=0)
 
-    def _obstacle_point(self, summary: GroupSummary, clearance_meters: float, world_to_walker: np.ndarray | None) -> ObstaclePoint:
+    def _obstacle_point(
+        self,
+        summary: GroupSummary,
+        clearance_meters: float,
+        world_to_walker: np.ndarray | None,
+        points_camera: np.ndarray,
+    ) -> ObstaclePoint:
         velocity = None
         if world_to_walker is not None:
             # Only meaningful when the grid did not move with the walker, and only in the
@@ -215,4 +225,5 @@ class ScenePipeline:
             closing_rate_mps=self._history.closing_rate(summary.group_id),
             velocity_mps=velocity,
             is_wall=summary.is_wall,
+            camera_point=points_camera[summary.nearest_index],
         )

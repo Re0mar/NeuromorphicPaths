@@ -8,8 +8,9 @@
   :root { --bg: #181818; --fg: #eeeeee; --arrow: #3fdf5f; --alarm-bg: #7a1010; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font-family: system-ui, sans-serif; }
   body.alarm { background: var(--alarm-bg); }
-  main { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 16px; padding: 0 16px; }
-  canvas { max-width: 100%; }
+  main { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100%; gap: 16px; padding: 16px; box-sizing: border-box; }
+  canvas, img { max-width: 100%; }
+  #depth[hidden] { display: none; }
   #status { font-size: 1.1rem; }
   #link { font-size: 0.9rem; opacity: 0.7; }
 </style>
@@ -17,16 +18,22 @@
 <body>
 <main>
   <canvas id="arrow" width="320" height="320"></canvas>
+  <img id="depth" alt="The depth image the planner saw, with the obstacle groups and the chosen path drawn on it" hidden>
   <div id="status">Waiting for the laptop.</div>
   <div id="link">Not connected.</div>
 </main>
 <script>
   // Draws the arrow the planner chose. Red background when something is under a second away.
-  // Reconnects on its own, because the laptop restarts more often than the page reloads.
+  // Under the arrow, the depth image the planner saw, when the laptop sends one: a text frame is
+  // the path's JSON, a binary frame is a PNG, and a page served by a sink that sends no PNG keeps
+  // working with the arrow alone. Reconnects on its own, because the laptop restarts more often
+  // than the page reloads.
   const canvas = document.getElementById("arrow");
   const context = canvas.getContext("2d");
+  const depth = document.getElementById("depth");
   const status = document.getElementById("status");
   const link = document.getElementById("link");
+  let depthUrl = null;
 
   function drawArrow(headingRadians, alarm) {
     const width = canvas.width, height = canvas.height;
@@ -59,13 +66,28 @@
     status.textContent = (message.alarm ? "Obstacle close. " : "") + "Heading " + (degrees >= 0 ? "+" : "") + degrees + " degrees.";
   }
 
+  function showDepth(blob) {
+    // One object URL alive at a time. Revoking the previous one after the new image has loaded
+    // keeps the browser from holding every frame the laptop ever sent.
+    const previous = depthUrl;
+    depthUrl = URL.createObjectURL(blob);
+    depth.onload = () => { if (previous) URL.revokeObjectURL(previous); };
+    depth.src = depthUrl;
+    depth.hidden = false;
+  }
+
   function connect() {
     const protocol = location.protocol === "https:" ? "wss" : "ws";
     const socket = new WebSocket(protocol + "://" + location.host + "/ws");
+    socket.binaryType = "blob";
     socket.onopen = () => { link.textContent = "Connected to " + location.host + "."; };
     socket.onmessage = (event) => {
-      try { showPath(JSON.parse(event.data)); }
-      catch (error) { status.textContent = "Bad message from the laptop."; }
+      if (typeof event.data === "string") {
+        try { showPath(JSON.parse(event.data)); }
+        catch (error) { status.textContent = "Bad message from the laptop."; }
+        return;
+      }
+      showDepth(event.data);
     };
     socket.onclose = () => {
       link.textContent = "Connection lost. Retrying.";

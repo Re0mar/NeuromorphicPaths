@@ -27,7 +27,7 @@ from nav.runtime.tap import RecordingTap
 from nav.runtime.worker import NewestFrameWorker
 from nav.sources.config import ArCoreConfig, LoggedConfig, TapConfig
 from nav.sources.framecodec import INDEX_FILENAME
-from nav.types import PlannedPath
+from nav.types import DebugView, DepthFrame, FloorSource, ObstacleSet, Plane, PlannedPath, Pose
 from nav.usermodel.config import UserModelConfig
 from nav.usermodel.work import WorkMeter
 from fake_arcore_sender import send_frames, synthetic_frames
@@ -44,6 +44,19 @@ def _free_port() -> int:
 
 def _path(heading: float = 0.0, cost: float = 1.0) -> PlannedPath:
     return PlannedPath(0.0, np.array([0.0, 0.1]), np.array([0.0, 0.0]), heading, False, cost)
+
+
+def _view() -> DebugView:
+    """The smallest view a result can carry: a 2 by 2 frame, no obstacles, a level floor."""
+    frame = DepthFrame(
+        timestamp_seconds=0.0,
+        depth_meters=np.ones((2, 2), dtype=np.float32),
+        intrinsics=np.array([[1.0, 0.0, 1.0], [0.0, 1.0, 1.0], [0.0, 0.0, 1.0]]),
+        pose=Pose(orientation=np.array([1.0, 0.0, 0.0, 0.0]), position=None, has_position=False),
+        ground_plane=None,
+        gaze_pixel=None,
+    )
+    return DebugView(frame, ObstacleSet(0.0, (), 0), Plane(np.array([0.0, -1.0, 0.0]), 1.6), FloorSource.FITTED, 1.4)
 
 
 def test_a_source_that_fails_inside_the_loop_is_reported_as_known_not_unexpected(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
@@ -158,7 +171,7 @@ def test_a_result_is_published_once_however_many_frames_arrive_while_it_is_the_n
         """Holds one result for as long as the test likes, like a worker mid-way through a slow frame."""
 
         def __init__(self) -> None:
-            self.result = FrameResult(_path(0.1), np.zeros((1, 3)), np.array([-1.0, 0.0, 1.0]))
+            self.result = FrameResult(_path(0.1), np.zeros((1, 3)), np.array([-1.0, 0.0, 1.0]), _view())
 
         def latest_result(self):
             return self.result
@@ -169,7 +182,7 @@ def test_a_result_is_published_once_however_many_frames_arrive_while_it_is_the_n
         publisher.publish(worker)
     assert len(published) == 1, "six source frames with one result is one publish"
 
-    worker.result = FrameResult(_path(0.2), np.zeros((1, 3)), np.array([-1.0, 0.0, 1.0]))
+    worker.result = FrameResult(_path(0.2), np.zeros((1, 3)), np.array([-1.0, 0.0, 1.0]), _view())
     publisher.publish(worker)
     publisher.publish(worker)
     assert [path.first_heading_radians for path in published] == pytest.approx([0.1, 0.2])

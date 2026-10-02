@@ -243,6 +243,32 @@ def test_a_supplied_plane_from_a_rolled_camera_is_judged_against_gravity() -> No
     assert pipeline.previous_plane.offset_meters == pytest.approx(CAMERA_HEIGHT_METERS, abs=1e-9)
 
 
+def test_each_obstacle_point_carries_its_camera_frame_position() -> None:
+    # The depth view projects this point back onto the image, so it has to be where the camera
+    # saw it: its depth equals the depth image at its own pixel, and it sits on the box. With a
+    # pose the cloud is moved into the world before grouping, so the point must come from the
+    # copy kept before that move, and both pose modes must give the same point.
+    scene = clean_scene(box_lateral_meters=0.5, box_forward_meters=3.0, box_height_meters=1.0, box_half_width_meters=0.1)
+    focal_x, focal_y = scene.intrinsics[0, 0], scene.intrinsics[1, 1]
+    principal_x, principal_y = scene.intrinsics[0, 2], scene.intrinsics[1, 2]
+    body = ScenePipeline(CONFIG, WALKER).process(_frame(scene))
+    world = ScenePipeline(CONFIG, WALKER).process(_frame(scene, pose=_pitched_pose(np.zeros(3))))
+
+    for obstacles in (body, world):
+        assert obstacles.points
+        for point in obstacles.points:
+            x, y, z = point.camera_point
+            assert z > 0
+            assert 0.3 <= x <= 0.7, "the box is half a meter to the right"
+            column, row = int(round(focal_x * x / z + principal_x)), int(round(focal_y * y / z + principal_y))
+            assert 0 <= column < scene.depth_meters.shape[1] and 0 <= row < scene.depth_meters.shape[0]
+            # The cloud was thinned to one point per 5 cm voxel, so the point sits within that of the pixel's depth.
+            assert scene.depth_meters[row, column] == pytest.approx(z, abs=0.1)
+    nearest_body = min(body.points, key=lambda point: point.clearance_meters).camera_point
+    nearest_world = min(world.points, key=lambda point: point.clearance_meters).camera_point
+    assert nearest_body == pytest.approx(nearest_world, abs=1e-6)
+
+
 def test_a_supplied_plane_with_its_normal_pointing_down_is_read_the_right_way_up() -> None:
     # A source that writes its normal pointing at the floor describes the same plane. The scene
     # must not read it as the camera 1.6 m below the floor and refuse it.

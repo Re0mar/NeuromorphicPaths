@@ -103,6 +103,9 @@ class ObstaclePoint:
     closing_rate_mps: float | None
     velocity_mps: np.ndarray | None
     is_wall: bool
+    # The nearest point as the camera saw it, (3,) camera frame. For the depth view only. The
+    # planner never reads it, and a test that builds a point by hand gives it zeros.
+    camera_point: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -112,6 +115,24 @@ class ObstacleSet:
     timestamp_seconds: float
     points: tuple[ObstaclePoint, ...]
     groups_in_view: int
+
+
+@dataclass(frozen=True)
+class DebugView:
+    """
+    What a person tuning the planner needs to see beside the path: the planner's input.
+
+    The frame the path was planned for, the obstacles the scene found in it, the floor the scene
+    used and where it came from, and the walking speed the planner assumed. The floor is here
+    because a renderer lays the path on it, and the speed because a path is offsets against time
+    and the floor is meters.
+    """
+
+    frame: DepthFrame
+    obstacles: ObstacleSet
+    floor: Plane
+    floor_source: FloorSource
+    walking_speed_mps: float
 
 
 @dataclass(frozen=True)
@@ -161,10 +182,11 @@ class PathSink(Protocol):
 
 @runtime_checkable
 class DebugSink(PathSink, Protocol):
-    """A sink that can also draw the surprise field.
+    """A sink that can also draw the surprise field and the planner's input.
 
-    Separate from PathSink so the field, which is a grid the size of the planner's horizon, can
-    only go somewhere local. A phone over TCP and a browser over a websocket get the path alone.
+    Separate from PathSink so the field, which is a grid the size of the planner's horizon, and
+    the view, which carries a whole depth frame, only go where a person is looking at them. A
+    phone over TCP gets the path alone.
     """
 
-    def publish_debug(self, path: PlannedPath, field: np.ndarray, grid: np.ndarray) -> None: ...
+    def publish_debug(self, path: PlannedPath, field: np.ndarray, grid: np.ndarray, view: DebugView) -> None: ...

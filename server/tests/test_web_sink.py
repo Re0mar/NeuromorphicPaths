@@ -11,6 +11,7 @@ import json
 import time
 
 # Third party imports
+import cv2
 import numpy as np
 import pytest
 
@@ -18,13 +19,46 @@ import pytest
 from nav.sinks.config import WebConfig
 from nav.sinks.web import WebSink
 from nav.sources.framecodec import encode_path
-from nav.types import PlannedPath
+from nav.types import DebugSink, DebugView, DepthFrame, FloorSource, ObstacleSet, Plane, PlannedPath, Pose
 
 RECEIVE_TIMEOUT_SECONDS = 3.0
+VIEW_SIDE = 4
 
 
 def _path(heading: float = 0.1, alarm: bool = False) -> PlannedPath:
     return PlannedPath(1.0, np.array([0.0, 0.1]), np.array([0.0, 0.05]), heading, alarm, 2.5)
+
+
+def _view() -> DebugView:
+    """A 4 by 4 frame of valid depth, no obstacles, a level floor. Enough to render and encode."""
+    frame = DepthFrame(
+        timestamp_seconds=1.0,
+        depth_meters=np.full((VIEW_SIDE, VIEW_SIDE), 2.0, dtype=np.float32),
+        intrinsics=np.array([[2.0, 0.0, 2.0], [0.0, 2.0, 2.0], [0.0, 0.0, 1.0]]),
+        pose=Pose(np.array([1.0, 0.0, 0.0, 0.0]), None, False),
+        ground_plane=None,
+        gaze_pixel=None,
+    )
+    return DebugView(frame, ObstacleSet(1.0, (), 0), Plane(np.array([0.0, -1.0, 0.0]), 1.6), FloorSource.FITTED, 1.4)
+
+
+def _field() -> tuple[np.ndarray, np.ndarray]:
+    return np.zeros((2, 3)), np.array([-1.0, 0.0, 1.0])
+
+
+async def _receive_frames(port: int, after_connect, count: int) -> list:
+    """The first count websocket frames after connecting, each as a str or bytes."""
+    import aiohttp
+
+    async with aiohttp.ClientSession() as session:
+        async with session.ws_connect(f"ws://127.0.0.1:{port}/ws") as socket:
+            after_connect()
+            received = []
+            for _ in range(count):
+                message = await asyncio.wait_for(socket.receive(), RECEIVE_TIMEOUT_SECONDS)
+                assert message.type in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY), message
+                received.append(message.data)
+            return received
 
 
 @pytest.fixture
@@ -115,3 +149,66 @@ def test_a_port_already_in_use_is_reported_rather_than_hung() -> None:
 
 def test_closing_an_unstarted_sink_does_not_raise() -> None:
     WebSink(WebConfig(port=0)).close()
+
+
+def test_the_web_sink_is_a_debug_sink() -> None:
+    # The loop dispatches on this. Without it the browser would get the path and never the view.
+    assert isinstance(WebSink(WebConfig(port=0)), DebugSink)
+
+
+def test_a_debug_publish_sends_json_then_a_png_to_a_connected_browser(sink: WebSink) -> None:
+    path = _path(heading=0.3)
+    field, grid = _field()
+
+    text, png = asyncio.run(_receive_frames(sink.port, lambda: sink.publish_debug(path, field, grid, _view()), count=2))
+
+    assert json.loads(text) == json.loads(encode_path(path))
+    assert isinstance(png, bytes)
+    decoded = cv2.imdecode(np.frombuffer(png, dtype=np.uint8), cv2.IMREAD_COLOR)
+    # A 4 by 4 frame scaled up by a whole number to the target width.
+    assert decoded.shape == (640, 640, 3)
+
+
+def test_a_browser_connecting_late_gets_the_latest_json_and_png_at_once(sink: WebSink) -> None:
+    # Published before anyone is connected. A page opened afterwards must not sit blank until the
+    # next planned frame, which on a still phone never comes.
+    path = _path(heading=0.4)
+    field, grid = _field()
+    sink.publish_debug(path, field, grid, _view())
+    time.sleep(0.3)  # Let the server loop take both messages off its queue.
+
+    text, png = asyncio.run(_receive_frames(sink.port, lambda: None, count=2))
+
+    assert json.loads(text)["first_heading_radians"] == pytest.approx(0.4)
+    assert isinstance(png, bytes) and png[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_a_png_encode_failure_still_sends_the_json(sink: WebSink, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    import nav.sinks.web as web_module
+
+    def broken(view, path):
+        raise ValueError("no picture today")
+
+    monkeypatch.setattr(web_module, "render_depth_view", broken)
+    path = _path(heading=0.5)
+    field, grid = _field()
+
+    async def scenario() -> tuple[str, bool]:
+        import aiohttp
+
+        async with aiohttp.ClientSession() as session:
+            async with session.ws_connect(f"ws://127.0.0.1:{sink.port}/ws") as socket:
+                with caplog.at_level("WARNING", logger="nav.sinks.web"):
+                    sink.publish_debug(path, field, grid, _view())
+                    text = await asyncio.wait_for(socket.receive_str(), RECEIVE_TIMEOUT_SECONDS)
+                try:
+                    await asyncio.wait_for(socket.receive(), 0.5)
+                    return text, True
+                except TimeoutError:
+                    return text, False
+
+    text, more_arrived = asyncio.run(scenario())
+
+    assert json.loads(text)["first_heading_radians"] == pytest.approx(0.5)
+    assert not more_arrived, "nothing may follow the JSON when the picture failed"
+    assert any("depth view not sent" in record.message for record in caplog.records)
