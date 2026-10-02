@@ -96,7 +96,6 @@ def test_defaults_land_where_they_belong() -> None:
         (["--source", "video_file", "--sink", "none"], "--path"),
         (["--source", "neon_plugin", "--sink", "none"], "--recording-dir"),
         (["--source", "logged", "--sink", "none"], "--log-dir"),
-        (["--source", "video_file", "--path", STREAM_URL, "--sink", "phone_app"], "--phone-address"),
     ],
 )
 def test_missing_required_argument_names_it(argv: list[str], expected_in_message: str, capsys: pytest.CaptureFixture[str]) -> None:
@@ -249,7 +248,7 @@ BUILT_SINK_KINDS = {
     SinkKind.NONE: {},
     SinkKind.DEBUG_WINDOW: {},
     SinkKind.WEB: {"web": WebConfig(port=0)},
-    SinkKind.PHONE_APP: {"phone_app": PhoneAppConfig(address="127.0.0.1", port=1)},
+    SinkKind.PHONE_APP: {"phone_app": PhoneAppConfig(port=1)},
 }
 
 
@@ -342,8 +341,17 @@ def test_the_accept_timeout_flag_reaches_the_phone_source() -> None:
     web = build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "web"]).web
     assert web is not None and web.port == WebConfig.port
 
-    phone = build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "phone_app", "--phone-address", "10.0.0.2"]).phone_app
+    phone = build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "phone_app"]).phone_app
     assert phone is not None and phone.port == PhoneAppConfig.port
+
+
+def test_phone_address_is_no_longer_an_argument(capsys: pytest.CaptureFixture[str]) -> None:
+    # The phone connects to the laptop now, with the laptop address it already has. A flag for
+    # the phone's address would be a flag nothing reads, and the parser must say so.
+    with pytest.raises(SystemExit):
+        build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "phone_app", "--phone-address", "10.0.0.2"])
+
+    assert "unrecognized arguments: --phone-address" in capsys.readouterr().err
 
 
 def test_neon_without_an_address_is_left_to_discovery() -> None:

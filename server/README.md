@@ -69,7 +69,7 @@ the flag the run ends when the phone disconnects.
 |---|---|---|
 | `debug_window` | an OpenCV window with the arrow, the alarm and the surprise field | |
 | `web` | a page in any browser on the network, arrow and alarm, no video | `--web-port` (8765) |
-| `phone_app` | the Pixel app over TCP | `--phone-address`, `--phone-port` (9100) |
+| `phone_app` | the Pixel app over TCP. The phone connects to the laptop, on this port | `--phone-port` (9100) |
 | `none` | nowhere. For recording and for tests | |
 
 ### Two flags a phone recording needs

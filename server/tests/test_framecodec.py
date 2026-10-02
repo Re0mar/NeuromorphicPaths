@@ -427,6 +427,19 @@ def test_the_format_document_contains_the_generated_example() -> None:
     assert json.loads(header)["depth"]["byte_length"] == 16
 
 
+def test_the_format_document_carries_the_path_field_table() -> None:
+    # The Kotlin decoder is written from the document's per-field table for the path, the way the
+    # frame decoder was written from the frame's. A key the encoder writes and the table does not
+    # name is a key the app will not read.
+    document = (Path(__file__).parent.parent / "docs" / "arcore_wire_format.md").read_text(encoding="utf-8")
+    path_section = document.split("## What the laptop sends back", 1)[1].split("\n## ", 1)[0]
+    assert "| Field | Produced by | On the wire | Read by | Value domain | Who enforces it |" in path_section
+
+    written = json.loads(encode_path(PlannedPath(1.0, np.array([0.0]), np.array([0.0]), 0.0, False, 0.0)))
+    for key in written:
+        assert f"| `{key}` |" in path_section, key
+
+
 @pytest.mark.parametrize("field", ["first_heading_radians", "cumulative_cost_bits"])
 def test_a_path_with_a_non_finite_scalar_never_reaches_the_encoder(field: str) -> None:
     # PlannedPath refuses this itself, so encode_path's allow_nan=False is defence in depth that no

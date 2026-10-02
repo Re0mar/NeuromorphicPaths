@@ -8,6 +8,7 @@ and needs no estimator at all.
 
 # Standard library imports
 import dataclasses
+import time
 from pathlib import Path
 
 # Third party imports
@@ -74,6 +75,51 @@ def test_video_to_log_to_replay_round_trip(tmp_path: Path) -> None:
 
     # 3. The replay path through main, the way a person types it.
     assert main(["--source", "logged", "--log-dir", str(log_dir), "--sink", "none"]) == 0
+
+
+def test_a_logged_replay_reaches_a_phone_through_main(tmp_path: Path) -> None:
+    # The phone sink listens and the phone connects, so the one way to drive it through the
+    # entry point a person types is a fake phone that keeps knocking until the run is listening.
+    video = _write_video(tmp_path / "walk.avi")
+    log_dir = tmp_path / "log"
+    config = build_run_config(["--source", "video_file", "--path", str(video), "--sink", "none", "--record-to", str(log_dir)])
+    config = dataclasses.replace(config, estimator_factory=lambda estimator_config: StubDepthEstimator())
+    assert run(config) == 0
+
+    import socket
+    import threading
+
+    from nav.sources.framecodec import decode_path, read_message
+
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    free_port = probe.getsockname()[1]
+    probe.close()
+    received: list = []
+
+    def phone() -> None:
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            try:
+                connection = socket.create_connection(("127.0.0.1", free_port), timeout=5.0)
+            except OSError:
+                time.sleep(0.05)
+                continue
+            try:
+                received.append(decode_path(read_message(connection)))
+            finally:
+                connection.close()
+            return
+
+    knocking = threading.Thread(target=phone, daemon=True)
+    knocking.start()
+    # Real time, so the thirty frames take three seconds and the phone has time to be accepted
+    # before the last path is published.
+    assert main(["--source", "logged", "--log-dir", str(log_dir), "--sink", "phone_app", "--phone-port", str(free_port), "--realtime"]) == 0
+    knocking.join(5.0)
+
+    assert received, "the phone never read a path from the run"
+    assert np.isfinite(received[0].first_heading_radians)
 
 
 def test_a_missing_video_is_refused_by_the_parser_naming_the_path(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

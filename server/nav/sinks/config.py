@@ -22,7 +22,12 @@ class WebConfig:
 
 @dataclass(frozen=True)
 class PhoneAppConfig:
-    """The Pixel app's listening socket, which the phone sink connects out to."""
+    """The port the laptop listens on for the Pixel app's path connection.
 
-    address: str
+    The phone connects here with the same laptop address it sends depth to, so the laptop never
+    needs the phone's address. There is no accept timeout: the sink waits for a phone for as long
+    as the run lasts, and plans without one.
+    """
+
     port: int = 9100  # Beside the depth port the laptop listens on, so the two never collide.
+    bind_address: str = "0.0.0.0"

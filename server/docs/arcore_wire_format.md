@@ -5,7 +5,9 @@ laptop sends planned paths back. This document is the contract. If the two sides
 file is right and the code that does not match it is wrong.
 
 The laptop listens on a port you choose with `--arcore-port`, default 9000. It accepts one
-connection at a time.
+connection at a time. It also listens on a second port, `--phone-port`, default 9100, for the
+path connection. You open both, to the one laptop address you already have, and nothing on the
+laptop ever needs your address.
 
 ---
 
@@ -116,6 +118,11 @@ reader ignores keys it does not know. Changing the meaning or the unit of an exi
 A planned path, framed the same way: a 4-byte big-endian length, then UTF-8 JSON. No header and
 newline split, because there is no binary part.
 
+You open this connection, the same way you open the depth one, to the path port. The laptop writes
+one message per planned path and never reads from this socket. You never write on it. A phone that
+reconnects gets the next path, not a replay of the one it missed: a path is a decision about this
+instant, and the next frame produces the next one within a frame interval.
+
 ```json
 {
   "timestamp_seconds": 12.345,
@@ -136,6 +143,17 @@ newline split, because there is no binary part.
 | `cumulative_cost_bits` | Total cost of the chosen path. For display and logging, not for steering |
 
 `times_seconds` and `lateral_offsets_meters` always have the same length.
+
+Every key is required and every number is finite. Per field, who produces it and who checks it:
+
+| Field | Produced by | On the wire | Read by | Value domain | Who enforces it |
+|---|---|---|---|---|---|
+| `timestamp_seconds` | the depth frame the path was planned for | JSON number | display, logging | finite, your clock's seconds handed back | laptop refuses a non-finite path before encoding, you check finite |
+| `times_seconds` | planner, its time step and horizon | JSON array of numbers | the arrow, later a ribbon | finite, at least one entry, same length as the offsets | both sides, you refuse a length mismatch or an empty array |
+| `lateral_offsets_meters` | planner | JSON array of numbers | the arrow, later a ribbon | finite, positive is right | both sides |
+| `first_heading_radians` | planner | JSON number | the arrow | finite, positive is right, within the sidestep limit | both sides |
+| `alarm` | planner, time to contact under a second | JSON boolean | display color | `true` or `false`, never a number | you refuse a number where the boolean belongs |
+| `cumulative_cost_bits` | planner | JSON number | display, logging | finite, zero or more | both sides |
 
 ---
 
@@ -229,6 +247,15 @@ frame is bad:
 - **A length prefix over 64 MB, or zero.** The connection is treated as desynchronised.
 - **The connection closing mid-message.** The reader reports how many bytes it was still waiting
   for, rather than blocking forever.
+
+### The path direction
+
+The same rules, applied by you. A path message that breaks a field rule above is dropped on the
+phone with the key named, and the connection stays up. A zero length prefix, or one over 1 MB (a
+path is a few hundred bytes), means the stream is out of step: close the connection and reconnect,
+which is what the laptop does with a bad prefix on the depth side. The laptop never closes the
+path connection for a bad message, because it never reads one. It closes it only when the run
+ends, and it counts the paths it had nobody to send to.
 
 ---
 

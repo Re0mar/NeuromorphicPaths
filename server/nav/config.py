@@ -217,8 +217,12 @@ def build_parser() -> argparse.ArgumentParser:
     web.add_argument("--web-port", type=_port_number, default=WebConfig.port)
 
     phone = parser.add_argument_group("phone_app sink")
-    phone.add_argument("--phone-address", help="the Pixel app's address")
-    phone.add_argument("--phone-port", type=_port_number, default=PhoneAppConfig.port)
+    phone.add_argument(
+        "--phone-port",
+        type=_port_number,
+        default=PhoneAppConfig.port,
+        help="the port the Pixel app connects to for paths. The phone uses the laptop address it already has",
+    )
 
     logging_group = parser.add_argument_group("logging")
     logging_group.add_argument("--verbose", action="store_true")
@@ -305,8 +309,7 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
         case SinkKind.WEB:
             web = WebConfig(port=arguments.web_port)
         case SinkKind.PHONE_APP:
-            _require(parser, arguments.phone_address, "--phone-address", sink_kind)
-            phone_app = PhoneAppConfig(address=arguments.phone_address, port=arguments.phone_port)
+            phone_app = PhoneAppConfig(port=arguments.phone_port)
         case SinkKind.DEBUG_WINDOW | SinkKind.NONE:
             pass
         case _:

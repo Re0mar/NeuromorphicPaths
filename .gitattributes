@@ -2,3 +2,6 @@
 
 # The Gradle wrapper is run by cmd.exe, which needs CRLF.
 *.bat text eol=crlf
+
+# Wire fixtures are bytes the other side decodes. No layer may translate them.
+server/tests/fixtures/*.bin binary
