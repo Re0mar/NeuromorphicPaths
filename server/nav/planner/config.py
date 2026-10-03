@@ -32,6 +32,10 @@ class PlannerConfig:
     # hit at 8. 6.5 is the highest weight that still clears them with the sway anywhere from 0.05 to
     # 0.20 m and the near noise at either recorded walk's median. The worst of those, 0.20 m of sway
     # at 0.0337 m of noise, hits at 7. The safety tests in test_planner_pipeline.py pin all of it.
+    # Replayed on the seeded floor fit, against his weight without the contact term: with something
+    # 3 to 5.32 m ahead the arrow sits at the sidestep limit on 59.0 % of classroom frames (was 94.9)
+    # and 58.2 % on pixel_walk_3 (was 81.1), still over the 50 % aimed for. With nothing in the way
+    # it never does on either walk (was 9.1 and 15.3).
     lateral_kinetic_weight: float = 6.5
     surprise_cap: float = 2.0e4  # His cap on a single point's surprise.
     walking_speed_mps: float = 1.4  # Ours. Average walking pace, against his 5.0 for a cyclist.

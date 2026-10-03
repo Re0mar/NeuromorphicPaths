@@ -107,7 +107,7 @@ def test_the_path_goes_through_the_gap_and_not_the_wall() -> None:
 
 
 # Median noise of real groups inside the walker's corridor and within 2 m of clearance, replayed
-# over the 2026-10-02 classroom walk. The other recorded walk's median was 0.0966 m. The lower one
+# over the 2026-10-02 classroom walk. pixel_walk_3's median is 0.0958 m on the seeded floor fit. The lower one
 # pushes the plan least, so a too-heavy kinetic weight fails here first.
 MEASURED_NEAR_NOISE_METERS = 0.0337
 
@@ -218,10 +218,10 @@ def test_the_path_timestamp_is_the_obstacle_sets() -> None:
 # The contact term. Above the shipped weight, so this guards a weight the shipped config does not
 # already cover. His term alone walks into both posts here, and the contact term still clears them.
 WEIGHT_ONLY_CONTACT_HOLDS = 7.0
-# The other recorded walk's median near noise, beside the classroom's MEASURED_NEAR_NOISE_METERS.
+# pixel_walk_3's median near noise on the seeded floor fit, beside the classroom's MEASURED_NEAR_NOISE_METERS.
 # More noise makes his term dodge harder, so the classroom's value is the hard case and this one
 # checks the margin does not depend on it.
-OTHER_WALK_NEAR_NOISE_METERS = 0.0966
+OTHER_WALK_NEAR_NOISE_METERS = 0.0958
 
 
 def test_the_shipping_terms_are_his_surprise_and_contact() -> None:
