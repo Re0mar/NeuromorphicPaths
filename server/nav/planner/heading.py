@@ -12,7 +12,7 @@ import numpy as np
 
 # Local package imports
 from nav.planner.config import PlannerConfig
-from nav.planner.surprise import step_count
+from nav.planner.field import step_count
 
 
 def lookahead_step_index(config: PlannerConfig) -> int:

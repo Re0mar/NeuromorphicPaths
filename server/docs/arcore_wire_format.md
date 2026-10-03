@@ -153,7 +153,7 @@ instant, and the next frame produces the next one within a frame interval.
 | `lateral_offsets_meters` | Where to be at that time, sideways from straight ahead. Positive is right |
 | `first_heading_radians` | Where the path is heading. The planner reads the path a fixed time ahead, set on the laptop, and takes the angle from here to there. Positive is right |
 | `alarm` | Something in the walker's way is close at walking pace, or was a moment ago. Turn the display red |
-| `cumulative_cost_bits` | Total cost of the chosen path. For display and logging, not for steering |
+| `cumulative_cost_bits` | Total cost of the chosen path: the surprise of how unsure the readings of near things are, plus the surprise of the body touching something, plus the costs of moving sideways and of ending away from the goal. Quoted in bits by the course's convention. For display and logging, not for steering |
 
 `times_seconds` and `lateral_offsets_meters` always have the same length.
 

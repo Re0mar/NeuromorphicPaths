@@ -1,13 +1,22 @@
 """Covers the planner end to end on synthetic obstacle sets, against behaviors stated in advance."""
 
+# Standard library imports
+from dataclasses import replace
+
 # Third party imports
 import numpy as np
 import pytest
 
 # Local package imports
 from nav.planner.config import GoalMode, PlannerConfig
+from nav.planner.contact import ContactSurprise
+from nav.planner.dynamic_programming import plan
+from nav.planner.field import cost_field
+from nav.planner.goal import goal_position, goal_term
 from nav.planner.heading import lookahead_step_index
-from nav.planner.pipeline import PlannerPipeline
+from nav.planner.pipeline import PlannerPipeline, planner_terms
+from nav.planner.surprise import CollisionSurprise, surprise_field
+from nav.sources.framecodec import decode_path, encode_path
 from nav.types import ObstaclePoint, ObstacleSet, PlannedPath
 from nav.walker import WalkerConfig
 
@@ -204,3 +213,99 @@ def test_the_path_timestamp_is_the_obstacle_sets() -> None:
     path = PlannerPipeline(CONFIG, WALKER).plan(_set(timestamp=12.5))
 
     assert path.timestamp_seconds == pytest.approx(12.5)
+
+
+# The contact term. At this weight the post safety test's posts are walked into with only his term
+# and cleared with the contact term added (STEP_04 post sweep, 2026-10-03).
+WEIGHT_ONLY_CONTACT_HOLDS = 0.5
+
+
+def test_the_shipping_terms_are_his_surprise_and_contact() -> None:
+    terms = planner_terms(PlannerConfig())
+
+    assert [type(term) for term in terms] == [CollisionSurprise, ContactSurprise]
+
+
+def test_switching_contact_off_leaves_his_term_alone() -> None:
+    terms = planner_terms(replace(CONFIG, contact_term_enabled=False))
+
+    assert [type(term) for term in terms] == [CollisionSurprise]
+
+
+@pytest.mark.parametrize(
+    "scene",
+    [_wall_across(1.0), _wall_across(2.5, gap=(0.75, 1.75)), _set(_point(0.0, 1.5, group=1, noise=MEASURED_NEAR_NOISE_METERS))],
+    ids=["wall", "gap", "post"],
+)
+def test_with_contact_off_the_plan_is_what_his_field_alone_gives(scene: ObstacleSet) -> None:
+    config = replace(CONFIG, contact_term_enabled=False)
+    pipeline = PlannerPipeline(config, WALKER)
+    field = surprise_field(scene, pipeline.grid, config, WALKER)
+    field[-1] += goal_term(pipeline.grid, goal_position(GoalMode.AHEAD, config, None), config)
+    expected_offsets, expected_cost = plan(field, 0.0, pipeline.grid, config)
+
+    path = pipeline.plan(scene)
+
+    np.testing.assert_array_equal(path.lateral_offsets_meters, expected_offsets)
+    assert path.cumulative_cost_bits == expected_cost
+
+
+def test_last_field_includes_the_contact_term() -> None:
+    scene = _set(_point(0.0, 1.5, group=1, noise=MEASURED_NEAR_NOISE_METERS))
+    with_contact = PlannerPipeline(CONFIG, WALKER)
+    without = PlannerPipeline(replace(CONFIG, contact_term_enabled=False), WALKER)
+    with_contact.plan(scene)
+    without.plan(scene)
+
+    contact_only = cost_field(scene, with_contact.grid, CONFIG, WALKER, terms=(ContactSurprise(),))
+
+    np.testing.assert_allclose(with_contact.last_field - without.last_field, contact_only, atol=1e-12)
+    assert contact_only.max() > 0.0
+
+
+@pytest.mark.parametrize("forward", [1.0, 1.5])
+def test_a_post_at_a_raised_weight_is_cleared_only_because_of_contact(forward: float) -> None:
+    raised = replace(CONFIG, lateral_kinetic_weight=WEIGHT_ONLY_CONTACT_HOLDS)
+    post = _set(_point(0.0, forward, group=1, noise=MEASURED_NEAR_NOISE_METERS))
+    k_reach = int(np.ceil(forward / (CONFIG.walking_speed_mps * CONFIG.time_step_seconds)))
+
+    his_alone = PlannerPipeline(replace(raised, contact_term_enabled=False), WALKER).plan(post)
+    with_contact = PlannerPipeline(raised, WALKER).plan(post)
+
+    # Both halves in one test, so the scene cannot quietly stop telling the two apart.
+    assert abs(his_alone.lateral_offsets_meters[k_reach]) <= WALKER.radius_meters, "the scene no longer needs the contact term"
+    assert abs(with_contact.lateral_offsets_meters[k_reach]) > WALKER.radius_meters, with_contact.lateral_offsets_meters[: k_reach + 1]
+    assert abs(with_contact.lateral_offsets_meters[k_reach]) > CONFIG.body_half_width_meters
+
+
+def test_a_bad_contact_constant_stops_the_pipeline_at_construction() -> None:
+    with pytest.raises(ValueError, match="walker_sway_meters"):
+        PlannerPipeline(replace(CONFIG, walker_sway_meters=0.0), WALKER)
+
+
+def test_the_alarm_does_not_depend_on_the_contact_term() -> None:
+    scenes = [
+        _set(*_wall_across(1.0).points, timestamp=0.0),
+        _set(timestamp=0.1),
+        _set(*_wall_across(1.5, gap=(0.75, 1.75)).points, timestamp=0.2),
+        _set(timestamp=0.8),
+        _set(_point(0.0, 0.8, group=1, noise=MEASURED_NEAR_NOISE_METERS), timestamp=0.9),
+    ]
+    with_contact = PlannerPipeline(CONFIG, WALKER)
+    without = PlannerPipeline(replace(CONFIG, contact_term_enabled=False), WALKER)
+
+    alarms_with = [with_contact.plan(scene).alarm for scene in scenes]
+    alarms_without = [without.plan(scene).alarm for scene in scenes]
+
+    assert alarms_with == alarms_without
+    assert True in alarms_with and False in alarms_with, "the scenes must raise and clear the alarm"
+
+
+def test_the_cost_stays_finite_with_the_walker_inside_an_obstacle() -> None:
+    inside = _set(_point(0.0, 0.1, group=1, noise=0.0))
+
+    path = PlannerPipeline(CONFIG, WALKER).plan(inside)
+    decoded = decode_path(encode_path(path))
+
+    assert np.isfinite(path.cumulative_cost_bits)
+    assert decoded.cumulative_cost_bits == pytest.approx(path.cumulative_cost_bits)

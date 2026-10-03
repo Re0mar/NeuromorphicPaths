@@ -16,7 +16,7 @@ import pytest
 # Local package imports
 from nav.planner.config import PlannerConfig
 from nav.planner.dynamic_programming import plan, reachable_cell_offset
-from nav.planner.surprise import lateral_grid, step_count
+from nav.planner.field import lateral_grid, step_count
 
 CONFIG = PlannerConfig()
 GRID = lateral_grid(CONFIG)

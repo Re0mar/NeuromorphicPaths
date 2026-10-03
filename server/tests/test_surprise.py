@@ -6,7 +6,8 @@ import pytest
 
 # Local package imports
 from nav.planner.config import PlannerConfig
-from nav.planner.surprise import effective_noise, lateral_grid, point_surprise, step_count, surprise_field
+from nav.planner.field import effective_noise, lateral_grid, step_count
+from nav.planner.surprise import point_surprise, surprise_field
 from nav.types import ObstaclePoint, ObstacleSet
 from nav.walker import WalkerConfig
 
