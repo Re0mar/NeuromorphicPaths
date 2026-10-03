@@ -1,8 +1,9 @@
 """
 What the planner needs to build its surprise field and run the dynamic program over it.
 
-Four of these are the professor's values from the lecture and the paper, and are marked as his.
-The rest are walking values we chose and expect to tune once there are real recordings.
+Six of these are the professor's values from the lecture and the paper, and are marked as his.
+The rest are walking values we chose. The ones measured against recorded walks carry the numbers in
+their comments.
 """
 
 # Standard library imports
@@ -44,7 +45,7 @@ class PlannerConfig:
     # On the classroom walk the group raising the alarm sits a median 0.15 m to the side, none past the edge.
     corridor_margin_meters: float = 0.15
     # Ours. How long a raised alarm stays up before it may clear. Takes the classroom walk from 100
-    # state changes to 66, and pixel_walk_3 from 207 to 129 over all six of its segments.
+    # state changes to 66, and the last segment of pixel_walk_3 from 69 to 41.
     alarm_hold_seconds: float = 0.5
     # Ours. The arrow points at where the path is this far ahead. On the classroom walk the arrow
     # takes 20 values instead of 3, and sits at the sidestep limit on 75.8 % of frames instead of 87.6 %.

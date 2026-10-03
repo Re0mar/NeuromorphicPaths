@@ -97,9 +97,9 @@ def test_the_path_goes_through_the_gap_and_not_the_wall() -> None:
     assert np.all((path.lateral_offsets_meters[k_past:] > 0.5) & (path.lateral_offsets_meters[k_past:] < 2.0))
 
 
-# Median noise of real groups within 2 m of the walker's corridor, replayed over the 2026-10-02
-# classroom walk. The other recorded walk's median was 0.0966 m. The lower one pushes the plan
-# least, so it is the case a too-heavy kinetic weight fails first.
+# Median noise of real groups inside the walker's corridor and within 2 m of clearance, replayed
+# over the 2026-10-02 classroom walk. The other recorded walk's median was 0.0966 m. The lower one
+# pushes the plan least, so a too-heavy kinetic weight fails here first.
 MEASURED_NEAR_NOISE_METERS = 0.0337
 
 
@@ -171,6 +171,21 @@ def test_the_heading_takes_more_than_three_values_across_scenes() -> None:
         headings.add(round(float(np.degrees(path.first_heading_radians)), 2))
 
     assert len(headings) > 3, headings
+
+
+def test_no_planned_heading_exceeds_the_sidestep_limit() -> None:
+    # The wire format promises the heading stays within the sidestep limit. That holds only while the
+    # dynamic program moves at most the limit's worth of cells per step, so plan real scenes and check.
+    limit = np.arctan2(CONFIG.max_lateral_speed_mps, CONFIG.walking_speed_mps)
+    pipeline = PlannerPipeline(CONFIG, WALKER)
+    headings = [
+        pipeline.plan(_wall_across(forward, gap=(float(gap_start), float(gap_start) + 1.0))).first_heading_radians
+        for forward in (1.5, 2.5)
+        for gap_start in np.arange(-2.0, 1.01, 0.5)
+    ]
+
+    assert max(abs(heading) for heading in headings) == pytest.approx(limit), "the sweep must reach the limit to test it"
+    assert all(abs(heading) <= limit + 1e-9 for heading in headings)
 
 
 def test_last_field_is_the_field_the_plan_was_made_from() -> None:

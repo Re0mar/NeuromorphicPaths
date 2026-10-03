@@ -44,6 +44,17 @@ def test_the_same_post_beyond_the_threshold_does_not_raise() -> None:
     assert alarm_raised(_set(_point(0.0, 1.4)), CONFIG, WALKER) is False
 
 
+def test_contact_exactly_at_the_threshold_does_not_raise() -> None:
+    # Under the threshold raises, at it does not. Speed 2.0 and threshold 0.5 put 1.0 m of
+    # clearance at exactly 0.5 s in floating point, so the comparison itself is what is tested.
+    config = replace(CONFIG, walking_speed_mps=2.0, alarm_time_to_contact_seconds=0.5)
+    at_the_threshold = ObstaclePoint(0.0, 1.35, 1, 1.0, 0.1, None, None, False, np.zeros(3))
+    just_under = ObstaclePoint(0.0, 1.35, 1, 0.999, 0.1, None, None, False, np.zeros(3))
+
+    assert alarm_raised(_set(at_the_threshold), config, WALKER) is False
+    assert alarm_raised(_set(just_under), config, WALKER) is True
+
+
 def test_a_post_beside_the_corridor_does_not_raise() -> None:
     assert alarm_raised(_set(_point(0.51, 0.8)), CONFIG, WALKER) is False
 

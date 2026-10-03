@@ -48,7 +48,7 @@ def test_the_lookahead_index_rounds_configured_values() -> None:
         assert lookahead_step_index(replace(CONFIG, heading_lookahead_seconds=seconds)) == expected
 
 
-def test_the_heading_never_exceeds_the_sidestep_limit() -> None:
+def test_a_full_sidestep_reads_exactly_the_sidestep_limit() -> None:
     limit = np.arctan2(CONFIG.max_lateral_speed_mps, CONFIG.walking_speed_mps)
     full_sidestep = _bend(first_moving_step=1)
 

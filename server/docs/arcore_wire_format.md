@@ -151,7 +151,7 @@ instant, and the next frame produces the next one within a frame interval.
 |---|---|
 | `times_seconds` | How far into the future each offset is |
 | `lateral_offsets_meters` | Where to be at that time, sideways from straight ahead. Positive is right |
-| `first_heading_radians` | Where the path is heading over the next second or so. The planner reads the path a fixed time ahead and takes the angle from here to there. Positive is right |
+| `first_heading_radians` | Where the path is heading. The planner reads the path a fixed time ahead, set on the laptop, and takes the angle from here to there. Positive is right |
 | `alarm` | Something in the walker's way is close at walking pace, or was a moment ago. Turn the display red |
 | `cumulative_cost_bits` | Total cost of the chosen path. For display and logging, not for steering |
 
