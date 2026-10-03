@@ -13,7 +13,8 @@ From `server/`, with the venv `../server/README.md` describes:
 ```
 
 Dependencies come from `pyproject.toml`'s `dev` extra. The suite needs no GPU, no torch, no
-glasses, no phone, and no display. It takes about fifteen seconds. `pytest -rs` is already in
+glasses, no phone, and no display. It takes about a minute on this laptop, about half of it in
+`test_evaluation_replay.py`, which runs real recordings through the scene. `pytest -rs` is already in
 `pyproject.toml`, so a skipped test prints its reason in the summary. Today nothing skips.
 
 ## Adding a test
