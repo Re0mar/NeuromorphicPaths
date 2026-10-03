@@ -118,19 +118,3 @@ def surprise_field(obstacles: ObstacleSet, grid: np.ndarray, config: PlannerConf
         field[k] = total
 
     return field
-
-
-def time_to_contact(obstacles: ObstacleSet) -> float | None:
-    """
-    Seconds until the nearest closing group touches the footprint, or None when nothing closes.
-
-    :param obstacles: This frame's groups.
-    :return: Minimum over closing groups of clearance over closing rate.
-    :rtype: float | None
-    """
-    times = [
-        point.clearance_meters / point.closing_rate_mps
-        for point in obstacles.points
-        if point.closing_rate_mps is not None and point.closing_rate_mps > 0
-    ]
-    return min(times) if times else None

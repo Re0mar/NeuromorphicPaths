@@ -46,7 +46,7 @@ def goal_term(grid: np.ndarray, goal: np.ndarray, config: PlannerConfig) -> np.n
 
     :param grid: The lateral candidates.
     :param goal: (2,) goal, only its lateral component matters here.
-    :param config: The tolerance, half the corridor width by default.
+    :param config: The tolerance, half a typical hallway's width by default.
     :return: (len(grid),) term.
     :rtype: np.ndarray
     """

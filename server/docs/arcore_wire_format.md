@@ -151,8 +151,8 @@ instant, and the next frame produces the next one within a frame interval.
 |---|---|
 | `times_seconds` | How far into the future each offset is |
 | `lateral_offsets_meters` | Where to be at that time, sideways from straight ahead. Positive is right |
-| `first_heading_radians` | Where to point the arrow now. Positive is right |
-| `alarm` | Something is under a second from contact. Turn the display red |
+| `first_heading_radians` | Where the path is heading over the next second or so. The planner reads the path a fixed time ahead and takes the angle from here to there. Positive is right |
+| `alarm` | Something in the walker's way is close at walking pace, or was a moment ago. Turn the display red |
 | `cumulative_cost_bits` | Total cost of the chosen path. For display and logging, not for steering |
 
 `times_seconds` and `lateral_offsets_meters` always have the same length.
@@ -164,8 +164,8 @@ Every key is required and every number is finite. Per field, who produces it and
 | `timestamp_seconds` | the depth frame the path was planned for | JSON number | display, logging | finite, your clock's seconds handed back | laptop refuses a non-finite path before encoding, you check finite |
 | `times_seconds` | planner, its time step and horizon | JSON array of numbers | the arrow, later a ribbon | finite, at least one entry, same length as the offsets | both sides, you refuse a length mismatch or an empty array |
 | `lateral_offsets_meters` | planner | JSON array of numbers | the arrow, later a ribbon | finite, positive is right | both sides |
-| `first_heading_radians` | planner | JSON number | the arrow | finite, positive is right, within the sidestep limit | both sides |
-| `alarm` | planner, time to contact under a second | JSON boolean | display color | `true` or `false`, never a number | you refuse a number where the boolean belongs |
+| `first_heading_radians` | planner, from the path a fixed time ahead | JSON number | the arrow | finite, positive is right, within the sidestep limit | both sides |
+| `alarm` | planner, from what is in the walker's way | JSON boolean | display color | `true` or `false`, never a number | you refuse a number where the boolean belongs |
 | `cumulative_cost_bits` | planner | JSON number | display, logging | finite, zero or more | both sides |
 
 ---

@@ -8,10 +8,12 @@ import time
 import numpy as np
 
 # Local package imports
+from nav.planner.alarm import AlarmHold, alarm_raised, check_alarm_config
 from nav.planner.config import GoalMode, PlannerConfig
 from nav.planner.dynamic_programming import plan
 from nav.planner.goal import goal_position, goal_term
-from nav.planner.surprise import lateral_grid, step_count, surprise_field, time_to_contact
+from nav.planner.heading import lookahead_heading, lookahead_step_index
+from nav.planner.surprise import lateral_grid, step_count, surprise_field
 from nav.types import ObstacleSet, PlannedPath
 from nav.walker import WalkerConfig
 
@@ -19,13 +21,21 @@ log = logging.getLogger(__name__)
 
 
 class PlannerPipeline:
-    """Holds the grid, which never changes, and the last field, which the debug window draws."""
+    """Holds the grid, which never changes, the last field, which the debug window draws, and the alarm's hold.
+
+    The hold carries across frames, so one pipeline has to serve a whole run. A pipeline built per
+    frame would let the alarm clear the moment its raise decision did.
+    """
 
     def __init__(self, config: PlannerConfig, walker: WalkerConfig) -> None:
         self._config = config
         self._walker = walker
         self._grid = lateral_grid(config)
         self._times = np.arange(step_count(config)) * config.time_step_seconds
+        # Checked here so a bad lookahead stops the run at startup rather than on its first frame.
+        self._lookahead_index = lookahead_step_index(config)
+        check_alarm_config(config)
+        self._alarm_hold = AlarmHold(config.alarm_hold_seconds)
         self._last_field: np.ndarray | None = None
 
     @property
@@ -55,7 +65,7 @@ class PlannerPipeline:
         :param start_lateral_meters: Where the walker is on the grid. Zero, the walker is the origin.
         :param goal_mode: Straight ahead or the gaze.
         :param gaze_ground_point: The gaze on the floor, when the mode wants it.
-        :return: The chosen path, its first heading, and the alarm.
+        :return: The chosen path, its heading at the lookahead, and the alarm.
         :rtype: PlannedPath
         """
         config = self._config
@@ -70,15 +80,10 @@ class PlannerPipeline:
         offsets, cost = plan(field, start_lateral_meters, self._grid, config)
         after_plan = time.perf_counter()
 
-        # Where the arrow points now: the first lateral step against the forward distance the
-        # walker covers in one time step. Positive is right.
-        if len(offsets) > 1:
-            first_heading = float(np.arctan2(offsets[1] - offsets[0], config.time_step_seconds * config.walking_speed_mps))
-        else:
-            first_heading = 0.0
+        # Where the arrow points: at where the path is a lookahead from now, not at its first step.
+        heading = lookahead_heading(offsets, self._lookahead_index, config)
 
-        contact = time_to_contact(obstacles)
-        alarm = contact is not None and contact < config.alarm_time_to_contact_seconds
+        alarm = self._alarm_hold.update(alarm_raised(obstacles, config, self._walker), obstacles.timestamp_seconds)
 
         log.debug(
             "planner %.1f ms: field %.1f, dp %.1f, %d groups, cost %.2f, heading %.1f deg, alarm %s",
@@ -87,7 +92,7 @@ class PlannerPipeline:
             (after_plan - after_field) * 1000,
             obstacles.groups_in_view,
             cost,
-            np.degrees(first_heading),
+            np.degrees(heading),
             alarm,
         )
 
@@ -95,7 +100,7 @@ class PlannerPipeline:
             timestamp_seconds=obstacles.timestamp_seconds,
             times_seconds=self._times.copy(),
             lateral_offsets_meters=np.asarray(offsets, dtype=np.float64),
-            first_heading_radians=first_heading,
+            first_heading_radians=heading,
             alarm=alarm,
             cumulative_cost_bits=cost,
         )

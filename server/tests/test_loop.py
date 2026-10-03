@@ -195,6 +195,33 @@ def test_reconnect_with_a_recording_keeps_one_log_and_the_totals_across_connecti
     assert processed + dropped == 6
 
 
+def test_one_planner_serves_every_frame_of_a_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The alarm's hold lives on the planner and carries across frames, so a planner built per frame
+    # would clear the alarm the moment its raise decision did.
+    import nav.runtime.loop as loop_module
+
+    counts = {"built": 0, "planned": 0}
+
+    class CountingPlanner(loop_module.PlannerPipeline):
+        def __init__(self, *args, **kwargs) -> None:
+            counts["built"] += 1
+            super().__init__(*args, **kwargs)
+
+        def plan(self, *args, **kwargs) -> PlannedPath:
+            counts["planned"] += 1
+            return super().plan(*args, **kwargs)
+
+    monkeypatch.setattr(loop_module, "PlannerPipeline", CountingPlanner)
+    log_dir = tmp_path / "log"
+    _record_synthetic_log(log_dir, count=6)
+    config = RunConfig(source_kind=SourceKind.LOGGED, sink_kinds=(SinkKind.NONE,), goal_mode=GoalMode.AHEAD, logged=LoggedConfig(log_dir=str(log_dir)))
+
+    assert run(config) == 0
+
+    assert counts["planned"] >= 2, "the run must plan more than one frame for the count to mean anything"
+    assert counts["built"] == 1
+
+
 def test_a_result_is_published_once_however_many_frames_arrive_while_it_is_the_newest() -> None:
     published: list[PlannedPath] = []
 

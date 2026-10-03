@@ -19,7 +19,7 @@ class GoalMode(Enum):
 
 @dataclass(frozen=True)
 class PlannerConfig:
-    """The field, the dynamic program, and the alarm threshold."""
+    """The field, the dynamic program, the arrow's lookahead, and the alarm's corridor, threshold and hold."""
 
     time_step_seconds: float = 0.1  # His dt.
     horizon_seconds: float = 3.8  # His horizon.
@@ -33,6 +33,11 @@ class PlannerConfig:
     max_lateral_speed_mps: float = 1.0  # Ours. How fast a walker can sidestep.
     wall_noise_multiplier: float = 3.0  # Ours. A wall is worth avoiding further out than a post.
     predict_motion: bool = False  # Off until the scene's group velocities are trusted.
-    alarm_time_to_contact_seconds: float = 1.0  # Under a second to contact turns the display red.
+    # Ours. Clearance at walking pace, not over a closing rate. Times walking speed it must stay
+    # under the 1 m at which something counts as close, so 0.7 s at 1.4 m/s is 0.98 m.
+    alarm_time_to_contact_seconds: float = 0.7
+    corridor_margin_meters: float = 0.15  # Ours. Added to the footprint radius on each side of the corridor.
+    alarm_hold_seconds: float = 0.5  # Ours. How long a raised alarm stays up before it may clear.
+    heading_lookahead_seconds: float = 1.0  # Ours. The arrow points at where the path is this far ahead.
     goal_distance_meters: float = 4.0  # Old file's goal_dist.
-    goal_tolerance_meters: float = 1.5  # Half the corridor width, so the goal term picks among safe paths.
+    goal_tolerance_meters: float = 1.5  # Half a typical hallway's width, so the goal term picks among safe paths.

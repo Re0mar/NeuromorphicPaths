@@ -6,6 +6,7 @@ import pytest
 
 # Local package imports
 from nav.planner.config import GoalMode, PlannerConfig
+from nav.planner.heading import lookahead_step_index
 from nav.planner.pipeline import PlannerPipeline
 from nav.types import ObstaclePoint, ObstacleSet, PlannedPath
 from nav.walker import WalkerConfig
@@ -45,15 +46,25 @@ def test_an_empty_scene_plans_straight_ahead_with_no_alarm() -> None:
     assert len(path.times_seconds) == len(path.lateral_offsets_meters)
 
 
-def test_a_closing_wall_at_one_meter_raises_the_alarm() -> None:
-    # Clearance about 0.65 m closing at 1 m/s is 0.65 s to contact, under the one second alarm.
-    path = PlannerPipeline(CONFIG, WALKER).plan(_wall_across(1.0, closing=1.0))
-
-    assert path.alarm is True
+def test_a_wall_a_meter_ahead_raises_the_alarm() -> None:
+    # 0.65 m of clearance dead ahead is 0.46 s at walking pace, under the threshold.
+    assert PlannerPipeline(CONFIG, WALKER).plan(_wall_across(1.0)).alarm is True
 
 
-def test_a_wall_that_is_not_closing_raises_no_alarm() -> None:
-    assert PlannerPipeline(CONFIG, WALKER).plan(_wall_across(1.0, closing=None)).alarm is False
+def test_the_same_wall_further_ahead_raises_no_alarm() -> None:
+    # 1.15 m of clearance is 0.82 s at walking pace, over the threshold.
+    assert PlannerPipeline(CONFIG, WALKER).plan(_wall_across(1.5)).alarm is False
+
+
+def test_the_pipeline_holds_the_alarm_across_frames() -> None:
+    pipeline = PlannerPipeline(CONFIG, WALKER)
+    in_the_way = _wall_across(1.0)
+
+    raised = pipeline.plan(_set(*in_the_way.points, timestamp=0.0))
+    held = pipeline.plan(_set(timestamp=0.1))
+    cleared = pipeline.plan(_set(timestamp=0.6))
+
+    assert (raised.alarm, held.alarm, cleared.alarm) == (True, True, False)
 
 
 def test_cost_rises_monotonically_as_a_group_is_moved_closer() -> None:
@@ -86,6 +97,29 @@ def test_the_path_goes_through_the_gap_and_not_the_wall() -> None:
     assert np.all((path.lateral_offsets_meters[k_past:] > 0.5) & (path.lateral_offsets_meters[k_past:] < 2.0))
 
 
+# Median noise of real groups within 2 m of the walker's corridor, replayed over the 2026-10-02
+# classroom walk. The other recorded walk's median was 0.0966 m. The lower one pushes the plan
+# least, so it is the case a too-heavy kinetic weight fails first.
+MEASURED_NEAR_NOISE_METERS = 0.0337
+
+
+@pytest.mark.parametrize("forward", [1.0, 1.5])
+def test_a_post_close_ahead_is_cleared_before_the_walker_reaches_it(forward: float) -> None:
+    post = _set(_point(0.0, forward, group=1, noise=MEASURED_NEAR_NOISE_METERS))
+    path = PlannerPipeline(CONFIG, WALKER).plan(post)
+
+    k_reach = int(np.ceil(forward / (CONFIG.walking_speed_mps * CONFIG.time_step_seconds)))
+    assert abs(path.lateral_offsets_meters[k_reach]) > WALKER.radius_meters, path.lateral_offsets_meters[: k_reach + 1]
+
+
+def test_a_gap_close_ahead_is_still_taken() -> None:
+    gapped = _wall_across(1.5, gap=(0.75, 1.75))
+    path = PlannerPipeline(CONFIG, WALKER).plan(gapped)
+
+    k_reach = int(np.ceil(1.5 / (CONFIG.walking_speed_mps * CONFIG.time_step_seconds)))
+    assert np.all((path.lateral_offsets_meters[k_reach:] > 0.5) & (path.lateral_offsets_meters[k_reach:] < 2.0))
+
+
 def test_the_gaze_goal_picks_the_gap_on_the_gaze_side_when_two_gaps_are_equal() -> None:
     two_gaps = _wall_across(2.5, gap=None)
     points = [p for p in two_gaps.points if not (1.0 <= abs(p.lateral_meters) <= 1.5)]
@@ -108,16 +142,35 @@ def test_the_gaze_goal_falls_back_to_ahead_without_a_gaze() -> None:
     assert no_gaze.lateral_offsets_meters == pytest.approx(ahead.lateral_offsets_meters)
 
 
-def test_the_first_heading_is_the_first_step_against_the_forward_distance() -> None:
-    wall = _wall_across(1.5, gap=(1.0, 2.0))
+def test_the_path_heading_reads_the_path_at_the_lookahead() -> None:
+    # This gap's path sidesteps for half a second and then holds, so its first step and its
+    # lookahead read different angles. A gap the path runs at full speed for a whole second
+    # reads the same both ways and could not tell the two rules apart.
+    wall = _wall_across(1.5, gap=(0.0, 1.0))
     path = PlannerPipeline(CONFIG, WALKER).plan(wall)
 
-    expected = np.arctan2(
-        path.lateral_offsets_meters[1] - path.lateral_offsets_meters[0],
-        CONFIG.time_step_seconds * CONFIG.walking_speed_mps,
-    )
+    index = lookahead_step_index(CONFIG)
+    offsets = path.lateral_offsets_meters
+    first_step = np.arctan2(offsets[1] - offsets[0], 0.1 * 1.4)
+    # Worked from the returned path rather than through lookahead_heading, so a wrong index or
+    # forward distance inside it cannot agree with itself here.
+    expected = np.arctan2(offsets[10] - offsets[0], 10 * 0.1 * 1.4)
+    assert index == 10
+    assert abs(first_step - expected) > np.radians(5.0), "the scene no longer separates the two readings"
     assert path.first_heading_radians == pytest.approx(expected)
     assert path.first_heading_radians > 0.0, "the gap is on the right"
+
+
+def test_the_heading_takes_more_than_three_values_across_scenes() -> None:
+    # A first-step reading can only be straight, or a full sidestep either way. Sliding a gap
+    # across the wall gives paths that reach the lookahead at many different offsets.
+    pipeline = PlannerPipeline(CONFIG, WALKER)
+    headings = set()
+    for gap_start in np.arange(-2.0, 1.01, 0.25):
+        path = pipeline.plan(_wall_across(2.5, gap=(float(gap_start), float(gap_start) + 1.0)))
+        headings.add(round(float(np.degrees(path.first_heading_radians)), 2))
+
+    assert len(headings) > 3, headings
 
 
 def test_last_field_is_the_field_the_plan_was_made_from() -> None:

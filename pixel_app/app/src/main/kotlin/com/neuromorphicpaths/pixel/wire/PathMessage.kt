@@ -9,8 +9,8 @@ package com.neuromorphicpaths.pixel.wire
  * @property timestampSeconds the depth frame the path was planned for, this phone's clock handed back
  * @property timesSeconds how far into the future each offset is
  * @property lateralOffsetsMeters where to be at that time, sideways from straight ahead, positive right
- * @property firstHeadingRadians where to point the arrow now, positive right
- * @property alarm something is under a second from contact
+ * @property firstHeadingRadians where the path is heading over the planner's lookahead, positive right
+ * @property alarm something in the walker's way is close at walking pace
  * @property cumulativeCostBits total cost of the chosen path, for display and logging
  */
 data class PathMessage(
