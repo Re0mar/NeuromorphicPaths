@@ -3,6 +3,8 @@
 
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Android 17 blocks connections to a laptop on a private address without this. -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
 
     <!-- ARCore is required, not optional. The app has no purpose without depth. -->
     <uses-feature android:name="android.hardware.camera.ar" android:required="true" />

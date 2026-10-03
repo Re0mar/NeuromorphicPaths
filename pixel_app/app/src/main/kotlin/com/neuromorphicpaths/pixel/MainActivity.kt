@@ -1,6 +1,5 @@
 package com.neuromorphicpaths.pixel
 
-import android.Manifest
 import android.content.pm.PackageManager
 import android.opengl.GLSurfaceView
 import android.os.Bundle
@@ -64,8 +63,12 @@ class MainActivity : ComponentActivity() {
     private var startupPort = DEFAULT_PORT
     private var startupPathPort = DEFAULT_PATH_PORT
 
-    private val cameraPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) startSession() else connectionStatus.value = ConnectionStatus.Disconnected("camera permission refused")
+    private val permissionWarning = MutableStateFlow<String?>(null)
+
+    // The result map is ignored on purpose. applyPermissions asks the system again, so a permission
+    // granted on an earlier launch and left out of this request still counts.
+    private val startupPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        applyPermissions()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -87,6 +90,7 @@ class MainActivity : ComponentActivity() {
                         connectionStatus = connectionStatus,
                         pathStatus = pathStatus,
                         latestPath = latestPath,
+                        permissionWarning = permissionWarning,
                         onConnect = { host, port, pathPort -> connect(host, port, pathPort) },
                         glSurface = { view -> surface = view },
                     )
@@ -97,12 +101,18 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-            startSession()
-        } else {
-            cameraPermission.launch(Manifest.permission.CAMERA)
-        }
+        val missing = StartupPermissions.requested.filterNot(::isGranted)
+        if (missing.isEmpty()) applyPermissions() else startupPermissions.launch(missing.toTypedArray())
         surface?.onResume()
+    }
+
+    private fun isGranted(permission: String): Boolean =
+        ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+
+    private fun applyPermissions() {
+        val outcome = StartupPermissions.outcome(::isGranted)
+        permissionWarning.value = outcome.warning
+        if (outcome.canCapture) startSession()
     }
 
     override fun onPause() {
@@ -188,9 +198,11 @@ class MainActivity : ComponentActivity() {
         connectionStatus: MutableStateFlow<ConnectionStatus>,
         pathStatus: MutableStateFlow<PathConnectionStatus>,
         latestPath: MutableStateFlow<ReceivedPath?>,
+        permissionWarning: MutableStateFlow<String?>,
         onConnect: (String, Int, Int) -> Unit,
         glSurface: (GLSurfaceView) -> Unit,
     ) {
+        val warning by permissionWarning.collectAsState()
         val capture by captureState.collectAsState()
         val status by connectionStatus.collectAsState()
         val paths by pathStatus.collectAsState()
@@ -216,6 +228,9 @@ class MainActivity : ComponentActivity() {
             ) {
                 Text("Connect")
             }
+            // Its own line, because the connection status is rewritten on every attempt and would
+            // bury the one thing that explains why the attempts keep failing.
+            warning?.let { Text("Permission: $it.", color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 12.dp)) }
             Text(describe(status), modifier = Modifier.padding(top = 12.dp))
             Text(describe(capture), modifier = Modifier.padding(top = 4.dp))
             Text(describe(paths), modifier = Modifier.padding(top = 4.dp))
