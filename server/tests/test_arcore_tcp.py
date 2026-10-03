@@ -274,3 +274,21 @@ def test_synthetic_frames_carry_a_real_floor_plane() -> None:
 
     assert frame.ground_plane is not None
     assert frame.ground_plane.normal @ point + frame.ground_plane.offset_meters == pytest.approx(0.0, abs=1e-3)
+
+
+def test_a_received_frame_carries_its_arrival_time() -> None:
+    source = _listening_source()
+    before = time.time()
+    try:
+        _in_background(lambda: send_frames("127.0.0.1", source.port, list(synthetic_frames(2))))
+        received = _collect(source)
+    finally:
+        source.close()
+
+    assert len(received) == 2
+    for frame in received:
+        # Arrival only. The phone's capture time needs a clock offset this source does not measure.
+        assert frame.timing.arrival_seconds == pytest.approx(before, abs=5.0)
+        assert frame.timing.capture_seconds is None
+        assert frame.timing.depth_ready_seconds is None
+    assert received[1].timing.arrival_seconds >= received[0].timing.arrival_seconds

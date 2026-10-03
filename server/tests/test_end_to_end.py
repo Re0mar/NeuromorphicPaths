@@ -26,6 +26,7 @@ from nav.config import build_run_config
 from nav.main import main
 from nav.runtime.loop import RUN_CONFIG_FILENAME, HeadingBaseline, gaze_on_the_ground, wrap_angle, yaw_from_quaternion
 from nav.runtime.loop import run
+from nav.runtime.timing import TIMING_FILENAME, read_timing_log
 from nav.scene.pipeline import ScenePipeline
 from nav.sources.framecodec import INDEX_FILENAME, decode_path, read_message
 from nav.sources.logged import LoggedDepthFrameSource
@@ -292,3 +293,73 @@ def test_a_gaze_above_the_horizon_gives_no_ground_point() -> None:
     frame = DepthFrame(0.0, np.ones((4, 4), dtype=np.float32), intrinsics, Pose(np.array([1.0, 0, 0, 0]), None, False), None, np.array([50.0, 10.0]))
 
     assert gaze_on_the_ground(frame, scene) is None
+
+
+class FloorlessDepthEstimator(StubDepthEstimator):
+    """Depth with nothing in it, so the scene finds no floor and the worker skips every frame."""
+
+    def estimate(self, image_rgb: np.ndarray):
+        estimate = super().estimate(image_rgb)
+        return dataclasses.replace(estimate, depth_meters=np.full_like(estimate.depth_meters, np.nan))
+
+
+def _processed_count(caplog: pytest.LogCaptureFixture) -> int:
+    report = next(record.message for record in caplog.records if " processed, " in record.message)
+    return int(report.split(" processed")[0].split(", ")[-1])
+
+
+def test_a_recorded_run_writes_one_timing_line_per_frame_it_took(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    # Through run(), the production entry point, from a video to the timing log beside the frames.
+    video = _write_video(tmp_path / "walk.avi")
+    log_dir = tmp_path / "log"
+    config = build_run_config(["--source", "video_file", "--path", str(video), "--sink", "none", "--record-to", str(log_dir)])
+    config = dataclasses.replace(config, estimator_factory=lambda estimator_config: StubDepthEstimator())
+
+    with caplog.at_level(logging.INFO):
+        assert run(config) == 0
+
+    lines = read_timing_log(log_dir)
+    assert len(lines) == _processed_count(caplog)
+    assert all(line.plan_done_seconds is not None for line in lines)
+    assert all(line.arrival_seconds <= line.depth_ready_seconds <= line.plan_done_seconds for line in lines)
+    assert all(line.capture_seconds is None for line in lines), "a file's timestamps are not on any clock"
+    assert b"\r" not in (log_dir / TIMING_FILENAME).read_bytes()
+
+
+def test_a_skipped_frame_still_writes_a_timing_line_with_no_floor(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    video = _write_video(tmp_path / "walk.avi", frame_count=5)
+    log_dir = tmp_path / "log"
+    config = build_run_config(["--source", "video_file", "--path", str(video), "--sink", "none", "--record-to", str(log_dir)])
+    config = dataclasses.replace(config, estimator_factory=lambda estimator_config: FloorlessDepthEstimator())
+
+    with caplog.at_level(logging.INFO):
+        assert run(config) == 0
+
+    lines = read_timing_log(log_dir)
+    assert lines, "frames the worker skipped wrote nothing, so the floor rate would read perfect"
+    assert all(line.floor_source is None and line.plan_done_seconds is None for line in lines)
+
+
+def test_the_end_of_run_report_counts_floor_sources(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    video = _write_video(tmp_path / "walk.avi")
+    config = build_run_config(["--source", "video_file", "--path", str(video), "--sink", "none"])
+    config = dataclasses.replace(config, estimator_factory=lambda estimator_config: StubDepthEstimator())
+
+    with caplog.at_level(logging.INFO):
+        assert run(config) == 0
+
+    report = [record.message for record in caplog.records if record.message.startswith("floor over")]
+    assert report, "no floor-source line in the end-of-run report"
+    assert f"floor over {_processed_count(caplog)} frames taken" in report[0]
+    assert "fitted" in report[0]
+
+
+def test_no_timing_log_is_written_without_record_to(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    video = _write_video(tmp_path / "walk.avi", frame_count=5)
+    monkeypatch.chdir(tmp_path)
+    config = build_run_config(["--source", "video_file", "--path", str(video), "--sink", "none"])
+    config = dataclasses.replace(config, estimator_factory=lambda estimator_config: StubDepthEstimator())
+
+    assert run(config) == 0
+
+    assert not list(tmp_path.rglob(TIMING_FILENAME))

@@ -14,11 +14,12 @@ import numpy as np
 import pytest
 
 # Local package imports
+from nav.pose.imu_orientation import pose_from_imu
+from nav.pose.neon_mount import NEON_IMU_MOUNT
 from nav.sources.config import NeonPluginConfig, NeonPluginModel
 from nav.sources.neon_plugin import (
     PLUGIN_CACHE_RELATIVE_DIR,
     NeonPluginDepthFrameSource,
-    scale_intrinsics,
     xyzw_to_wxyz,
 )
 
@@ -116,14 +117,16 @@ def test_intrinsics_are_scaled_to_the_quarter_resolution_map(tmp_path: Path) -> 
     assert frame.intrinsics == pytest.approx(SCENE_CAMERA_MATRIX * np.array([[0.25], [0.25], [1.0]]))
 
 
-def test_imu_orientation_becomes_a_normalised_pose(tmp_path: Path) -> None:
+def test_imu_orientation_becomes_the_mounted_camera_pose(tmp_path: Path) -> None:
     recording = tmp_path / "rec"
     _write_cache(recording)
 
     frame = next(iter(_source(recording).frames()))
 
-    assert np.linalg.norm(frame.pose.orientation) == pytest.approx(1.0)
-    assert frame.pose.orientation[0] > 0.9  # mostly w, the small pitch kept
+    # The recorded IMU is the same IMU the live stream reads, so it goes through the same mount.
+    expected = pose_from_imu(np.array([2.0, 0.2, 0.0, 0.0]), NEON_IMU_MOUNT)
+    assert frame.pose.orientation == pytest.approx(expected.orientation)
+    assert frame.pose.orientation_is_gravity_aligned is True
 
 
 def test_gaze_is_rescaled_to_depth_pixels(tmp_path: Path) -> None:
@@ -164,6 +167,7 @@ def test_a_non_finite_imu_sample_falls_back_to_identity_for_that_frame(tmp_path:
     frames = list(_source(recording, FakeReader(quaternions_wxyz=quaternions)).frames())
 
     assert frames[2].pose.orientation == pytest.approx([1.0, 0.0, 0.0, 0.0])
+    assert frames[2].pose.orientation_is_gravity_aligned is False
     assert len(frames) == FRAME_COUNT
 
 
@@ -247,16 +251,3 @@ def test_quaternion_columns_are_reordered_from_the_recordings_xyzw() -> None:
 def test_quaternion_reorder_refuses_the_wrong_shape() -> None:
     with pytest.raises(ValueError, match=r"\(N, 4\)"):
         xyzw_to_wxyz(np.zeros((3, 3)))
-
-
-def test_scale_intrinsics_refuses_a_zero_source_size() -> None:
-    with pytest.raises(ValueError, match="positive"):
-        scale_intrinsics(SCENE_CAMERA_MATRIX, (0, 1600), (300, 400))
-
-
-def test_scale_intrinsics_leaves_the_homogeneous_row_alone() -> None:
-    scaled = scale_intrinsics(SCENE_CAMERA_MATRIX, SCENE_SIZE, DEPTH_SIZE)
-
-    assert scaled[2] == pytest.approx([0.0, 0.0, 1.0])
-    assert scaled[0, 0] == pytest.approx(225.0)
-    assert scaled[1, 2] == pytest.approx(150.0)

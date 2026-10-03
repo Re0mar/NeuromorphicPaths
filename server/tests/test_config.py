@@ -7,6 +7,8 @@ the start of a walk.
 """
 
 # Standard library imports
+import dataclasses
+
 import pytest
 
 # Third party imports
@@ -535,3 +537,30 @@ def test_planned_path_rejects_a_non_finite_time() -> None:
             alarm=False,
             cumulative_cost_bits=0.0,
         )
+
+
+@pytest.mark.parametrize(("device", "warned"), [("cpu", True), ("cuda", False)])
+def test_neon_live_on_a_cpu_estimator_warns_and_still_builds(device: str, warned: bool, caplog: pytest.LogCaptureFixture) -> None:
+    config = dataclasses.replace(
+        _run_config_for(SourceKind.NEON_LIVE),
+        estimator_factory=lambda estimator_config: StubDepthEstimator(device=device),
+    )
+
+    with caplog.at_level("WARNING", logger="nav.config"):
+        source = build_source(config)
+
+    assert hasattr(source, "frames"), "warned, but must still build"
+    assert any("on the CPU" in record.message for record in caplog.records) is warned
+
+
+def test_a_recording_on_a_cpu_estimator_does_not_warn(caplog: pytest.LogCaptureFixture) -> None:
+    # A recording is only slow to process on the CPU. Nobody is walking behind it.
+    config = dataclasses.replace(
+        _run_config_for(SourceKind.VIDEO_FILE),
+        estimator_factory=lambda estimator_config: StubDepthEstimator(device="cpu"),
+    )
+
+    with caplog.at_level("WARNING", logger="nav.config"):
+        build_source(config)
+
+    assert not any("on the CPU" in record.message for record in caplog.records)

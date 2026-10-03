@@ -8,6 +8,7 @@ here and nowhere else. A guard test enforces that the torch import does not spre
 # Standard library imports
 import logging
 import os
+import time
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -25,7 +26,10 @@ class DepthEstimate:
     """One frame's depth, the camera it implies, and how sure the model was."""
 
     depth_meters: np.ndarray
-    intrinsics: np.ndarray
+    # None when the model offers none, which the metric model does for a plain image. Choosing what
+    # to use instead belongs to the composed source, because only it knows whether the camera
+    # brought a calibration of its own.
+    intrinsics: np.ndarray | None
     confidence: np.ndarray | None
 
 
@@ -36,7 +40,14 @@ class DepthEstimatorProtocol(Protocol):
     test suite ever importing torch.
     """
 
+    # "cuda" or "cpu", where the model runs. Read once, to warn about a live run on the CPU.
+    device: str
+
     def estimate(self, image_rgb: np.ndarray) -> DepthEstimate: ...
+
+    def warm_up(self) -> None:
+        """Run once before the first real frame, so start-up cost does not land on it."""
+        ...
 
 
 def fallback_intrinsics(height: int, width: int, half_field_of_view_degrees: float = 50.0) -> np.ndarray:
@@ -109,19 +120,31 @@ class DepthEstimator:
 
         self._torch = torch
         self._config = config
-        self._warned_about_fallback_intrinsics = False
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        log.info("loading %s on %s", config.model_name, device)
-        self._model = DepthAnything3.from_pretrained(config.model_name).to(device)
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        log.info("loading %s on %s", config.model_name, self.device)
+        self._model = DepthAnything3.from_pretrained(config.model_name).to(self.device)
         log.info("loaded %s", config.model_name)
+
+    def warm_up(self) -> None:
+        """
+        Run one inference on a blank image before any real frame.
+
+        The first inference on CUDA pays for context creation and kernel selection. Without this,
+        that lands on the walker's first frame and on the first latency figure.
+        """
+        side = self._config.process_resolution
+        started = time.perf_counter()
+        self.estimate(np.zeros((side, side, 3), dtype=np.uint8))
+        log.info("warmed up %s on %s in %.1f s", self._config.model_name, self.device, time.perf_counter() - started)
 
     def estimate(self, image_rgb: np.ndarray) -> DepthEstimate:
         """
         Run the model on one frame.
 
         :param image_rgb: (H, W, 3) uint8 RGB image.
-        :return: Metric depth, intrinsics at the depth resolution, and confidence when offered.
+        :return: Metric depth, the model's intrinsics at the depth resolution when it offers them,
+            and confidence when offered.
         :rtype: DepthEstimate
         """
         with self._torch.inference_mode():
@@ -129,17 +152,6 @@ class DepthEstimator:
 
         depth_meters = np.asarray(prediction.depth[0], dtype=np.float32)
         confidence = None if prediction.conf is None else np.asarray(prediction.conf[0], dtype=np.float32)
-
-        if prediction.intrinsics is not None:
-            intrinsics = np.asarray(prediction.intrinsics[0], dtype=np.float64)
-        else:
-            intrinsics = fallback_intrinsics(*depth_meters.shape, self._config.fallback_half_field_of_view_degrees)
-            if not self._warned_about_fallback_intrinsics:
-                log.warning(
-                    "%s returned no intrinsics, assuming a %.0f degree half field of view",
-                    self._config.model_name,
-                    self._config.fallback_half_field_of_view_degrees,
-                )
-                self._warned_about_fallback_intrinsics = True
+        intrinsics = None if prediction.intrinsics is None else np.asarray(prediction.intrinsics[0], dtype=np.float64)
 
         return DepthEstimate(depth_meters=depth_meters, intrinsics=intrinsics, confidence=confidence)

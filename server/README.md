@@ -31,6 +31,26 @@ build, which is fine for a recording and too slow for a live walk. For live use 
 build that matches your driver from pytorch.org first, then run the line above. The first run
 downloads the metric depth checkpoint, 1.3 GB.
 
+### The CUDA build, as installed on the Quadro T2000 laptop
+
+On 2026-10-03, with NVIDIA driver 581.95 (which reports CUDA 13.0), the line that worked was:
+
+```
+.venv/Scripts/python -m pip install torch==2.14.1+cu126 --index-url https://download.pytorch.org/whl/cu126
+.venv/Scripts/python -m pip install -e ".[dev,glasses]"
+```
+
+The cu126 build was picked over cu130 because its kernels certainly cover the T2000's Turing GPU
+(sm_75). Installing the glasses extra afterwards kept the CUDA build in place. Check it did, every
+time, because a package that depends on torch can pull the CPU build back in without saying so:
+
+```
+.venv/Scripts/python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+```
+
+The version must end in `+cu126` and the third value must be `True`. A `neon_live` run on a CPU
+estimator also says so in its log, and still runs.
+
 If pip stalls on a 401 from a private package index, your machine has a user-level `pip.ini`
 pointing somewhere that needs a token. Put this in `.venv/pip.ini` and it talks to PyPI only:
 
@@ -110,10 +130,12 @@ down, a meter below the real floor, and nothing refused it.
 
 A phone held in the hand and pointed at the pavement still leans about 40 degrees from gravity,
 so the live runs set `--floor-max-tilt 50`. The metric model returns no camera intrinsics for a
-plain video, so the pipeline assumes `--fallback-fov` degrees of horizontal field of view, 100
-by default for the Neon. A phone is nearer 75, and the wrong value stretches the cloud sideways
-and overstates the camera's height. That one was found on the first outdoor recording, where the
-estimator read the camera 2.27 m above the floor at 100 degrees and 1.84 m at 75.
+plain video, so `video_file` assumes `--fallback-fov` degrees of horizontal field of view, 100 by
+default. A phone is nearer 75, and the wrong value stretches the cloud sideways and overstates the
+camera's height. That one was found on the first outdoor recording, where the estimator read the
+camera 2.27 m above the floor at 100 degrees and 1.84 m at 75. `neon_live` ignores the flag. It
+reads the glasses' own calibration when it connects, straightens every frame and the gaze point
+with it, and hands the straightened camera matrix on, so there is nothing to guess.
 
 Phone videos also carry a rotation tag. The video source applies it, so a portrait recording
 comes through upright.
@@ -190,7 +212,9 @@ that between subnets, in which case read the address off the Companion app's str
 ```
 
 `check_neon.py` connects, receives one frame and exits 0, or says which path it tried and exits
-1. The `neon_live` and `neon_plugin` commands above were not run while building this, because
+1. On success it also prints the camera matrix after straightening, how many degrees of field of
+view the straightening crops off, and the measured offset between the laptop's clock and the
+glasses'. It exits 1 if the glasses do not hand over their calibration. The `neon_live` and `neon_plugin` commands above were not run while building this, because
 there were no glasses and no plugin recording on hand. The Pixel runs on 2026-10-02 used the
 `web` sink over wifi and USB. The `phone_app` sink has been run against the suite's fake phone,
 through the same entry point, and not yet with the Pixel. Everything else was run as shown.
@@ -208,6 +232,24 @@ recording accepted. The recording run writes its whole configuration to `run_con
 log directory, so the flags are there to read back.
 
 Completed avoidances are written to `episodes.jsonl` in the same directory, one JSON line each.
+
+Every frame the planner took, or tried to, gets a line in `timing.jsonl` in the same directory:
+when the frame was captured, when it reached the laptop, when its depth was ready, when its plan
+was done, and where its floor came from. A frame skipped for having no usable floor still gets a
+line, with no floor and no plan time, so the floor acceptance rate reads back honestly. The times
+are on the laptop's clock. Capture is only there for a source that measured the offset between
+its clock and the laptop's, which today is the Neon. Summarize a run with:
+
+```
+.venv/Scripts/python examples/timing_report.py frame_logs/walk
+```
+
+It leaves out the first 10 seconds by default, while the network and the GPU settle, and prints
+each share's median, 95th percentile and worst case, the planned frame rate, the longest gap
+between plans, and the floor sources. Run it on the live recording, not on a replay. A replay
+carries the walk's capture, arrival and depth times beside its own plan times, so its shares mix
+two runs. `--verbose` prints the same shares per frame while a run is going, along with the
+observed heading.
 
 ## The layers
 

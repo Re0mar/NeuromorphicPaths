@@ -11,6 +11,7 @@ they came from. A test enforces that.
 
 # Standard library imports
 import argparse
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -47,6 +48,7 @@ from nav.types import DepthFrameSource, PathSink
 from nav.usermodel.config import UserModelConfig
 from nav.walker import WalkerConfig
 
+log = logging.getLogger(__name__)
 
 class SourceKind(Enum):
     """Where frames come from. Values are the spellings the command line accepts."""
@@ -70,6 +72,9 @@ class SinkKind(Enum):
 # These two sources carry RGB only, so they need the depth estimator composed in behind them.
 # The other three already deliver depth, so asking them for a model name would be meaningless.
 ESTIMATOR_BACKED_SOURCES = frozenset({SourceKind.VIDEO_FILE, SourceKind.NEON_LIVE})
+# Of those, the ones a person walks with while the estimator runs, where a CPU estimator is worth a
+# warning. A recording on the CPU is only slow to process.
+LIVE_ESTIMATOR_SOURCES = frozenset({SourceKind.NEON_LIVE})
 
 
 @dataclass(frozen=True)
@@ -197,7 +202,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--fallback-fov",
         type=_positive_float,
         default=2 * EstimatorConfig.fallback_half_field_of_view_degrees,
-        help="horizontal field of view in degrees, used when the model returns no intrinsics. A phone is about 75",
+        help=(
+            "horizontal field of view in degrees, used when the camera has no calibration and the model "
+            "returns no intrinsics. A phone is about 75. Ignored by neon_live, which uses the device's own calibration"
+        ),
     )
 
     tap = parser.add_argument_group("recording tap")
@@ -367,7 +375,16 @@ def build_estimated_depth_source(rgb_source: RgbSource, config: RunConfig) -> Es
         raise ValueError(f"{config.source_kind.value} needs an estimator config and none was built")
 
     build = config.estimator_factory if config.estimator_factory is not None else DepthEstimator
-    return EstimatedDepthSource(rgb_source, build(config.estimator), config.estimator)
+    estimator = build(config.estimator)
+    if config.source_kind in LIVE_ESTIMATOR_SOURCES and estimator.device == "cpu":
+        # Warned rather than refused. The run still works, and on a laptop without an NVIDIA GPU
+        # it is the only way to check the glasses connect at all.
+        log.warning(
+            "the depth estimator is on the CPU, so a live %s walk will run at a fraction of a frame a second. "
+            "Install the CUDA build of torch, see server/README.md",
+            config.source_kind.value,
+        )
+    return EstimatedDepthSource(rgb_source, estimator, config.estimator)
 
 
 def build_source(config: RunConfig) -> DepthFrameSource:

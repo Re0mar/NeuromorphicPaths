@@ -14,11 +14,15 @@ import pytest
 
 # Local package imports
 from conftest import SYNTHETIC_VIDEO_FRAME_COUNT
+from nav.clock import laptop_time_seconds
+from nav.pose.imu_orientation import pose_from_imu
+from nav.pose.neon_mount import NEON_IMU_MOUNT
 from nav.sources.config import EstimatorConfig
 from nav.sources.estimated_depth import EstimatedDepthSource
 from nav.sources.estimator import DepthEstimate, apply_confidence_filter, fallback_intrinsics
 from nav.sources.rgb import RgbFrame
 from nav.sources.video_file import VideoFileRgbSource
+from nav.types import FrameTiming
 from stubs import StubDepthEstimator, WrongShapeDepthEstimator
 
 
@@ -41,7 +45,9 @@ def _rgb_frame(**overrides) -> RgbFrame:
         "timestamp_seconds": 0.0,
         "image_rgb": np.zeros((48, 64, 3), dtype=np.uint8),
         "gaze_pixel": None,
-        "imu_orientation_wxyz": None,
+        "pose": None,
+        "camera_matrix": None,
+        "timing": None,
     }
     fields.update(overrides)
     return RgbFrame(**fields)
@@ -68,14 +74,76 @@ def test_every_camera_frame_becomes_a_depth_frame(synthetic_video: Path) -> None
     assert first.ground_plane is None
 
 
-def test_an_imu_quaternion_becomes_the_frame_pose() -> None:
-    rgb_source = ListRgbSource([_rgb_frame(imu_orientation_wxyz=np.array([0.0, 0.0, 0.0, 2.0]))])
+def test_the_cameras_own_pose_becomes_the_frame_pose() -> None:
+    camera_pose = pose_from_imu(np.array([0.0, 0.0, 0.0, 2.0]), NEON_IMU_MOUNT)
+    rgb_source = ListRgbSource([_rgb_frame(pose=camera_pose)])
     source = EstimatedDepthSource(rgb_source, StubDepthEstimator(), EstimatorConfig())
 
     frame = next(iter(source.frames()))
 
-    assert np.linalg.norm(frame.pose.orientation) == pytest.approx(1.0)
-    assert frame.pose.has_position is False
+    assert frame.pose is camera_pose
+    assert frame.pose.orientation_is_gravity_aligned is True
+
+
+def test_a_frame_without_a_pose_gets_identity_and_does_not_claim_gravity() -> None:
+    # A camera with no IMU reading yet must not tell the scene it knows where up is.
+    source = EstimatedDepthSource(ListRgbSource([_rgb_frame()]), StubDepthEstimator(), EstimatorConfig())
+
+    frame = next(iter(source.frames()))
+
+    assert frame.pose.orientation == pytest.approx([1.0, 0.0, 0.0, 0.0])
+    assert frame.pose.orientation_is_gravity_aligned is False
+
+
+def test_an_rgb_frame_refuses_a_pose_that_is_not_a_pose() -> None:
+    with pytest.raises(ValueError, match="pose must be a Pose"):
+        _rgb_frame(pose=np.array([1.0, 0.0, 0.0, 0.0]))
+
+
+def test_a_camera_matrix_from_the_source_overrides_the_estimators_and_is_scaled_to_the_depth_size() -> None:
+    # The frame is 64 by 48 and the stub's depth is 32 by 24, so the camera's matrix halves.
+    camera_matrix = np.array([[50.0, 0.0, 30.0], [0.0, 50.0, 22.0], [0.0, 0.0, 1.0]])
+    stub = StubDepthEstimator(height=24, width=32)
+    source = EstimatedDepthSource(ListRgbSource([_rgb_frame(camera_matrix=camera_matrix)]), stub, EstimatorConfig())
+
+    frame = next(iter(source.frames()))
+
+    assert frame.intrinsics == pytest.approx(np.array([[25.0, 0.0, 15.0], [0.0, 25.0, 11.0], [0.0, 0.0, 1.0]]))
+
+
+def test_without_a_source_matrix_the_estimators_intrinsics_are_used() -> None:
+    stub = StubDepthEstimator(height=24, width=32)
+    source = EstimatedDepthSource(ListRgbSource([_rgb_frame()]), stub, EstimatorConfig())
+
+    frame = next(iter(source.frames()))
+
+    assert frame.intrinsics == pytest.approx(stub.estimate(np.zeros((1, 1, 3))).intrinsics)
+
+
+def test_only_the_fallback_path_warns_that_the_field_of_view_was_assumed(caplog: pytest.LogCaptureFixture) -> None:
+    config = EstimatorConfig(fallback_half_field_of_view_degrees=40.0)
+    with_intrinsics = EstimatedDepthSource(ListRgbSource([_rgb_frame()]), StubDepthEstimator(), config)
+    without_any = EstimatedDepthSource(
+        ListRgbSource([_rgb_frame(), _rgb_frame()]),
+        StubDepthEstimator(returns_intrinsics=False),
+        config,
+    )
+
+    with caplog.at_level("WARNING", logger="nav.sources.estimated_depth"):
+        list(with_intrinsics.frames())
+        assert not [record for record in caplog.records if "assuming" in record.message]
+        frames = list(without_any.frames())
+
+    assumed = [record for record in caplog.records if "assuming" in record.message]
+    assert len(assumed) == 1, "warned once, not once per frame"
+    stub = StubDepthEstimator()
+    assert frames[0].intrinsics == pytest.approx(fallback_intrinsics(stub.height, stub.width, 40.0))
+
+
+@pytest.mark.parametrize("camera_matrix", [np.eye(2), np.full((3, 3), np.nan)])
+def test_an_rgb_frame_with_a_misshapen_camera_matrix_is_refused(camera_matrix: np.ndarray) -> None:
+    with pytest.raises(ValueError, match="camera_matrix"):
+        _rgb_frame(camera_matrix=camera_matrix)
 
 
 def test_gaze_is_rescaled_from_scene_pixels_to_depth_pixels() -> None:
@@ -178,3 +246,28 @@ def test_confidence_filter_survives_a_map_with_no_finite_values() -> None:
     )
 
     assert not np.any(np.isnan(apply_confidence_filter(estimate, drop_percentile=30.0)))
+
+
+def test_depth_ready_is_stamped_after_estimation_and_after_arrival() -> None:
+    arrived = FrameTiming(capture_seconds=None, arrival_seconds=laptop_time_seconds(), depth_ready_seconds=None)
+    source = EstimatedDepthSource(ListRgbSource([_rgb_frame(timing=arrived)]), StubDepthEstimator(), EstimatorConfig())
+
+    frame = next(iter(source.frames()))
+
+    assert frame.timing.arrival_seconds == arrived.arrival_seconds
+    assert frame.timing.depth_ready_seconds >= arrived.arrival_seconds
+
+
+def test_a_frame_without_timing_stays_without_timing() -> None:
+    source = EstimatedDepthSource(ListRgbSource([_rgb_frame()]), StubDepthEstimator(), EstimatorConfig())
+
+    assert next(iter(source.frames())).timing is None
+
+
+def test_the_estimator_is_warmed_once_before_the_first_frame() -> None:
+    stub = StubDepthEstimator()
+    source = EstimatedDepthSource(ListRgbSource([_rgb_frame(), _rgb_frame()]), stub, EstimatorConfig())
+
+    list(source.frames())
+
+    assert stub.calls == ["warm_up", "estimate", "estimate"]

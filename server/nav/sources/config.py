@@ -29,6 +29,12 @@ class NeonConfig:
     address: str | None = None
     port: int = 8080  # The Neon real-time API's documented default.
     discovery_timeout_seconds: float = 10.0  # The client's own default search duration.
+    # How long without a scene frame before the log says so. It warns and keeps waiting, because a
+    # wifi drop in the middle of a walk should not end the walk.
+    stall_warning_seconds: float = 5.0
+    # How long a Time Echo clock measurement may take before it is abandoned. A hundred round trips
+    # on a phone hotspot take about a second, so this only fires when the phone has gone.
+    time_echo_timeout_seconds: float = 5.0
 
 
 @dataclass(frozen=True)

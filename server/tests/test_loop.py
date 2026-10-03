@@ -13,6 +13,7 @@ import logging
 import socket
 import threading
 import time
+from collections import Counter
 from pathlib import Path
 
 # Third party imports
@@ -263,7 +264,7 @@ def test_run_config_json_carries_every_field_of_the_run_configuration(tmp_path: 
     config = build_run_config(["--source", "arcore_tcp", "--sink", "none", "--record-to", str(log_dir)])
     log_dir.mkdir()
 
-    _report(NewestFrameWorker(lambda frame: None), WorkMeter(UserModelConfig()), 0, config)
+    _report(NewestFrameWorker(lambda frame: None), WorkMeter(UserModelConfig()), 0, config, Counter())
 
     recorded = json.loads((log_dir / RUN_CONFIG_FILENAME).read_text(encoding="utf-8"))
     expected = {field.name for field in dataclasses.fields(RunConfig)} - {"estimator_factory"}
@@ -282,7 +283,7 @@ def test_completed_episodes_are_written_beside_the_frames(tmp_path: Path) -> Non
     meter.observe(_path(heading=0.0, cost=2.0), 0.0, 0.5)
     assert len(meter.completed_episodes()) == 1
 
-    _report(NewestFrameWorker(lambda frame: None), meter, 0, config)
+    _report(NewestFrameWorker(lambda frame: None), meter, 0, config, Counter())
 
     lines = (log_dir / EPISODES_FILENAME).read_bytes()
     assert b"\r" not in lines

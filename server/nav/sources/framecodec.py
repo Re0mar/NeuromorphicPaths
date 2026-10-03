@@ -24,7 +24,7 @@ from pathlib import Path
 import numpy as np
 
 # Local package imports
-from nav.types import DepthFrame, Plane, PlannedPath, Pose
+from nav.types import DepthFrame, FrameTiming, Plane, PlannedPath, Pose
 
 WIRE_VERSION = 1
 
@@ -144,6 +144,14 @@ def encode_frame(frame: DepthFrame) -> bytes:
         ),
         "gaze_pixel": None if frame.gaze_pixel is None else frame.gaze_pixel.tolist(),
     }
+    # Written only when there is something to write, so a frame from a source that keeps no timing
+    # encodes exactly as it did before the key existed.
+    if frame.timing is not None:
+        header["timing"] = {
+            "capture_seconds": frame.timing.capture_seconds,
+            "arrival_seconds": frame.timing.arrival_seconds,
+            "depth_ready_seconds": frame.timing.depth_ready_seconds,
+        }
 
     try:
         # allow_nan=False turns a non-finite intrinsic or pose into an error here, rather than into
@@ -195,6 +203,8 @@ def decode_frame(payload: bytes) -> DepthFrame:
         "pose": _decode_pose(_required(header, "pose")),
         "ground_plane": _decode_ground_plane(_required(header, "ground_plane")),
         "gaze_pixel": _optional_vector(_required(header, "gaze_pixel"), "gaze_pixel", length=2),
+        # Optional. The Pixel app never sends it, and frame logs written before it existed lack it.
+        "timing": _decode_timing(header["timing"]) if "timing" in header else None,
     }
 
     try:
@@ -393,8 +403,7 @@ def _decode_pose(block: object) -> Pose:
     raw_position = _required(block, "position_xyz")
     position = None if raw_position is None else _vector(raw_position, "pose.position_xyz", length=3)
 
-    # The one optional key in the header, and the only one with a default that is not simply the
-    # safe answer. Every frame log that existed when this key was added was recorded from the
+    # An optional key, and the only one with a default that is not simply the safe answer. Every frame log that existed when this key was added was recorded from the
     # phone, whose world is gravity-aligned, and those recordings are what the planner is tuned
     # against. Reading them as un-aligned would reintroduce the defect the key exists to fix, so
     # an absent key means the sender predates it and is assumed to be the phone. Everything
@@ -414,6 +423,26 @@ def _decode_pose(block: object) -> Pose:
         if isinstance(inconsistent_error, FrameDecodeError):
             raise
         raise FrameDecodeError(f"pose is inconsistent: {inconsistent_error}") from inconsistent_error
+
+
+def _decode_timing(block: object) -> FrameTiming:
+    if not isinstance(block, dict):
+        raise FrameDecodeError(f"timing must be a JSON object, got {type(block).__name__}")
+
+    def optional_number(key: str) -> float | None:
+        value = block.get(key)
+        return None if value is None else _number(value, f"timing.{key}")
+
+    try:
+        return FrameTiming(
+            capture_seconds=optional_number("capture_seconds"),
+            arrival_seconds=_number(_required(block, "arrival_seconds"), "timing.arrival_seconds"),
+            depth_ready_seconds=optional_number("depth_ready_seconds"),
+        )
+    except ValueError as inconsistent_error:
+        if isinstance(inconsistent_error, FrameDecodeError):
+            raise
+        raise FrameDecodeError(f"timing is inconsistent: {inconsistent_error}") from inconsistent_error
 
 
 def _decode_ground_plane(block: object) -> Plane | None:

@@ -23,6 +23,8 @@ import numpy as np
 
 # Local package imports
 from nav.pose.imu_orientation import identity_pose, pose_from_imu
+from nav.pose.neon_mount import NEON_IMU_MOUNT
+from nav.sources.camera_model import scale_intrinsics
 from nav.sources.config import NeonPluginConfig, NeonPluginModel
 from nav.types import DepthFrame
 
@@ -61,26 +63,6 @@ def xyzw_to_wxyz(quaternions_xyzw: np.ndarray) -> np.ndarray:
     if quaternions_xyzw.ndim != 2 or quaternions_xyzw.shape[1] != 4:
         raise ValueError(f"expected (N, 4) quaternions, got shape {quaternions_xyzw.shape}")
     return quaternions_xyzw[:, [3, 0, 1, 2]]
-
-
-def scale_intrinsics(camera_matrix: np.ndarray, from_size: tuple[int, int], to_size: tuple[int, int]) -> np.ndarray:
-    """
-    Rescale a camera matrix from one image size to another.
-
-    :param camera_matrix: (3, 3) at from_size.
-    :param from_size: (height, width) the matrix describes.
-    :param to_size: (height, width) wanted.
-    :return: (3, 3) at to_size.
-    :rtype: np.ndarray
-    """
-    from_height, from_width = from_size
-    to_height, to_width = to_size
-    if from_height <= 0 or from_width <= 0:
-        raise ValueError(f"source image size must be positive, got {from_size}")
-    scaled = np.array(camera_matrix, dtype=np.float64)
-    scaled[0, :] *= to_width / from_width
-    scaled[1, :] *= to_height / from_height
-    return scaled
 
 
 class NeonPluginDepthFrameSource:
@@ -154,7 +136,9 @@ class NeonPluginDepthFrameSource:
 
         for index in range(usable):
             if orientations is not None and np.all(np.isfinite(orientations[index])):
-                pose = pose_from_imu(np.asarray(orientations[index], dtype=np.float64))
+                # The same IMU as the live stream, so the same mount. The xyzw reorder above is the
+                # recording's own column order and has already happened.
+                pose = pose_from_imu(np.asarray(orientations[index], dtype=np.float64), NEON_IMU_MOUNT)
             else:
                 pose = identity_pose()
 
