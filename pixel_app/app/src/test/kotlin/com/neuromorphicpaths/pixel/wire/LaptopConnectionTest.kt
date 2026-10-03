@@ -145,6 +145,46 @@ class LaptopConnectionTest {
     }
 
     @Test
+    fun aReplacedMessageReportsTheDroppedFrame() {
+        // No server, so the slot is never emptied and the second offer replaces the first.
+        val dropped = CopyOnWriteArrayList<Long>()
+        val connection = LaptopConnection("127.0.0.1", 1, onDropped = { dropped.add(it) }) { }
+        connection.offer(message(1.0))
+        connection.offer(message(2.0))
+
+        assertEquals(listOf(1_000_000_000L), dropped.toList(), "the replaced frame, not the newer one")
+    }
+
+    @Test
+    fun sentIsReportedAfterTheWrite() {
+        val server = ServerSocket(0, 1, loopback)
+        val readAtServer = java.util.concurrent.CountDownLatch(1)
+        thread(isDaemon = true) {
+            server.accept().use { socket ->
+                val input = DataInputStream(socket.getInputStream())
+                input.readFully(ByteArray(input.readInt()))
+                readAtServer.countDown()
+                Thread.sleep(1_000)
+            }
+        }
+        val sent = CopyOnWriteArrayList<Long>()
+        val statuses = CopyOnWriteArrayList<ConnectionStatus>()
+        val connection = LaptopConnection("127.0.0.1", server.localPort, onSent = { sent.add(it) }) { statuses.add(it) }
+        try {
+            connection.start()
+            assertTrue(waitUntil { statuses.any { it is ConnectionStatus.Connected } }, "never connected, saw $statuses")
+            connection.offer(message(7.5))
+            assertTrue(readAtServer.await(5, TimeUnit.SECONDS), "the server never read the message")
+            assertTrue(waitUntil(2_000) { sent.isNotEmpty() }, "the write was never reported")
+        } finally {
+            connection.stop()
+            server.close()
+        }
+
+        assertEquals(listOf(7_500_000_000L), sent.toList())
+    }
+
+    @Test
     fun aRefusedPortIsReportedAndRetriedNotFatal() {
         val probe = ServerSocket(0, 1, loopback)
         val closedPort = probe.localPort

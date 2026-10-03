@@ -1,6 +1,7 @@
 package com.neuromorphicpaths.pixel.wire
 
 import android.util.Log
+import com.neuromorphicpaths.pixel.timing.TimingRecord
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -16,10 +17,17 @@ import kotlin.concurrent.thread
  * and returns. The sender thread takes the newest pending message, encodes it and writes it. A
  * message replaced before it was sent is counted as dropped. When the socket fails the thread
  * reconnects after a pause and keeps going, because a walk does not stop for a hotspot hiccup.
+ *
+ * @param onSent called on the sender thread once a frame's message has been written and flushed,
+ * with the frame's ARCore timestamp in nanoseconds
+ * @param onDropped called on the caller's thread of [offer] for a frame replaced before it went,
+ * with that frame's ARCore timestamp in nanoseconds
  */
 class LaptopConnection(
     private val host: String,
     private val port: Int,
+    private val onSent: (Long) -> Unit = {},
+    private val onDropped: (Long) -> Unit = {},
     private val onStatus: (ConnectionStatus) -> Unit,
 ) {
     private val pending = AtomicReference<DepthMessage?>(null)
@@ -48,9 +56,9 @@ class LaptopConnection(
 
     /** Hand over a frame. If the previous one has not gone yet, it is replaced and counted. */
     fun offer(message: DepthMessage) {
-        if (pending.getAndSet(message) != null) {
-            dropped.incrementAndGet()
-        }
+        val replaced = pending.getAndSet(message) ?: return
+        dropped.incrementAndGet()
+        onDropped(TimingRecord.frameNanosFromSeconds(replaced.timestampSeconds))
     }
 
     private fun loop() {
@@ -84,6 +92,7 @@ class LaptopConnection(
                     }
                     output.write(FrameEncoder.encode(message))
                     output.flush()
+                    onSent(TimingRecord.frameNanosFromSeconds(message.timestampSeconds))
                     sent.incrementAndGet()
                     onStatus(ConnectionStatus.Connected(host, port, sent.get(), dropped.get()))
                 }

@@ -12,8 +12,10 @@ import kotlin.concurrent.thread
 /**
  * A path as it arrived: the message, and when, on this phone's own clock.
  *
- * The laptop's `timestamp_seconds` is on a clock unrelated to the display's, so the arrow's age
- * is measured from [receivedAtMillis], which is what makes a stale arrow visibly stale.
+ * The message's `timestamp_seconds` is this phone's own ARCore timestamp for the depth frame the
+ * path was planned from, handed back unchanged by the laptop. The timing log uses it to tie the
+ * path to its frame. The arrow's age is measured from [receivedAtMillis] instead, because the age
+ * text is about how long ago the path arrived, and that is what makes a stale arrow visibly stale.
  */
 class ReceivedPath(val message: PathMessage, val receivedAtMillis: Long)
 
