@@ -26,11 +26,13 @@ class PlannerConfig:
     horizon_seconds: float = 3.8  # His horizon.
     clearance_epsilon_meters: float = 0.06  # His epsilon, the floor under S.
     noise_epsilon_meters: float = 1.0e-6  # His numeric floor under N, so a zero N is a zero surprise, not a NaN.
-    # His weight on the lateral kinetic term, kept for now. Raising it stops the arrow pinning. With
-    # his surprise alone a steadily measured post then costs less to hit than to dodge, and at 0.35
-    # the planner walks into a post 1.5 m ahead. With the contact term the same post is cleared up
-    # to a weight of 4 and hit from 8. The safety tests in test_planner_pipeline.py catch either.
-    lateral_kinetic_weight: float = 0.055
+    # Ours, raised from his 0.055 so the plan stops sidestepping at full speed whenever anything is
+    # ahead. His surprise alone can't afford it: a steadily measured post costs less to hit than to
+    # dodge from 0.35. With the contact term the post safety test's posts are cleared through 7 and
+    # hit at 8. 6.5 is the highest weight that still clears them with the sway anywhere from 0.05 to
+    # 0.20 m and the near noise at either recorded walk's median. The worst of those, 0.20 m of sway
+    # at 0.0337 m of noise, hits at 7. The safety tests in test_planner_pipeline.py pin all of it.
+    lateral_kinetic_weight: float = 6.5
     surprise_cap: float = 2.0e4  # His cap on a single point's surprise.
     walking_speed_mps: float = 1.4  # Ours. Average walking pace, against his 5.0 for a cyclist.
     grid_half_width_meters: float = 3.0  # Ours. Matches the scene grid.

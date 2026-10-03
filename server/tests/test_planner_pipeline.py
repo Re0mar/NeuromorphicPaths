@@ -215,9 +215,13 @@ def test_the_path_timestamp_is_the_obstacle_sets() -> None:
     assert path.timestamp_seconds == pytest.approx(12.5)
 
 
-# The contact term. At this weight the post safety test's posts are walked into with only his term
-# and cleared with the contact term added (STEP_04 post sweep, 2026-10-03).
-WEIGHT_ONLY_CONTACT_HOLDS = 0.5
+# The contact term. Above the shipped weight, so this guards a weight the shipped config does not
+# already cover. His term alone walks into both posts here, and the contact term still clears them.
+WEIGHT_ONLY_CONTACT_HOLDS = 7.0
+# The other recorded walk's median near noise, beside the classroom's MEASURED_NEAR_NOISE_METERS.
+# More noise makes his term dodge harder, so the classroom's value is the hard case and this one
+# checks the margin does not depend on it.
+OTHER_WALK_NEAR_NOISE_METERS = 0.0966
 
 
 def test_the_shipping_terms_are_his_surprise_and_contact() -> None:
@@ -309,3 +313,28 @@ def test_the_cost_stays_finite_with_the_walker_inside_an_obstacle() -> None:
 
     assert np.isfinite(path.cumulative_cost_bits)
     assert decoded.cumulative_cost_bits == pytest.approx(path.cumulative_cost_bits)
+
+
+@pytest.mark.parametrize("forward", [1.0, 1.5])
+@pytest.mark.parametrize("noise", [MEASURED_NEAR_NOISE_METERS, OTHER_WALK_NEAR_NOISE_METERS])
+@pytest.mark.parametrize("sway", [0.05, 0.20])
+def test_the_shipped_weight_clears_the_post_under_the_margin_conditions(sway: float, noise: float, forward: float) -> None:
+    # The margin on the shipped weight: half to twice the assumed sway, at either walk's near noise.
+    # Twice the sway at the classroom's noise is the corner closest to failing, and it hits at a weight of 7.
+    config = replace(CONFIG, walker_sway_meters=sway)
+    post = _set(_point(0.0, forward, group=1, noise=noise))
+
+    path = PlannerPipeline(config, WALKER).plan(post)
+
+    k_reach = int(np.ceil(forward / (CONFIG.walking_speed_mps * CONFIG.time_step_seconds)))
+    assert abs(path.lateral_offsets_meters[k_reach]) > WALKER.radius_meters, path.lateral_offsets_meters[: k_reach + 1]
+
+
+def test_without_contact_the_shipped_weight_walks_into_the_post() -> None:
+    # The shipped weight depends on the contact term. Removing it should fail here, not on a walk.
+    post = _set(_point(0.0, 1.5, group=1, noise=MEASURED_NEAR_NOISE_METERS))
+
+    path = PlannerPipeline(replace(CONFIG, contact_term_enabled=False), WALKER).plan(post)
+
+    k_reach = int(np.ceil(1.5 / (CONFIG.walking_speed_mps * CONFIG.time_step_seconds)))
+    assert abs(path.lateral_offsets_meters[k_reach]) <= WALKER.radius_meters
