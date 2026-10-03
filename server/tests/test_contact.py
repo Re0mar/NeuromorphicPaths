@@ -23,8 +23,8 @@ TERM = ContactSurprise()
 TAU_SECONDS = 0.6 / 1.4
 
 
-def _rate(centre_distance: float, noise: float, config: PlannerConfig = CONFIG) -> float:
-    return float(TERM.point_cost(np.array([[centre_distance]]), np.array([noise]), config, WALKER)[0, 0])
+def _rate(center_distance: float, noise: float, config: PlannerConfig = CONFIG) -> float:
+    return float(TERM.point_cost(np.array([[center_distance]]), np.array([noise]), config, WALKER)[0, 0])
 
 
 def _point(lateral: float, forward: float, group: int, noise: float = 0.0, is_wall: bool = False) -> ObstaclePoint:
@@ -65,12 +65,12 @@ def test_a_steady_post_costs_more_to_walk_into_than_his_term_does() -> None:
     # 10 cm of overlap with the classroom's measured near noise. His term floors S at 0.06 m and
     # reads about 0.158 there. Contact reads about 4.11 per second.
     noise = 0.0337
-    centre = CONFIG.body_half_width_meters - 0.10
-    his = point_surprise(centre - WALKER.radius_meters, noise, CONFIG)
+    center = CONFIG.body_half_width_meters - 0.10
+    his = point_surprise(center - WALKER.radius_meters, noise, CONFIG)
 
     assert his == pytest.approx(0.1577, abs=1e-3)
-    assert _rate(centre, noise) == pytest.approx(4.112, abs=1e-2)
-    assert _rate(centre, noise) > 20 * his
+    assert _rate(center, noise) == pytest.approx(4.112, abs=1e-2)
+    assert _rate(center, noise) > 20 * his
 
 
 def test_a_distant_point_costs_next_to_nothing() -> None:
@@ -80,9 +80,9 @@ def test_a_distant_point_costs_next_to_nothing() -> None:
 def test_a_wall_spreads_its_contact_cost_further() -> None:
     plain = _point(0.0, 0.5, group=1, noise=0.05)
     wall = _point(0.0, 0.5, group=1, noise=0.05, is_wall=True)
-    centre = CONFIG.body_half_width_meters + 0.20
+    center = CONFIG.body_half_width_meters + 0.20
 
-    assert _rate(centre, effective_noise(wall, CONFIG)) > 2 * _rate(centre, effective_noise(plain, CONFIG))
+    assert _rate(center, effective_noise(wall, CONFIG)) > 2 * _rate(center, effective_noise(plain, CONFIG))
 
 
 @pytest.mark.parametrize("lateral", [0.0, 0.2])
@@ -115,7 +115,7 @@ def test_zero_noise_is_finite() -> None:
 
 
 def test_the_shipped_sway_never_reaches_the_cap() -> None:
-    # Centre distance zero is the deepest overlap there is. -ln Phi(-3) = 6.607726 from the table.
+    # Center distance zero is the deepest overlap there is. -ln Phi(-3) = 6.607726 from the table.
     assert _rate(0.0, 0.0) == pytest.approx(6.607726 / TAU_SECONDS, rel=1e-5)
     assert 6.607726 < CONFIG.contact_surprise_cap
 

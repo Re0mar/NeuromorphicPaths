@@ -306,9 +306,13 @@ def test_the_alarm_does_not_depend_on_the_contact_term() -> None:
 
 
 def test_the_cost_stays_finite_with_the_walker_inside_an_obstacle() -> None:
+    # At the shipped sway the geometry alone keeps a point under 6.61, so the cost could not go
+    # infinite there whatever the formula did. At a millimeter of sway, S over sigma reaches about
+    # -300, where a naive -log of the cumulative distribution underflows to infinity. Only log_ndtr
+    # and the cap keep it finite all the way to the wire.
     inside = _set(_point(0.0, 0.1, group=1, noise=0.0))
 
-    path = PlannerPipeline(CONFIG, WALKER).plan(inside)
+    path = PlannerPipeline(replace(CONFIG, walker_sway_meters=0.001), WALKER).plan(inside)
     decoded = decode_path(encode_path(path))
 
     assert np.isfinite(path.cumulative_cost_bits)

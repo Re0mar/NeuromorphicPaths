@@ -45,7 +45,7 @@ class CollisionSurprise:
 
     def point_cost(
         self,
-        centre_distance_meters: np.ndarray,
+        center_distance_meters: np.ndarray,
         noise_meters: np.ndarray,
         config: PlannerConfig,
         walker: WalkerConfig,
@@ -53,14 +53,14 @@ class CollisionSurprise:
         """
         Half of (N over S) squared for every point from every candidate position.
 
-        :param centre_distance_meters: (cells, points) distance from each candidate position to each point.
+        :param center_distance_meters: (cells, points) distance from each candidate position to each point.
         :param noise_meters: (points,) each point's N, walls already multiplied.
         :param config: His epsilons and cap.
         :param walker: The footprint radius, subtracted to get S.
         :return: (cells, points) surprise per second.
         :rtype: np.ndarray
         """
-        clearance = centre_distance_meters - walker.radius_meters
+        clearance = center_distance_meters - walker.radius_meters
         return point_surprise(clearance, noise_meters[None, :], config)
 
 
@@ -71,7 +71,7 @@ def surprise_field(obstacles: ObstacleSet, grid: np.ndarray, config: PlannerConf
     :param obstacles: This frame's groups, walker relative.
     :param grid: The lateral candidates, from lateral_grid.
     :param config: Horizon, speed, prediction flag, surprise constants.
-    :param walker: The footprint radius, subtracted from centre distance to get clearance.
+    :param walker: The footprint radius, subtracted from center distance to get clearance.
     :return: (steps, len(grid)) field. Zero everywhere when nothing is in view.
     :rtype: np.ndarray
     """

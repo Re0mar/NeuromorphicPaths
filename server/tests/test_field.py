@@ -69,15 +69,15 @@ def _random_scene(seed: int) -> ObstacleSet:
     # gather each group's points itself rather than finding them side by side.
     group_ids = generator.choice(1000, size=int(generator.integers(1, 8)), replace=False)
     for group in (int(group_id) for group_id in group_ids):
-        centre_lateral = float(generator.uniform(-3.0, 3.0))
-        centre_forward = float(generator.uniform(0.3, 6.0))
+        center_lateral = float(generator.uniform(-3.0, 3.0))
+        center_forward = float(generator.uniform(0.3, 6.0))
         is_wall = bool(generator.random() < 0.3)
         velocity = generator.uniform(-1.0, 1.0, size=2) if generator.random() < 0.5 else None
         for _ in range(int(generator.integers(1, 6))):
             points.append(
                 _point(
-                    centre_lateral + float(generator.normal(0.0, 0.2)),
-                    max(0.05, centre_forward + float(generator.normal(0.0, 0.2))),
+                    center_lateral + float(generator.normal(0.0, 0.2)),
+                    max(0.05, center_forward + float(generator.normal(0.0, 0.2))),
                     group,
                     noise=float(generator.uniform(0.0, 0.5)),
                     is_wall=is_wall,
@@ -94,8 +94,8 @@ class _ConstantPerPoint:
     def __init__(self, costs: list[float]) -> None:
         self._costs = np.array(costs)
 
-    def point_cost(self, centre_distance_meters, noise_meters, config, walker) -> np.ndarray:
-        return np.broadcast_to(self._costs[None, :], centre_distance_meters.shape).copy()
+    def point_cost(self, center_distance_meters, noise_meters, config, walker) -> np.ndarray:
+        return np.broadcast_to(self._costs[None, :], center_distance_meters.shape).copy()
 
 
 @pytest.mark.parametrize("seed", range(12))

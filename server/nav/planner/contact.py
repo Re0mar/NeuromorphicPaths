@@ -8,7 +8,7 @@ likely the body is to overlap the point at all, whatever the noise, so a steady 
 costs something to walk into. The two are evidence about different things, and the planner adds
 them.
 
-The probability first. S is the clearance between the body and the point: the centre distance
+The probability first. S is the clearance between the body and the point: the center distance
 minus the body half-width, negative when they would overlap. The walker's real position is
 uncertain for two reasons, the reading's noise N and how far a person drifts from the line the
 arrow asks for, the sway. Together they spread S by sigma = hypot(N, sway). The chance of contact
@@ -24,11 +24,14 @@ a rate per second: the surprise divided by tau, the time it takes to walk past a
 the half-width over walking speed. Halving the time step then leaves the total unchanged, and a
 straight walk through an obstacle adds up to about one contact's worth.
 
-Two limits. A centre distance is never negative, so S never drops below minus the half-width and
+Three limits. A center distance is never negative, so S never drops below minus the half-width and
 one point can never cost more than -ln Phi(-half-width / sway), 6.61 at the shipped values. The
-cap only matters for a much smaller sway. And consecutive slices that overlap the same obstacle
-are summed as if each were a separate contact, which overcounts a long overlap. That is harmless
-when the plan's aim is not to go there at all.
+cap only matters for a much smaller sway. Consecutive slices that overlap the same obstacle are
+summed as if each were a separate contact, which overcounts a long overlap. That is harmless when
+the plan's aim is not to go there at all. And groups add, the way his term's do, while the scene
+makes one group per 0.25 m cell, so a wall is many groups. Walking beside a wall therefore costs
+about 1.4 to 1.5 times what one cell at the same clearance costs. His term overcounts a wall more,
+2 to 4 times, under the same rule.
 """
 
 # Third party imports
@@ -74,7 +77,7 @@ class ContactSurprise:
 
     def point_cost(
         self,
-        centre_distance_meters: np.ndarray,
+        center_distance_meters: np.ndarray,
         noise_meters: np.ndarray,
         config: PlannerConfig,
         walker: WalkerConfig,
@@ -82,14 +85,14 @@ class ContactSurprise:
         """
         Minus ln Phi(S over sigma), capped, over tau, for every point from every candidate position.
 
-        :param centre_distance_meters: (cells, points) distance from each candidate position to each point.
+        :param center_distance_meters: (cells, points) distance from each candidate position to each point.
         :param noise_meters: (points,) each point's N, walls already multiplied.
         :param config: The body half-width, the sway, the cap and the walking speed.
         :param walker: Unused. Contact is measured against the body, not the steering footprint.
         :return: (cells, points) contact surprise per second.
         :rtype: np.ndarray
         """
-        clearance = centre_distance_meters - config.body_half_width_meters
+        clearance = center_distance_meters - config.body_half_width_meters
         spread = np.hypot(noise_meters[None, :], config.walker_sway_meters)
         surprise = np.minimum(-log_ndtr(clearance / spread), config.contact_surprise_cap)
         return surprise / contact_time_scale(config)

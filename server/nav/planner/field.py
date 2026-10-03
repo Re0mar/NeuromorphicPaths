@@ -5,7 +5,7 @@ lateral position.
 The geometry lives here once. The walker advances at walking speed, so at slice k it is k dt v
 further forward and every obstacle is that much nearer. A group with a known velocity is slid by it
 when motion prediction is on. Everything else is held where it is. Each cost term is handed the
-centre distance from every candidate position to every point, and the noise of every point, and
+center distance from every candidate position to every point, and the noise of every point, and
 says what each point costs per second.
 
 A term's points are combined the way the professor combines his: the most costly point within a
@@ -31,7 +31,7 @@ class CostTerm(Protocol):
 
     def point_cost(
         self,
-        centre_distance_meters: np.ndarray,
+        center_distance_meters: np.ndarray,
         noise_meters: np.ndarray,
         config: PlannerConfig,
         walker: WalkerConfig,
@@ -39,7 +39,7 @@ class CostTerm(Protocol):
         """
         The cost rate of every point seen from every candidate position, at one time slice.
 
-        :param centre_distance_meters: (cells, points) distance from each candidate position to each point.
+        :param center_distance_meters: (cells, points) distance from each candidate position to each point.
         :param noise_meters: (points,) each point's N, walls already multiplied.
         :param config: The planner's constants.
         :param walker: The footprint.
@@ -67,7 +67,7 @@ def effective_noise(point: ObstaclePoint, config: PlannerConfig) -> float:
 
 
 def lateral_grid(config: PlannerConfig) -> np.ndarray:
-    """The candidate lateral positions, centred on straight ahead, spacing from the config."""
+    """The candidate lateral positions, centered on straight ahead, spacing from the config."""
     if config.grid_spacing_meters <= 0 or config.grid_half_width_meters <= 0:
         raise ValueError("grid spacing and half width must be positive")
     count = int(round(2 * config.grid_half_width_meters / config.grid_spacing_meters)) + 1
@@ -133,10 +133,10 @@ def cost_field(
         point_forward = forward + velocity[:, 1] * elapsed - walker_forward
 
         # (cells, points): distance from each candidate position to each point.
-        centre_distance = np.hypot(grid[:, None] - point_lateral[None, :], point_forward[None, :])
+        center_distance = np.hypot(grid[:, None] - point_lateral[None, :], point_forward[None, :])
 
         for term in terms:
-            per_point = term.point_cost(centre_distance, noise, config, walker)
+            per_point = term.point_cost(center_distance, noise, config, walker)
             # Max within each group, then the sum across groups. cumsum adds the groups strictly left
             # to right, the order a loop over them would, so the result is exact to the bit rather
             # than off by the rounding a pairwise sum would introduce.
