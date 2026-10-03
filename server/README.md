@@ -16,7 +16,7 @@ py -3.12 -m venv .venv
 .venv/Scripts/python -m pytest
 ```
 
-That installs numpy, OpenCV, Open3D, aiohttp and pytest, and runs the whole test suite on CPU.
+That installs numpy, SciPy, OpenCV, Open3D, aiohttp and pytest, and runs the whole test suite on CPU.
 It deliberately does not install torch. The suite never needs it, and keeping it out is what
 proves the scene and planner layers import without it.
 
@@ -215,7 +215,8 @@ Completed avoidances are written to `episodes.jsonl` in the same directory, one 
 depth estimator. **Scene** turns a depth image into obstacles on the ground: unproject, find the
 floor, keep what is between ankle and head height, group into cells, and measure how much each
 group's distance has been wobbling. That wobble is N and the distance is S. **Planner** builds a
-surprise field over future time and lateral position from S and N, and runs dynamic programming
+field over future time and lateral position from two surprises, the professor's, which grows
+with N over S, and the surprise of the body touching something, and runs dynamic programming
 through it. **User model** watches the planner's output and the walker's heading and measures
 what each avoidance cost in bits. It never steers. **Sinks** are device specific and take a
 `PlannedPath`. The runtime runs scene and planner on the newest frame in a thread so the source
@@ -245,3 +246,5 @@ values in `tests/test_laptop_path_fixture.py` and decoded by the app's test.
 - Motion prediction in the planner is off by default. The scene reports a group's velocity from
   its centroid in the world frame, which needs a source with a position.
 - The user model's time constant, b, is a placeholder until a walker is measured.
+- The planner's walker sway, how far a person drifts from the line the arrow asks for, is an
+  assumed 0.10 m. No recorded walk had anyone steering by the arrow, so it has not been measured.

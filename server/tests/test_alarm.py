@@ -16,7 +16,7 @@ from nav.walker import WalkerConfig
 
 CONFIG = PlannerConfig()
 WALKER = WalkerConfig(radius_meters=0.35)
-EDGE = CONFIG.alarm_body_half_width_meters  # 0.30 m with the defaults.
+EDGE = CONFIG.body_half_width_meters  # 0.30 m with the defaults.
 
 
 def _point(lateral: float, forward: float, group: int = 1, closing: float | None = None) -> ObstaclePoint:
@@ -120,8 +120,8 @@ def test_the_threshold_at_walking_pace_stays_under_a_meter() -> None:
 
 @pytest.mark.parametrize("half_width", [0.0, -0.3, float("nan")])
 def test_a_bad_body_half_width_is_refused(half_width: float) -> None:
-    with pytest.raises(ValueError, match="alarm_body_half_width_meters"):
-        corridor_points(_set(_point(0.0, 1.0)), replace(CONFIG, alarm_body_half_width_meters=half_width))
+    with pytest.raises(ValueError, match="body_half_width_meters"):
+        corridor_points(_set(_point(0.0, 1.0)), replace(CONFIG, body_half_width_meters=half_width))
 
 
 @pytest.mark.parametrize("speed", [0.0, -1.4])
@@ -139,7 +139,7 @@ def test_a_threshold_that_is_not_positive_is_refused(threshold: float) -> None:
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("alarm_body_half_width_meters", 0.0),
+        ("body_half_width_meters", 0.0),
         ("walking_speed_mps", 0.0),
         ("alarm_time_to_contact_seconds", 0.0),
         ("alarm_hold_seconds", -0.1),
