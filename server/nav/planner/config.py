@@ -25,7 +25,10 @@ class PlannerConfig:
     horizon_seconds: float = 3.8  # His horizon.
     clearance_epsilon_meters: float = 0.06  # His epsilon, the floor under S.
     noise_epsilon_meters: float = 1.0e-6  # His numeric floor under N, so a zero N is a zero surprise, not a NaN.
-    lateral_kinetic_weight: float = 0.055  # His weight on the lateral kinetic term.
+    # His weight on the lateral kinetic term, kept on purpose. Raising it would stop the arrow
+    # pinning, but a steadily measured post then costs less to hit than to dodge. At 0.35 the
+    # planner walks into a post 1.5 m ahead, which the safety tests in test_planner_pipeline.py catch.
+    lateral_kinetic_weight: float = 0.055
     surprise_cap: float = 2.0e4  # His cap on a single point's surprise.
     walking_speed_mps: float = 1.4  # Ours. Average walking pace, against his 5.0 for a cyclist.
     grid_half_width_meters: float = 3.0  # Ours. Matches the scene grid.
@@ -34,10 +37,17 @@ class PlannerConfig:
     wall_noise_multiplier: float = 3.0  # Ours. A wall is worth avoiding further out than a post.
     predict_motion: bool = False  # Off until the scene's group velocities are trusted.
     # Ours. Clearance at walking pace, not over a closing rate. Times walking speed it must stay
-    # under the 1 m at which something counts as close, so 0.7 s at 1.4 m/s is 0.98 m.
+    # under the 1 m at which something counts as close, so 0.7 s at 1.4 m/s is 0.98 m. Replayed with
+    # the corridor and hold below: alarm on 61.7 % with 66 changes on the classroom walk, was 76.0 % and 408.
     alarm_time_to_contact_seconds: float = 0.7
-    corridor_margin_meters: float = 0.15  # Ours. Added to the footprint radius on each side of the corridor.
-    alarm_hold_seconds: float = 0.5  # Ours. How long a raised alarm stays up before it may clear.
-    heading_lookahead_seconds: float = 1.0  # Ours. The arrow points at where the path is this far ahead.
+    # Ours. Added to the footprint radius on each side, so the corridor is 0.50 m wide either way.
+    # On the classroom walk the group raising the alarm sits a median 0.15 m to the side, none past the edge.
+    corridor_margin_meters: float = 0.15
+    # Ours. How long a raised alarm stays up before it may clear. Takes the classroom walk from 100
+    # state changes to 66, and pixel_walk_3 from 207 to 129 over all six of its segments.
+    alarm_hold_seconds: float = 0.5
+    # Ours. The arrow points at where the path is this far ahead. On the classroom walk the arrow
+    # takes 20 values instead of 3, and sits at the sidestep limit on 75.8 % of frames instead of 87.6 %.
+    heading_lookahead_seconds: float = 1.0
     goal_distance_meters: float = 4.0  # Old file's goal_dist.
     goal_tolerance_meters: float = 1.5  # Half a typical hallway's width, so the goal term picks among safe paths.
