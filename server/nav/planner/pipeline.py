@@ -83,7 +83,7 @@ class PlannerPipeline:
         # Where the arrow points: at where the path is a lookahead from now, not at its first step.
         heading = lookahead_heading(offsets, self._lookahead_index, config)
 
-        alarm = self._alarm_hold.update(alarm_raised(obstacles, config, self._walker), obstacles.timestamp_seconds)
+        alarm = self._alarm_hold.update(alarm_raised(obstacles, config), obstacles.timestamp_seconds)
 
         log.debug(
             "planner %.1f ms: field %.1f, dp %.1f, %d groups, cost %.2f, heading %.1f deg, alarm %s",

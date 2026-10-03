@@ -16,7 +16,7 @@ from nav.walker import WalkerConfig
 
 CONFIG = PlannerConfig()
 WALKER = WalkerConfig(radius_meters=0.35)
-EDGE = WALKER.radius_meters + CONFIG.corridor_margin_meters  # 0.50 m with the defaults.
+EDGE = CONFIG.alarm_body_half_width_meters  # 0.30 m with the defaults.
 
 
 def _point(lateral: float, forward: float, group: int = 1, closing: float | None = None) -> ObstaclePoint:
@@ -36,12 +36,12 @@ def _hold_run(hold: AlarmHold, script: list[tuple[bool, float]]) -> list[bool]:
 
 def test_a_post_dead_ahead_inside_the_threshold_raises() -> None:
     # 0.9 m ahead is 0.55 m of clearance, 0.39 s at 1.4 m/s, under 0.7 s.
-    assert alarm_raised(_set(_point(0.0, 0.9)), CONFIG, WALKER) is True
+    assert alarm_raised(_set(_point(0.0, 0.9)), CONFIG) is True
 
 
 def test_the_same_post_beyond_the_threshold_does_not_raise() -> None:
     # 1.4 m ahead is 1.05 m of clearance, 0.75 s, over 0.7 s.
-    assert alarm_raised(_set(_point(0.0, 1.4)), CONFIG, WALKER) is False
+    assert alarm_raised(_set(_point(0.0, 1.4)), CONFIG) is False
 
 
 def test_contact_exactly_at_the_threshold_does_not_raise() -> None:
@@ -51,31 +51,44 @@ def test_contact_exactly_at_the_threshold_does_not_raise() -> None:
     at_the_threshold = ObstaclePoint(0.0, 1.35, 1, 1.0, 0.1, None, None, False, np.zeros(3))
     just_under = ObstaclePoint(0.0, 1.35, 1, 0.999, 0.1, None, None, False, np.zeros(3))
 
-    assert alarm_raised(_set(at_the_threshold), config, WALKER) is False
-    assert alarm_raised(_set(just_under), config, WALKER) is True
+    assert alarm_raised(_set(at_the_threshold), config) is False
+    assert alarm_raised(_set(just_under), config) is True
 
 
 def test_a_post_beside_the_corridor_does_not_raise() -> None:
-    assert alarm_raised(_set(_point(0.51, 0.8)), CONFIG, WALKER) is False
+    assert alarm_raised(_set(_point(0.31, 0.8)), CONFIG) is False
 
 
 def test_the_same_post_just_inside_the_edge_raises() -> None:
-    assert alarm_raised(_set(_point(0.49, 0.8)), CONFIG, WALKER) is True
+    assert alarm_raised(_set(_point(0.29, 0.8)), CONFIG) is True
+
+
+def test_a_doorway_the_body_fits_through_stays_quiet() -> None:
+    # Sides 0.40 m either side of center, 0.8 m ahead: an opening the walker's body clears walking
+    # straight, but inside the planner's 0.35 m footprint plus a margin. That corridor turned the
+    # screen red all the way through a doorway on the apartment walk of 2026-10-03.
+    doorway = _set(_point(-0.40, 0.8, group=1), _point(0.40, 0.8, group=2))
+    assert alarm_raised(doorway, CONFIG) is False
+
+
+def test_a_doorway_side_that_would_hit_the_body_raises() -> None:
+    narrow = _set(_point(-0.25, 0.8, group=1), _point(0.40, 0.8, group=2))
+    assert alarm_raised(narrow, CONFIG) is True
 
 
 def test_the_corridor_edge_is_inclusive() -> None:
     on_the_edge = _point(EDGE, 0.8)
-    assert corridor_points(_set(on_the_edge), CONFIG, WALKER) == (on_the_edge,)
-    assert corridor_points(_set(_point(-EDGE, 0.8)), CONFIG, WALKER) != ()
+    assert corridor_points(_set(on_the_edge), CONFIG) == (on_the_edge,)
+    assert corridor_points(_set(_point(-EDGE, 0.8)), CONFIG) != ()
 
 
 @pytest.mark.parametrize("forward", [0.0, -0.5])
 def test_a_group_level_with_or_behind_the_walker_never_raises(forward: float) -> None:
-    assert alarm_raised(_set(_point(0.0, forward)), CONFIG, WALKER) is False
+    assert alarm_raised(_set(_point(0.0, forward)), CONFIG) is False
 
 
 def test_a_group_just_ahead_of_the_walker_raises() -> None:
-    assert alarm_raised(_set(_point(0.0, 0.05)), CONFIG, WALKER) is True
+    assert alarm_raised(_set(_point(0.0, 0.05)), CONFIG) is True
 
 
 def test_the_nearest_corridor_group_sets_the_contact_time() -> None:
@@ -85,18 +98,18 @@ def test_the_nearest_corridor_group_sets_the_contact_time() -> None:
     assert beside_and_nearer.clearance_meters < near.clearance_meters, "the decoy must be nearer to prove it is ignored"
 
     expected = near.clearance_meters / CONFIG.walking_speed_mps
-    assert corridor_time_to_contact(_set(far, beside_and_nearer, near), CONFIG, WALKER) == pytest.approx(expected)
+    assert corridor_time_to_contact(_set(far, beside_and_nearer, near), CONFIG) == pytest.approx(expected)
 
 
 def test_an_empty_scene_has_no_contact_time() -> None:
-    assert corridor_time_to_contact(_set(), CONFIG, WALKER) is None
-    assert alarm_raised(_set(), CONFIG, WALKER) is False
+    assert corridor_time_to_contact(_set(), CONFIG) is None
+    assert alarm_raised(_set(), CONFIG) is False
 
 
 @pytest.mark.parametrize("closing", [-2.0, None, 0.0, 5.0])
 def test_the_alarm_ignores_the_closing_rate(closing: float | None) -> None:
-    assert alarm_raised(_set(_point(0.0, 0.9, closing=closing)), CONFIG, WALKER) is True
-    assert alarm_raised(_set(_point(0.0, 1.4, closing=closing)), CONFIG, WALKER) is False
+    assert alarm_raised(_set(_point(0.0, 0.9, closing=closing)), CONFIG) is True
+    assert alarm_raised(_set(_point(0.0, 1.4, closing=closing)), CONFIG) is False
 
 
 def test_the_threshold_at_walking_pace_stays_under_a_meter() -> None:
@@ -105,28 +118,28 @@ def test_the_threshold_at_walking_pace_stays_under_a_meter() -> None:
     assert CONFIG.alarm_time_to_contact_seconds * CONFIG.walking_speed_mps <= 1.0
 
 
-@pytest.mark.parametrize("margin", [-0.01, float("nan")])
-def test_a_bad_margin_is_refused(margin: float) -> None:
-    with pytest.raises(ValueError, match="corridor_margin_meters"):
-        corridor_points(_set(_point(0.0, 1.0)), replace(CONFIG, corridor_margin_meters=margin), WALKER)
+@pytest.mark.parametrize("half_width", [0.0, -0.3, float("nan")])
+def test_a_bad_body_half_width_is_refused(half_width: float) -> None:
+    with pytest.raises(ValueError, match="alarm_body_half_width_meters"):
+        corridor_points(_set(_point(0.0, 1.0)), replace(CONFIG, alarm_body_half_width_meters=half_width))
 
 
 @pytest.mark.parametrize("speed", [0.0, -1.4])
 def test_a_walking_speed_that_is_not_positive_is_refused(speed: float) -> None:
     with pytest.raises(ValueError, match="walking_speed_mps"):
-        corridor_time_to_contact(_set(_point(0.0, 1.0)), replace(CONFIG, walking_speed_mps=speed), WALKER)
+        corridor_time_to_contact(_set(_point(0.0, 1.0)), replace(CONFIG, walking_speed_mps=speed))
 
 
 @pytest.mark.parametrize("threshold", [0.0, -0.7])
 def test_a_threshold_that_is_not_positive_is_refused(threshold: float) -> None:
     with pytest.raises(ValueError, match="alarm_time_to_contact_seconds"):
-        alarm_raised(_set(_point(0.0, 1.0)), replace(CONFIG, alarm_time_to_contact_seconds=threshold), WALKER)
+        alarm_raised(_set(_point(0.0, 1.0)), replace(CONFIG, alarm_time_to_contact_seconds=threshold))
 
 
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("corridor_margin_meters", -0.01),
+        ("alarm_body_half_width_meters", 0.0),
         ("walking_speed_mps", 0.0),
         ("alarm_time_to_contact_seconds", 0.0),
         ("alarm_hold_seconds", -0.1),

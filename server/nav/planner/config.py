@@ -39,13 +39,15 @@ class PlannerConfig:
     predict_motion: bool = False  # Off until the scene's group velocities are trusted.
     # Ours. Clearance at walking pace, not over a closing rate. Times walking speed it must stay
     # under the 1 m at which something counts as close, so 0.7 s at 1.4 m/s is 0.98 m. Replayed with
-    # the corridor and hold below: alarm on 61.7 % with 66 changes on the classroom walk, was 76.0 % and 408.
+    # the corridor and hold below: alarm on 60.0 % with 66 changes on the classroom walk, was 76.0 % and 408.
     alarm_time_to_contact_seconds: float = 0.7
-    # Ours. Added to the footprint radius on each side, so the corridor is 0.50 m wide either way.
-    # On the classroom walk the group raising the alarm sits a median 0.15 m to the side, none past the edge.
-    corridor_margin_meters: float = 0.15
-    # Ours. How long a raised alarm stays up before it may clear. Takes the classroom walk from 100
-    # state changes to 66, and the last segment of pixel_walk_3 from 69 to 41.
+    # Ours. How far to each side the alarm looks: the body, a shoulder half-width with room for arm
+    # swing, narrower than the footprint the planner steers with. At the planner's 0.35 m plus 0.15 m,
+    # a doorway about 0.9 m wide on the 2026-10-03 apartment walk raised the alarm on 93 % of its
+    # frames. At 0.30 m it is 36 %, and things the walker stood in front of still raise it on 84 %.
+    alarm_body_half_width_meters: float = 0.30
+    # Ours. How long a raised alarm stays up before it may clear. Takes the classroom walk from 108
+    # state changes to 66, and the last segment of pixel_walk_3 from 55 to 35.
     alarm_hold_seconds: float = 0.5
     # Ours. The arrow points at where the path is this far ahead. On the classroom walk the arrow
     # takes 20 values instead of 3, and sits at the sidestep limit on 75.8 % of frames instead of 87.6 %.
