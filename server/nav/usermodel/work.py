@@ -1,8 +1,8 @@
 """
 What an avoidance cost the walker, in bits.
 
-An episode opens when the planner asks for a turn, either through the alarm or a first heading
-outside tolerance, and closes when both the planner and the walker's observed heading are back
+An episode opens when the planner asks for a turn, either through the alarm or a heading outside
+tolerance, and closes when both the planner and the walker's observed heading are back
 inside it. The work of the episode is the planner's cost when it opened minus its cost when it
 closed, which is the slides' H at start minus H at threshold.
 

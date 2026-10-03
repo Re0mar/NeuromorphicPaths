@@ -37,8 +37,8 @@ arrow over it.
 - Line two: whether ARCore is tracking, how many frames had depth, and whether a floor is found.
 - Line three: the path connection, paths received and refused, and the last refusal's reason.
 - The arrow points where the newest path says, positive to the right, with the heading in
-  degrees under it. Green normally, red with `ALARM` when something is under a second from
-  contact, grey with `No path yet` before the first path. The age under the heading counts up
+  degrees under it. Green normally, red with `ALARM` when something in the walker's way is
+  close, grey with `No path yet` before the first path. The age under the heading counts up
   from when the path arrived and says `stale` after a second without a new one, so a frozen
   arrow is visibly frozen.
 
