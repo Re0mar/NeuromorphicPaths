@@ -56,7 +56,7 @@ def effective_noise(point: ObstaclePoint, config: PlannerConfig) -> float:
     It lives with the field rather than with either term because every term reads the same N, so
     a wall is treated one way whichever term is looking at it.
 
-    :param point: The point.
+    :param point: The noise scale and wall flag.
     :param config: The wall multiplier.
     :return: N in meters.
     :rtype: float

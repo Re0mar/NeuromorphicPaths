@@ -23,14 +23,16 @@ log = logging.getLogger(__name__)
 
 
 def planner_terms(config: PlannerConfig) -> tuple[CostTerm, ...]:
-    """The cost terms a plan is built from: his collision surprise always, and the contact surprise unless switched off."""
+    """The cost terms a plan is built from: the collision surprise always, and the contact surprise unless switched off."""
     if config.contact_term_enabled:
         return (CollisionSurprise(), ContactSurprise())
     return (CollisionSurprise(),)
 
 
 class PlannerPipeline:
-    """Holds the grid and the cost terms, which never change, the last field, which the debug window draws, and the alarm's hold.
+    """Holds what a run keeps between frames: the grid and the cost terms, the last field, the alarm's hold.
+
+    The grid and the terms never change. The last field is there for the debug window to draw.
 
     The hold carries across frames, so one pipeline has to serve a whole run. A pipeline built per
     frame would let the alarm clear the moment its raise decision did.
