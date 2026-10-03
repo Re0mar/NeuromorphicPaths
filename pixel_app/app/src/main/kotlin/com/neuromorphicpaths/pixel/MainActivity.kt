@@ -42,12 +42,27 @@ import com.neuromorphicpaths.pixel.wire.LaptopConnection
 import com.neuromorphicpaths.pixel.wire.PathConnection
 import com.neuromorphicpaths.pixel.wire.PathConnectionStatus
 import com.neuromorphicpaths.pixel.wire.ReceivedPath
+import com.neuromorphicpaths.pixel.wire.RecordingProgress
+import com.neuromorphicpaths.pixel.wire.ReplayStatus
+import com.neuromorphicpaths.pixel.wire.WalkRecorder
+import com.neuromorphicpaths.pixel.wire.WalkReplayer
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.io.IOException
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+import java.util.Locale
+import kotlin.concurrent.thread
 import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
  * Sends the Pixel's ARCore depth to the laptop pipeline and receives the paths it plans. One
  * screen, three lines that matter: whether depth frames are flowing, whether the laptop is
  * receiving them, and whether paths are coming back.
+ *
+ * It can also record a walk with nothing connected and replay the recording to the laptop later,
+ * for walks where the phone can't reach the laptop. The laptop records a replay like a live walk.
  */
 class MainActivity : ComponentActivity() {
     private var session: Session? = null
@@ -58,6 +73,11 @@ class MainActivity : ComponentActivity() {
     private val connectionStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Disconnected("not started"))
     private val pathStatus = MutableStateFlow<PathConnectionStatus>(PathConnectionStatus.Disconnected("not started"))
     private val latestPath = MutableStateFlow<ReceivedPath?>(null)
+    // Read on the GL thread for every frame, written on the UI thread.
+    @Volatile private var recorder: WalkRecorder? = null
+    private var replayer: WalkReplayer? = null
+    private val recordingStatus = MutableStateFlow<RecordingStatus>(RecordingStatus.Idle)
+    private val replayStatus = MutableStateFlow<ReplayStatus?>(null)
     private var installRequested = false
     private var startupHost = DEFAULT_HOST
     private var startupPort = DEFAULT_PORT
@@ -124,6 +144,10 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         connection?.stop()
         pathConnection?.stop()
+        replayer?.stop()
+        // Writes out what is still queued, so a walk recorded right up to closing the app keeps its end.
+        recorder?.stop()
+        recorder = null
         session?.close()
         session = null
         super.onDestroy()
@@ -175,6 +199,9 @@ class MainActivity : ComponentActivity() {
 
     /** Both connections go to the one laptop address. The phone opens both, the laptop listens on both. */
     private fun connect(host: String, port: Int, pathPort: Int) {
+        // The laptop takes one depth connection at a time, so a live connection ends any replay.
+        replayer?.stop()
+        replayer = null
         connection?.stop()
         pathConnection?.stop()
         connection = LaptopConnection(host, port) { status -> connectionStatus.value = status }.also { it.start() }
@@ -188,9 +215,63 @@ class MainActivity : ComponentActivity() {
 
     private fun renderer(): DepthCaptureRenderer = DepthCaptureRenderer(
         sessionProvider = { session },
-        onFrame = { message -> connection?.offer(message) },
+        onFrame = { message ->
+            connection?.offer(message)
+            recorder?.offer(message)
+        },
         onState = { state -> captureState.value = state },
     )
+
+    private fun startRecording() {
+        if (recorder != null) return
+        val directory = getExternalFilesDir(WALKS_DIRECTORY)
+        if (directory == null) {
+            recordingStatus.value = RecordingStatus.Unavailable("the app has no storage to record to right now")
+            return
+        }
+        val name = "walk_${LocalDateTime.now().format(FILE_TIME_FORMAT)}$WALK_SUFFIX"
+        val output = try {
+            FileOutputStream(File(directory, name))
+        } catch (unwritable: IOException) {
+            recordingStatus.value = RecordingStatus.Unavailable("can't create $name: ${unwritable.message}")
+            return
+        }
+        recordingStatus.value = RecordingStatus.Recording(name, RecordingProgress(0, 0, 0, null))
+        recorder = WalkRecorder(output, onProgress = { progress -> recordingStatus.value = RecordingStatus.Recording(name, progress) })
+            .also { it.start() }
+    }
+
+    private fun stopRecording() {
+        val stopping = recorder ?: return
+        // Stop handing it frames first, then let it write out what is queued, off the UI thread.
+        recorder = null
+        val name = (recordingStatus.value as? RecordingStatus.Recording)?.name ?: "the recording"
+        thread(name = "walk-recorder-stop", isDaemon = true) {
+            stopping.stop()
+            recordingStatus.value = RecordingStatus.Saved(name, stopping.progress)
+        }
+    }
+
+    /** Sends the newest recording to the laptop at host and port, in place of the live connection. */
+    private fun replayLatest(host: String, port: Int) {
+        if (recorder != null) {
+            replayStatus.value = ReplayStatus.Failed("stop the recording before replaying", 0)
+            return
+        }
+        val latest = getExternalFilesDir(WALKS_DIRECTORY)
+            ?.listFiles { file -> file.name.endsWith(WALK_SUFFIX) }
+            ?.maxByOrNull { it.lastModified() }
+        if (latest == null) {
+            replayStatus.value = ReplayStatus.Failed("no recorded walk on this phone", 0)
+            return
+        }
+        // The laptop takes one depth connection at a time, so the live one makes way.
+        connection?.stop()
+        connection = null
+        connectionStatus.value = ConnectionStatus.Disconnected("replaying ${latest.name} instead")
+        replayer?.stop()
+        replayer = WalkReplayer(host, port, { FileInputStream(latest) }, { status -> replayStatus.value = status }).also { it.start() }
+    }
 
     @Composable
     private fun Screen(
@@ -207,6 +288,8 @@ class MainActivity : ComponentActivity() {
         val status by connectionStatus.collectAsState()
         val paths by pathStatus.collectAsState()
         val path by latestPath.collectAsState()
+        val recording by recordingStatus.collectAsState()
+        val replay by replayStatus.collectAsState()
         var host by remember { mutableStateOf(startupHost) }
         var port by remember { mutableStateOf(startupPort.toString()) }
         var pathPort by remember { mutableStateOf(startupPathPort.toString()) }
@@ -228,6 +311,21 @@ class MainActivity : ComponentActivity() {
             ) {
                 Text("Connect")
             }
+            Row(modifier = Modifier.padding(top = 8.dp)) {
+                if (recording is RecordingStatus.Recording) {
+                    Button(onClick = { stopRecording() }) { Text("Stop recording") }
+                } else {
+                    Button(onClick = { startRecording() }) { Text("Record walk") }
+                }
+                Button(
+                    onClick = { port.toIntOrNull()?.let { depthPort -> replayLatest(host, depthPort) } },
+                    modifier = Modifier.padding(start = 8.dp),
+                ) {
+                    Text("Replay latest walk")
+                }
+            }
+            Text(describe(recording), modifier = Modifier.padding(top = 8.dp))
+            replay?.let { Text(describe(it), modifier = Modifier.padding(top = 4.dp)) }
             // Its own line, because the connection status is rewritten on every attempt and would
             // bury the one thing that explains why the attempts keep failing.
             warning?.let { Text("Permission: $it.", color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 12.dp)) }
@@ -269,6 +367,29 @@ class MainActivity : ComponentActivity() {
         is PathConnectionStatus.Disconnected -> "Paths: not connected: ${status.reason}."
     }
 
+    private fun describe(status: RecordingStatus): String = when (status) {
+        RecordingStatus.Idle -> "Not recording."
+        is RecordingStatus.Recording -> "Recording ${status.name}: ${describe(status.progress)}"
+        is RecordingStatus.Saved -> "Saved ${status.name}: ${describe(status.progress)}"
+        is RecordingStatus.Unavailable -> "Can't record: ${status.reason}."
+    }
+
+    private fun describe(progress: RecordingProgress): String = buildString {
+        append("${progress.framesWritten} frames, ${progress.framesDropped} dropped, ")
+        append(String.format(Locale.ROOT, "%.1f MB.", progress.bytesWritten / BYTES_PER_MEGABYTE))
+        progress.failure?.let { append(" Writing stopped: $it.") }
+    }
+
+    private fun describe(status: ReplayStatus): String = when (status) {
+        is ReplayStatus.Connecting -> "Replay: connecting to ${status.host}:${status.port}."
+        is ReplayStatus.Replaying -> "Replay: ${status.framesSent} frames sent to ${status.host}:${status.port}."
+        is ReplayStatus.Finished -> buildString {
+            append("Replay finished: ${status.framesSent} frames sent.")
+            if (status.truncatedBytes > 0) append(" The recording's last ${status.truncatedBytes} bytes were a cut-off frame and were left out.")
+        }
+        is ReplayStatus.Failed -> "Replay stopped after ${status.framesSent} frames: ${status.reason}. Replay into a fresh laptop directory."
+    }
+
     private fun describe(state: CaptureState): String = when (state) {
         CaptureState.CameraUnavailable -> "Camera not available yet."
         is CaptureState.Running -> buildString {
@@ -289,5 +410,21 @@ class MainActivity : ComponentActivity() {
         const val DEFAULT_PORT = 9000
         // The laptop's --phone-port default. Its own number, not derived from the depth port.
         const val DEFAULT_PATH_PORT = 9100
+        // Under the app's own storage, which needs no permission and which adb pull can reach.
+        const val WALKS_DIRECTORY = "walks"
+        const val WALK_SUFFIX = ".bin"
+        val FILE_TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss", Locale.ROOT)
+        const val BYTES_PER_MEGABYTE = 1_000_000.0
     }
+}
+
+/** What the screen shows about recording a walk. */
+private sealed interface RecordingStatus {
+    data object Idle : RecordingStatus
+
+    data class Recording(val name: String, val progress: RecordingProgress) : RecordingStatus
+
+    data class Saved(val name: String, val progress: RecordingProgress) : RecordingStatus
+
+    data class Unavailable(val reason: String) : RecordingStatus
 }
