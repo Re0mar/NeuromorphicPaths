@@ -80,6 +80,8 @@ def _walk_section(result: WalkResult, config: EvaluationConfig) -> list[str]:
     lines = [f"## {result.name}", ""]
     lines.append(f"- Scene settings: {result.scene_source}. Goal mode: {result.goal_mode.value}")
     lines.append(f"- Frames: {result.frames}, planned {result.planned_frames}, refused by the scene {result.refused_frames}")
+    for reason, count in sorted(result.refusal_reasons.items(), key=lambda item: -item[1]):
+        lines.append(f"  - {count} refused: {reason}")
     kept = [segment for segment in result.segments]
     kept_lengths = ", ".join(f"{segment.end_seconds - segment.start_seconds:.1f}" for segment in kept) or "none"
     all_lengths = ", ".join(f"{end - start:.1f}" for start, end in result.all_segments) or "none"

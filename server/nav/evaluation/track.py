@@ -5,7 +5,8 @@ The phone is hand-held and points wherever the hand points, so its own yaw is no
 heading. The direction of travel is. It comes from the ARCore position track, projected onto the
 floor, put on a uniform time grid and smoothed with a centered window. The track breaks wherever the
 recorded position can't be trusted to join up: a tracker jump, a hole in the stream, a lost
-position. Nothing is interpolated, smoothed or unwrapped across a break.
+position. Nothing is interpolated, smoothed or unwrapped across a break, and within half a window of
+a break the heading is left unknown, because a full window doesn't fit there.
 """
 
 # Standard library imports
@@ -233,14 +234,20 @@ def _piece(times: np.ndarray, positions: np.ndarray, indices: list[int]) -> tupl
 
 
 def _centered_mean(values: np.ndarray, half_window: int) -> np.ndarray:
-    """Mean over 2k + 1 samples around each one, the window shrunk symmetrically at the ends."""
+    """
+    Mean over 2k + 1 samples around each one, and NaN wherever the full window doesn't fit.
+
+    A window shrunk at a piece's ends would leave its last samples unsmoothed, and on a straight walk
+    with ordinary jitter those raw edges swing by 6 to 11 degrees, enough to look like a turn.
+    """
     count = values.shape[0]
+    smoothed = np.full(values.shape, np.nan)
+    if count < 2 * half_window + 1:
+        return smoothed
     cumulative = np.vstack([np.zeros((1, values.shape[1])), np.cumsum(values, axis=0)])
-    indices = np.arange(count)
-    halves = np.minimum(half_window, np.minimum(indices, count - 1 - indices))
-    lows = indices - halves
-    highs = indices + halves + 1
-    return (cumulative[highs] - cumulative[lows]) / (highs - lows)[:, None]
+    centers = np.arange(half_window, count - half_window)
+    smoothed[centers] = (cumulative[centers + half_window + 1] - cumulative[centers - half_window]) / (2 * half_window + 1)
+    return smoothed
 
 
 def _unwrap_moving_runs(headings: np.ndarray, moving: np.ndarray) -> np.ndarray:

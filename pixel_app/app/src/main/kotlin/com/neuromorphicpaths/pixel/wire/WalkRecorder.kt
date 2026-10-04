@@ -1,5 +1,6 @@
 package com.neuromorphicpaths.pixel.wire
 
+import org.json.JSONException
 import java.io.BufferedOutputStream
 import java.io.IOException
 import java.io.OutputStream
@@ -34,36 +35,48 @@ class WalkRecorder(
     private val queue = ArrayBlockingQueue<Item>(capacityFrames)
     private val written = AtomicInteger(0)
     private val dropped = AtomicInteger(0)
+    private val unencodable = AtomicInteger(0)
     private val bytes = AtomicLong(0)
-    @Volatile private var accepting = false
+    // Held while a frame is queued and while the recording is shut, so once stop() or a failure has
+    // shut it no frame can land behind the end marker unwritten and uncounted.
+    private val door = Any()
+    private var accepting = false
     @Volatile private var failure: String? = null
     private var worker: Thread? = null
 
     /** Where the recording stands now. */
-    val progress: RecordingProgress get() = RecordingProgress(written.get(), dropped.get(), bytes.get(), failure)
+    val progress: RecordingProgress
+        get() = RecordingProgress(written.get(), dropped.get(), bytes.get(), failure, unencodable.get())
 
     fun start() {
         if (worker != null) return
-        accepting = true
+        synchronized(door) { accepting = true }
         worker = thread(name = "walk-recorder", isDaemon = true) { loop() }
     }
 
-    /** Hand over a frame. Never blocks. After [stop], or once writing has failed, it is ignored. */
+    /** Hand over a frame. Never waits on the writer. After [stop], or once writing has failed, it is ignored. */
     fun offer(message: DepthMessage) {
-        if (!accepting) return
-        if (!queue.offer(Item.Frame(message))) {
-            dropped.incrementAndGet()
+        synchronized(door) {
+            if (!accepting) return
+            if (!queue.offer(Item.Frame(message))) {
+                dropped.incrementAndGet()
+            }
         }
     }
 
     /** Write what is still queued, close the file, and wait for that to finish. */
     fun stop() {
         val running = worker ?: return
-        accepting = false
-        // put rather than offer: the end marker has to get in, so it waits for room.
+        shut()
+        // put waits for room. It can't wait forever, because a writer that dies shuts the door and
+        // empties the queue on its way out, and onDestroy calls this on the UI thread.
         queue.put(Item.End)
         running.join()
         worker = null
+    }
+
+    private fun shut() {
+        synchronized(door) { accepting = false }
     }
 
     private fun loop() {
@@ -72,25 +85,41 @@ class WalkRecorder(
                 while (true) {
                     when (val item = queue.take()) {
                         Item.End -> break
-                        is Item.Frame -> {
-                            val encoded = FrameEncoder.encode(item.message)
-                            out.write(encoded)
-                            written.incrementAndGet()
-                            bytes.addAndGet(encoded.size.toLong())
-                            onProgress(progress)
-                        }
+                        is Item.Frame -> write(out, item.message)
                     }
                 }
             }
         } catch (unwritable: IOException) {
             // A full disk, or storage that went away. The frames written so far are a good
             // recording. Later ones are refused rather than queued for a file that can't take them.
-            accepting = false
             failure = unwritable.message ?: unwritable.javaClass.simpleName
-            queue.clear()
         } catch (interrupted: InterruptedException) {
             Thread.currentThread().interrupt()
+        } catch (unexpected: RuntimeException) {
+            // Nobody predicted this one. Not rethrown, because an uncaught exception here takes the
+            // whole app down, and the frames already written are still a good recording.
+            failure = "UNEXPECTED ${unexpected.javaClass.simpleName}, may need a handler: ${unexpected.message}"
+        } finally {
+            shut()
+            // Frames still queued when the writer stopped early were never written. Counted, not lost.
+            dropped.addAndGet(queue.count { it is Item.Frame })
+            queue.clear()
         }
+        onProgress(progress)
+    }
+
+    private fun write(out: BufferedOutputStream, message: DepthMessage) {
+        val encoded = try {
+            FrameEncoder.encode(message)
+        } catch (unencodable: JSONException) {
+            // A header value JSON can't hold, such as a NaN in the pose. Costs this frame only.
+            this.unencodable.incrementAndGet()
+            onProgress(progress)
+            return
+        }
+        out.write(encoded)
+        written.incrementAndGet()
+        bytes.addAndGet(encoded.size.toLong())
         onProgress(progress)
     }
 
@@ -101,10 +130,14 @@ class WalkRecorder(
     }
 }
 
-/** Frames written, frames dropped because the writer fell behind, bytes in the file, and why it stopped if it failed. */
+/**
+ * Frames written, frames dropped because the writer fell behind or stopped early, bytes in the
+ * file, why it stopped if it failed, and frames left out because they couldn't be encoded.
+ */
 data class RecordingProgress(
     val framesWritten: Int,
     val framesDropped: Int,
     val bytesWritten: Long,
     val failure: String?,
+    val framesUnencodable: Int,
 )

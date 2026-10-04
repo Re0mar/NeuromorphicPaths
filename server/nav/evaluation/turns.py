@@ -110,8 +110,10 @@ def detect_turns(track: WalkerTrack, config: EvaluationConfig) -> tuple[Turn, ..
     Find every place the heading changes past the threshold within the turn window.
 
     A window counts only when every sample in it is defined and in one piece, so it never spans a
-    standing pause or a track break. Overlapping windows of one sign merge into one turn. Windows of
-    opposite sign are separate turns, which is what an S-bend is.
+    standing pause or a track break. Overlapping windows of one sign merge into one interval, and
+    windows of opposite sign are separate, which is what an S-bend is. Each interval is then trimmed
+    to its largest change in its own direction, and starts no earlier than the previous turn's end,
+    so a turn's change always has its side's sign and onsets come in order.
 
     :param track: The walker's track.
     :param config: The turn window and threshold.
@@ -136,15 +138,33 @@ def detect_turns(track: WalkerTrack, config: EvaluationConfig) -> tuple[Turn, ..
             intervals.append([start, stop, sign])
 
     turns = []
+    previous_end = -1
     for start, stop, sign in intervals:
+        # A turn may not begin before the one before it ended. Windows of opposite sign can overlap,
+        # and an overlap scored one arrow window against both sides of the pair.
+        start = max(start, previous_end)
+        if stop <= start:
+            continue
+        # Trim to the turn itself: the largest change in the interval's own direction. The interval's
+        # endpoints can sit on a swing the other way, which once gave a right turn a net change of
+        # -3 degrees and an onset placed while the walker was swinging left.
+        oriented = sign * heading[start:stop + 1]
+        rises = oriented - np.minimum.accumulate(oriented)
+        peak = start + int(np.argmax(rises))
+        base = start + int(np.argmin(oriented[:peak - start + 1]))
+        change = float(heading[peak] - heading[base])
+        if abs(change) <= threshold:
+            # What's left after giving way to the turn before it is no longer a turn.
+            continue
         turns.append(
             Turn(
-                onset_seconds=turn_onset_seconds(track, start, stop),
-                end_seconds=float(track.times_seconds[stop]),
+                onset_seconds=turn_onset_seconds(track, base, peak),
+                end_seconds=float(track.times_seconds[peak]),
                 side=TurnSide.RIGHT if sign > 0 else TurnSide.LEFT,
-                change_radians=float(heading[stop] - heading[start]),
+                change_radians=change,
             )
         )
+        previous_end = peak
     return tuple(turns)
 
 

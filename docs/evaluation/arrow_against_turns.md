@@ -151,8 +151,9 @@ its code, and a test pins that call so a change to it is caught.
 
 **Old recordings, new settings.** `pixel_walk_3` and `pixel_display_run` were recorded before the
 phone sent its gravity flag, so the decoder supplies it. Every recording predates the seeded floor
-fit, so `floor_ransac_seed=0` and `floor_ransac_success_probability=0.99999999` are set by flag.
-Those are the defaults, and the probability is Open3D's own. `pixel_walk_3` predates the floor's
+fit. `pixel_walk_3` and `wifi_run_2` get `floor_ransac_seed=0` and
+`floor_ransac_success_probability=0.99999999` by flag, and `pixel_display_run` gets the same two from
+`--scene-defaults`. Those are the defaults, and the probability is Open3D's own. `pixel_walk_3` predates the floor's
 camera-height check, so `floor_max_offset_meters=inf` turns that check off, as its live run had none.
 `pixel_display_run` has no record of its scene settings, so it runs on today's defaults plus
 `floor_max_tilt_degrees=50`, the tilt in the documented live command.

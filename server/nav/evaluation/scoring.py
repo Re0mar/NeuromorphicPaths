@@ -45,7 +45,8 @@ class TurnScore:
     agreed: bool | None
     # None when it didn't agree, or the arrow had let go by onset.
     lead_seconds: float | None
-    # The lead ran into the cap or the previous turn's end, so it is "at least" this long.
+    # The lead ran into the cap, the previous turn's end, the start of the recording, or a stretch
+    # where the walker's heading was unknown, so it is "at least" this long.
     lead_at_limit: bool
 
 
@@ -85,7 +86,7 @@ class WalkSummary:
     by_tag: dict[TurnTag, ScoreSummary]
     sidesteps: int
     sidestep_seconds: float
-    # None when no walking was scored.
+    # Per minute of walking with an arrow to read. None when there was none.
     sidesteps_per_minute: float | None
 
 
@@ -146,7 +147,9 @@ def score_turn(
         return TurnScore(turn, tag, None, False, None, None, False)
 
     dead_band = np.radians(config.arrow_dead_band_degrees)
-    mean = float(np.mean(readable))
+    # A circular mean. A straight mean of +179 and -176 degrees is about 0, which would read an
+    # arrow pointing almost straight back as one saying carry on.
+    mean = float(np.arctan2(np.mean(np.sin(readable)), np.mean(np.cos(readable))))
     if abs(mean) <= dead_band:
         return TurnScore(turn, tag, None, True, False, None, False)
     side = TurnSide.RIGHT if mean > 0 else TurnSide.LEFT
@@ -170,19 +173,27 @@ def find_sidesteps(arrow: ArrowSeries, turns: tuple[Turn, ...], config: Evaluati
     times = arrow.times_seconds
     values = arrow.travel_frame_radians
     limit = np.radians(config.sidestep_min_degrees)
-    sides = np.where(np.isfinite(values) & (values > limit), 1, np.where(np.isfinite(values) & (values < -limit), -1, 0))
     step = float(times[1] - times[0]) if times.shape[0] > 1 else 0.0
+    defined = np.flatnonzero(np.isfinite(values))
+    # +1 for a lean right, -1 for a lean left, 0 for neither, over the defined samples only. An
+    # unknown stretch no longer than max_interpolation_gap_seconds doesn't end a lean, because one
+    # unknown sample in the middle would otherwise split one sidestep into two.
+    sides = np.where(values[defined] > limit, 1, np.where(values[defined] < -limit, -1, 0))
     sidesteps = []
     index = 0
-    while index < sides.shape[0]:
+    while index < defined.shape[0]:
         if sides[index] == 0:
             index += 1
             continue
         end = index
-        while end + 1 < sides.shape[0] and sides[end + 1] == sides[index]:
+        while (
+            end + 1 < defined.shape[0]
+            and sides[end + 1] == sides[index]
+            and times[defined[end + 1]] - times[defined[end]] <= config.max_interpolation_gap_seconds + 1e-9
+        ):
             end += 1
-        start_time, end_time = float(times[index]), float(times[end])
-        long_enough = (end - index + 1) * step >= config.sidestep_min_hold_seconds - 1e-9
+        start_time, end_time = float(times[defined[index]]), float(times[defined[end]])
+        long_enough = end_time - start_time + step >= config.sidestep_min_hold_seconds - 1e-9
         quiet_until = end_time + config.sidestep_quiet_seconds
         walker_turned = any(turn.onset_seconds <= quiet_until and turn.end_seconds >= start_time for turn in turns)
         if long_enough and not walker_turned:
@@ -228,13 +239,14 @@ def lagged_correlation(arrow: ArrowSeries, track: WalkerTrack, config: Evaluatio
     return LaggedCorrelation(lags, correlations, pair_counts, None, None)
 
 
-def summarize(scores: list[TurnScore], sidesteps: tuple[Sidestep, ...], scored_seconds: float) -> WalkSummary:
+def summarize(scores: list[TurnScore], sidesteps: tuple[Sidestep, ...], arrow_seconds: float) -> WalkSummary:
     """
     Count the scores per tag, keeping every unknown out of the medians and in its own count.
 
     :param scores: Every scored turn.
     :param sidesteps: Sidesteps while walking straight.
-    :param scored_seconds: How much walking had a defined heading.
+    :param arrow_seconds: How much walking had an arrow to read. Sidesteps can only happen there,
+        so the rate is per minute of that, and there is no rate without it.
     :return: The summary.
     :rtype: WalkSummary
     """
@@ -254,7 +266,7 @@ def summarize(scores: list[TurnScore], sidesteps: tuple[Sidestep, ...], scored_s
             leads_at_limit=sum(1 for score in tagged if score.lead_at_limit),
         )
     sidestep_seconds = float(sum(sidestep.end_seconds - sidestep.start_seconds for sidestep in sidesteps))
-    per_minute = len(sidesteps) / (scored_seconds / 60.0) if scored_seconds > 0 else None
+    per_minute = len(sidesteps) / (arrow_seconds / 60.0) if arrow_seconds > 0 else None
     return WalkSummary(by_tag, len(sidesteps), sidestep_seconds, per_minute)
 
 
@@ -285,12 +297,21 @@ def _lead(
         limit = max(limit, previous_turn_end_seconds)
     earliest = onset_index
     at_limit = False
-    while earliest - 1 >= 0 and on_side(earliest - 1):
-        if times[earliest - 1] < limit - 1e-9:
+    while True:
+        previous = earliest - 1
+        if previous < 0:
+            # The grid starts while the arrow is still on side, so the lead runs past what is recorded.
             at_limit = True
             break
-        earliest -= 1
-    if earliest == 0 and on_side(0) and times[0] >= limit - 1e-9:
-        # The grid starts while the arrow is still on side, so the lead runs past what is recorded.
-        at_limit = True
+        if times[previous] < limit - 1e-9:
+            at_limit = True
+            break
+        if not np.isfinite(values[previous]):
+            # Unknown, not let go. The walker's heading wasn't known there, so the arrow may have
+            # held on through it. The lead is at least this long, never exactly this long.
+            at_limit = True
+            break
+        if not on_side(previous):
+            break
+        earliest = previous
     return float(turn.onset_seconds - times[earliest]), at_limit

@@ -121,7 +121,10 @@ def test_height_changes_do_not_move_heading() -> None:
 def test_smoothing_keeps_a_real_turn() -> None:
     # The window trades noise for sharpness. This is the floor on the sharpness side.
     times, positions = walk(ramp(5.0, 1.5, 90.0), 12.0, noise_meters=POSE_JITTER_METERS, sway_meters=STRIDE_SWAY_METERS)
-    assert np.isfinite(walker_track(times, positions, EvaluationConfig()).heading_radians).mean() > 0.9
+    # Jitter and sway at the measured level never break the track. Only the half window at each end,
+    # where a full window doesn't fit, is unknown.
+    half_window = EvaluationConfig().steps(EvaluationConfig().heading_half_window_seconds) + 1
+    assert np.isfinite(walker_track(times, positions, EvaluationConfig()).heading_radians[half_window:-half_window]).all()
     track = walker_track(times, positions, EvaluationConfig())
     around = (track.times_seconds >= 4.75) & (track.times_seconds <= 7.75)
     span = np.degrees(np.nanmax(track.heading_radians[around]) - np.nanmin(track.heading_radians[around]))
@@ -257,3 +260,23 @@ def test_steps_on_whole_ratios() -> None:
     config = EvaluationConfig()
     assert config.steps(0.3) == 3
     assert config.steps(0.7) == 7
+
+
+# *******************************************
+# Piece ends
+# *******************************************
+
+
+def test_edges_of_a_piece_are_unknown_and_make_no_turn() -> None:
+    # A shrunk window at a piece's ends left its edge samples unsmoothed, and on a straight walk with
+    # the measured jitter and sway they swung by 6 to 11 degrees, enough to read as a turn on some
+    # lengths. A full window or nothing.
+    from nav.evaluation.turns import detect_turns
+    half_window = EvaluationConfig().steps(EvaluationConfig().heading_half_window_seconds)
+    for length_seconds in np.arange(20.0, 20.6, 0.05):
+        times, positions = walk(lambda time: 0.0, length_seconds, noise_meters=POSE_JITTER_METERS, sway_meters=STRIDE_SWAY_METERS, seed=3)
+        track = walker_track(times, positions, EvaluationConfig())
+        assert np.isnan(track.heading_radians[:half_window]).all()
+        assert np.isnan(track.heading_radians[-half_window:]).all()
+        assert np.isnan(track.turn_rate_radians_per_second[:half_window + 1]).all()
+        assert detect_turns(track, EvaluationConfig()) == (), f"a straight {length_seconds:.2f} s walk made a turn"

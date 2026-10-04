@@ -16,8 +16,14 @@ import kotlin.concurrent.thread
  * the replay with the count sent. It doesn't reconnect and carry on, because a walk with a hole
  * in the middle is a different walk. Replay again into a fresh directory instead.
  *
+ * After the last frame the phone closes its sending side and waits for the laptop to close back.
+ * The laptop closes only once it has read the end of the stream, so that close is the one sign
+ * every frame left the phone's send buffer and arrived.
+ *
  * @param openWalk Opens the recording. Called once, on the replay's own thread.
  * @param nanoTime A monotonic clock, for pacing. A parameter so a test can see what it does.
+ * @param confirmTimeoutMillis How long to wait for the laptop to close back after the last frame.
+ *   A laptop still working through a backlog of frames closes late, so this is generous.
  */
 class WalkReplayer(
     private val host: String,
@@ -25,6 +31,7 @@ class WalkReplayer(
     private val openWalk: () -> InputStream,
     private val onStatus: (ReplayStatus) -> Unit,
     private val nanoTime: () -> Long = System::nanoTime,
+    private val confirmTimeoutMillis: Long = DEFAULT_CONFIRM_TIMEOUT_MILLIS,
 ) {
     @Volatile private var running = false
     private var worker: Thread? = null
@@ -78,7 +85,8 @@ class WalkReplayer(
                         onStatus(ReplayStatus.Failed("stopped before the end", sent))
                         return
                     }
-                    onStatus(ReplayStatus.Finished(sent, reader.truncatedBytes))
+                    socket.shutdownOutput()
+                    onStatus(ReplayStatus.Finished(sent, reader.truncatedBytes, laptopClosedBack(socket, input)))
                 }
             }
         } catch (interrupted: InterruptedException) {
@@ -103,10 +111,38 @@ class WalkReplayer(
         false
     }
 
+    /**
+     * Whether the laptop closed its side cleanly once it had read everything. Waits in short slices
+     * so stop() still ends the wait promptly.
+     */
+    private fun laptopClosedBack(socket: Socket, input: InputStream): Boolean {
+        val deadline = System.nanoTime() + confirmTimeoutMillis * NANOS_PER_MILLI
+        while (running) {
+            val remainingMillis = (deadline - System.nanoTime()) / NANOS_PER_MILLI
+            if (remainingMillis <= 0) return false
+            socket.soTimeout = minOf(remainingMillis, CONFIRM_SLICE_MILLIS).toInt().coerceAtLeast(1)
+            try {
+                // The end of the stream is the clean close. A byte is something this side never
+                // asked for, so it confirms nothing.
+                return input.read() == END_OF_STREAM
+            } catch (stillOpen: SocketTimeoutException) {
+                continue
+            } catch (reset: IOException) {
+                // A reset rather than a close means the laptop dropped the connection with bytes
+                // still unread, so it did not get everything.
+                return false
+            }
+        }
+        return false
+    }
+
     private companion object {
         const val CONNECT_TIMEOUT_MILLIS = 3_000
         // The probe waits this long for a byte that should never come. Short against a frame interval.
         const val PEER_PROBE_MILLIS = 2
+        const val DEFAULT_CONFIRM_TIMEOUT_MILLIS = 30_000L
+        const val CONFIRM_SLICE_MILLIS = 100L
+        const val END_OF_STREAM = -1
         const val NANOS_PER_SECOND = 1_000_000_000.0
         const val NANOS_PER_MILLI = 1_000_000L
     }
@@ -118,7 +154,8 @@ sealed interface ReplayStatus {
 
     data class Replaying(val host: String, val port: Int, val framesSent: Int) : ReplayStatus
 
-    data class Finished(val framesSent: Int, val truncatedBytes: Int) : ReplayStatus
+    /** Every frame was sent. [laptopConfirmed] says whether the laptop then closed back, having read them all. */
+    data class Finished(val framesSent: Int, val truncatedBytes: Int, val laptopConfirmed: Boolean) : ReplayStatus
 
     data class Failed(val reason: String, val framesSent: Int) : ReplayStatus
 }

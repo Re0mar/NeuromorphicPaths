@@ -16,7 +16,7 @@ import pytest
 # Local package imports
 import nav.evaluation
 from nav.evaluation.config import EvaluationConfig
-from nav.evaluation.track import walker_track
+from nav.evaluation.track import WalkerTrack, walker_track
 from nav.evaluation.turns import (
     Turn,
     TurnSide,
@@ -109,14 +109,21 @@ def test_turn_made_while_stopped_is_not_scored() -> None:
     assert detect_turns(walker_track(times, positions, EvaluationConfig()), EvaluationConfig()) == ()
 
 
-def test_window_across_a_standing_pause_is_not_a_turn() -> None:
+def test_heading_stays_continuous_across_a_stand() -> None:
+    # A full loop first, so the heading before the stand is already past 360 degrees. Without the
+    # alignment across the stand, the heading after it would restart from its raw angle, 360 lower.
     times, positions = walk(
-        lambda time: 0.0,
-        14.0,
-        speed_mps_at=lambda time: 0.15 if 5.0 <= time < 8.0 else WALKING_SPEED_MPS,
+        ramp(1.0, 8.0, 450.0),
+        20.0,
+        speed_mps_at=lambda time: 0.15 if 12.0 <= time < 15.0 else WALKING_SPEED_MPS,
         noise_meters=POSE_JITTER_METERS,
     )
-    assert detect_turns(walker_track(times, positions, EvaluationConfig()), EvaluationConfig()) == ()
+    track = walker_track(times, positions, EvaluationConfig())
+    before = np.degrees(track.heading_radians[np.argmin(np.abs(track.times_seconds - 11.0))])
+    after = np.degrees(track.heading_radians[np.argmin(np.abs(track.times_seconds - 17.0))])
+    assert before == pytest.approx(450.0, abs=5.0)
+    assert after == pytest.approx(before, abs=5.0)
+    assert detect_turns(track, EvaluationConfig())[-1].end_seconds < 12.0
 
 
 # *******************************************
@@ -285,3 +292,77 @@ def test_turn_threshold_matches_its_record() -> None:
     assert EvaluationConfig().turn_threshold_degrees == 11.0
     assert "the 99th percentile of heading change over 2 s on straight walking, 10.39" in source
     assert "TEMPORARY" not in source
+
+
+# *******************************************
+# Turns that swing back, and their order
+# *******************************************
+
+
+def test_turn_change_has_its_side_and_onsets_come_in_order() -> None:
+    # Right 30, straight into left 45, then a later right 40. The first interval's end sits on the
+    # swing left, which once gave a right turn a net change of the wrong sign.
+    heading = turns_in_sequence((3.0, 1.0, 30.0), (4.0, 1.5, -45.0), (10.0, 1.5, 40.0))
+    times, positions = walk(heading, 15.0, noise_meters=POSE_JITTER_METERS)
+    turns = detect_turns(walker_track(times, positions, EvaluationConfig()), EvaluationConfig())
+    assert [turn.side for turn in turns] == [TurnSide.RIGHT, TurnSide.LEFT, TurnSide.RIGHT]
+    for turn in turns:
+        assert (turn.change_radians > 0) == (turn.side == TurnSide.RIGHT), turn
+        assert turn.end_seconds >= turn.onset_seconds
+    for earlier, later in zip(turns, turns[1:]):
+        assert later.onset_seconds >= earlier.end_seconds, (earlier, later)
+    # The first two turns meet with no straight between them, so the 1 s smoothing window rounds the
+    # corner and both read smaller than walked, by about a quarter of the window times the rate.
+    first, second, third = np.degrees([turn.change_radians for turn in turns])
+    assert 18.0 < first <= 30.0
+    assert -45.0 <= second < -33.0
+    assert third == pytest.approx(40.0, abs=4.0)
+
+
+def heading_track(legs: list[tuple[float, float]], step_seconds: float = 0.1) -> WalkerTrack:
+    """
+    A track straight from a heading, with no positions or smoothing in between. Each leg turns by
+    its degrees at a steady rate over its seconds, with 3 s of straight walking before and after.
+    """
+    rates = [0.0] * 30
+    for seconds, degrees in legs:
+        samples = int(round(seconds / step_seconds))
+        rates += [degrees / samples] * samples
+    rates += [0.0] * 30
+    heading = np.radians(np.concatenate([[0.0], np.cumsum(rates)]))
+    count = heading.shape[0]
+    return WalkerTrack(
+        times_seconds=np.arange(count) * step_seconds,
+        positions_floor_meters=np.zeros((count, 3)),
+        heading_radians=heading,
+        turn_rate_radians_per_second=np.gradient(heading, step_seconds),
+        speed_mps=np.ones(count),
+        piece_index=np.zeros(count, dtype=int),
+        duplicates_dropped=0,
+        samples_too_slow=0,
+        breaks_for_jumps=0,
+        breaks_for_gaps=0,
+        poses_without_position=0,
+    )
+
+
+def test_zig_zag_inside_one_window_still_gives_turns_in_order() -> None:
+    # Four 0.4 s legs fit inside one 2 s turn window, so which of them come out as turns is the
+    # window's call. What must hold either way: no turn starts before the one before it ended.
+    track = heading_track([(0.4, -15.0), (0.4, 25.0), (0.4, -25.0), (0.4, 15.0)])
+    turns = detect_turns(track, EvaluationConfig())
+    assert turns
+    for turn in turns:
+        assert (turn.change_radians > 0) == (turn.side == TurnSide.RIGHT), turn
+    for earlier, later in zip(turns, turns[1:]):
+        assert later.onset_seconds >= earlier.end_seconds, (earlier, later)
+
+
+def test_obstacle_seen_only_after_onset_does_not_tag_the_turn() -> None:
+    times, positions, track = straight_track()
+    frames = [
+        phone_frame(time, position, 0.0, (obstacle(0.0, 1.5),) if time > 6.0 else ())
+        for time, position in zip(times, positions)
+        if 4.0 <= time <= 8.0
+    ]
+    assert tag_turn(turn_at(6.0), track, frames, EvaluationConfig()) == TurnTag.OPEN_AHEAD

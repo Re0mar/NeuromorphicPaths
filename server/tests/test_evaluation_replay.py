@@ -9,6 +9,8 @@ recordings supply their floor, so the scene never fits one by RANSAC and every r
 import ast
 import dataclasses
 import json
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -20,11 +22,14 @@ import pytest
 
 # Local package imports
 import nav.evaluation
+import nav.evaluation.replay as replay_module
 from nav.evaluation.__main__ import main
 from nav.evaluation.config import EvaluationConfig
 from nav.evaluation.overrides import OverrideRefused, apply_overrides
 from nav.evaluation.replay import (
+    DEFAULT_CACHE_DIR,
     NAV_DIR,
+    cache_key,
     clone_state,
     evaluate_walk,
     planner_pass,
@@ -32,6 +37,7 @@ from nav.evaluation.replay import (
     segment_bounds,
 )
 from nav.evaluation.track import floor_heading_radians
+from nav.evaluation.turns import TurnTag
 from nav.planner.config import GoalMode, PlannerConfig
 from nav.planner.pipeline import PlannerPipeline
 from nav.scene.config import SceneConfig
@@ -116,7 +122,7 @@ def test_cache_payload_loads_in_a_fresh_process(recording: Path, tmp_path: Path)
     (cache_file,) = tmp_path.glob("*.pkl")
     script = (
         "import pickle, sys\n"
-        "times, positions, rows, refused = pickle.load(open(sys.argv[1], 'rb'))\n"
+        "times, positions, rows, refused, reasons = pickle.load(open(sys.argv[1], 'rb'))\n"
         "print(len(rows), type(rows[0][1]).__name__)\n"
     )
     completed = subprocess.run([sys.executable, "-c", script, str(cache_file)], capture_output=True, text=True)
@@ -333,3 +339,127 @@ def test_refused_scene_frames_are_counted(tmp_path: Path, capsys) -> None:
     code, out, _ = run([late_floor, "--passes", "1"], capsys)
     assert code == 0
     assert "refused by the scene 10" in out
+
+
+# *******************************************
+# Found by the final review
+# *******************************************
+
+
+def test_run_config_that_isnt_json_is_refused(recording: Path, tmp_path: Path, capsys) -> None:
+    broken = tmp_path / "broken_config"
+    shutil.copytree(recording, broken)
+    (broken / "run_config.json").write_bytes(b"{scene: nope\n")
+    code, _, err = run([broken, "--passes", "1"], capsys)
+    assert code == 1
+    assert "RecordingRefused" in err and "not valid JSON" in err
+
+
+def test_unknown_goal_mode_is_refused(recording: Path, tmp_path: Path, capsys) -> None:
+    sideways = tmp_path / "sideways"
+    shutil.copytree(recording, sideways)
+    content = json.loads((sideways / "run_config.json").read_text(encoding="utf-8"))
+    content["goal_mode"] = "sideways"
+    (sideways / "run_config.json").write_bytes(json.dumps(content).encode("utf-8"))
+    code, _, err = run([sideways, "--passes", "1"], capsys)
+    assert code == 1
+    assert "sideways" in err
+
+
+def test_an_edited_frame_misses_the_cache(recording: Path, tmp_path: Path) -> None:
+    copy = tmp_path / "copy"
+    shutil.copytree(recording, copy)
+    cache = tmp_path / "cache"
+    scene_pass(copy, SceneConfig(), WalkerConfig(), cache)
+    assert scene_pass(copy, SceneConfig(), WalkerConfig(), cache).cache_state.startswith("hit")
+    frame = copy / "frame_000010.bin"
+    stat = frame.stat()
+    os.utime(frame, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    assert scene_pass(copy, SceneConfig(), WalkerConfig(), cache).cache_state.startswith("miss")
+
+
+def test_an_unreadable_cache_entry_is_rebuilt(recording: Path, tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / f"{cache_key(recording, SceneConfig(), WalkerConfig())}.pkl").write_bytes(b"half a pickle")
+    rebuilt = scene_pass(recording, SceneConfig(), WalkerConfig(), cache)
+    assert rebuilt.cache_state.startswith("miss") and "unreadable" in rebuilt.cache_state
+    assert scene_pass(recording, SceneConfig(), WalkerConfig(), cache).cache_state.startswith("hit")
+    assert not list(cache.glob("*.partial"))
+
+
+def test_default_cache_dir_is_beside_the_server_code(tmp_path: Path, monkeypatch) -> None:
+    from nav.evaluation.__main__ import parse_arguments
+    monkeypatch.chdir(tmp_path)
+    arguments = parse_arguments(["somewhere"])
+    assert arguments.cache_dir == DEFAULT_CACHE_DIR
+    assert DEFAULT_CACHE_DIR == NAV_DIR.parent / ".replay_cache"
+
+
+def swaying_recording(directory: Path) -> Path:
+    # 70 s of straight walking with a 5 degree heading sway at 0.2 Hz. Its 2 s changes sit near 8.75
+    # degrees, past the 5 degree dead band and under half the 25 degree cap, so every rule passes.
+    return write_recording(directory, lambda time: 5.0 * np.sin(2.0 * np.pi * 0.2 * time), 70.0, write_run_config=False)
+
+
+def test_spread_rules_each_refuse_by_name(tmp_path: Path, capsys) -> None:
+    sway = swaying_recording(tmp_path / "sway")
+    code, out, _ = run(["--spread-only", sway], capsys)
+    assert code == 0, out
+    assert "Threshold: " in out and "not set" not in out
+    code, out, _ = run(["--spread-only", sway, "--eval-set", "max_spread_share_of_cap=0.1"], capsys)
+    assert code == 3
+    assert "so the cap set it" in out
+    code, out, _ = run(["--spread-only", sway, "--eval-set", "arrow_dead_band_degrees=20"], capsys)
+    assert code == 3
+    assert "inside the arrow's dead band" in out
+
+
+def test_zero_passes_is_a_usage_error(recording: Path) -> None:
+    with pytest.raises(SystemExit) as exited:
+        main([str(recording), "--passes", "0"])
+    assert exited.value.code == 2
+
+
+def test_a_field_overrides_cant_set_is_refused() -> None:
+    @dataclasses.dataclass(frozen=True)
+    class Holder:
+        label: str = "plain"
+
+    with pytest.raises(OverrideRefused, match="can't set"):
+        apply_overrides(Holder(), ["label=fancy"])
+
+
+def test_no_arrow_before_any_turn_exits_3(tmp_path: Path, capsys) -> None:
+    # The scene refuses every frame, so the walk has turns and no arrow. That is nothing scored, not
+    # a walk where the arrow never sidestepped.
+    blind = write_recording(tmp_path / "blind", TWO_TURNS, WALK_SECONDS, floorless_until_seconds=WALK_SECONDS)
+    code, out, err = run([blind, "--passes", "1"], capsys)
+    assert code == 3
+    assert "no turn had an arrow" in err
+    assert "per minute unknown" in out
+    # Every frame was refused, so the report says why rather than only how many.
+    assert re.search(r"\n  - \d+ refused: \S", out), out
+
+
+def test_tags_are_recomputed_on_every_pass(recording: Path, monkeypatch) -> None:
+    # The second pass sees no obstacles. If tags were taken from the first pass only, both passes
+    # would report the same tags.
+    real_scene_pass = replay_module.scene_pass
+    calls = []
+
+    def scene_pass_that_loses_its_obstacles(*arguments, **keywords):
+        result = real_scene_pass(*arguments, **keywords)
+        calls.append(result)
+        if len(calls) == 1:
+            return result
+        empty = [dataclasses.replace(row, obstacles=dataclasses.replace(row.obstacles, points=(), groups_in_view=0)) for row in result.planned]
+        return dataclasses.replace(result, planned=empty)
+
+    monkeypatch.setattr(replay_module, "scene_pass", scene_pass_that_loses_its_obstacles)
+    # The synthetic camera is pitched for a 1.6 m height, so the walker's line is in view from 2 m.
+    config = dataclasses.replace(EvaluationConfig(), view_check_near_meters=2.0)
+    result = evaluate_walk(recording, SceneConfig(), "test", PlannerConfig(), config, 2, None)
+    first, second = (result_pass.tag_counts for result_pass in result.passes)
+    assert first[TurnTag.OBSTACLE_AHEAD] > 0
+    assert second[TurnTag.OBSTACLE_AHEAD] == 0

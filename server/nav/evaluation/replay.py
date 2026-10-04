@@ -6,14 +6,16 @@ one planner run across the whole log, as a live run does, and each planned frame
 `plan` call the loop makes. The scene is built from the recording's own `run_config.json`, so a replay
 sees the floor the live run saw.
 
-The scene pass is the slow part, minutes per walk, and is cached. Its floor fit is an unseeded RANSAC,
-so a cached pass is one realization. Verdicts come from several cold passes.
+The scene pass is the slow part, minutes per walk, and can be cached. The floor fit is seeded, so a
+cold pass repeats. Verdicts still come from several cold passes, because their agreeing is the
+evidence that it still does.
 """
 
 # Standard library imports
 import dataclasses
 import hashlib
 import json
+import os
 import pickle
 import subprocess
 from dataclasses import dataclass
@@ -55,7 +57,12 @@ from nav.walker import WalkerConfig
 NAV_DIR = Path(nav.__file__).resolve().parent
 CLONE_DIR = NAV_DIR.parent.parent
 # Bumped whenever the pickled layout changes, so an old cache entry is rebuilt rather than misread.
-CACHE_FORMAT = "cache-format-1"
+CACHE_FORMAT = "cache-format-2"
+# Beside the server code, not in whatever folder the command happens to run from, so it always lands
+# where .gitignore covers it.
+DEFAULT_CACHE_DIR = NAV_DIR.parent / ".replay_cache"
+# Kept per walk. Beyond this many distinct reasons the rest are counted under one line.
+MAX_REFUSAL_REASONS = 5
 # The modules whose code decides what a scene pass produces. Changing any of them changes the key.
 SCENE_PASS_SOURCES = (
     "scene/*.py",
@@ -99,6 +106,9 @@ class ScenePass:
     pose_positions_world: np.ndarray
     planned: list[PlannedScene]
     refused_frames: int
+    # Why the scene refused frames, each reason with how many it refused. A refusal is expected on a
+    # frame with no floor, and the reasons are what tells that apart from a defect in the scene.
+    refusal_reasons: dict[str, int]
     cache_state: str
 
 
@@ -129,6 +139,7 @@ class WalkResult:
     frames: int
     planned_frames: int
     refused_frames: int
+    refusal_reasons: dict[str, int]
     all_segments: list[tuple[float, float]]
     segments: list[SegmentTrack]
     spread: StraightSpread
@@ -229,15 +240,23 @@ def scene_pass(log_dir: Path, scene_config: SceneConfig, walker: WalkerConfig, c
     key = cache_key(log_dir, scene_config, walker) if cache_dir is not None else None
     cache_file = None if cache_dir is None else Path(cache_dir) / f"{key}.pkl"
     if cache_file is not None and cache_file.is_file():
-        with open(cache_file, "rb") as handle:
-            times, positions, rows, refused = pickle.load(handle)
-        return ScenePass(times, positions, [PlannedScene(*row) for row in rows], refused, f"hit {key} in {cache_dir}")
+        try:
+            with open(cache_file, "rb") as handle:
+                times, positions, rows, refused, reasons = pickle.load(handle)
+            return ScenePass(times, positions, [PlannedScene(*row) for row in rows], refused, reasons, f"hit {key} in {cache_dir}")
+        except (pickle.UnpicklingError, EOFError, ValueError, TypeError) as unreadable:
+            # A damaged or foreign entry. Rebuilt below like a miss, rather than failing every
+            # cached run until somebody deletes it.
+            stale_note = f", an unreadable entry ({type(unreadable).__name__}) was rebuilt"
+    else:
+        stale_note = ""
 
     scene = ScenePipeline(scene_config, walker)
     times: list[float] = []
     positions: list[np.ndarray] = []
     planned: list[PlannedScene] = []
     refused = 0
+    reasons: dict[str, int] = {}
     for frame in LoggedDepthFrameSource(log_dir).frames():
         if not frame.pose.orientation_is_gravity_aligned:
             raise RecordingRefused(
@@ -248,11 +267,16 @@ def scene_pass(log_dir: Path, scene_config: SceneConfig, walker: WalkerConfig, c
         positions.append(np.asarray(frame.pose.position, dtype=np.float64) if frame.pose.has_position else np.full(3, np.nan))
         try:
             obstacles = scene.process(frame)
-        except ValueError:
+        except ValueError as degenerate_error:
             # A frame the scene could not use, such as one with no floor and no previous plane.
             # Expected at the start of a run and on a camera pointed at nothing. Costs this
             # frame and the replay continues, as the live worker does.
             refused += 1
+            reason = str(degenerate_error) or type(degenerate_error).__name__
+            if reason in reasons or len(reasons) < MAX_REFUSAL_REASONS:
+                reasons[reason] = reasons.get(reason, 0) + 1
+            else:
+                reasons["other reasons"] = reasons.get("other reasons", 0) + 1
             continue
         origin = lateral_axis = forward_axis = camera_position = camera_rotation = floor_world = None
         if frame.pose.has_position and scene.previous_plane is not None:
@@ -283,14 +307,18 @@ def scene_pass(log_dir: Path, scene_config: SceneConfig, walker: WalkerConfig, c
     time_array = np.asarray(times, dtype=np.float64)
     position_array = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
     if cache_file is None:
-        return ScenePass(time_array, position_array, planned, refused, "cold")
+        return ScenePass(time_array, position_array, planned, refused, reasons, "cold")
     cache_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(cache_file, "wb") as handle:
+    # Written beside the entry and renamed into place, so an interrupted run never leaves a
+    # half-written entry under the real name.
+    partial = cache_file.with_name(cache_file.name + ".partial")
+    with open(partial, "wb") as handle:
         # Plain tuples of plain values and nav.types instances, never PlannedScene itself, so the file
         # loads in any process. astuple would also flatten the nav.types instances, so it isn't used.
         rows = [tuple(getattr(row, field.name) for field in dataclasses.fields(PlannedScene)) for row in planned]
-        pickle.dump((time_array, position_array, rows, refused), handle)
-    return ScenePass(time_array, position_array, planned, refused, f"miss {key}, written to {cache_dir}")
+        pickle.dump((time_array, position_array, rows, refused, reasons), handle)
+    os.replace(partial, cache_file)
+    return ScenePass(time_array, position_array, planned, refused, reasons, f"miss {key}, written to {cache_dir}{stale_note}")
 
 
 def cache_key(log_dir: Path, scene_config: SceneConfig, walker: WalkerConfig) -> str:
@@ -368,16 +396,18 @@ def segment_tracks(scene: ScenePass, config: EvaluationConfig) -> tuple[list[tup
     return all_segments, tracks
 
 
-def score_pass(segments: list[SegmentTrack], frames: list[PlannedFrame], scored_seconds: float, config: EvaluationConfig) -> PassResult:
+def score_pass(segments: list[SegmentTrack], frames: list[PlannedFrame], config: EvaluationConfig) -> PassResult:
     """Score one pass's arrow on every kept segment of a walk."""
     scores: list[TurnScore] = []
     sidesteps = []
     correlations = []
     offsets = []
     tag_counts = {tag: 0 for tag in TurnTag}
+    arrow_seconds = 0.0
     for segment in segments:
         inside = [frame for frame in frames if segment.start_seconds <= frame.timestamp_seconds <= segment.end_seconds]
         arrow = arrow_in_travel_frame(inside, segment.track, config)
+        arrow_seconds += float(np.count_nonzero(np.isfinite(arrow.travel_frame_radians))) * config.resample_step_seconds
         previous_end = None
         for turn in segment.turns:
             tag = tag_turn(turn, segment.track, inside, config)
@@ -388,7 +418,7 @@ def score_pass(segments: list[SegmentTrack], frames: list[PlannedFrame], scored_
         correlations.append(lagged_correlation(arrow, segment.track, config))
         offsets.append(arrow.phone_offset_radians[np.isfinite(arrow.phone_offset_radians)])
     return PassResult(
-        summary=summarize(scores, tuple(sidesteps), scored_seconds),
+        summary=summarize(scores, tuple(sidesteps), arrow_seconds),
         tag_counts=tag_counts,
         correlations=correlations,
         phone_offsets_radians=np.concatenate(offsets) if offsets else np.zeros(0),
@@ -428,7 +458,7 @@ def evaluate_walk(
             defined = sum(int(np.count_nonzero(np.isfinite(segment.track.heading_radians))) for segment in segments)
             scored_seconds = defined * config.resample_step_seconds
         frames = planner_pass(scene, planner_config, walker, goal_mode)
-        pass_results.append(score_pass(segments, frames, scored_seconds, config))
+        pass_results.append(score_pass(segments, frames, config))
     spreads = [straight_stretch_spread(segment.track, config) for segment in segments]
     return WalkResult(
         name=Path(log_dir).name,
@@ -437,6 +467,7 @@ def evaluate_walk(
         frames=int(first.pose_times_seconds.shape[0]),
         planned_frames=len(first.planned),
         refused_frames=first.refused_frames,
+        refusal_reasons=first.refusal_reasons,
         all_segments=all_segments,
         segments=segments,
         spread=_pool_spreads(spreads, config),

@@ -8,7 +8,9 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
+import kotlin.concurrent.thread
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -59,7 +61,7 @@ class WalkRecorderTest {
         val messages = readBack(file.toByteArray())
         assertEquals(stamps, messages.map { it.timestampSeconds })
         assertContentEquals(FrameEncoder.encode(message(stamps[7])), messages[7].wireBytes)
-        assertEquals(RecordingProgress(50, 0, file.size().toLong(), null), recorder.progress)
+        assertEquals(RecordingProgress(50, 0, file.size().toLong(), null, 0), recorder.progress)
     }
 
     @Test
@@ -111,5 +113,68 @@ class WalkRecorderTest {
         val failure = recorder.progress.failure
         assertNotNull(failure)
         assertTrue(failure.contains("no space left"), failure)
+    }
+
+    @Test
+    fun aFrameThatWontEncodeCostsOnlyItself() {
+        val file = ByteArrayOutputStream()
+        val recorder = WalkRecorder(file)
+        recorder.start()
+        recorder.offer(message(1.0))
+        // JSON has no NaN, so this header can't be written.
+        recorder.offer(message(Double.NaN))
+        recorder.offer(message(2.0))
+        recorder.stop()
+        assertEquals(listOf(1.0, 2.0), readBack(file.toByteArray()).map { it.timestampSeconds })
+        assertEquals(1, recorder.progress.framesUnencodable)
+        assertEquals(0, recorder.progress.framesDropped)
+        assertEquals(null, recorder.progress.failure)
+    }
+
+    @Test
+    fun anUnexpectedFailureEndsTheRecordingAndStopStillReturns() {
+        val broken = object : OutputStream() {
+            override fun write(byte: Int) = throw IllegalStateException("storage driver gave up")
+            override fun write(buffer: ByteArray, offset: Int, length: Int) = throw IllegalStateException("storage driver gave up")
+        }
+        // The last progress call carries the failure, and comes once the writer has finished dying.
+        val writerGone = CountDownLatch(1)
+        val recorder = WalkRecorder(broken, onProgress = { if (it.failure != null) writerGone.countDown() }, capacityFrames = 2)
+        recorder.start()
+        recorder.offer(largeMessage(0.0))
+        assertTrue(writerGone.await(5, TimeUnit.SECONDS), "the writer never failed")
+        val afterFailure = recorder.progress
+        // More than the queue holds. A dead writer that kept accepting would fill it, and stop()
+        // would then wait forever for room for its end marker.
+        repeat(10) { recorder.offer(largeMessage(1.0 + it)) }
+        assertEquals(afterFailure, recorder.progress)
+        val stopper = thread { recorder.stop() }
+        stopper.join(5_000)
+        assertFalse(stopper.isAlive, "stop() is still waiting on a writer that died")
+        val failure = recorder.progress.failure
+        assertNotNull(failure)
+        assertTrue(failure.startsWith("UNEXPECTED IllegalStateException") && failure.contains("storage driver gave up"), failure)
+    }
+
+    @Test
+    fun framesQueuedWhenWritingFailsAreCountedAsDropped() {
+        val held = HeldOutput(object : OutputStream() {
+            override fun write(byte: Int) = throw IOException("no space left on device")
+            override fun write(buffer: ByteArray, offset: Int, length: Int) = throw IOException("no space left on device")
+        })
+        val recorder = WalkRecorder(held, capacityFrames = 3)
+        recorder.start()
+        recorder.offer(largeMessage(0.0))
+        assertTrue(held.firstWriteStarted.await(5, TimeUnit.SECONDS), "the writer never reached the file")
+        // Exactly full when the write fails, so stop() only finds room for its end marker if the
+        // dying writer emptied the queue.
+        repeat(3) { recorder.offer(largeMessage(1.0 + it)) }
+        held.release.countDown()
+        val stopper = thread { recorder.stop() }
+        stopper.join(5_000)
+        assertFalse(stopper.isAlive, "stop() is waiting for room in a queue nobody will empty")
+        // The three queued behind the failed write never reach the file, and the count says so.
+        assertEquals(3, recorder.progress.framesDropped)
+        assertEquals(0, recorder.progress.framesWritten)
     }
 }

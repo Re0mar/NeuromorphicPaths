@@ -26,8 +26,8 @@ class EvaluationConfig:
     heading_half_window_seconds: float = 0.5
     # Below this the walker is standing, and which way they face says nothing about where they go.
     min_walking_speed_mps: float = 0.3
-    # Faster than any walker. A step this fast is the tracker relocalizing. ARCore jumped 11 times
-    # inside pixel_walk_3's segments, once by 17.48 m in 0.033 s.
+    # Faster than any walker. A step this fast is the tracker relocalizing. pixel_walk_3 has 11
+    # steps over this speed across all its segments, one of them 17.48 m in 0.033 s.
     max_plausible_step_speed_mps: float = 3.0
     # A hole in the pose stream longer than this breaks the track rather than being filled with
     # invented straight walking. pixel_display_run has a 4.61 s one.
@@ -51,7 +51,7 @@ class EvaluationConfig:
     # Measured 2026-10-03: the 99th percentile of heading change over 2 s on straight walking, 10.39
     # deg, rounded up. From straight_walk_4, a 68 s walk recorded on the phone for this purpose, with
     # 62.5 s of straight walking over 585 windows and 605 change samples. The 50th and 95th
-    # percentiles were 1.71 and 6.96 deg. Reproduce with:
+    # percentiles were 1.72 and 6.96 deg. Reproduce with:
     #   python -m nav.evaluation --spread-only frame_logs/straight_walk_4
     # The three scored walks couldn't set it. They hold under 41 s of straight walking between them,
     # because they loop around rooms.

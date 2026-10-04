@@ -7,10 +7,11 @@ Run from server/ with its venv:
     python -m nav.evaluation frame_logs/pixel_display_run --scene-defaults --scene-set floor_max_tilt_degrees=50
     python -m nav.evaluation --spread-only frame_logs/pixel_walk_3 frame_logs/wifi_run_2
 
-A plain run takes three cold scene passes, because the scene's floor fit doesn't repeat and one pass is
-one realization. --cached takes one pass through the cache, for iterating.
+A plain run takes three cold scene passes. The floor fit is seeded, so they should agree, and their
+agreeing is the evidence. --cached takes one pass through the cache, for iterating.
 
-Exit codes: 0 scored, 1 a recording or an override refused, 2 a usage error, 3 nothing to score.
+Exit codes: 0 scored, 1 a recording or an override refused, 2 a usage error, 3 nothing to score,
+which includes turns with no arrow to read before any of them.
 """
 
 # Standard library imports
@@ -22,6 +23,7 @@ from pathlib import Path
 from nav.evaluation.config import EvaluationConfig
 from nav.evaluation.overrides import OverrideRefused, apply_overrides
 from nav.evaluation.replay import (
+    DEFAULT_CACHE_DIR,
     RecordingRefused,
     clone_state,
     evaluate_walk,
@@ -44,7 +46,7 @@ def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("log_dirs", type=Path, nargs="+", help="frame logs written by --record-to")
     parser.add_argument("--passes", type=int, default=None, help=f"cold scene passes per walk, {DEFAULT_PASSES} by default")
     parser.add_argument("--cached", action="store_true", help="one scene pass through the cache, for iterating, not for a verdict")
-    parser.add_argument("--cache-dir", type=Path, default=Path(".replay_cache"), help="where cached scene passes live")
+    parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR, help="where cached scene passes live, server/.replay_cache by default")
     parser.add_argument("--scene-defaults", action="store_true", help="today's scene defaults, for a recording with no run_config.json")
     parser.add_argument("--scene-set", action="append", default=[], metavar="FIELD=VALUE", help="override a SceneConfig field")
     parser.add_argument("--set", dest="planner_set", action="append", default=[], metavar="FIELD=VALUE", help="override a PlannerConfig field")
@@ -95,6 +97,11 @@ def _run(arguments: argparse.Namespace) -> int:
         return EXIT_NOTHING_SCORED
     if not any(segment.turns for result in results for segment in result.segments):
         print("nothing scored: no turn was found in any kept segment", file=sys.stderr)
+        return EXIT_NOTHING_SCORED
+    if not any(score.arrow_read for result in results for result_pass in result.passes for score in result_pass.scores):
+        # Turns, but no arrow before any of them, say a scene that refused every frame. Reporting
+        # that as a scored walk would turn "no arrow" into "the arrow never sidestepped".
+        print("nothing scored: no turn had an arrow to read before it", file=sys.stderr)
         return EXIT_NOTHING_SCORED
     return EXIT_SCORED
 

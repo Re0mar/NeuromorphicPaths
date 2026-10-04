@@ -19,7 +19,7 @@ the arrow before each one. also counts sidesteps while walking straight, and a l
 
 ## run it
 
-from `server/`. Git Bash:
+from the repo root. Git Bash:
 
 ```bash
 cd server

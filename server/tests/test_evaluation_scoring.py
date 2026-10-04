@@ -7,6 +7,7 @@ come from arithmetic on those arrows, never from what the code printed.
 
 # Standard library imports
 import ast
+import dataclasses
 from pathlib import Path
 
 # Third party imports
@@ -17,6 +18,8 @@ import pytest
 import nav.evaluation
 from nav.evaluation.config import EvaluationConfig
 from nav.evaluation.scoring import (
+    ArrowSeries,
+    Sidestep,
     TurnScore,
     arrow_in_travel_frame,
     find_sidesteps,
@@ -24,7 +27,7 @@ from nav.evaluation.scoring import (
     score_turn,
     summarize,
 )
-from nav.evaluation.track import walker_track
+from nav.evaluation.track import WalkerTrack, walker_track
 from nav.evaluation.turns import Turn, TurnSide, TurnTag
 from synthetic_walks import phone_frame, ramp, walk
 
@@ -117,10 +120,12 @@ def test_lead_stops_at_cap_and_at_previous_turn() -> None:
 
 
 def test_lead_back_to_the_start_of_the_recording_is_at_least() -> None:
-    # Leaning from the first frame: the lead runs past what was recorded, so it is a floor, not a value.
+    # Leaning from the first frame: the lead runs back past where the walker's heading is first
+    # known, so it is a floor, not a value.
     _, series = arrow_series(lambda time: 15.0)
+    first_known = float(series.times_seconds[np.flatnonzero(np.isfinite(series.travel_frame_radians))[0]])
     score = score_turn(right_turn_at(3.0), TurnTag.OPEN_AHEAD, series, None, EvaluationConfig())
-    assert score.lead_seconds == pytest.approx(3.0, abs=STEP_SECONDS)
+    assert score.lead_seconds == pytest.approx(3.0 - first_known, abs=STEP_SECONDS)
     assert score.lead_at_limit is True
 
 
@@ -287,3 +292,78 @@ def test_scoring_imports_nothing_from_the_measured_system() -> None:
     modules += [alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names]
     assert modules, "parsed no imports at all"
     assert not [module for module in modules if module.startswith(("nav.planner", "nav.walker", "nav.runtime"))]
+
+
+# *******************************************
+# Found by the final review
+# *******************************************
+
+
+def with_unknown(series, from_seconds: float, to_seconds: float):
+    """The same arrow with a stretch made unknown, as where the walker's heading wasn't known."""
+    values = series.travel_frame_radians.copy()
+    values[(series.times_seconds >= from_seconds - 1e-9) & (series.times_seconds <= to_seconds + 1e-9)] = np.nan
+    return dataclasses.replace(series, travel_frame_radians=values)
+
+
+def test_unknown_sample_in_the_lead_makes_it_at_least() -> None:
+    # The arrow held right from 1 s. One unknown sample at 4.5 s used to end the walk-back there and
+    # report a lead of 0.4 s as exact.
+    _, series = arrow_series(lambda time: 15.0 if time >= 1.0 else 0.0)
+    score = score_turn(right_turn_at(5.0), TurnTag.OPEN_AHEAD, with_unknown(series, 4.5, 4.5), None, EvaluationConfig())
+    assert score.lead_seconds == pytest.approx(0.4, abs=STEP_SECONDS)
+    assert score.lead_at_limit is True
+
+
+def test_arrow_pointing_back_is_read_by_circular_mean() -> None:
+    # The 1 s window holds six samples at +179 and five at -176. A straight mean of those is +17.6, a
+    # right that agrees with the turn. Their circular mean is -178.7, behind and to the left.
+    _, series = arrow_series(lambda time: -176.0 if int(round(time * 10)) % 2 else 179.0)
+    score = score_turn(right_turn_at(6.0), TurnTag.OPEN_AHEAD, series, None, EvaluationConfig())
+    assert score.arrow_side == TurnSide.LEFT
+    assert score.agreed is False
+
+
+def test_unknown_sample_does_not_split_a_sidestep() -> None:
+    _, series = arrow_series(lambda time: 25.0 if 4.0 <= time < 5.0 else 0.0)
+    (sidestep,) = find_sidesteps(with_unknown(series, 4.5, 4.5), (), EvaluationConfig())
+    assert sidestep.start_seconds == pytest.approx(4.0, abs=STEP_SECONDS)
+    assert sidestep.end_seconds == pytest.approx(4.9, abs=2 * STEP_SECONDS)
+
+
+def test_a_long_unknown_stretch_does_end_a_sidestep() -> None:
+    _, series = arrow_series(lambda time: 25.0 if 4.0 <= time < 6.0 else 0.0)
+    sidesteps = find_sidesteps(with_unknown(series, 4.6, 5.3), (), EvaluationConfig())
+    assert len(sidesteps) == 2
+
+
+def test_correlation_pairs_never_span_a_break() -> None:
+    # Two pieces of 40 samples, everything defined. At a lag of 10 samples each piece gives 30 pairs.
+    # A pair from the end of one piece to the start of the next would make it 70.
+    count = 80
+    times = np.arange(count) * STEP_SECONDS
+    rng = np.random.default_rng(1)
+    track = WalkerTrack(
+        times_seconds=times,
+        positions_floor_meters=np.zeros((count, 3)),
+        heading_radians=np.zeros(count),
+        turn_rate_radians_per_second=rng.normal(size=count),
+        speed_mps=np.ones(count),
+        piece_index=np.repeat([0, 1], count // 2),
+        duplicates_dropped=0,
+        samples_too_slow=0,
+        breaks_for_jumps=1,
+        breaks_for_gaps=0,
+        poses_without_position=0,
+    )
+    arrow = ArrowSeries(times, rng.normal(size=count), np.zeros(count))
+    config = dataclasses.replace(EvaluationConfig(), min_correlation_pairs=2)
+    result = lagged_correlation(arrow, track, config)
+    assert result.pair_counts[10] == 60
+    assert result.pair_counts[0] == 80
+
+
+def test_sidestep_rate_is_per_minute_of_arrow() -> None:
+    sidestep = Sidestep(1.0, 2.0, TurnSide.RIGHT)
+    assert summarize([], (sidestep,), 0.0).sidesteps_per_minute is None
+    assert summarize([], (sidestep, sidestep), 30.0).sidesteps_per_minute == pytest.approx(4.0)
