@@ -40,20 +40,21 @@ class EvaluationConfig:
     # A stretch is straight when no change over the turn window, in it or within a window of it,
     # passes this cap. Any definition of straight caps what the straight-walking spread can measure,
     # so the cap is reported beside the spread, and a spread near it means the cap set the number.
-    # 25 rather than the 15 first chosen. On the straight walk recorded to set the threshold
-    # (straight_walk_4, 2026-10-03, 65 m in one line), the 99th percentile was 10.39 to 10.40 deg for
-    # every cap from 15 to 40, so the walking set it, not the cap. At 15 the half-cap guard tripped on
-    # that real tail. At 25 it passes with the same number.
+    # On the straight walk that set the threshold (straight_walk_4, 2026-10-03, 65 m in one line),
+    # the 99th percentile was 10.39 to 10.40 deg for every cap from 15 to 40, so the walking set
+    # the number, not the cap. At 15 the half-cap guard trips on the real tail. At 25 it passes
+    # with the same percentile.
     straight_window_seconds: float = 4.0
     straight_max_change_degrees: float = 25.0
     # A turn is a heading change past the threshold within this window.
     turn_window_seconds: float = 2.0
     # Measured 2026-10-03: the 99th percentile of heading change over 2 s on straight walking, 10.39
     # deg, rounded up. From straight_walk_4, a 68 s walk recorded on the phone for this purpose, with
-    # 62.5 s of straight walking over 585 windows and 605 change samples. The 50th and 95th
-    # percentiles were 1.72 and 6.96 deg. Reproduce with:
+    # 62.4 s of straight walking over 584 windows and 604 change samples. The 50th and 95th
+    # percentiles were 1.71 and 6.92 deg. The unknown-heading rule at piece ends moves the window
+    # and sample counts slightly but leaves the 99th percentile alone. Reproduce with:
     #   python -m nav.evaluation --spread-only frame_logs/straight_walk_4
-    # The three scored walks couldn't set it. They hold under 41 s of straight walking between them,
+    # The three scored walks couldn't set it. They hold under 17 s of straight walking between them,
     # because they loop around rooms.
     turn_threshold_degrees: float = 11.0
     # How the threshold is set from the pooled straight-walking spread, and when that spread can't be

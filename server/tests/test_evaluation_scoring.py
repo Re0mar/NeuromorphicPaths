@@ -295,7 +295,7 @@ def test_scoring_imports_nothing_from_the_measured_system() -> None:
 
 
 # *******************************************
-# Found by the final review
+# Unknowns and piece boundaries
 # *******************************************
 
 

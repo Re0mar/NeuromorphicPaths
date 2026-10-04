@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import pickle
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,12 +58,14 @@ from nav.walker import WalkerConfig
 NAV_DIR = Path(nav.__file__).resolve().parent
 CLONE_DIR = NAV_DIR.parent.parent
 # Bumped whenever the pickled layout changes, so an old cache entry is rebuilt rather than misread.
-CACHE_FORMAT = "cache-format-2"
+CACHE_FORMAT = "cache-format-3"
 # Beside the server code, not in whatever folder the command happens to run from, so it always lands
 # where .gitignore covers it.
 DEFAULT_CACHE_DIR = NAV_DIR.parent / ".replay_cache"
 # Kept per walk. Beyond this many distinct reasons the rest are counted under one line.
 MAX_REFUSAL_REASONS = 5
+# A number inside a refusal message, so messages that differ only in their counts group together.
+REFUSAL_NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
 # The modules whose code decides what a scene pass produces. Changing any of them changes the key.
 SCENE_PASS_SOURCES = (
     "scene/*.py",
@@ -272,7 +275,7 @@ def scene_pass(log_dir: Path, scene_config: SceneConfig, walker: WalkerConfig, c
             # Expected at the start of a run and on a camera pointed at nothing. Costs this
             # frame and the replay continues, as the live worker does.
             refused += 1
-            reason = str(degenerate_error) or type(degenerate_error).__name__
+            reason = refusal_reason(degenerate_error)
             if reason in reasons or len(reasons) < MAX_REFUSAL_REASONS:
                 reasons[reason] = reasons.get(reason, 0) + 1
             else:
@@ -319,6 +322,16 @@ def scene_pass(log_dir: Path, scene_config: SceneConfig, walker: WalkerConfig, c
         pickle.dump((time_array, position_array, rows, refused, reasons), handle)
     os.replace(partial, cache_file)
     return ScenePass(time_array, position_array, planned, refused, reasons, f"miss {key}, written to {cache_dir}{stale_note}")
+
+
+def refusal_reason(error: ValueError) -> str:
+    """
+    The scene's refusal message with its numbers replaced by N.
+
+    The scene says "no floor found in 35 points", and one cause with a different count each frame
+    would otherwise fill the report's few reason lines and push everything else into "other".
+    """
+    return REFUSAL_NUMBER.sub("N", str(error)) or type(error).__name__
 
 
 def cache_key(log_dir: Path, scene_config: SceneConfig, walker: WalkerConfig) -> str:

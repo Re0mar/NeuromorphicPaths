@@ -55,19 +55,21 @@ like `inf` for a maximum. if you can't tell, ask before quoting numbers from it.
 
 ## what you get
 
-takes 3 to 8 min a walk (three replays of the scene, the slow part). ends with a table like:
+takes 3 to 7 min a walk (three replays of the scene, the slow part). ends with a table like:
 
 ```
-- Turns: 8 at a 11 deg threshold (left -71, right +9, right +46, right +70, left -50, left -25, right +15, left -79)
+- Turns: 6 at a 11 deg threshold (left -72, right +15, right +46, left -31, right +37, left -98)
 
 | Tag | Turns | Arrow read | Agreed | Wrong side | Carry on | Not read | Median lead s (known, at limit) |
 |---|---|---|---|---|---|---|---|
-| obstacle ahead | 6 | 6 | 4 | 2 | 0 | 0 | 0.70 (3, 0) |
+| obstacle ahead | 4 | 4 | 4 | 0 | 0 | 0 | 0.40 (3, 1) |
 | open ahead | 0 | 0 | 0 | 0 | 0 | 0 | unknown (0, 0) |
-| unknown | 2 | 2 | 1 | 1 | 0 | 0 | 0.06 (1, 0) |
+| unknown | 2 | 2 | 1 | 1 | 0 | 0 | 0.06 (1, 1) |
 ```
 
-plus sidesteps, the correlation per segment, and how far the phone pointed off the walking direction.
+plus sidesteps, the correlation per segment, how far the phone pointed off the walking direction,
+and why the scene refused any frames it couldn't plan. "at limit" means the lead is at least that
+long: it hit the 5 s cap, the previous turn, or a stretch where the walker's heading isn't known.
 top of the report has the commit + a hash of the code that made it. commit before a run you'll quote.
 
 `--out file.md` writes the same report to a file. otherwise it's only on screen.
@@ -78,13 +80,15 @@ top of the report has the commit + a hash of the code that made it. commit befor
 - `1` refused: missing `run_config.json` (add `--scene-defaults`), a setting missing from it
   (add the `--scene-set` it names), a bad flag, a corrupt recording. the message says which
 - `2` usage error from the flags themselves
-- `3` nothing to score: no segment of 20 s or more, or no turns found
+- `3` nothing to score: no segment of 20 s or more, no turns found, or no turn had an arrow before it
 
 ## after changing the planner
 
 just rerun. turns + tags don't depend on the planner, only the arrow numbers move. try a planner
 setting without editing code: `--set lateral_kinetic_weight=0.2`. iterating? `--cached` does one replay
-through a cache in `.replay_cache/`, much faster. not for numbers you'll quote, use the default 3.
+through a cache in `server/.replay_cache/` (same place whatever folder you run from), much faster.
+not for numbers you'll quote, use the default 3. to compare against the planner before the contact
+term: `--set lateral_kinetic_weight=0.055 --set contact_term_enabled=false`.
 
 ## the turn threshold
 

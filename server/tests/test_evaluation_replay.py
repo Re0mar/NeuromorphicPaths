@@ -28,6 +28,7 @@ from nav.evaluation.config import EvaluationConfig
 from nav.evaluation.overrides import OverrideRefused, apply_overrides
 from nav.evaluation.replay import (
     DEFAULT_CACHE_DIR,
+    refusal_reason,
     NAV_DIR,
     cache_key,
     clone_state,
@@ -342,7 +343,7 @@ def test_refused_scene_frames_are_counted(tmp_path: Path, capsys) -> None:
 
 
 # *******************************************
-# Found by the final review
+# Edge cases
 # *******************************************
 
 
@@ -463,3 +464,11 @@ def test_tags_are_recomputed_on_every_pass(recording: Path, monkeypatch) -> None
     first, second = (result_pass.tag_counts for result_pass in result.passes)
     assert first[TurnTag.OBSTACLE_AHEAD] > 0
     assert second[TurnTag.OBSTACLE_AHEAD] == 0
+
+
+def test_refusals_that_differ_only_in_counts_share_a_reason() -> None:
+    first = refusal_reason(ValueError("no floor found in 35 points, 0 below the camera, and no previous plane"))
+    second = refusal_reason(ValueError("no floor found in 135 points, 135 below the camera, and no previous plane"))
+    assert first == second == "no floor found in N points, N below the camera, and no previous plane"
+    assert refusal_reason(ValueError("plane tilted 61.5 deg")) != first
+    assert refusal_reason(ValueError()) == "ValueError"

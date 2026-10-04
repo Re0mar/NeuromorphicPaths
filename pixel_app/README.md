@@ -61,9 +61,12 @@ later sends the recording to the laptop as if it were happening then. The laptop
 new: it records the replay with `--record-to` like any live walk.
 
 1. Tap **Record walk** and walk. Nothing needs to be connected. ARCore tracks and the frames go to
-   a file in the app's own storage, `walks/walk_<date>_<time>.bin`. Tap **Stop recording** at the
-   end. The line under the buttons counts frames written, frames dropped and megabytes. A drop
-   means the phone fell behind writing, and the count says how much of the walk is missing.
+   a file in the app's own storage, `walks/walk_<date>_<time>.bin`, the time to the millisecond.
+   Tap **Stop recording** at the end. The button reads **Saving** until the last queued frames are
+   written, and Record and Replay both wait for it. The line under the buttons counts frames
+   written, frames dropped and megabytes. A drop means the phone fell behind writing, and the count
+   says how much of the walk is missing. A frame whose values can't go in the file, such as a NaN in
+   the pose, is left out and counted as unencodable.
 2. Later, where the phone reaches the laptop, make sure no live connection is running: swipe the
    app away, or `adb shell am force-stop com.neuromorphicpaths.pixel`, and don't tap Connect after
    reopening it. A live connection retries in the background, and the laptop records whichever
@@ -74,7 +77,11 @@ new: it records the replay with `--record-to` like any live walk.
 3. Type the laptop's address and tap **Replay latest walk**. The app stops its live connection,
    because the laptop takes one depth connection at a time, and sends the newest recording,
    every frame unchanged and in order, at the pace it was recorded. The laptop's log gets the
-   original timestamps. When the line says the replay finished, stop the laptop with Ctrl-C.
+   original timestamps. After the last frame the phone closes its side and waits up to 30 s for
+   the laptop to close back, which the laptop does once it has read every frame. The line then
+   says the replay finished and whether the laptop read them all. If it says the laptop didn't
+   confirm, check the laptop's frame count before trusting the log. Then stop the laptop with
+   Ctrl-C if it hasn't stopped on its own.
 
 A replay never drops a frame and never resumes. If the connection is lost partway, the line says
 so with the count sent, and the laptop's log is missing the rest of the walk. Replay again into a
