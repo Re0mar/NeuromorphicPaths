@@ -26,10 +26,17 @@ class PlannerConfig:
     horizon_seconds: float = 3.8  # His horizon.
     clearance_epsilon_meters: float = 0.06  # His epsilon, the floor under S.
     noise_epsilon_meters: float = 1.0e-6  # His numeric floor under N, so a zero N is a zero surprise, not a NaN.
-    # His weight on the lateral kinetic term, kept on purpose. Raising it would stop the arrow
-    # pinning, but a steadily measured post then costs less to hit than to dodge. At 0.35 the
-    # planner walks into a post 1.5 m ahead, which the safety tests in test_planner_pipeline.py catch.
-    lateral_kinetic_weight: float = 0.055
+    # Ours, raised from his 0.055 so the plan stops sidestepping at full speed whenever anything is
+    # ahead. His surprise alone can't afford it: a steadily measured post costs less to hit than to
+    # dodge from 0.35. With the contact term the post safety test's posts are cleared through 7 and
+    # hit at 8. 6.5 is the highest weight that still clears them with the sway anywhere from 0.05 to
+    # 0.20 m and the near noise at either recorded walk's median. The worst of those, 0.20 m of sway
+    # at 0.0337 m of noise, hits at 7. The safety tests in test_planner_pipeline.py pin all of it.
+    # Replayed on the seeded floor fit, against his weight without the contact term: with something
+    # 3 to 5.32 m ahead the arrow sits at the sidestep limit on 59.0 % of classroom frames (was 94.9)
+    # and 58.2 % on pixel_walk_3 (was 81.1), still over the 50 % aimed for. With nothing in the way
+    # it never does on either walk (was 9.1 and 15.3).
+    lateral_kinetic_weight: float = 6.5
     surprise_cap: float = 2.0e4  # His cap on a single point's surprise.
     walking_speed_mps: float = 1.4  # Ours. Average walking pace, against his 5.0 for a cyclist.
     grid_half_width_meters: float = 3.0  # Ours. Matches the scene grid.
@@ -41,11 +48,22 @@ class PlannerConfig:
     # under the 1 m at which something counts as close, so 0.7 s at 1.4 m/s is 0.98 m. Replayed with
     # the corridor and hold below: alarm on 60.0 % with 66 changes on the classroom walk, was 76.0 % and 408.
     alarm_time_to_contact_seconds: float = 0.7
-    # Ours. How far to each side the alarm looks: the body, a shoulder half-width with room for arm
-    # swing, narrower than the footprint the planner steers with. At the planner's 0.35 m plus 0.15 m,
-    # a doorway about 0.9 m wide on the 2026-10-03 apartment walk raised the alarm on 93 % of its
-    # frames. At 0.30 m it is 36 %, and things the walker stood in front of still raise it on 84 %.
-    alarm_body_half_width_meters: float = 0.30
+    # Ours. The body, a shoulder half-width with room for arm swing, narrower than the footprint the
+    # planner steers with. Two things read it. The alarm looks this far to each side, and the contact
+    # term measures overlap against it. At the planner's 0.35 m plus 0.15 m, a doorway about 0.9 m
+    # wide on the 2026-10-03 apartment walk raised the alarm on 93 % of its frames. At 0.30 m it is
+    # 36 %, and things the walker stood in front of still raise it on 84 %.
+    body_half_width_meters: float = 0.30
+    # Ours. Adds the surprise of the body touching something beside his surprise. Off only to compare
+    # against the planner without it.
+    contact_term_enabled: bool = True
+    # Ours, and an assumption rather than a measurement. How far a walker drifts sideways from the
+    # line the arrow asks for, one standard deviation. No recorded walk had anyone steering by the
+    # arrow, so it cannot be measured from them yet.
+    walker_sway_meters: float = 0.10
+    # Ours. The most one point's contact surprise may reach. With the 0.30 m half-width it binds only
+    # for a sway under about 0.031 m. At 0.10 m no point can cost more than 6.61.
+    contact_surprise_cap: float = 50.0
     # Ours. How long a raised alarm stays up before it may clear. Takes the classroom walk from 108
     # state changes to 66, and the last segment of pixel_walk_3 from 55 to 35.
     alarm_hold_seconds: float = 0.5

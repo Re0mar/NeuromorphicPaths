@@ -37,9 +37,9 @@ def check_alarm_config(config: PlannerConfig) -> None:
 
 
 def _check_body_half_width(config: PlannerConfig) -> None:
-    half_width = config.alarm_body_half_width_meters
+    half_width = config.body_half_width_meters
     if not np.isfinite(half_width) or half_width <= 0:
-        raise ValueError(f"alarm_body_half_width_meters must be above zero, got {half_width}")
+        raise ValueError(f"body_half_width_meters must be above zero, got {half_width}")
 
 
 def _check_walking_speed(config: PlannerConfig) -> None:
@@ -69,7 +69,7 @@ def corridor_points(obstacles: ObstacleSet, config: PlannerConfig) -> tuple[Obst
     :raises ValueError: When the body half-width is not above zero.
     """
     _check_body_half_width(config)
-    half_width = config.alarm_body_half_width_meters
+    half_width = config.body_half_width_meters
     # Strictly ahead. A group level with the walker or behind it is being passed, not approached.
     return tuple(point for point in obstacles.points if point.forward_meters > 0.0 and abs(point.lateral_meters) <= half_width)
 

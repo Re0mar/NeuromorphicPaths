@@ -11,7 +11,7 @@ import pytest
 from nav.planner.config import PlannerConfig
 from nav.planner.heading import lookahead_heading, lookahead_step_index
 from nav.planner.pipeline import PlannerPipeline
-from nav.planner.surprise import step_count
+from nav.planner.field import step_count
 from nav.walker import WalkerConfig
 
 CONFIG = PlannerConfig()

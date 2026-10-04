@@ -10,18 +10,29 @@ import numpy as np
 # Local package imports
 from nav.planner.alarm import AlarmHold, alarm_raised, check_alarm_config
 from nav.planner.config import GoalMode, PlannerConfig
+from nav.planner.contact import ContactSurprise, check_contact_config
 from nav.planner.dynamic_programming import plan
+from nav.planner.field import CostTerm, cost_field, lateral_grid, step_count
 from nav.planner.goal import goal_position, goal_term
 from nav.planner.heading import lookahead_heading, lookahead_step_index
-from nav.planner.surprise import lateral_grid, step_count, surprise_field
+from nav.planner.surprise import CollisionSurprise
 from nav.types import ObstacleSet, PlannedPath
 from nav.walker import WalkerConfig
 
 log = logging.getLogger(__name__)
 
 
+def planner_terms(config: PlannerConfig) -> tuple[CostTerm, ...]:
+    """The cost terms a plan is built from: the collision surprise always, and the contact surprise unless switched off."""
+    if config.contact_term_enabled:
+        return (CollisionSurprise(), ContactSurprise())
+    return (CollisionSurprise(),)
+
+
 class PlannerPipeline:
-    """Holds the grid, which never changes, the last field, which the debug window draws, and the alarm's hold.
+    """Holds what a run keeps between frames: the grid and the cost terms, the last field, the alarm's hold.
+
+    The grid and the terms never change. The last field is there for the debug window to draw.
 
     The hold carries across frames, so one pipeline has to serve a whole run. A pipeline built per
     frame would let the alarm clear the moment its raise decision did.
@@ -35,6 +46,8 @@ class PlannerPipeline:
         # Checked here so a bad lookahead stops the run at startup rather than on its first frame.
         self._lookahead_index = lookahead_step_index(config)
         check_alarm_config(config)
+        check_contact_config(config)
+        self._terms = planner_terms(config)
         self._alarm_hold = AlarmHold(config.alarm_hold_seconds)
         self._last_field: np.ndarray | None = None
 
@@ -44,7 +57,7 @@ class PlannerPipeline:
 
     @property
     def last_field(self) -> np.ndarray | None:
-        """The field from the most recent plan, goal term included.
+        """The field from the most recent plan: every cost term, with the goal term on its last row.
 
         Debug only. The runtime hands it to a DebugSink and nothing else reads it, so nothing else
         grows a dependency on a grid the size of the horizon.
@@ -71,7 +84,7 @@ class PlannerPipeline:
         config = self._config
         started = time.perf_counter()
 
-        field = surprise_field(obstacles, self._grid, config, self._walker)
+        field = cost_field(obstacles, self._grid, config, self._walker, self._terms)
         goal = goal_position(goal_mode, config, gaze_ground_point)
         field[-1] += goal_term(self._grid, goal, config)
         self._last_field = field
