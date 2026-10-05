@@ -234,3 +234,10 @@ def test_avoidance_surprise_reads_the_nearest_group_in_the_corridor() -> None:
 def test_a_group_outside_the_corridor_adds_no_avoidance_surprise() -> None:
     assert avoidance_surprise_bits(_set(_at_clearance(0.1, lateral=EDGE + 0.05)), CONFIG) == 0.0
     assert avoidance_surprise_bits(_set(_at_clearance(0.1, lateral=EDGE - 0.05)), CONFIG) > 0.0
+
+
+def test_avoidance_surprise_refuses_a_walking_speed_of_zero() -> None:
+    # Time to contact divides by walking speed. The refusal names the setting, where a missing check
+    # would surface as a bare ZeroDivisionError.
+    with pytest.raises(ValueError, match="walking_speed_mps must be above zero, got 0.0"):
+        avoidance_surprise_bits(_set(_at_clearance(1.0)), replace(CONFIG, walking_speed_mps=0.0))

@@ -35,10 +35,11 @@ log = logging.getLogger(__name__)
 PAGE_PATH = Path(__file__).parent / "web_page.html"
 STARTUP_TIMEOUT_SECONDS = 5.0
 SHUTDOWN_TIMEOUT_SECONDS = 2.0
-# How many messages may wait for the browsers. A depth view is about 128 KB and a plan view about
-# 40 KB, so this is a few megabytes at worst. The queue has to be bounded: the pipeline hands over a
-# path, a plan view and a picture per planned frame and never waits, while one browser that stops
-# reading suspends the send loop for every browser, so an unbounded queue grows for as long as that lasts.
+# How many messages may wait for the browsers. A depth view is about 128 KB and a plan view up to
+# about 60 KB, so this is a few megabytes at worst. The queue has to be bounded: the pipeline hands
+# over a path, a plan view and a picture per planned frame and never waits, while one browser that
+# stops reading suspends the send loop for every browser, so an unbounded queue grows for as long as
+# that lasts.
 OUTGOING_QUEUE_LIMIT = 32
 
 

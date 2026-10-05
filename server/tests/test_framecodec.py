@@ -581,3 +581,9 @@ def test_a_gravity_flag_that_is_not_a_boolean_is_refused_by_name() -> None:
 
     with pytest.raises(FrameDecodeError, match="pose.orientation_is_gravity_aligned must be true or false"):
         decode_frame(_rebuild(header, body))
+
+
+def test_planned_path_has_no_default_for_either_new_number() -> None:
+    # A default would let a construction site that forgot them send a plausible zero on both wires.
+    with pytest.raises(TypeError, match="scene_information_bits.*avoidance_surprise_bits"):
+        PlannedPath(1.0, np.array([0.0]), np.array([0.0]), 0.0, False, 0.0)

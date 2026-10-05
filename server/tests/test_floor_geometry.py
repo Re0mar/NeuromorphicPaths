@@ -141,3 +141,11 @@ def test_a_floor_point_behind_the_camera_is_never_seen() -> None:
     assert np.any((raw_column >= 0) & (raw_column < 128) & (raw_row >= 0) & (raw_row < 96))
 
     assert not floor_seen_mask(_view(floor=behind_plane), TIMES, GRID).any()
+
+
+def test_a_point_exactly_on_the_camera_plane_is_not_in_front() -> None:
+    # The walker's own feet sit at z = 0 on a level floor. Counted as in front, they would divide by
+    # zero. A point a centimeter ahead is the control.
+    _, _, in_front = project_points(np.array([[0.0, 1.6, 0.0], [0.0, 1.6, 0.01]]), INTRINSICS)
+
+    assert list(in_front) == [False, True]

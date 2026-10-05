@@ -127,3 +127,10 @@ def test_the_plan_view_carries_the_floor_mask_for_every_cell() -> None:
     assert mask.shape == (STEPS, len(GRID))
     assert mask.dtype == bool
     assert np.array_equal(mask, floor_seen_mask(view, _path().times_seconds, GRID))
+
+
+def test_a_debug_view_has_no_default_body_width() -> None:
+    # A default would let a construction site that forgot the width draw the path a plausible width.
+    view = _view()
+    with pytest.raises(TypeError, match="body_half_width_meters"):
+        DebugView(view.frame, view.obstacles, view.floor, view.floor_source, view.walking_speed_mps)

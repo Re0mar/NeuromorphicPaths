@@ -271,3 +271,10 @@ def test_backward_costs_refuses_a_non_finite_field() -> None:
 def test_forward_costs_refuses_a_start_cell_off_the_grid() -> None:
     with pytest.raises(ValueError, match="start cell 61 is not one of the grid's 61 cells"):
         forward_costs(np.zeros((STEPS, len(GRID))), len(GRID), GRID, CONFIG)
+
+
+def test_a_field_of_the_wrong_shape_is_reported_before_a_start_off_the_grid() -> None:
+    # Both are wrong here. The shape is the more basic fault, and plan checks it first so its error
+    # names the shape rather than whatever the start check trips on.
+    with pytest.raises(ValueError, match="field has 60 columns and the grid has 61 cells"):
+        plan(np.zeros((STEPS, len(GRID) - 1)), CONFIG.grid_half_width_meters + 1.0, GRID, CONFIG)

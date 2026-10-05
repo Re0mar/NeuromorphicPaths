@@ -17,7 +17,7 @@ import pytest
 
 # Local package imports
 from nav.sinks.config import WebConfig
-from nav.sinks.web import OUTGOING_QUEUE_LIMIT, WebSink
+from nav.sinks.web import OUTGOING_QUEUE_LIMIT, WebSink, _quiet_client_resets
 from nav.sinks.web_messages import OBSTACLE_KEYS, PLAN_VIEW_KEYS, WebMessageKind
 from nav.sources.framecodec import path_message
 from nav.types import DebugSink, DebugView, DepthFrame, FloorSource, ObstacleSet, Plane, PlannedPath, Pose
@@ -296,8 +296,6 @@ class _RecordingLoop:
 
 
 def test_a_browser_resetting_its_socket_is_logged_as_expected_not_as_an_error(caplog: pytest.LogCaptureFixture) -> None:
-    from nav.sinks.web import _quiet_client_resets
-
     loop = _RecordingLoop()
     reset = {"message": "Exception in callback _call_connection_lost", "exception": ConnectionResetError(10054, "reset")}
 
@@ -310,3 +308,10 @@ def test_a_browser_resetting_its_socket_is_logged_as_expected_not_as_an_error(ca
     other = {"message": "something else", "exception": RuntimeError("not a reset")}
     _quiet_client_resets(loop, other)
     assert loop.passed_on == [other]
+
+
+def test_a_started_sink_installs_the_reset_handler_on_its_loop(sink: WebSink) -> None:
+    # The handler only quiets resets if the server's own loop uses it. Tested apart from the handler,
+    # because a refactor of _run can drop the one line that installs it with every other test green.
+    assert sink._loop is not None
+    assert sink._loop.get_exception_handler() is _quiet_client_resets

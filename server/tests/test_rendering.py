@@ -16,7 +16,9 @@ from nav.scene.pipeline import ScenePipeline
 from nav.sinks.rendering import (
     CANVAS_HEIGHT,
     CANVAS_WIDTH,
+    COLOR_GROUP,
     COLOR_INVALID_DEPTH,
+    COLOR_WALL,
     DEPTH_VIEW_TARGET_WIDTH,
     FIELD_INSET_SCALE,
     encode_png,
@@ -25,6 +27,7 @@ from nav.sinks.rendering import (
     render_field,
     upright_quarter_turns,
 )
+from nav.sinks.path_style import GROUP_RGB, WALL_RGB
 from nav.types import DebugView, DepthFrame, FloorSource, ObstaclePoint, ObstacleSet, Plane, PlannedPath, Pose
 from nav.walker import WalkerConfig
 from synthetic_depth import HEIGHT, WIDTH, clean_scene
@@ -354,7 +357,11 @@ def test_the_view_turns_so_the_floor_is_at_the_bottom(normal: np.ndarray, turns:
 
 
 def test_a_camera_facing_the_floor_is_not_turned() -> None:
-    # Frame 1500 of pixel_walk_3. The floor fills the view and the picture has no up.
+    # The floor's normal leans a quarter of its length into the image plane, toward the left, under
+    # the threshold. Read without the threshold, that lean would turn the picture once.
+    leaning = np.array([0.25, 0.0, -1.0])
+    assert upright_quarter_turns(Plane(leaning / np.linalg.norm(leaning), 0.71)) == 0
+    # Frame 1500 of pixel_walk_3, where the floor fills the view and the picture has no up.
     assert upright_quarter_turns(Plane(np.array([-0.01, -0.01, -1.0]), 0.71)) == 0
 
 
@@ -377,3 +384,26 @@ def test_the_text_line_is_drawn_after_the_turn() -> None:
     text_rows = image[:TEXT_BAND_ROWS]
     assert np.any(np.all(text_rows == 255, axis=2)), "white text along the top"
     assert not np.any(np.all(image[:, -TEXT_BAND_ROWS:][TEXT_BAND_ROWS:] == 255, axis=2)), "no white text down the right edge"
+
+
+def test_a_ribbon_piece_crossing_the_near_plane_still_draws_its_visible_part() -> None:
+    # A camera 5 cm above the floor sees its first ribbon piece. That piece runs from the walker's
+    # feet at z = 0 to 0.14 m ahead, so it starts inside the near plane and has to be cut there. Its
+    # visible part lands at rows 30 * 0.05 / z + 48, 59 to 78, straight down the middle, and no other
+    # piece reaches row 70. Dropped instead of cut, it would leave that row untouched.
+    view = _floor_view()
+    low_camera = DebugView(view.frame, view.obstacles, Plane(np.array([0.0, -1.0, 0.0]), 0.05), FloorSource.FITTED, WALKING_SPEED, BODY_HALF_WIDTH)
+    scale = DEPTH_VIEW_TARGET_WIDTH // WIDTH
+    row, column = 70 * scale, int(WIDTH / 2.0 * scale)
+
+    drawn = render_depth_view(low_camera, _styled_path(np.zeros(STEPS)))
+    blank = render_depth_view(low_camera, _one_step_path())
+
+    assert np.any(drawn[row, column] != blank[row, column])
+
+
+def test_the_depth_views_obstacle_colors_are_the_pages() -> None:
+    # One definition in path_style serves both displays. The renderer draws in BGR, so its constants
+    # are the shared RGB triples reversed, and a literal here would let the two views disagree.
+    assert tuple(COLOR_GROUP) == tuple(reversed(GROUP_RGB))
+    assert tuple(COLOR_WALL) == tuple(reversed(WALL_RGB))

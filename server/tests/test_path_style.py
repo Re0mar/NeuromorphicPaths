@@ -36,13 +36,17 @@ def test_the_color_changes_monotonically_toward_red() -> None:
 
 
 def test_the_middle_of_the_ramp_is_not_darker_than_either_end() -> None:
-    # The reason to blend in OKLab. A plain sRGB blend of this blue and red sags in the middle.
-    def luma(color: tuple[int, int, int]) -> float:
-        return 0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2]
+    # The reason to blend in OKLab. A plain sRGB blend of this blue and red sags in relative
+    # luminance (the light that actually reaches the eye) to 0.136 in the middle against 0.192 and
+    # 0.200 at the ends. Gamma-encoded luma hides that sag, so it is not the measure used here.
+    def luminance(color: tuple[int, int, int]) -> float:
+        encoded = np.array(color, dtype=np.float64) / 255.0
+        linear = np.where(encoded <= 0.04045, encoded / 12.92, ((encoded + 0.055) / 1.055) ** 2.4)
+        return float(linear @ np.array([0.2126, 0.7152, 0.0722]))
 
-    middle = luma(path_color_rgb(SURPRISE_RED_BITS / 2.0))
+    middle = luminance(path_color_rgb(SURPRISE_RED_BITS / 2.0))
 
-    assert middle >= min(luma(SURPRISE_LOW_RGB), luma(SURPRISE_HIGH_RGB)) - 1.0
+    assert middle >= min(luminance(SURPRISE_LOW_RGB), luminance(SURPRISE_HIGH_RGB)) - 0.01
 
 
 def test_fill_opacity_is_the_floor_at_zero_bits_and_solid_from_full() -> None:

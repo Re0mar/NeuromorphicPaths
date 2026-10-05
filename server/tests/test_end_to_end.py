@@ -128,10 +128,8 @@ def test_a_logged_replay_reaches_a_phone_through_main(tmp_path: Path) -> None:
 
     assert received, "the phone never read a path from the run"
     assert np.isfinite(received[0].first_heading_radians)
-    # decode_path requires both keys, so a decoded path carried them. Checked as numbers too, so a
-    # run that wired a placeholder through the pipeline would show here.
-    assert received[0].scene_information_bits >= 0.0
-    assert received[0].avoidance_surprise_bits >= 0.0
+    # decode_path requires scene_information_bits and avoidance_surprise_bits, so a decoded path
+    # carried both. Their values are tested through PlannerPipeline in test_planner_pipeline.py.
 
 
 def test_a_logged_replay_serves_a_phone_and_a_browser_in_the_same_run(tmp_path: Path) -> None:
@@ -207,7 +205,9 @@ def test_a_logged_replay_serves_a_phone_and_a_browser_in_the_same_run(tmp_path: 
     assert plan_views, "the browser never got a plan view from the same run"
     field = np.array(plan_views[0]["field"])
     assert field.shape == (len(plan_views[0]["times_seconds"]), len(plan_views[0]["grid_meters"]))
-    assert np.isfinite(plan_views[0]["scene_information_bits"]) and np.isfinite(plan_views[0]["avoidance_surprise_bits"])
+    # The loop hands the planner's body half-width to the sink, and the page draws the path twice
+    # that wide. Nothing upstream of the loop reads this value, so only a run through main() can check it.
+    assert plan_views[0]["path_width_meters"] == pytest.approx(2.0 * config.planner.body_half_width_meters)
 
 
 def test_a_run_that_recorded_nothing_leaves_its_directory_usable(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:

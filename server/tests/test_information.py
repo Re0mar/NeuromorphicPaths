@@ -142,3 +142,16 @@ def test_the_halved_passes_match_the_full_passes_at_every_step() -> None:
 
     for step in range(STEPS):
         assert path_cost_through_cells(field, START, GRID, CONFIG, step) == pytest.approx(forward[step] + to_go[step]), f"step {step}"
+
+
+def test_the_distribution_is_in_base_two() -> None:
+    # The number is quoted in bits, so a cost one bit higher must carry half the probability. Base e
+    # would pass every other test here, because they compare the code against itself.
+    assert softmin_distribution(np.array([0.0, 1.0, np.inf])) == pytest.approx([2.0 / 3.0, 1.0 / 3.0, 0.0])
+
+
+def test_a_negative_step_is_refused_naming_the_step() -> None:
+    # A negative step would otherwise slice an empty field and fail later as "at least one step",
+    # which names the wrong thing.
+    with pytest.raises(ValueError, match="step -1 is not one of the field's 39 steps"):
+        path_cost_through_cells(_goal_only(), START, GRID, CONFIG, -1)
