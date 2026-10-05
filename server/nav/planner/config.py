@@ -72,7 +72,8 @@ class PlannerConfig:
     heading_lookahead_seconds: float = 1.0
     # Ours. A prior toward the plan the walker was already following, held in the walker's own frame.
     # His dynamic program keeps nothing between frames, and on the recorded walks the arrow swung from
-    # one sidestep limit to the other 65 to 127 times a minute, at his weight and at ours alike.
+    # one sidestep limit to the other 65 to 127 times a minute, at his weight with or without the
+    # contact term, and at ours.
     # Off only to compare against the planner without memory.
     previous_plan_prior_enabled: bool = True
     # Ours. How far from the previous plan a position may be before the prior counts it as surprising,

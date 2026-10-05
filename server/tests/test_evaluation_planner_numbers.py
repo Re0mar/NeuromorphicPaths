@@ -16,7 +16,7 @@ import pytest
 
 # Local package imports
 from nav.evaluation import replay as replay_module
-from nav.evaluation.check_planner import format_numbers, main
+from nav.evaluation.check_planner import SegmentReplay, format_flips, format_numbers, main, travel_offset_lookup
 from nav.evaluation.config import PlannerNumbersConfig
 from nav.evaluation.planner_numbers import (
     ClearanceBand,
@@ -42,7 +42,8 @@ from nav.evaluation.replay import replayed_frames
 from nav.planner.alarm import alarm_raised
 from nav.planner.config import GoalMode, PlannerConfig
 from nav.planner.pipeline import PlannerPipeline
-from nav.types import ObstaclePoint, ObstacleSet, PlannedPath
+from nav.scene.floor import ground_axes
+from nav.types import WORLD_UP, ObstaclePoint, ObstacleSet, Plane, PlannedPath
 from nav.walker import WalkerConfig
 from synthetic_walks import write_recording
 
@@ -226,9 +227,14 @@ def test_identical_plans_from_the_same_place_disagree_by_zero() -> None:
     assert plan_disagreement(frame(0.0, offsets=0.2), frame(0.1, offsets=0.2), plan_forward_distances(PLANNER)) == pytest.approx(0.0)
 
 
-def test_a_walker_who_moved_forward_with_the_same_straight_plan_disagrees_by_zero() -> None:
-    later = frame(0.1, origin=ORIGIN + 0.5 * FORWARD)
-    assert plan_disagreement(frame(0.0), later, plan_forward_distances(PLANNER)) == pytest.approx(0.0)
+def test_a_walker_who_moved_forward_along_the_same_plan_disagrees_by_zero() -> None:
+    # A plan drifting 0.1 m right per meter ahead. Half a meter on, the same line on the floor reads
+    # 0.05 m further right at every distance from the walker. Compared at the same time instead of the
+    # same place, the two would disagree by that 0.05 m.
+    distances = plan_forward_distances(PLANNER)
+    earlier = frame(0.0, offsets=0.1 * distances)
+    later = frame(0.1, offsets=0.1 * (distances + 0.5), origin=ORIGIN + 0.5 * FORWARD)
+    assert plan_disagreement(earlier, later, distances) == pytest.approx(0.0, abs=1e-12)
 
 
 def test_a_plan_shifted_sideways_disagrees_by_the_shift() -> None:
@@ -236,11 +242,14 @@ def test_a_plan_shifted_sideways_disagrees_by_the_shift() -> None:
 
 
 def test_disagreement_percentiles_cover_every_pair() -> None:
-    frames = [frame(0.1 * index, offsets=0.1 * index) for index in range(11)]
+    # Straight plans from one place, stepping out 0.1, 0.2, ... 1.0 m, so the gaps are those ten steps.
+    # Median 0.55. The 90th percentile sits 8.1 of 9 steps along the sorted gaps, 0.9 + 0.1 * 0.1 = 0.91.
+    offsets = np.cumsum(np.arange(11) * 0.1)
+    frames = [frame(0.1 * index, offsets=offset) for index, offset in enumerate(offsets)]
     numbers = whole_walk_numbers(frames, PLANNER, CONFIG)
     assert numbers.disagreement_pairs == 10
-    assert numbers.disagreement_median_meters == pytest.approx(0.1)
-    assert numbers.disagreement_p90_meters == pytest.approx(0.1)
+    assert numbers.disagreement_median_meters == pytest.approx(0.55)
+    assert numbers.disagreement_p90_meters == pytest.approx(0.91)
 
 
 # *******************************************
@@ -284,13 +293,14 @@ def test_a_replayed_frame_holds_the_path_plan_returned(monkeypatch) -> None:
 def test_numbers_command_prints_every_figure_on_a_recording(recording: Path, capsys) -> None:
     code, out, _ = run(["numbers", recording], capsys)
     assert code == 0
+    # Each as its line starts, so a label repeated in a verdict line can't stand in for a dropped figure.
     for line in (
-        "nearer than 1.00 m",
-        "3.00 to 5.32 m",
-        "clear past 5.32 m, or empty",
-        "all planned frames",
-        "distinct headings",
-        "alarm on",
+        "\n  nearer than 1.00 m",
+        "\n  3.00 to 5.32 m",
+        "\n  clear past 5.32 m, or empty",
+        "\n  all planned frames",
+        "\ndistinct headings, to 2 decimals of a degree:",
+        "\nalarm on",
         "raise decisions with the nearest alarm-corridor point past 1.0 m",
         "longest the alarm stayed up",
         "consecutive plans disagree by median",
@@ -455,10 +465,15 @@ def test_the_first_matching_cause_wins() -> None:
 
 def test_a_phone_turn_with_a_real_flip_stays_a_flip() -> None:
     # The phone turned 5 degrees, but the plan also changed sides, so lining up the axes leaves most of the gap.
+    # The post stays put in the world, so the turned phone sees it 3 sin 5 = 0.26 m to the right of its
+    # own line and 3 cos 5 = 2.99 m ahead.
+    angle = math.radians(5.0)
+    seen_turned = (point(3.0 * math.sin(angle), 3.0 * math.cos(angle), 2.65),)
     earlier = frame(0.0, offsets=-0.8, points=POST)
-    later = frame(0.033, offsets=0.8, points=POST, axes=turned_left(5.0))
+    later = frame(0.033, offsets=0.8, points=seen_turned, axes=turned_left(5.0))
     cause, _ = pair_cause(earlier, later, PLANNER, CONFIG)
-    assert cause in (PairCause.SIDE_FLIP, PairCause.NEW_OBSTACLE)
+    # The post is in both frames, so it is a side flip and never a new obstacle.
+    assert cause is PairCause.SIDE_FLIP
 
 
 def test_disagreement_pairs_keeps_only_pairs_at_or_above_the_percentile() -> None:
@@ -565,7 +580,11 @@ def test_the_numbers_command_judges_the_band_on_the_restated_figure(recording: P
     code, out, _ = run(["numbers", recording], capsys)
     assert code == 0
     assert "restated band, 3.00 to 5.32 m, nothing nearer within 1 m: pinned" in out
-    assert "restated band pinned" in out
+    # The synthetic walk has no band frames, so the restated band is reported as not judged, never as
+    # a failed or a met target.
+    assert "NOT JUDGED  restated band pinned: 0 frames, a share needs 100" in out
+    assert "FAIL  restated band" not in out
+    assert "PASS  restated band" not in out
 
 
 def test_a_clear_frame_with_clear_sides_is_not_in_the_restated_band() -> None:
@@ -617,3 +636,57 @@ def test_the_numbers_command_prints_the_swings_a_minute(recording: Path, capsys)
     code, out, _ = run(["numbers", recording], capsys)
     assert code == 0
     assert "full swings, from the limit on one side to the other between consecutive frames:" in out
+
+
+def test_an_orientation_glitch_is_a_frame_jump_not_a_phone_turn() -> None:
+    # 60 degrees in a thirtieth of a second is 1800 degrees a second, no person turning a phone.
+    earlier = frame(0.0, offsets=0.5, points=POST)
+    later = frame(0.033, offsets=0.5, points=POST, axes=turned_left(60.0))
+    assert pair_cause(earlier, later, PLANNER, CONFIG) == (PairCause.FRAME_JUMP, None)
+
+
+def test_a_jump_with_an_equal_timestamp_is_a_frame_jump() -> None:
+    later = frame(0.0, offsets=0.8, points=POST, origin=ORIGIN + 2.0 * LATERAL)
+    assert pair_cause(frame(0.0, offsets=-0.8, points=POST), later, PLANNER, CONFIG) == (PairCause.FRAME_JUMP, None)
+
+
+def test_a_duplicated_frame_is_not_a_jump() -> None:
+    # Same pose, same timestamp, plans that differ: whatever it is, the tracker didn't move.
+    cause, _ = pair_cause(frame(0.0, offsets=0.5, points=POST), frame(0.0, offsets=1.2, points=POST), PLANNER, CONFIG)
+    assert cause is not PairCause.FRAME_JUMP
+
+
+def test_a_swing_across_a_pause_is_not_counted() -> None:
+    limit = sidestep_limit_degrees(PLANNER)
+    # One swing 33 ms apart, and one across a 2 s pause, past the 0.5 s the turn evaluation breaks at.
+    frames = [frame(0.0, -limit), frame(0.033, limit), frame(2.033, -limit)]
+    assert whole_walk_numbers(frames, PLANNER, CONFIG).full_swings == 1
+
+
+def test_the_travel_offset_is_positive_when_the_walker_heads_right_of_the_phone() -> None:
+    # The phone faces world +z. The planner's right for that facing comes from the floor's own axes, so
+    # this checks the sign against the arrow's convention rather than against the function's arithmetic.
+    phone_forward = np.array([0.0, 0.0, 1.0])
+    right, _ = ground_axes(Plane(WORLD_UP, 0.0), phone_forward)
+    angle = math.radians(20.0)
+    travel = math.cos(angle) * phone_forward + math.sin(angle) * right
+    times = np.arange(0.0, 4.0, 1.0 / 30.0)
+    positions = 1.4 * times[:, None] * travel[None, :]
+    frames = [frame(2.0, axes=(right, phone_forward))]
+    replay = SegmentReplay(frames, "test", "test", GoalMode.AHEAD, 0.25, times, positions)
+    assert math.degrees(travel_offset_lookup(replay)(2.0)) == pytest.approx(20.0, abs=1.0)
+
+
+def test_the_travel_offset_is_unknown_when_standing_or_without_a_world_pose() -> None:
+    times = np.arange(0.0, 4.0, 1.0 / 30.0)
+    standing = np.zeros((len(times), 3))
+    replay = SegmentReplay([frame(2.0)], "test", "test", GoalMode.AHEAD, 0.25, times, standing)
+    # Standing still gives the track no heading, so there's no direction of travel to compare with.
+    assert travel_offset_lookup(replay)(2.0) is None
+    walking = 1.4 * times[:, None] * np.array([0.0, 0.0, 1.0])[None, :]
+    no_pose = SegmentReplay([frame(2.0, origin=None)], "test", "test", GoalMode.AHEAD, 0.25, times, walking)
+    assert travel_offset_lookup(no_pose)(2.0) is None
+
+
+def test_the_flips_report_says_so_when_no_pair_could_be_placed() -> None:
+    assert format_flips("walk", None, [], 90.0, 5) == "=== walk\nno pair of consecutive plans could be placed in the world\n"

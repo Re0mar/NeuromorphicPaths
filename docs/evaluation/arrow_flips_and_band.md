@@ -49,7 +49,9 @@ Before the change, the 90th percentile of plan disagreement was 1.18 m on `conta
 `pixel_walk_3` and 1.30 m in the classroom. Each frame pair at or above it was sorted into one of five
 kinds, checked in this order:
 
-1. **The tracker jumped.** The phone's tracked position moved faster than 3 m/s between the frames.
+1. **The tracker jumped.** The phone's tracked position moved faster than 3 m/s between the frames,
+   or its forward direction turned faster than 720 degrees a second, which no hand turns a phone at.
+   Between two frames with the same timestamp, any move at all counts.
 2. **The phone turned.** The plan is drawn along the phone's forward direction, so a phone turning
    between frames swings an unchanged plan through the world. A pair counts here when lining up the two
    frames' directions removes at least half the gap.
@@ -63,9 +65,9 @@ because a group number names a patch of the walker's view rather than an object.
 
 | Walk | Pairs at or above the 90th percentile | Side flips | New obstacle | Phone turned | Same side | Tracker jump |
 |---|---|---|---|---|---|---|
-| `contact_walk_1` | 121 | 109 (90.1 %) | 2 | 10 | 0 | 0 |
-| `pixel_walk_3` | 139 | 103 (74.1 %) | 22 | 10 | 4 | 0 |
-| Classroom | 259 | 220 (84.9 %) | 25 | 11 | 2 | 1 |
+| `contact_walk_1` | 121 | 109 (90.1 %) | 2 | 0 | 0 | 10 |
+| `pixel_walk_3` | 139 | 103 (74.1 %) | 22 | 0 | 3 | 11 |
+| Classroom | 259 | 220 (84.9 %) | 25 | 0 | 2 | 12 |
 
 Most of the large disagreements were side flips: an obstacle centered ahead, a table or a cluster of
 chairs, with the plan passing it on the left in one frame and on the right in the next. Counted at a
@@ -80,8 +82,10 @@ around a centered obstacle cost nearly the same, any small change between frames
 planner keeps nothing from one frame to the next, so nothing resists the tip.
 
 The sideways weight had been suspected, because raising it from 0.055 to 6.5 earlier raised the 90th
-percentile. That isn't the cause. At the course's weight of 0.055 the arrow swung more often on two of
-the three walks: 100 times a minute on `pixel_walk_3` and 127 in the classroom.
+percentile. That isn't the cause. At the course's weight of 0.055, with the contact term off as the
+course has it, the arrow swung more often on two of the three walks: 100 times a minute on
+`pixel_walk_3` and 127 in the classroom. With the contact term on, 0.055 gives 101.9, 102.5 and 123.0
+swings a minute, more than 6.5 on all three walks.
 
 ### What was changed
 
@@ -94,8 +98,8 @@ to act on the arrow, so the plan further out stays free to change as new things 
 The previous plan is held relative to the walker's own direction, not fixed in the world. Between frames
 it is moved on the way the planner already assumes the walker moves: forward at walking pace, and
 sideways along the plan itself. It is dropped after a gap of more than half a second, after the clock goes
-backwards, and when the goal moves more than 1.5 m, so a wearer who looks toward the other of two gaps is
-steered there.
+backwards, and when the goal moves more than 1.5 m sideways, so a wearer who looks toward the other of
+two gaps is steered there. A goal that only moves nearer or farther keeps the plan.
 
 **How it behaves in use.** Two versions were considered: the previous plan fixed in the world, or held
 relative to the walker's own direction.
@@ -161,6 +165,17 @@ the arrow stops coming back to straight at 0.05 m, and the swings return from ab
 
 The alarm is unchanged on every walk, because it doesn't read the plan.
 
+The pairs at the new 90th percentile, sorted the same way:
+
+| Walk | Pairs at or above the 90th percentile | Side flips | New obstacle | Phone turned | Same side | Tracker jump |
+|---|---|---|---|---|---|---|
+| `contact_walk_1` | 121 | 13 (10.7 %) | 3 | 61 | 31 | 13 |
+| `pixel_walk_3` | 139 | 42 (30.2 %) | 33 | 26 | 25 | 13 |
+| Classroom | 259 | 32 (12.4 %) | 44 | 53 | 118 | 12 |
+
+Side flips went from most of the large disagreements to a tenth to a third of a much smaller set. What
+is left at the top is mostly the phone turning between frames and the plan moving on its own side.
+
 ## What holds the arrow at its limit 3 to 5.32 m out
 
 ### The band before and after
@@ -178,8 +193,8 @@ once.
 
 ### What the remaining frames are
 
-Each band frame with the arrow at its limit was re-planned four times, each time without one suspected
-cause, to see whether it would still sit at the limit:
+Each band frame with the arrow at its limit was re-planned without one suspected cause at a time, to see
+whether it would still sit at the limit:
 
 - **The phone pointing off the walker's line**, tested by turning the obstacles into the walker's
   direction of travel.
@@ -188,21 +203,28 @@ cause, to see whether it would still sit at the limit:
 - **The goal acting only on the plan's last row**, tested by spreading the same goal over every row.
 - **A full sidestep simply being right**, tested by geometry: whether the slowest sidestep that gets the
   body past the obstacle in time would still read as the limit.
+- **The prior toward the previous plan holding a sidestep it started earlier**, tested by re-planning
+  without it.
 
 | | `pixel_walk_3`, now | `pixel_walk_3`, before | Classroom, now | Classroom, before |
 |---|---|---|---|---|
 | Band frames at the limit | 2 | 71 | 59 | 115 |
-| Explained by the phone pointing off the line | 0 | 15 | 27 | 36 |
+| Explained by the phone pointing off the line | 0 | 15 | 27 | 35 |
 | Explained by the goal on the last row | 0 | 22 | 0 | 10 |
 | Explained by walls | 0 | 0 | 0 | 0 |
 | A full sidestep is right | 0 | 0 | 0 | 0 |
-| Explained by none of the four | 2 | 46 | 30 | 73 |
+| Held by the previous plan | 0 | 0 | 5 | 0 |
+| Explained by none of the five | 2 | 46 | 29 | 73 |
 
 A frame can be explained by more than one cause, so the rows can add up to more than the total. Two
-classroom frames couldn't be tested for the phone pointing, before or after, because the walker's
-direction of travel wasn't known there: standing, or close to a gap in the tracking.
+classroom frames now, and three before, couldn't be tested for the phone pointing. In two the walker's
+direction of travel wasn't known: standing, or close to a gap in the tracking. In the third, before
+the change, the phone pointed 103.5 degrees off it, and past 90 degrees that's the track's heading
+going wrong rather than a phone held off the line.
 
 - The prior took out every frame the goal test explained.
+- The prior itself holds 5 of the classroom's 59 frames at the limit. That's what it is built to do:
+  keep a sidestep until the other side is cheaper by more than the cost of switching.
 - The phone pointing explains 27 of the classroom's 59 remaining frames. In those the phone pointed a
   median 23.9 degrees off the walking direction, between 7.9 and 36.3.
 - Walls can't be judged on these walks. `pixel_walk_3` has no wall in any band frame, and the classroom
@@ -210,9 +232,9 @@ direction of travel wasn't known there: standing, or close to a gap in the track
 - A steady sidestep for anything 3 to 5.32 m ahead reads well under the limit, so a full sidestep is
   never simply right there.
 
-Most of the frames none of the four explains have something nearer than 3 m just beside the corridor,
+Most of the frames none of the five explains have something nearer than 3 m just beside the corridor,
 0.5 to 1.0 m to the side, where the band doesn't look: both of `pixel_walk_3`'s, and 19 of the
-classroom's 30. They are desk clusters about 2 m wide, and an obstacle shaped like a U whose arms reach
+classroom's 29. They are desk clusters about 2 m wide, and an obstacle shaped like a U whose arms reach
 to about 2 m ahead.
 
 ### The band, restated
@@ -235,8 +257,9 @@ longer walk adds frames. On the earlier definition the target is met on both.
 ## What is left open
 
 - **The plan is made along the phone's direction, not the walker's.** It explains 27 of the classroom's
-  remaining band frames, and 4 to 8 % of the large plan disagreements. Planning along the direction of
-  travel would remove it.
+  remaining band frames. Since the change it's also the phone turning between frames behind 61 of 121,
+  26 of 139 and 53 of 259 of the pairs at the 90th percentile. Planning along the direction of travel
+  would remove both.
 - **A wall counted once rather than once per patch.** These walks have almost no walls in the band, so a
   walk along a corridor is what would show whether it matters.
 - **The restated band needs more frames.** A walk with at least 100 such frames would let it be judged.
@@ -254,5 +277,7 @@ python -m nav.evaluation.check_planner numbers frame_logs/pixel_display_run --sc
 ```
 
 `flips` and `band` take the same arguments in place of `numbers`. Add
-`--set previous_plan_prior_enabled=false` for the figures before the change. `--cached` keeps the scene
-pass between runs, which takes minutes cold.
+`--set previous_plan_prior_enabled=false` for the figures before the change. The spread sweep is
+`numbers` with `--set previous_plan_spread_meters=` each of 0.05, 0.125, 0.25, 0.5 and 1.0, and the
+whole-horizon runs add `--set previous_plan_prior_seconds=3.8`. `--cached` keeps the scene pass between
+runs, which takes minutes cold.

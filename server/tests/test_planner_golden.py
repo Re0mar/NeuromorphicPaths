@@ -9,8 +9,8 @@ with the reason in the commit message. A change that moves them by accident show
 The expected values are a snapshot of the planner, not arithmetic. First captured 2026-10-04 at
 e983176 plus the commit that added this test. Updated 2026-10-05 for the prior toward the previous
 plan (previous_plan_spread_meters 0.25 over the first 1.0 s), which moved every heading figure and no
-alarm figure. The arithmetic check
-beside them is `test_a_hand_built_slice_gives_the_numbers_worked_out_by_hand` in
+alarm figure. The full swings, the alarm's hold and raise figures and the near noise were added the
+same day, at their values with the prior on. The arithmetic check beside them is `test_a_hand_built_slice_gives_the_numbers_worked_out_by_hand` in
 test_evaluation_fixture.py, which a uniform defect in the planner can't satisfy by accident.
 
 The slices were cut from the recordings in the root clone's server/frame_logs/ with:
@@ -45,6 +45,10 @@ FIXTURES = Path(__file__).parent / "fixtures"
 SHARE_TOLERANCE_POINTS = 0.5
 COUNT_TOLERANCE = 1
 DISAGREEMENT_TOLERANCE_METERS = 0.005
+# About a tenth of these walks' 34 ms frame step, so one frame more or less of hold shows.
+HOLD_TOLERANCE_SECONDS = 0.003
+# The noise comes from the scene and no planner change should move it at all.
+NOISE_TOLERANCE_METERS = 0.0005
 
 
 @dataclass(frozen=True)
@@ -58,8 +62,14 @@ class Expected:
     restated_band_pinned: int
     restated_band_frames: int
     distinct_headings: int
+    # Pinned frame pairs whose arrow jumps from one limit to the other.
+    full_swings: int
     alarm_on_percent: float
     alarm_changes: int
+    raised_past_close: int
+    longest_hold_seconds: float
+    near_noise_median_meters: float
+    near_noise_readings: int
     disagreement_median_meters: float
     disagreement_p90_meters: float
 
@@ -75,8 +85,13 @@ EXPECTED = {
         restated_band_pinned=0,
         restated_band_frames=52,
         distinct_headings=21,
+        full_swings=0,
         alarm_on_percent=47.156,  # 456 of 967
         alarm_changes=26,
+        raised_past_close=0,
+        longest_hold_seconds=0.4998,
+        near_noise_median_meters=0.0986,
+        near_noise_readings=8392,
         disagreement_median_meters=0.0668,  # over 964 pairs
         disagreement_p90_meters=0.3993,
     ),
@@ -89,8 +104,13 @@ EXPECTED = {
         restated_band_pinned=6,
         restated_band_frames=54,
         distinct_headings=16,
+        full_swings=0,
         alarm_on_percent=27.766,  # 128 of 461
         alarm_changes=12,
+        raised_past_close=0,
+        longest_hold_seconds=0.2999,
+        near_noise_median_meters=0.1244,
+        near_noise_readings=1480,
         disagreement_median_meters=0.0521,  # over 460 pairs
         disagreement_p90_meters=0.3573,
     ),
@@ -129,7 +149,10 @@ def test_the_planner_gives_the_pinned_numbers_on_the_slice(name: str) -> None:
     ]
     counts = (
         ("distinct_headings", numbers.distinct_headings),
+        ("full_swings", numbers.full_swings),
         ("alarm_changes", numbers.alarm_changes),
+        ("raised_past_close", numbers.raised_past_close),
+        ("near_noise_readings", numbers.near_noise_readings),
         ("restated_band_pinned", numbers.restated_band_pinned),
         ("restated_band_frames", numbers.restated_band_frames),
     )
@@ -139,6 +162,10 @@ def test_the_planner_gives_the_pinned_numbers_on_the_slice(name: str) -> None:
     for field, value in (("disagreement_median_meters", numbers.disagreement_median_meters), ("disagreement_p90_meters", numbers.disagreement_p90_meters)):
         if abs(value - getattr(expected, field)) > DISAGREEMENT_TOLERANCE_METERS:
             moved.append(f"{field} {value:.4f}, pinned {getattr(expected, field):.4f}")
+    if abs(numbers.longest_hold_seconds - expected.longest_hold_seconds) > HOLD_TOLERANCE_SECONDS:
+        moved.append(f"longest_hold_seconds {numbers.longest_hold_seconds:.4f}, pinned {expected.longest_hold_seconds:.4f}")
+    if numbers.near_noise_median_meters is None or abs(numbers.near_noise_median_meters - expected.near_noise_median_meters) > NOISE_TOLERANCE_METERS:
+        moved.append(f"near_noise_median_meters {numbers.near_noise_median_meters}, pinned {expected.near_noise_median_meters:.4f}")
     # Every moved figure in one message, so a planner change shows its whole effect at once.
     assert not moved, f"{name}: " + "; ".join(moved)
 

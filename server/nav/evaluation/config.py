@@ -191,6 +191,13 @@ class PlannerNumbersConfig:
     # The walker's origin moving faster than this between two frames is the tracker relocalizing. The
     # same figure the turn evaluation uses, read from it rather than restated.
     tracker_jump_speed_mps: float = EvaluationConfig.max_plausible_step_speed_mps
+    # The walker frame turning faster than this is the tracker's orientation jumping, not a person
+    # turning: 24 degrees between two frames at 30 Hz, faster than a head or a hand-held phone turns.
+    # The classroom walk has pairs turning 54 to 76 degrees in 33 ms, over 1300 degrees a second.
+    max_turn_rate_degrees_per_second: float = 720.0
+    # A full swing counts only between frames this close in time. The same gap breaks the turn
+    # evaluation's track, read from it rather than restated.
+    swing_max_gap_seconds: float = EvaluationConfig.max_interpolation_gap_seconds
     # The phone's turn explains a pair when lining up the two frames' axes removes at least this share of
     # the disagreement. A share, not an angle, so a pair where the phone turned and the plan also flipped
     # sides still reads as a flip.
@@ -217,6 +224,8 @@ class PlannerNumbersConfig:
             "pinned_tolerance_degrees",
             "min_frames_for_a_share",
             "tracker_jump_speed_mps",
+            "max_turn_rate_degrees_per_second",
+            "swing_max_gap_seconds",
             "axis_turn_explained_share",
             "same_point_meters",
         ):

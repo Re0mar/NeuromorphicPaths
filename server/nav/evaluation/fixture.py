@@ -24,6 +24,7 @@ import dataclasses
 import gzip
 import json
 import math
+import os
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -246,6 +247,10 @@ def _parse_arguments(argv: list[str] | None) -> argparse.Namespace:
 
 
 def _run(arguments: argparse.Namespace) -> int:
+    if arguments.subcommand == "cut" and not arguments.out.match(FIXTURE_GLOB):
+        # The golden test and the size cap both find slices by this name, so a slice named otherwise
+        # would be tested by nothing and counted against nothing.
+        raise FixtureRefused(f"a golden slice is named {FIXTURE_GLOB}, so the golden test and the size cap find it, got {arguments.out.name}")
     planner_config, _ = apply_overrides(PlannerConfig(), arguments.planner_set)
     config = PlannerNumbersConfig()
     walker = WalkerConfig()
@@ -261,6 +266,9 @@ def _run(arguments: argparse.Namespace) -> int:
     if arguments.subcommand == "find":
         return _find(arguments, inputs, planner_config, config, walker, goal_mode)
 
+    if arguments.start > arguments.end:
+        print(f"the window starts at {arguments.start} s, after it ends at {arguments.end} s", file=sys.stderr)
+        return 2
     if not segment_start <= arguments.start <= arguments.end <= segment_end:
         raise UsageError(
             f"the window {arguments.start} to {arguments.end} s is not inside segment {arguments.segment} of "
@@ -286,29 +294,39 @@ def _run(arguments: argparse.Namespace) -> int:
         },
         "walker": dataclasses.asdict(walker),
     }
-    written = write_fixture(arguments.out, window, provenance)
-    total = check_fixture_set_size(arguments.out)
+    # Written beside the target first, so a cut refused for its size leaves the folder as it was,
+    # including a slice the cut would have replaced.
+    candidate = arguments.out.with_name(arguments.out.name + ".partial")
+    written = write_fixture(candidate, window, provenance)
+    total = check_fixture_set_size(candidate, arguments.out)
+    os.replace(candidate, arguments.out)
     print(f"wrote {arguments.out}: {len(window)} frames, {band_frames} band, {clear_frames} clear, {written} bytes, set {total} bytes")
     return EXIT_DONE
 
 
-def check_fixture_set_size(written: Path) -> int:
+def check_fixture_set_size(candidate: Path, target: Path) -> int:
     """
-    The size of every golden slice in the written slice's folder, the new one included.
+    The size the slice folder would have once the candidate replaces the target.
 
+    Every golden slice in the target's folder counts, except the target itself, which the candidate
+    replaces. The candidate counts whatever its name.
+
+    :param candidate: The slice just written, not yet in place.
+    :param target: Where it will go. It may already exist, from an earlier cut.
     :return: The total in bytes.
     :rtype: int
-    :raises FixtureRefused: Over MAX_FIXTURE_SET_BYTES. The slice just written is deleted first, so a
-        refused cut leaves the folder as it was, apart from the slice it replaced.
+    :raises FixtureRefused: Over MAX_FIXTURE_SET_BYTES. The candidate is deleted and the target left as it
+        was, so a refused cut changes nothing in the folder.
     """
-    written = Path(written)
-    total = sum(path.stat().st_size for path in written.parent.glob(FIXTURE_GLOB))
+    candidate, target = Path(candidate), Path(target)
+    size = candidate.stat().st_size
+    others = sum(path.stat().st_size for path in target.parent.glob(FIXTURE_GLOB) if path.resolve() != target.resolve())
+    total = size + others
     if total > MAX_FIXTURE_SET_BYTES:
-        size = written.stat().st_size
-        written.unlink()
+        candidate.unlink()
         raise FixtureRefused(
-            f"the fixture set would be {total} bytes, {size} of them {written.name}, over the cap of "
-            f"{MAX_FIXTURE_SET_BYTES}. The slice was not kept"
+            f"the fixture set would be {total} bytes, {size} of them {target.name}, over the cap of "
+            f"{MAX_FIXTURE_SET_BYTES}. Nothing in {target.parent} was changed"
         )
     return total
 
@@ -356,7 +374,9 @@ def _find(
 
 def check_rounding(window: Sequence[PlannerInput], planner_config: PlannerConfig, walker: WalkerConfig, goal_mode: GoalMode) -> None:
     """
-    Refuse a slice whose rounding changes any heading or alarm, so the slice pins what the recording gives.
+    Refuse a slice whose rounding changes any plan, so the slice pins what the recording gives.
+
+    A plan is its heading, its alarm and its offsets, which the plan disagreement is measured on.
 
     :raises FixtureRefused: Naming how many frames changed and the first few timestamps.
     """
@@ -365,7 +385,9 @@ def check_rounding(window: Sequence[PlannerInput], planner_config: PlannerConfig
     changed = [
         f"{a.input.timestamp_seconds!r}"
         for a, b in zip(exact, stored, strict=True)
-        if a.path.first_heading_radians != b.path.first_heading_radians or a.path.alarm != b.path.alarm
+        if a.path.first_heading_radians != b.path.first_heading_radians
+        or a.path.alarm != b.path.alarm
+        or not np.array_equal(a.path.lateral_offsets_meters, b.path.lateral_offsets_meters)
     ]
     if changed:
         raise FixtureRefused(f"rounding changes the plan on {len(changed)} frames, first at t = {', '.join(changed[:5])}")

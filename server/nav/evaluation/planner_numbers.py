@@ -194,14 +194,20 @@ def plan_disagreement(earlier: ReplayedFrame, later: ReplayedFrame, forward_dist
             f"a plan with no world pose can't be placed in the world: frames at "
             f"{first.timestamp_seconds:.3f} s and {second.timestamp_seconds:.3f} s"
         )
-    world = (
-        first.origin
-        + np.outer(forward_distances, first.forward_axis)
-        + np.outer(earlier.path.lateral_offsets_meters, first.lateral_axis)
-    )
+    forward_in_later, lateral_in_later = _earlier_plan_in_later_frame(earlier, later, forward_distances)
+    return _mean_gap(forward_in_later, lateral_in_later, later, forward_distances)
+
+
+def _earlier_plan_in_later_frame(earlier: ReplayedFrame, later: ReplayedFrame, forward_distances: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The earlier plan's points as forward and lateral distances in the later frame, through the world."""
+    first, second = earlier.input, later.input
+    world = first.origin + np.outer(forward_distances, first.forward_axis) + np.outer(earlier.path.lateral_offsets_meters, first.lateral_axis)
     relative = world - second.origin
-    forward_in_later = relative @ second.forward_axis
-    lateral_in_later = relative @ second.lateral_axis
+    return relative @ second.forward_axis, relative @ second.lateral_axis
+
+
+def _mean_gap(forward_in_later: np.ndarray, lateral_in_later: np.ndarray, later: ReplayedFrame, forward_distances: np.ndarray) -> float | None:
+    """Mean lateral gap from the later plan, over the earlier plan's points that lie within its reach."""
     overlap = (forward_in_later >= 0.0) & (forward_in_later <= forward_distances[-1])
     if not overlap.any():
         return None
@@ -233,9 +239,11 @@ def whole_walk_numbers(frames: Sequence[ReplayedFrame], planner_config: PlannerC
     for band, at_limit in zip(bands, pinned):
         frames_by_band[band] += 1
         pinned_by_band[band] += int(at_limit)
+    stamps = [frame.input.timestamp_seconds for frame in frames]
+    # A swing across a pause isn't the arrow swinging in front of the walker, so only frames close in time count.
     full_swings = sum(
-        1 for before, after, before_pinned, after_pinned in zip(headings, headings[1:], pinned, pinned[1:])
-        if before_pinned and after_pinned and np.sign(before) != np.sign(after)
+        1 for before, after, before_pinned, after_pinned, gap in zip(headings, headings[1:], pinned, pinned[1:], np.diff(stamps))
+        if before_pinned and after_pinned and np.sign(before) != np.sign(after) and 0.0 <= gap <= config.swing_max_gap_seconds
     )
     restated = [in_restated_band(frame.input.obstacles, planner_config, config) for frame in frames]
     restated_pinned = sum(1 for inside, at_limit in zip(restated, pinned) if inside and at_limit)
@@ -321,7 +329,7 @@ class PairCause(Enum):
     what it chose. Only then is the plan itself compared with what was in front of it.
     """
 
-    FRAME_JUMP = "frame jump"  # The tracker relocalized between the frames.
+    FRAME_JUMP = "frame jump"  # The tracker relocalized: its position or its orientation jumped between the frames.
     AXIS_TURN = "axis turn"  # The phone turned, and lining up the axes removes most of the gap.
     NEW_OBSTACLE = "new obstacle"  # The plans pass a point on opposite sides, and the earlier frame hadn't seen it.
     SIDE_FLIP = "side flip"  # The plans pass a point both frames saw on opposite sides.
@@ -345,14 +353,6 @@ class DiagnosedPair:
     axis_turn_degrees: float
 
 
-def _earlier_plan_in_later_frame(earlier: ReplayedFrame, later: ReplayedFrame, forward_distances: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """The earlier plan's points as forward and lateral distances in the later frame, through the world."""
-    first, second = earlier.input, later.input
-    world = first.origin + np.outer(forward_distances, first.forward_axis) + np.outer(earlier.path.lateral_offsets_meters, first.lateral_axis)
-    relative = world - second.origin
-    return relative @ second.forward_axis, relative @ second.lateral_axis
-
-
 def _aligned_disagreement(earlier: ReplayedFrame, later: ReplayedFrame, forward_distances: np.ndarray) -> float | None:
     """
     The disagreement if the axes hadn't turned: both plans in their own walker frames, the earlier one
@@ -361,11 +361,7 @@ def _aligned_disagreement(earlier: ReplayedFrame, later: ReplayedFrame, forward_
     moved = later.input.origin - earlier.input.origin
     forward_in_later = forward_distances - float(moved @ later.input.forward_axis)
     lateral_in_later = earlier.path.lateral_offsets_meters - float(moved @ later.input.lateral_axis)
-    overlap = (forward_in_later >= 0.0) & (forward_in_later <= forward_distances[-1])
-    if not overlap.any():
-        return None
-    later_lateral = np.interp(forward_in_later[overlap], forward_distances, later.path.lateral_offsets_meters)
-    return float(np.mean(np.abs(lateral_in_later[overlap] - later_lateral)))
+    return _mean_gap(forward_in_later, lateral_in_later, later, forward_distances)
 
 
 def _axis_turn_degrees(earlier: ReplayedFrame, later: ReplayedFrame) -> float:
@@ -419,7 +415,14 @@ def pair_cause(
     elapsed = second.timestamp_seconds - first.timestamp_seconds
     moved = second.origin - first.origin
     step = float(np.hypot(moved @ second.forward_axis, moved @ second.lateral_axis))
-    if elapsed > 0.0 and step / elapsed > config.tracker_jump_speed_mps:
+    turn = abs(_axis_turn_degrees(earlier, later))
+    if elapsed > 0.0:
+        jumped = step / elapsed > config.tracker_jump_speed_mps or turn / elapsed > config.max_turn_rate_degrees_per_second
+    else:
+        # No time passed, or the clock went back, so no rate can be taken. A duplicated frame carries
+        # the same pose, so any real move between the two is the tracker, however small the gap.
+        jumped = step > config.same_point_meters or turn > 0.0
+    if jumped:
         return PairCause.FRAME_JUMP, None
 
     forward_distances = plan_forward_distances(planner_config)

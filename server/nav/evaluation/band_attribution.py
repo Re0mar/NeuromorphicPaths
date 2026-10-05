@@ -2,7 +2,7 @@
 What holds the arrow at its sidestep limit when the nearest thing in the corridor is 3 to 5.32 m ahead.
 
 For every such frame, two things. A breakdown of what each cost term charges along the chosen path
-against walking straight on, computed the way the dynamic program adds it up. And four tests, one per
+against walking straight on, computed the way the dynamic program adds it up. And five tests, one per
 known cause, each asking whether the frame would still sit at the limit without that cause:
 
 - the phone pointing off the walker's line, tested by re-planning with the obstacles turned into the
@@ -10,7 +10,14 @@ known cause, each asking whether the frame would still sit at the limit without 
 - a wall counted once per scene cell, tested by re-planning with touching wall cells joined into one
 - the goal acting only on the plan's last row, tested by re-planning with the same goal spread over
   every row
+- the prior toward the previous plan holding a sidestep it started earlier, tested by re-planning
+  without it
 - the band itself, where a full sidestep may simply be the right plan, tested by geometry alone
+
+The prior toward the previous plan can't be rebuilt from one frame, so it is taken from the field the
+plan was made from and kept in every re-plan but its own. In the phone-pointing re-plan it stays in the
+phone's frame while the obstacles are turned, which leans that re-plan toward the plan it is testing,
+so it can only under-count the frames phone pointing explains.
 
 Every re-plan goes through the planner's own functions with one input changed. None of them is an
 arrow anyone sees or scores. They measure, and the planner's own arrow stays the only one judged.
@@ -60,10 +67,19 @@ class PinCandidate(Enum):
     WALL_CELLS = "wall cells"  # A wall costs once per 0.25 m cell, so it pushes harder than one obstacle.
     GOAL_LAST_ROW = "goal last row"  # The goal acts only on the plan's last row.
     RIGHT_PLAN = "right plan"  # A full sidestep is simply what clearing it takes.
+    PREVIOUS_PLAN = "previous plan"  # The prior toward the previous plan holds a sidestep it started earlier.
 
 
-# The two whose fixes belong to tickets on hold, and so are measured here but not fixed.
+# Measured here and fixed elsewhere: planning along the walker's direction of travel, and counting a wall
+# once, are both separate pieces of work waiting on other decisions.
 ON_HOLD = frozenset({PinCandidate.PHONE_POINTING, PinCandidate.WALL_CELLS})
+# The one cause a change to the planner here could remove.
+FIXABLE = frozenset({PinCandidate.GOAL_LAST_ROW})
+# Right plan and previous plan are the planner doing what it was built to do. They are neither on hold nor
+# something to fix, and each is counted under its own name.
+# A phone more than this far off the walking direction points sideways or behind, which is the track's
+# heading going wrong rather than a phone held off the line, so the test isn't run on it.
+MAX_PHONE_OFFSET_DEGREES = 90.0
 
 
 @dataclass(frozen=True)
@@ -95,7 +111,7 @@ class BandAttribution:
     unknown_by: dict[PinCandidate, int]
     # Explained, and only by causes on hold.
     only_on_hold: int
-    # Explained by at least one cause that isn't on hold.
+    # Explained by the cause a change here could remove.
     fixable: int
     # Explained by more than one cause.
     several: int
@@ -290,7 +306,7 @@ def band_attribution(
         explained = set()
         unknown = set()
         offset = travel_offset_at(frame.input.timestamp_seconds)
-        if offset is None:
+        if offset is None or abs(np.degrees(offset)) > MAX_PHONE_OFFSET_DEGREES:
             unknown.add(PinCandidate.PHONE_POINTING)
         elif not replan_pinned(term_fields(frame, turned_into_travel(obstacles, offset), planner_config, walker, goal_mode), planner_config, config):
             explained.add(PinCandidate.PHONE_POINTING)
@@ -302,6 +318,10 @@ def band_attribution(
             explained.add(PinCandidate.GOAL_LAST_ROW)
         if sidestep_is_the_right_plan(obstacles, planner_config, config):
             explained.add(PinCandidate.RIGHT_PLAN)
+        without_memory = dict(fields)
+        without_memory["previous plan"] = np.zeros_like(fields["previous plan"])
+        if not replan_pinned(without_memory, planner_config, config):
+            explained.add(PinCandidate.PREVIOUS_PLAN)
         attributed.append(
             FrameAttribution(
                 timestamp_seconds=frame.input.timestamp_seconds,
@@ -332,7 +352,7 @@ def summarize_attribution(attributed: list[FrameAttribution], band_frames: int, 
         explained_by={candidate: sum(candidate in each.explained for each in attributed) for candidate in PinCandidate},
         unknown_by={candidate: sum(candidate in each.unknown for each in attributed) for candidate in PinCandidate},
         only_on_hold=sum(1 for each in attributed if each.explained and each.explained <= ON_HOLD),
-        fixable=sum(1 for each in attributed if each.explained - ON_HOLD),
+        fixable=sum(1 for each in attributed if each.explained & FIXABLE),
         several=sum(1 for each in attributed if len(each.explained) > 1),
         unexplained=sum(1 for each in attributed if not each.explained and not each.unknown),
         frames=attributed,

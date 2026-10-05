@@ -250,25 +250,76 @@ def test_the_cutter_refuses_rounding_that_changes_a_plan(monkeypatch) -> None:
         check_rounding(hand_built_slice(), PLANNER, WalkerConfig(), GoalMode.AHEAD)
 
 
+def test_the_cutter_refuses_rounding_that_changes_only_the_offsets(monkeypatch) -> None:
+    # Same heading and alarm, but a later offset moved, as a far wall nudged by rounding would do.
+    # The plan disagreement reads offsets, so the slice would pin a number the recording doesn't give.
+    real_replay = fixture_module.replayed_frames
+    calls = []
+
+    def nudged(inputs, *args, **kwargs):
+        frames = real_replay(inputs, *args, **kwargs)
+        calls.append(None)
+        if len(calls) == 1:
+            return frames
+        offsets = frames[0].path.lateral_offsets_meters.copy()
+        offsets[-1] += 0.05
+        moved = dataclasses.replace(frames[0], path=dataclasses.replace(frames[0].path, lateral_offsets_meters=offsets))
+        return [moved, *frames[1:]]
+
+    monkeypatch.setattr(fixture_module, "replayed_frames", nudged)
+    with pytest.raises(FixtureRefused, match="rounding changes the plan on 1 frames"):
+        check_rounding(hand_built_slice(), PLANNER, WalkerConfig(), GoalMode.AHEAD)
+
+
 def test_the_real_rounding_leaves_the_hand_built_slice_alone() -> None:
     check_rounding(hand_built_slice(), PLANNER, WalkerConfig(), GoalMode.AHEAD)
 
 
 def test_the_cutter_refuses_a_fixture_set_over_the_size_cap(tmp_path: Path) -> None:
     (tmp_path / "golden_big.json.gz").write_bytes(b"\0" * (MAX_FIXTURE_SET_BYTES - 10))
-    new = tmp_path / "golden_new.json.gz"
-    new.write_bytes(b"\0" * 20)
-    with pytest.raises(FixtureRefused, match="over the cap of 1000000. The slice was not kept"):
-        check_fixture_set_size(new)
-    assert not new.exists()
+    candidate = tmp_path / "golden_new.json.gz.partial"
+    candidate.write_bytes(b"\0" * 20)
+    with pytest.raises(FixtureRefused, match="over the cap of 1000000. Nothing in .* was changed"):
+        check_fixture_set_size(candidate, tmp_path / "golden_new.json.gz")
+    assert not candidate.exists()
     assert (tmp_path / "golden_big.json.gz").exists()
 
 
+def test_a_refused_recut_leaves_the_slice_it_would_replace(tmp_path: Path) -> None:
+    # Re-cutting golden_a too large beside golden_b is refused, and the committed golden_a stays as it was.
+    old = tmp_path / "golden_a.json.gz"
+    old.write_bytes(b"old" * 100)
+    (tmp_path / "golden_b.json.gz").write_bytes(b"\0" * 300_000)
+    candidate = tmp_path / "golden_a.json.gz.partial"
+    candidate.write_bytes(b"\0" * 800_000)
+    with pytest.raises(FixtureRefused, match="1100000 bytes"):
+        check_fixture_set_size(candidate, old)
+    assert old.read_bytes() == b"old" * 100
+
+
+def test_a_recut_counts_the_new_slice_in_place_of_the_old(tmp_path: Path) -> None:
+    # The old golden_a is replaced, so only the candidate's size counts for it, not both.
+    (tmp_path / "golden_a.json.gz").write_bytes(b"\0" * 600_000)
+    candidate = tmp_path / "golden_a.json.gz.partial"
+    candidate.write_bytes(b"\0" * 600_000)
+    assert check_fixture_set_size(candidate, tmp_path / "golden_a.json.gz") == 600_000
+
+
 def test_a_fixture_set_under_the_cap_is_kept(tmp_path: Path) -> None:
-    new = tmp_path / "golden_new.json.gz"
-    new.write_bytes(b"\0" * 20)
+    candidate = tmp_path / "golden_new.json.gz.partial"
+    candidate.write_bytes(b"\0" * 20)
     (tmp_path / "not_a_slice.bin").write_bytes(b"\0" * MAX_FIXTURE_SET_BYTES)
-    assert check_fixture_set_size(new) == 20
+    assert check_fixture_set_size(candidate, tmp_path / "golden_new.json.gz") == 20
+    assert candidate.exists()
+
+
+def test_the_cutter_refuses_a_slice_named_outside_the_golden_pattern(recording: Path, tmp_path: Path, capsys) -> None:
+    out = tmp_path / "slice.json.gz"
+    code, _, err = run(["cut", recording, "--start", 0.0, "--end", 21.0, "--out", out], capsys)
+    assert code == 1
+    assert "a golden slice is named golden_*.json.gz" in err
+    assert "slice.json.gz" in err
+    assert not out.exists()
 
 
 def test_the_cutter_refuses_a_slice_short_of_band_or_clear_frames(recording: Path, tmp_path: Path, capsys) -> None:
@@ -283,6 +334,19 @@ def test_the_cut_command_refuses_a_window_outside_the_segment(recording: Path, t
     code, _, err = run(["cut", recording, "--start", 5.0, "--end", 99.0, "--out", tmp_path / "golden_x.json.gz"], capsys)
     assert code == 2
     assert "is not inside segment -1" in err
+
+
+def test_the_cut_command_refuses_a_window_that_starts_after_it_ends(recording: Path, tmp_path: Path, capsys) -> None:
+    code, _, err = run(["cut", recording, "--start", 15.0, "--end", 5.0, "--out", tmp_path / "golden_x.json.gz"], capsys)
+    assert code == 2
+    assert "the window starts at 15.0 s, after it ends at 5.0 s" in err
+
+
+def test_garbage_bytes_are_refused_as_an_unreadable_slice(tmp_path: Path) -> None:
+    path = tmp_path / "golden_garbage.json.gz"
+    path.write_bytes(b"not a gzip stream at all")
+    with pytest.raises(FixtureRefused, match="is not a readable slice"):
+        read_fixture(path)
 
 
 def test_find_with_no_qualifying_window_exits_3(recording: Path, capsys) -> None:

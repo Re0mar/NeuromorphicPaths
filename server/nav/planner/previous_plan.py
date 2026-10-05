@@ -56,9 +56,11 @@ class PreviousPlanPrior:
 
         Nothing is remembered on the first frame, after a clock that went backwards (a reconnect or a
         new recording segment), or after a gap longer than previous_plan_max_gap_seconds, when the old
-        plan is too stale to say anything about this one. Nor after the goal moved farther than the
-        goal's own tolerance: that is a different place to go, such as a wearer looking at the other of
-        two gaps, and holding the old plan would keep them from it.
+        plan is too stale to say anything about this one. Nor after the goal moved sideways farther than
+        the goal's own tolerance: that is a different place to go, such as a wearer looking at the other
+        of two gaps, and holding the old plan would keep them from it. Only the sideways part counts,
+        because it is the only part the goal term reads. A gaze sliding nearer or farther along the same
+        line is the same goal, and forgetting on it would bring the flips straight back in gaze mode.
 
         :param grid: The lateral candidates.
         :param timestamp_seconds: This frame's time.
@@ -69,8 +71,8 @@ class PreviousPlanPrior:
         if self._offsets is None or self._timestamp is None or self._goal is None:
             return None
         elapsed = timestamp_seconds - self._timestamp
-        goal_moved = float(np.hypot(*(np.asarray(goal, dtype=np.float64) - self._goal)))
-        if elapsed < 0 or elapsed > self._config.previous_plan_max_gap_seconds or goal_moved > self._config.goal_tolerance_meters:
+        goal_moved_sideways = abs(float(goal[0]) - float(self._goal[0]))
+        if elapsed < 0 or elapsed > self._config.previous_plan_max_gap_seconds or goal_moved_sideways > self._config.goal_tolerance_meters:
             self.forget()
             return None
         # Where each of this frame's rows lies on the previous plan. The planner assumes the walker

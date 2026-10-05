@@ -1,4 +1,4 @@
-"""An ObstacleSet in, a PlannedPath out. Field, goal prior, dynamic program, heading, alarm."""
+"""An ObstacleSet in, a PlannedPath out. Field, goal prior, previous-plan prior, dynamic program, heading, alarm."""
 
 # Standard library imports
 import logging
@@ -32,9 +32,11 @@ def planner_terms(config: PlannerConfig) -> tuple[CostTerm, ...]:
 
 
 class PlannerPipeline:
-    """Holds what a run keeps between frames: the grid and the cost terms, the last field, the alarm's hold.
+    """Holds what a run keeps between frames: the grid and the cost terms, the last field, the alarm's hold, the previous plan.
 
-    The grid and the terms never change. The last field is there for the debug window to draw.
+    The grid and the terms never change. The last field is there for the debug window to draw and for
+    the band breakdown to split by term. The previous plan is what the previous-plan prior pulls toward
+    on the next frame.
 
     The hold carries across frames, so one pipeline has to serve a whole run. A pipeline built per
     frame would let the alarm clear the moment its raise decision did.
@@ -62,10 +64,11 @@ class PlannerPipeline:
 
     @property
     def last_field(self) -> np.ndarray | None:
-        """The field from the most recent plan: every cost term, with the goal term on its last row.
+        """The field from the most recent plan: every cost term, the goal term on its last row, and the previous-plan prior.
 
-        Debug only. The runtime hands it to a DebugSink and nothing else reads it, so nothing else
-        grows a dependency on a grid the size of the horizon.
+        For looking at, not for planning with. The runtime hands it to a DebugSink, and the evaluation's
+        band breakdown reads it through replay to split a frame's cost by term. Nothing on the live path
+        reads it, so nothing there grows a dependency on a grid the size of the horizon.
         """
         return self._last_field
 
@@ -103,13 +106,17 @@ class PlannerPipeline:
 
         offsets, cost = plan(field, start_lateral_meters, self._grid, config)
         after_plan = time.perf_counter()
+        if previous_plan_field is not None:
+            # The user model's work figure reads this cost. Holding a side is the walker's memory,
+            # not work the scene imposed, so the prior's charge along the chosen path comes off.
+            cells = np.argmin(np.abs(self._grid[None, :] - offsets[:, None]), axis=1)
+            cost -= float(np.sum(previous_plan_field[np.arange(len(offsets)), cells]) * config.time_step_seconds)
         if self._previous_plan is not None:
             self._previous_plan.remember(offsets, obstacles.timestamp_seconds, goal)
 
-        # The prior is the planner with nothing in view: no obstacle terms, the same goal. A prior
-        # without the goal would credit the scene with a turn the gaze caused. The pull toward the
-        # previous plan goes in too, because it is the walker's own memory, not something the camera
-        # saw this frame, and leaving it out would count holding a side as scene information.
+        # The KL comparison's prior is the planner with nothing in view. It keeps the goal, or the scene gets
+        # credit for a turn the gaze caused. It keeps the previous-plan prior too, since that's the walker's
+        # memory and not something seen this frame, so holding a side doesn't count as scene information.
         prior_field = np.zeros_like(field)
         prior_field[-1] += goal_row
         if previous_plan_field is not None:

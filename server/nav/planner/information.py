@@ -84,7 +84,7 @@ def scene_information_bits(
     KL divergence of the plan's posterior from its prior at one step, in bits.
 
     :param posterior_field: The field the planner planned through, goal term included.
-    :param prior_field: The same with no obstacle terms: zero but for the goal term.
+    :param prior_field: The same with no obstacle terms: the goal term, and the previous-plan prior when it is on.
     :param start_cell: Where both paths start.
     :param grid: The lateral candidates.
     :param config: Time step, kinetic weight, lateral speed limit.

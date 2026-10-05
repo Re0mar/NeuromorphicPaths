@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 # Local package imports
-from nav.planner.config import PlannerConfig
+from nav.planner.config import GoalMode, PlannerConfig
 from nav.planner.field import lateral_grid, step_count
 from nav.planner.pipeline import PlannerPipeline
 from nav.planner.previous_plan import PreviousPlanPrior
@@ -143,6 +143,25 @@ def test_a_goal_that_moved_past_its_tolerance_forgets_the_plan() -> None:
     assert prior.field(GRID, 2 * FRAME_SECONDS, np.array([1.25, 4.0])) is None
 
 
+def test_a_goal_that_moved_only_nearer_or_farther_keeps_the_plan() -> None:
+    # The goal term reads only the sideways part, so a gaze sliding from 4 m to 2.2 m out along the same
+    # line is the same goal, however far it moved.
+    prior = PreviousPlanPrior(CONFIG, TIMES)
+    prior.remember(straight_plan(-1.25), 0.0, np.array([0.3, 4.0]))
+    assert prior.field(GRID, FRAME_SECONDS, np.array([0.3, 2.2])) is not None
+
+
+def test_a_gaze_moving_nearer_and_farther_keeps_a_near_tie_on_its_side() -> None:
+    # A post wobbling a millimeter, and a gaze straight ahead that alternates between 2 m and 4 m out,
+    # as gaze on the floor does. Forgetting on every forward move would flip the plan every frame.
+    pipeline = PlannerPipeline(CONFIG, WALKER)
+    sides = []
+    for index, scene in enumerate(alternating_posts(12)):
+        gaze = np.array([0.0, 2.0 if index % 2 else 4.0])
+        sides.append(float(np.sign(pipeline.plan(scene, 0.0, GoalMode.GAZE, gaze).lateral_offsets_meters[-1])))
+    assert len(set(sides)) == 1
+
+
 def test_a_goal_that_moved_within_its_tolerance_keeps_the_plan() -> None:
     # Gaze wanders between fixations. Half a meter is the same place to go.
     prior = PreviousPlanPrior(CONFIG, TIMES)
@@ -205,6 +224,20 @@ def test_holding_a_side_is_not_counted_as_scene_information() -> None:
     pipeline.plan(post(0.0, 1.5, 0.0))
     after = pipeline.plan(ObstacleSet(FRAME_SECONDS, (), 0))
     assert after.scene_information_bits == pytest.approx(0.0, abs=1e-9)
+
+
+def test_the_cost_figure_leaves_out_the_prior() -> None:
+    # The same post twice. The second frame remembers the first plan and makes the same plan again, so
+    # the scene and the goal charge exactly what a planner with no memory charges for that path. The
+    # user model's work figure reads this cost, and holding a side isn't work.
+    remembering = PlannerPipeline(CONFIG, WALKER)
+    remembering.plan(post(0.0, 1.5, 0.0))
+    second = remembering.plan(post(0.0, 1.5, FRAME_SECONDS))
+    fresh = PlannerPipeline(replace(CONFIG, previous_plan_prior_enabled=False), WALKER)
+    fresh.plan(post(0.0, 1.5, 0.0))
+    without = fresh.plan(post(0.0, 1.5, FRAME_SECONDS))
+    assert np.array_equal(second.lateral_offsets_meters, without.lateral_offsets_meters)
+    assert second.cumulative_cost_bits == pytest.approx(without.cumulative_cost_bits, rel=1e-9)
 
 
 def test_last_field_includes_the_prior() -> None:

@@ -38,7 +38,7 @@ import numpy as np
 
 # Local package imports
 from nav.evaluation.arguments import add_replay_arguments
-from nav.evaluation.band_attribution import ON_HOLD, TERM_NAMES, BandAttribution, PinCandidate, band_attribution
+from nav.evaluation.band_attribution import FIXABLE, ON_HOLD, TERM_NAMES, BandAttribution, PinCandidate, band_attribution
 from nav.evaluation.config import EvaluationConfig, PlannerNumbersConfig
 from nav.evaluation.overrides import OverrideRefused, apply_overrides
 from nav.evaluation.planner_numbers import (
@@ -209,7 +209,8 @@ def format_numbers(name: str, numbers: PlannerNumbers, planner_config: PlannerCo
     ):
         measured = share(pinned, count, config)
         if measured is None:
-            lines.append(f"  FAIL  {label}: too few frames, {count}")
+            # Too few frames for a share to be a result. Not a failed target, and not a met one.
+            lines.append(f"  NOT JUDGED  {label}: {count} frames, a share needs {config.min_frames_for_a_share}")
             continue
         lines.append(f"  {_verdict(measured <= target)}  {label} {100.0 * measured:.1f} % of {count}, target at most {100.0 * target:.0f} %")
     lines.append(f"  {_verdict(numbers.distinct_headings > 3)}  distinct headings {numbers.distinct_headings}, target more than 3")
@@ -273,7 +274,7 @@ def format_band(name: str, attribution: BandAttribution, config: PlannerNumbersC
     if attribution.pinned_band_frames:
         lines.append("each cause, and how many of those frames it explains (a frame can be explained by several):")
         for candidate in PinCandidate:
-            hold = ", on hold" if candidate in ON_HOLD else ""
+            hold = ", on hold" if candidate in ON_HOLD else (", can be fixed here" if candidate in FIXABLE else ", by design")
             unknown = attribution.unknown_by[candidate]
             unknown_text = f", {unknown} untested" if unknown else ""
             lines.append(f"  {candidate.value:<16} {attribution.explained_by[candidate]:>4}{unknown_text}{hold}")
