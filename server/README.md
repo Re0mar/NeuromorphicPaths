@@ -16,7 +16,7 @@ py -3.12 -m venv .venv
 .venv/Scripts/python -m pytest
 ```
 
-That installs numpy, OpenCV, Open3D, aiohttp and pytest, and runs the whole test suite on CPU.
+That installs numpy, SciPy, OpenCV, Open3D, aiohttp and pytest, and runs the whole test suite on CPU.
 It deliberately does not install torch. The suite never needs it, and keeping it out is what
 proves the scene and planner layers import without it.
 
@@ -89,7 +89,7 @@ run ends when the phone disconnects. Launching the app by hand takes longer than
 | Sink | Where the path goes | Flags |
 |---|---|---|
 | `debug_window` | an OpenCV window with the arrow, the alarm, the surprise field and the depth view | |
-| `web` | a page in any browser on the network: the arrow, the alarm, and the depth view under them | `--web-port` (8765) |
+| `web` | a page in any browser on the network: the arrow, the alarm, the planner's view from above, and the depth view | `--web-port` (8765) |
 | `phone_app` | the Pixel app over TCP. The phone connects to the laptop, on this port | `--phone-port` (9100) |
 | `none` | nowhere. For recording and for tests | |
 
@@ -104,12 +104,40 @@ laptop is looking. Name both and both are served from the one run:
 Any combination works, all three included. Each display is named at most once, since two of the
 same means two servers on one port. One display named is exactly what it always was.
 
-The depth view is the depth image the planner saw, colored by distance, with each obstacle
-group's nearest point as a ring sized by its clearance, magenta for a wall, the chosen path laid
-on the floor as a white line, and one line of text: groups in view, the nearest clearance, where
-the floor came from (`supplied` by the source, `fitted` from the cloud, or the `previous`
-frame's), and `ALARM` when set. It is what a person tuning the planner looks at, and the window
+The depth view is the depth image the planner saw, in gray with near bright and far dark, and a dim
+brown where there is no reading. It is turned a quarter turn at a time so the floor is at the bottom,
+because the Pixel sends its depth image sideways to how the phone is held. On it are each obstacle group's nearest point as a ring sized by
+its clearance, amber for a group and magenta for a wall, the chosen path laid on the floor as a
+ribbon the body's width, and one line of text. The ribbon is colored and filled the way the band
+in the view from above is. Its fill also fades to nothing toward the end of the plan, and its
+borders do not, so its direction stays visible. The line of text gives the groups in view, the
+nearest clearance, where the floor came from (`supplied` by the source, `fitted` from the cloud,
+or the `previous` frame's), and `ALARM` when set. It is what a person tuning the planner looks at, and the window
 and the browser draw it from the same code. The phone never gets it.
+
+The browser also draws the planner's view from above, walking up the screen, about 5.3 m ahead and
+3 m to each side. Three layers, each with a checkbox that hides it in the browser alone:
+
+- **Field.** What every spot ahead costs to walk through, at the moment the walker would reach it.
+  Brighter costs more. It is clipped at the frame's 98th percentile, so one costly point does not
+  leave the rest dark.
+- **Path.** The planned path as a band the body's width, from a dot at the walker to an arrowhead
+  where the plan ends. Its color runs blue to red as something in the way gets closer, red from
+  one second to contact. Its fill is more solid the more the scene shaped the plan, and its borders
+  stay at one opacity so its direction always shows.
+- **Obstacles.** Each group's nearest point, amber dots for groups and magenta squares for walls,
+  the same colors the depth view uses.
+
+Under it are two numbers. *How much the scene shaped the plan* is how far what the camera saw moved
+the plan from what the planner would do with nothing in view, in bits, measured where the arrow
+reads the path. It is not a confidence: an empty corridor gives a plan the planner is sure of and
+0 bits. *How soon something is in the way* is the course's avoidance surprise for the nearest group
+in the walker's path, in bits, 0.72 at one second to contact. The laptop computes every color,
+opacity and number on the page. The page only draws them. To see it on a recorded walk:
+
+```
+.venv/Scripts/python -m nav --source logged --log-dir frame_logs/walk --sink web --realtime
+```
 
 A display that cannot start ends the run with its own message, because a display asked for and
 silently missing is worse than a run that says why it stopped. A display that fails once it is
@@ -251,14 +279,44 @@ carries the walk's capture, arrival and depth times beside its own plan times, s
 two runs. `--verbose` prints the same shares per frame while a run is going, along with the
 observed heading.
 
+## Checking the planner on a recording
+
+`nav.evaluation.check_planner` replays a recording through the scene and planner and prints the
+figures the planner is judged by. Pass the same scene flags the recording needs, as for any replay.
+
+```
+.venv/Scripts/python -m nav.evaluation.check_planner numbers frame_logs/walk
+.venv/Scripts/python -m nav.evaluation.check_planner flips frame_logs/walk
+.venv/Scripts/python -m nav.evaluation.check_planner band frame_logs/walk
+```
+
+- `numbers`: how often the arrow sits at its sidestep limit, split by how far away the nearest thing
+  ahead is, how often it swings from one limit to the other, the alarm figures, and how much
+  consecutive plans disagree. Each target gets PASS or FAIL, or NOT JUDGED under 100 frames.
+- `flips`: the frame pairs whose plans disagree the most, sorted into side flips, new obstacles,
+  phone turns, shifts on the same side and tracker jumps, with the largest few to open in the recording.
+- `band`: with something 3 to 5.32 m ahead and the arrow at its limit, which cause would release it,
+  found by re-planning each frame without one suspected cause at a time.
+
+`--set <field>=<value>` changes a planner setting for the run, and the output marks it.
+`--cached` keeps the scene pass between runs. The measured results and the exact commands behind
+them are in `../docs/evaluation/arrow_flips_and_band.md`.
+
+`tests/test_planner_golden.py` pins the same figures on two committed slices of recorded walks. A
+planner change moves them on purpose: update the expected values in the same commit and say why.
+`tests/README.md` says how to cut a new slice.
+
 ## The layers
 
 **Sources** are device specific and yield `DepthFrame` objects. The two RGB sources share one
 depth estimator. **Scene** turns a depth image into obstacles on the ground: unproject, find the
 floor, keep what is between ankle and head height, group into cells, and measure how much each
 group's distance has been wobbling. That wobble is N and the distance is S. **Planner** builds a
-surprise field over future time and lateral position from S and N, and runs dynamic programming
-through it. **User model** watches the planner's output and the walker's heading and measures
+field over future time and lateral position from two surprises, the professor's, which grows
+with N over S, and the surprise of the body touching something, and runs dynamic programming
+through it. It also remembers the plan it made one frame earlier, relative to the walker, and
+charges any path for straying from it over the first second, so a near-tie doesn't flip sides
+every frame. **User model** watches the planner's output and the walker's heading and measures
 what each avoidance cost in bits. It never steers. **Sinks** are device specific and take a
 `PlannedPath`. The runtime runs scene and planner on the newest frame in a thread so the source
 is never blocked.
@@ -287,3 +345,7 @@ values in `tests/test_laptop_path_fixture.py` and decoded by the app's test.
 - Motion prediction in the planner is off by default. The scene reports a group's velocity from
   its centroid in the world frame, which needs a source with a position.
 - The user model's time constant, b, is a placeholder until a walker is measured.
+- The planner's walker sway, how far a person drifts from the line the arrow asks for, is an
+  assumed 0.10 m. No recorded walk had anyone steering by the arrow, so it has not been measured.
+- The planner's memory of its previous plan was tuned and checked on replays only. It has not run
+  live on the phone or the glasses yet.

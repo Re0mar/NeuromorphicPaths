@@ -7,6 +7,7 @@ and needs no estimator at all.
 """
 
 # Standard library imports
+import asyncio
 import dataclasses
 import json
 import logging
@@ -28,6 +29,7 @@ from nav.runtime.loop import RUN_CONFIG_FILENAME, HeadingBaseline, gaze_on_the_g
 from nav.runtime.loop import run
 from nav.runtime.timing import TIMING_FILENAME, read_timing_log
 from nav.scene.pipeline import ScenePipeline
+from nav.sinks.web_messages import WebMessageKind
 from nav.sources.framecodec import INDEX_FILENAME, decode_path, read_message
 from nav.sources.logged import LoggedDepthFrameSource
 from nav.types import DepthFrame, Plane, Pose
@@ -127,6 +129,8 @@ def test_a_logged_replay_reaches_a_phone_through_main(tmp_path: Path) -> None:
 
     assert received, "the phone never read a path from the run"
     assert np.isfinite(received[0].first_heading_radians)
+    # decode_path requires scene_information_bits and avoidance_surprise_bits, so a decoded path
+    # carried both. Their values are tested through PlannerPipeline in test_planner_pipeline.py.
 
 
 def test_a_logged_replay_serves_a_phone_and_a_browser_in_the_same_run(tmp_path: Path) -> None:
@@ -141,6 +145,7 @@ def test_a_logged_replay_serves_a_phone_and_a_browser_in_the_same_run(tmp_path: 
     phone_port, web_port = _free_port(), _free_port()
     paths: list = []
     pages: list[str] = []
+    plan_views: list[dict] = []
 
     def phone() -> None:
         deadline = time.monotonic() + 10.0
@@ -162,9 +167,23 @@ def test_a_logged_replay_serves_a_phone_and_a_browser_in_the_same_run(tmp_path: 
             try:
                 with urllib.request.urlopen(f"http://127.0.0.1:{web_port}/", timeout=5.0) as response:
                     pages.append(response.read().decode("utf-8"))
-                return
+                break
             except OSError:
                 time.sleep(0.05)
+        # Then the socket, as the page itself would, reading until a plan view comes through.
+        asyncio.run(read_until_a_plan_view())
+
+    async def read_until_a_plan_view() -> None:
+        import aiohttp
+
+        async with aiohttp.ClientSession() as session:
+            async with session.ws_connect(f"ws://127.0.0.1:{web_port}/ws") as connection:
+                deadline = time.monotonic() + 10.0
+                while time.monotonic() < deadline:
+                    message = await asyncio.wait_for(connection.receive(), 5.0)
+                    if message.type == aiohttp.WSMsgType.TEXT and json.loads(message.data)["kind"] == WebMessageKind.PLAN_VIEW.value:
+                        plan_views.append(json.loads(message.data))
+                        return
 
     watchers = [threading.Thread(target=phone, daemon=True), threading.Thread(target=browser, daemon=True)]
     for watcher in watchers:
@@ -184,6 +203,12 @@ def test_a_logged_replay_serves_a_phone_and_a_browser_in_the_same_run(tmp_path: 
     assert paths, "the phone never read a path from the run"
     assert np.isfinite(paths[0].first_heading_radians)
     assert pages and "<canvas" in pages[0], "the browser never got the page from the same run"
+    assert plan_views, "the browser never got a plan view from the same run"
+    field = np.array(plan_views[0]["field"])
+    assert field.shape == (len(plan_views[0]["times_seconds"]), len(plan_views[0]["grid_meters"]))
+    # The loop hands the planner's body half-width to the sink, and the page draws the path twice
+    # that wide. Nothing upstream of the loop reads this value, so only a run through main() can check it.
+    assert plan_views[0]["path_width_meters"] == pytest.approx(2.0 * config.planner.body_half_width_meters)
 
 
 def test_a_run_that_recorded_nothing_leaves_its_directory_usable(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:

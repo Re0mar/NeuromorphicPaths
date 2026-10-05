@@ -9,11 +9,16 @@ the camera is not level. A phone held in portrait sends a depth image in the sen
 orientation, so image-up points sideways and the floor's normal sits 90 degrees from it. Gravity
 from the pose is up when a source places the camera in a world. Image-up, CAMERA_UP, is all a
 plain video file can offer.
+
+The floor fit is a RANSAC seeded from the config, so the same points always give the same floor
+and a replayed recording gives the same numbers every run.
 """
+
+# Standard library imports
+import math
 
 # Third party imports
 import numpy as np
-import open3d
 
 # Local package imports
 from nav.scene.config import SceneConfig
@@ -21,6 +26,10 @@ from nav.types import Plane
 
 # Image-up, in camera axes where y points down. The right "up" only when the camera is level.
 CAMERA_UP = np.array([0.0, -1.0, 0.0])
+
+# How many RANSAC planes are scored at once. Bounds memory to points times this, and changes
+# nothing about which plane wins.
+_PLANES_PER_CHUNK = 32
 
 
 def normalize_plane(plane: Plane, up_camera: np.ndarray) -> Plane:
@@ -88,8 +97,13 @@ def fit_floor(points_camera: np.ndarray, previous: Plane | None, config: SceneCo
         the source has one, CAMERA_UP otherwise. "Below" and "level" are both measured against it.
     :return: The floor, normal pointing up.
     :rtype: Plane
-    :raises ValueError: When no floor is found and there is no previous plane to fall back on.
+    :raises ValueError: When the RANSAC seed or success probability is out of range, or when no
+        floor is found and there is no previous plane to fall back on.
     """
+    # Checked on every call, before the cloud decides whether the search runs at all. Otherwise a
+    # bad value only surfaces on the first frame that happens to reach the search.
+    _check_ransac_config(config)
+
     # Only points clearly below the camera can be floor. Without this, a wall straight ahead
     # with enough points wins the vote.
     depth_below_camera = -(points_camera @ up_camera)
@@ -107,23 +121,149 @@ def fit_floor(points_camera: np.ndarray, previous: Plane | None, config: SceneCo
     )
 
 
+def _check_ransac_config(config: SceneConfig) -> None:
+    if config.floor_ransac_seed < 0:
+        raise ValueError(f"floor_ransac_seed must be non-negative, got {config.floor_ransac_seed}")
+    probability = config.floor_ransac_success_probability
+    if not 0.0 < probability <= 1.0:
+        raise ValueError(f"floor_ransac_success_probability must be above 0 and at most 1, got {probability}")
+
+
 def _ransac_plane(candidates: np.ndarray, config: SceneConfig, up_camera: np.ndarray) -> Plane | None:
-    cloud = open3d.geometry.PointCloud()
-    cloud.points = open3d.utility.Vector3dVector(np.asarray(candidates, dtype=np.float64))
-    (a, b, c, d), _ = cloud.segment_plane(
-        distance_threshold=config.floor_ransac_distance_meters,
-        ransac_n=3,
-        num_iterations=config.floor_ransac_iterations,
-    )
-    normal = np.array([a, b, c])
-    if np.linalg.norm(normal) == 0:
+    # A fresh generator from the config's seed on every call, so the same cloud always draws the
+    # same planes and a frame's floor never depends on the frames before it. Open3D's RANSAC
+    # ignored its seed, and a replay came out different every run.
+    generator = np.random.default_rng(config.floor_ransac_seed)
+    points = np.asarray(candidates, dtype=np.float64)
+    triples = generator.integers(0, len(points), size=(config.floor_ransac_iterations, 3))
+    first, second, third = points[triples[:, 0]], points[triples[:, 1]], points[triples[:, 2]]
+    normals = np.cross(second - first, third - first)
+    lengths = np.linalg.norm(normals, axis=1)
+
+    # A triple that repeats a point has no normal and is dropped here. A nearly collinear one keeps
+    # a normal pointing anywhere, and it loses on inlier count rather than being filtered.
+    has_normal = lengths > 0
+    if not has_normal.any():
         return None
-    plane = normalize_plane(Plane(normal=normal, offset_meters=float(d)), up_camera)
+    normals = normals[has_normal] / lengths[has_normal, None]
+    first = first[has_normal]
+    offsets = -(normals[:, 0] * first[:, 0] + normals[:, 1] * first[:, 1] + normals[:, 2] * first[:, 2])
+
+    x, y, z = (np.ascontiguousarray(column) for column in points.T)
+    best = _best_plane(x, y, z, normals, offsets, config)
+
+    plane = _refit_on_inliers(points, x, y, z, normals[best], offsets[best], config.floor_ransac_distance_meters)
+    plane = normalize_plane(plane, up_camera)
 
     # Not level enough, too close, or too far down means this is not the floor.
     if plane_is_a_floor(plane, config, up_camera) is not None:
         return None
     return plane
+
+
+def _best_plane(
+    x: np.ndarray,
+    y: np.ndarray,
+    z: np.ndarray,
+    normals: np.ndarray,
+    offsets: np.ndarray,
+    config: SceneConfig,
+) -> int:
+    # Planes are tried in the order they were drawn, the way Open3D tries them. Most inliers wins,
+    # and a tie goes to the tighter fit. Once the best plane so far makes a better one unlikely
+    # enough, the search stops. Trying them in draw order keeps that stop the same for any chunk size.
+    best_index, best_count, best_rmse = 0, -1, np.inf
+    tries_needed = float(len(normals))
+    for start in range(0, len(normals), _PLANES_PER_CHUNK):
+        chunk = slice(start, start + _PLANES_PER_CHUNK)
+        counts, rmse = _score_planes(x, y, z, normals[chunk], offsets[chunk], config.floor_ransac_distance_meters)
+        for index, (count, error) in enumerate(zip(counts.tolist(), rmse.tolist()), start=start):
+            if count > best_count or (count == best_count and error < best_rmse):
+                best_index, best_count, best_rmse = index, count, error
+                tries_needed = min(tries_needed, _tries_needed(best_count / len(x), config.floor_ransac_success_probability))
+            if index + 1 >= tries_needed:
+                return best_index
+    return best_index
+
+
+def _tries_needed(inlier_fraction: float, probability: float) -> float:
+    # How many draws it takes to have hit three inliers at least once with this probability.
+    # Open3D's stopping rule. A floor that is 90 percent of the points needs about 14 draws.
+    all_three_inliers = inlier_fraction**3
+    if probability >= 1.0 or all_three_inliers <= 0.0:
+        return np.inf
+    if all_three_inliers >= 1.0:
+        return 0.0
+    return math.log(1.0 - probability) / math.log(1.0 - all_three_inliers)
+
+
+def _distances_to_planes(
+    x: np.ndarray,
+    y: np.ndarray,
+    z: np.ndarray,
+    normals: np.ndarray,
+    offsets: np.ndarray,
+) -> np.ndarray:
+    # One row per plane, written out rather than as normals @ points.T. A matrix product goes
+    # through BLAS, which can split the sum differently by thread count and change the last bits,
+    # and the fit has to give the same plane in any process.
+    distances = np.multiply.outer(normals[:, 0], x)
+    distances += np.multiply.outer(normals[:, 1], y)
+    distances += np.multiply.outer(normals[:, 2], z)
+    distances += offsets[:, None]
+    return np.abs(distances, out=distances)
+
+
+def _score_planes(
+    x: np.ndarray,
+    y: np.ndarray,
+    z: np.ndarray,
+    normals: np.ndarray,
+    offsets: np.ndarray,
+    threshold_meters: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    # Each plane's distances are one contiguous row, scored on its own, so how many planes share
+    # the array changes memory and nothing about the scores.
+    distances = _distances_to_planes(x, y, z, normals, offsets)
+    # Strictly under the threshold counts, as in Open3D.
+    is_inlier = distances < threshold_meters
+    counts = np.count_nonzero(is_inlier, axis=1)
+    np.multiply(distances, distances, out=distances)
+    distances[~is_inlier] = 0.0
+    rmse = np.sqrt(distances.sum(axis=1) / np.maximum(counts, 1))
+    return counts, rmse
+
+
+def _refit_on_inliers(
+    points: np.ndarray,
+    x: np.ndarray,
+    y: np.ndarray,
+    z: np.ndarray,
+    normal: np.ndarray,
+    offset: float,
+    threshold_meters: float,
+) -> Plane:
+    # The winning plane runs through three noisy points. The least-squares plane through all its
+    # inliers is the better floor, and it's what Open3D returns too.
+    members = points[_distances_to_planes(x, y, z, normal[None, :], np.array([offset]))[0] < threshold_meters]
+    centroid = members.mean(axis=0)
+    x, y, z = (members - centroid).T
+    # The covariance by hand for the same reason as the distances: no BLAS in the sum.
+    covariance = np.array(
+        [
+            [(x * x).sum(), (x * y).sum(), (x * z).sum()],
+            [(x * y).sum(), (y * y).sum(), (y * z).sum()],
+            [(x * z).sum(), (y * z).sum(), (z * z).sum()],
+        ]
+    )
+    # eigh sorts eigenvalues ascending, so the first eigenvector is the direction the inliers
+    # spread least along, which is the plane's normal.
+    _, eigenvectors = np.linalg.eigh(covariance)
+    refitted_normal = eigenvectors[:, 0]
+    refitted_offset = -(
+        refitted_normal[0] * centroid[0] + refitted_normal[1] * centroid[1] + refitted_normal[2] * centroid[2]
+    )
+    return Plane(normal=refitted_normal, offset_meters=float(refitted_offset))
 
 
 def ground_axes(plane: Plane, forward_hint: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:

@@ -25,7 +25,7 @@ def test_the_loop_can_tell_a_plain_sink_from_a_debug_sink_at_runtime() -> None:
 
 def test_publish_and_close_do_nothing_and_do_not_raise() -> None:
     sink = NullSink()
-    path = PlannedPath(0.0, np.array([0.0]), np.array([0.0]), 0.0, False, 0.0)
+    path = PlannedPath(0.0, np.array([0.0]), np.array([0.0]), 0.0, False, 0.0, scene_information_bits=0.0, avoidance_surprise_bits=0.0)
 
     sink.publish(path)
     sink.publish(path)

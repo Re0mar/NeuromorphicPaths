@@ -509,6 +509,8 @@ def test_planned_path_rejects_mismatched_lengths() -> None:
             first_heading_radians=0.0,
             alarm=False,
             cumulative_cost_bits=0.0,
+            scene_information_bits=0.0,
+            avoidance_surprise_bits=0.0,
         )
 
 
@@ -524,6 +526,8 @@ def test_planned_path_rejects_a_non_finite_offset(bad_value: float) -> None:
             first_heading_radians=0.0,
             alarm=False,
             cumulative_cost_bits=0.0,
+            scene_information_bits=0.0,
+            avoidance_surprise_bits=0.0,
         )
 
 
@@ -536,6 +540,8 @@ def test_planned_path_rejects_a_non_finite_time() -> None:
             first_heading_radians=0.0,
             alarm=False,
             cumulative_cost_bits=0.0,
+            scene_information_bits=0.0,
+            avoidance_surprise_bits=0.0,
         )
 
 

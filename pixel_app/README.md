@@ -54,6 +54,43 @@ adb shell am start -n com.neuromorphicpaths.pixel/.MainActivity --es host 127.0.
 Installing on the emulator from this machine: use `adb push` and `pm install`, not
 `adb install`. The streamed install wedges the emulator's package manager.
 
+## Recording a walk without the laptop
+
+For a walk somewhere the phone can't reach the laptop. The phone records the walk on its own, and
+later sends the recording to the laptop as if it were happening then. The laptop needs nothing
+new: it records the replay with `--record-to` like any live walk.
+
+1. Tap **Record walk** and walk. Nothing needs to be connected. ARCore tracks and the frames go to
+   a file in the app's own storage, `walks/walk_<date>_<time>.bin`, the time to the millisecond.
+   Tap **Stop recording** at the end. The button reads **Saving** until the last queued frames are
+   written, and Record and Replay both wait for it. The line under the buttons counts frames
+   written, frames dropped and megabytes. A drop means the phone fell behind writing, and the count
+   says how much of the walk is missing. A frame whose values can't go in the file, such as a NaN in
+   the pose, is left out and counted as unencodable.
+2. Later, where the phone reaches the laptop, make sure no live connection is running: swipe the
+   app away, or `adb shell am force-stop com.neuromorphicpaths.pixel`, and don't tap Connect after
+   reopening it. A live connection retries in the background, and the laptop records whichever
+   connection reaches it first. If that's the live one, the laptop records tonight's live frames,
+   and when the replay stops the live connection the laptop takes that as the end of the walk and
+   shuts down. Then start the laptop recording into a fresh directory:
+   `python -m nav --source arcore_tcp --arcore-accept-timeout 600 --sink phone_app --sink web --floor-max-tilt 50 --record-to frame_logs/<name>`.
+3. Type the laptop's address and tap **Replay latest walk**. The app stops its live connection,
+   because the laptop takes one depth connection at a time, and sends the newest recording,
+   every frame unchanged and in order, at the pace it was recorded. The laptop's log gets the
+   original timestamps. After the last frame the phone closes its side and waits up to 30 s for
+   the laptop to close back, which the laptop does once it has read every frame. The line then
+   says the replay finished and whether the laptop read them all. If it says the laptop didn't
+   confirm, check the laptop's frame count before trusting the log. Then stop the laptop with
+   Ctrl-C if it hasn't stopped on its own.
+
+A replay never drops a frame and never resumes. If the connection is lost partway, the line says
+so with the count sent, and the laptop's log is missing the rest of the walk. Replay again into a
+fresh directory.
+
+A recording is the wire stream itself, a 4-byte length before each frame, about 30 KB a frame,
+roughly 1 MB a second. Recordings stay on the phone until deleted, and can be copied off with
+`adb pull /sdcard/Android/data/com.neuromorphicpaths.pixel/files/walks/`.
+
 ## Emulator
 
 The emulator cannot produce depth, so it only proves the plumbing: install, permission, ARCore
@@ -106,8 +143,9 @@ the same thing the laptop does with a bad prefix on the depth side.
 
 `./gradlew.bat :app:testDebugUnitTest` runs the JVM tests: the two messages' own checks on their
 shapes, the encoder, the path decoder one rule per test, both connections against loopback
-servers, the floor choice, the arrow's arithmetic, and the ARCore conversion's pure functions
-(the quaternion, the floor plane, the DEPTH16 repacking). Two of them are the contract checks
+servers, the walk recorder, its file reader and its replayer against a loopback server, the floor
+choice, the arrow's arithmetic, and the ARCore conversion's pure functions (the quaternion, the
+floor plane, the DEPTH16 repacking). Two of them are the contract checks
 across the language boundary:
 
 - The encoder test writes `app/build/pixel_app_frame.bin`. The laptop's suite decodes a

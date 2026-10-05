@@ -44,7 +44,7 @@ def _free_port() -> int:
 
 
 def _path(heading: float = 0.0, cost: float = 1.0) -> PlannedPath:
-    return PlannedPath(0.0, np.array([0.0, 0.1]), np.array([0.0, 0.0]), heading, False, cost)
+    return PlannedPath(0.0, np.array([0.0, 0.1]), np.array([0.0, 0.0]), heading, False, cost, scene_information_bits=0.0, avoidance_surprise_bits=0.0)
 
 
 def _view() -> DebugView:
@@ -57,7 +57,7 @@ def _view() -> DebugView:
         ground_plane=None,
         gaze_pixel=None,
     )
-    return DebugView(frame, ObstacleSet(0.0, (), 0), Plane(np.array([0.0, -1.0, 0.0]), 1.6), FloorSource.FITTED, 1.4)
+    return DebugView(frame, ObstacleSet(0.0, (), 0), Plane(np.array([0.0, -1.0, 0.0]), 1.6), FloorSource.FITTED, 1.4, 0.30)
 
 
 def test_the_sink_is_started_before_the_source_yields_a_frame(monkeypatch: pytest.MonkeyPatch) -> None:

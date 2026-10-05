@@ -158,9 +158,10 @@ class DebugView:
     What a person tuning the planner needs to see beside the path: the planner's input.
 
     The frame the path was planned for, the obstacles the scene found in it, the floor the scene
-    used and where it came from, and the walking speed the planner assumed. The floor is here
-    because a renderer lays the path on it, and the speed because a path is offsets against time
-    and the floor is meters.
+    used and where it came from, the walking speed the planner assumed, and the body's half-width.
+    The floor is here because a renderer lays the path on it, the speed because a path is offsets
+    against time and the floor is meters, and the half-width because the path is drawn as wide as
+    the body that walks it.
     """
 
     frame: DepthFrame
@@ -168,6 +169,7 @@ class DebugView:
     floor: Plane
     floor_source: FloorSource
     walking_speed_mps: float
+    body_half_width_meters: float
 
 
 @dataclass(frozen=True)
@@ -180,6 +182,12 @@ class PlannedPath:
     first_heading_radians: float
     alarm: bool
     cumulative_cost_bits: float
+    # How far what the camera saw moved the plan from what it would do with nothing in view, at the
+    # arrow's lookahead. Not a confidence: an empty corridor gives a sure plan and 0 bits.
+    scene_information_bits: float
+    # How soon the walker reaches the nearest thing in its way, in the course's avoidance form.
+    # 0 with nothing in the way, 0.72 at one second to contact.
+    avoidance_surprise_bits: float
 
     def __post_init__(self) -> None:
         # This is the last shape before a sink serializes it, so a non-finite value caught here
@@ -197,6 +205,10 @@ class PlannedPath:
             raise ValueError(f"first_heading_radians must be finite, got {self.first_heading_radians}")
         if not np.isfinite(self.cumulative_cost_bits):
             raise ValueError(f"cumulative_cost_bits must be finite, got {self.cumulative_cost_bits}")
+        for field_name in ("scene_information_bits", "avoidance_surprise_bits"):
+            value = getattr(self, field_name)
+            if not np.isfinite(value) or value < 0.0:
+                raise ValueError(f"{field_name} must be finite and zero or more, got {value}")
 
 
 class DepthFrameSource(Protocol):

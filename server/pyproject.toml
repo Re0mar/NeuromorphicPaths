@@ -11,6 +11,9 @@ dependencies = [
     "numpy",
     "opencv-python",
     "open3d>=0.19",
+    # The planner's contact term needs the log of the normal cumulative distribution, accurate at
+    # both tails. numpy has no erf, and scipy.special.log_ndtr is that function exactly.
+    "scipy",
 ]
 
 [project.optional-dependencies]

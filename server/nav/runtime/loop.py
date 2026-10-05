@@ -198,6 +198,7 @@ def run(config: RunConfig) -> int:
             floor=floor,
             floor_source=floor_source,
             walking_speed_mps=config.planner.walking_speed_mps,
+            body_half_width_meters=config.planner.body_half_width_meters,
         )
         return FrameResult(path=path, field=field if field is not None else np.zeros((1, len(planner.grid))), grid=planner.grid, view=view)
 

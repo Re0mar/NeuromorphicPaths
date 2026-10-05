@@ -136,6 +136,14 @@ def degrade_with_holes(depth: np.ndarray, fraction: float, seed: int = 0) -> np.
     return holed
 
 
+def degrade_with_depth_noise(depth: np.ndarray, sigma_meters: float, seed: int = 0) -> np.ndarray:
+    """Add seeded Gaussian noise to every depth, the way a real sensor jitters. Holes stay holes."""
+    # A clean floor is a perfect plane, and on one every RANSAC draw refits to the same answer.
+    # Noise is what makes a fit's randomness show, so a repeatability test can fail at all.
+    generator = np.random.default_rng(seed)
+    return depth + generator.normal(0.0, sigma_meters, depth.shape)
+
+
 def degrade_with_zero_rows(depth: np.ndarray, rows: slice) -> np.ndarray:
     """Zero a band of rows, the way ARCore reports pixels it has no estimate for."""
     zeroed = depth.copy()

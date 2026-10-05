@@ -215,16 +215,32 @@ def decode_frame(payload: bytes) -> DepthFrame:
         raise FrameDecodeError(f"fields decoded but do not make a frame: {inconsistent_error}") from inconsistent_error
 
 
-def encode_path(path: PlannedPath) -> bytes:
-    """Serialize a PlannedPath to JSON bytes for the phone and web sinks."""
-    message = {
+def path_message(path: PlannedPath) -> dict:
+    """
+    A PlannedPath as the JSON object both wires carry, before serializing.
+
+    The one place the path's keys are spelled. The phone's encoding and the web's envelope are both
+    built from it, so neither can drop a key the other sends.
+
+    :param path: The path to describe.
+    :return: Plain Python numbers, lists and a bool, ready for json.dumps.
+    :rtype: dict
+    """
+    return {
         "timestamp_seconds": float(path.timestamp_seconds),
         "times_seconds": path.times_seconds.tolist(),
         "lateral_offsets_meters": path.lateral_offsets_meters.tolist(),
         "first_heading_radians": float(path.first_heading_radians),
         "alarm": bool(path.alarm),
         "cumulative_cost_bits": float(path.cumulative_cost_bits),
+        "scene_information_bits": float(path.scene_information_bits),
+        "avoidance_surprise_bits": float(path.avoidance_surprise_bits),
     }
+
+
+def encode_path(path: PlannedPath) -> bytes:
+    """Serialize a PlannedPath to JSON bytes for the phone and web sinks."""
+    message = path_message(path)
     try:
         return json.dumps(message, allow_nan=False).encode("utf-8")
     except ValueError as non_finite_error:
@@ -251,6 +267,8 @@ def decode_path(payload: bytes) -> PlannedPath:
             first_heading_radians=_number(_required(message, "first_heading_radians"), "first_heading_radians"),
             alarm=_boolean(_required(message, "alarm"), "alarm"),
             cumulative_cost_bits=_number(_required(message, "cumulative_cost_bits"), "cumulative_cost_bits"),
+            scene_information_bits=_number(_required(message, "scene_information_bits"), "scene_information_bits"),
+            avoidance_surprise_bits=_number(_required(message, "avoidance_surprise_bits"), "avoidance_surprise_bits"),
         )
     except ValueError as inconsistent_error:
         if isinstance(inconsistent_error, FrameDecodeError):
