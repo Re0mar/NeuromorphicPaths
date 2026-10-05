@@ -6,6 +6,7 @@ here and nowhere else. A guard test enforces that the torch import does not spre
 """
 
 # Standard library imports
+import functools
 import logging
 import os
 import time
@@ -124,7 +125,24 @@ class DepthEstimator:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         log.info("loading %s on %s", config.model_name, self.device)
         self._model = DepthAnything3.from_pretrained(config.model_name).to(self.device)
+        self._preprocess_on_the_calling_thread()
         log.info("loaded %s", config.model_name)
+
+    def _preprocess_on_the_calling_thread(self) -> None:
+        """
+        Stop Depth Anything 3 from preprocessing each frame on a fresh pool of 8 threads.
+
+        It builds that pool on every call, even for one image, and every pool leaves about 7 native
+        threads behind. Measured: 48 threads after loading, 259 after 30 calls. On a live walk that
+        is 20 a second, and by the time the run had 3000 the laptop was spending four cores on them
+        and the glasses' video decoder fell seconds behind.
+        """
+        processor = getattr(self._model, "input_processor", None)
+        if not callable(processor):
+            # A later Depth Anything 3 that renamed it. The estimator still works, it just leaks again.
+            log.warning("Depth Anything 3 has no input_processor to make sequential, so each frame may leave threads behind")
+            return
+        self._model.input_processor = functools.partial(processor, sequential=True)
 
     def warm_up(self) -> None:
         """

@@ -23,6 +23,7 @@ from nav.pose.imu_orientation import pose_from_imu
 from nav.pose.neon_mount import NEON_IMU_MOUNT
 from nav.sources.camera_model import scale_intrinsics
 from nav.sources.config import NeonConfig
+from nav.sources.neon_device import NeonStreamEnded
 from nav.sources.neon_live import NEON_SCENE_SIZE, RECEIVE_POLL_SECONDS, NeonCalibrationError, NeonLiveRgbSource
 
 # The device describes its native 1600 by 1200 scene camera. The fake frames are a fifth of that,
@@ -82,8 +83,22 @@ class FakeScene:
 
 @dataclass
 class FakeMatched:
-    scene: FakeScene
+    """Shaped like the client's `MatchedItem`, whose scene frame is `frame`.
+
+    The eye-video variant names it `scene`. A fake that copied that name passed every test while
+    the real stream failed on its first frame.
+    """
+
+    frame: FakeScene
     gaze: FakeGaze | None
+
+
+def test_the_fake_matched_item_has_the_real_clients_field_names() -> None:
+    # Checked against the installed client when it is present. The suite is meant to run without
+    # it, so this skips there, and the lane venv that has the glasses extra is where it bites.
+    models = pytest.importorskip("pupil_labs.realtime_api.simple.models")
+
+    assert tuple(FakeMatched.__dataclass_fields__) == models.MatchedItem._fields
 
 
 @dataclass
@@ -426,3 +441,38 @@ def test_a_close_time_echo_that_never_returns_does_not_hold_up_the_shutdown() ->
         assert device.closed is True
     finally:
         never.set()
+
+
+def test_a_zero_quaternion_from_the_imu_is_skipped_and_the_last_real_orientation_carries_on(caplog: pytest.LogCaptureFixture) -> None:
+    # The glasses sent only zeros for minutes on 2026-10-05. Before this, the first one ended the run.
+    device = FakeDevice(
+        matched=[FakeMatched(_scene(1.0), None), FakeMatched(_scene(2.0), None), FakeMatched(_scene(3.0), None)],
+        imu=[
+            FakeImuDatum(FakeQuaternion(0.0, 0.0, 0.0, 0.0)),
+            FakeImuDatum(FakeQuaternion(1.0, 0.0, 0.0, 0.0)),
+            FakeImuDatum(FakeQuaternion(0.0, 0.0, 0.0, 0.0)),
+        ],
+    )
+
+    with caplog.at_level(logging.WARNING, logger="nav.sources.neon_live"):
+        frames = _take(_source_with(device), 3)
+
+    level = pose_from_imu(np.array([1.0, 0.0, 0.0, 0.0]), NEON_IMU_MOUNT).orientation
+    assert frames[0].pose is None, "no real reading yet, so no gravity"
+    assert frames[1].pose.orientation == pytest.approx(level)
+    assert frames[2].pose.orientation == pytest.approx(level)
+    assert len([record for record in caplog.records if "empty orientations" in record.message]) == 1
+
+
+def test_a_played_back_capture_that_ends_ends_the_frames_normally() -> None:
+    class EndingDevice(FakeDevice):
+        def receive_matched_scene_video_frame_and_gaze(self, timeout_seconds: float | None = None):
+            if self.matched:
+                return self.matched.pop(0)
+            raise NeonStreamEnded("the capture has been played to the end")
+
+    device = EndingDevice(matched=[FakeMatched(_scene(1.0), None), FakeMatched(_scene(2.0), None)], imu=[])
+
+    frames = list(_source_with(device).frames())
+
+    assert [frame.timestamp_seconds for frame in frames] == [1.0, 2.0]

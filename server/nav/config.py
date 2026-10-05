@@ -168,6 +168,10 @@ def build_parser() -> argparse.ArgumentParser:
     neon = parser.add_argument_group("neon_live source")
     neon.add_argument("--neon-address", help="the Neon's address, or omit it to discover the device")
     neon.add_argument("--neon-port", type=_port_number, default=NeonConfig.port)
+    neon.add_argument(
+        "--neon-replay",
+        help="a folder written by examples/capture_neon_stream.py, played back at its recorded pace in place of the glasses",
+    )
 
     arcore = parser.add_argument_group("arcore_tcp source")
     arcore.add_argument("--arcore-port", type=_port_number, default=ArCoreConfig.port)
@@ -293,7 +297,9 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
             video = VideoConfig(path=arguments.path)
         case SourceKind.NEON_LIVE:
             # No address is the normal case. The source discovers the device instead.
-            neon = NeonConfig(address=arguments.neon_address, port=arguments.neon_port)
+            if arguments.neon_replay is not None and not (Path(arguments.neon_replay) / "meta.json").is_file():
+                parser.error(f"--neon-replay {arguments.neon_replay} is not a capture folder, it has no meta.json")
+            neon = NeonConfig(address=arguments.neon_address, port=arguments.neon_port, replay_dir=arguments.neon_replay)
         case SourceKind.ARCORE_TCP:
             arcore = ArCoreConfig(port=arguments.arcore_port, accept_timeout_seconds=arguments.arcore_accept_timeout)
         case SourceKind.NEON_PLUGIN:

@@ -35,6 +35,9 @@ class NeonConfig:
     # How long a Time Echo clock measurement may take before it is abandoned. A hundred round trips
     # on a phone hotspot take about a second, so this only fires when the phone has gone.
     time_echo_timeout_seconds: float = 5.0
+    # A capture folder from examples/capture_neon_stream.py, played back in place of the glasses at
+    # the pace it was recorded. None means the glasses themselves.
+    replay_dir: str | None = None
 
 
 @dataclass(frozen=True)

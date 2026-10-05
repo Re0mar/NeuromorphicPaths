@@ -115,7 +115,13 @@ class Undistorter:
             0,
             (width, height),
         )
-        self._camera_matrix = np.asarray(new_matrix, dtype=np.float64)
+        new_matrix = np.asarray(new_matrix, dtype=np.float64)
+        # OpenCV fills the frame by scaling x and y separately, and on the Neon that came out as
+        # fx 636 against fy 754, a picture squashed 16 percent sideways. The depth model learned on
+        # square pixels, so both take the larger focal. That crops a little more off the wider axis.
+        square_focal = max(new_matrix[0, 0], new_matrix[1, 1])
+        new_matrix[0, 0] = new_matrix[1, 1] = square_focal
+        self._camera_matrix = new_matrix
         self._map_x, self._map_y = cv2.initUndistortRectifyMap(
             calibration.camera_matrix,
             calibration.distortion_coefficients,

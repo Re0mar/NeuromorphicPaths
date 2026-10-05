@@ -1,8 +1,9 @@
 """
 A Pupil Labs Neon streaming over the network, as an RGB source.
 
-The only file allowed to import the Pupil Labs client, so that the rest of the package installs
-and imports without it. A guard test enforces that.
+The connection itself lives in a child process, in neon_device.py. Here, the source asks that
+process for the newest frame when it wants one. Run in this process, the client's video decoder
+lost the GIL to the estimator and the scene, and frames reached the planner 4 to 12 s old.
 
 Scene frames drive the loop. The IMU runs at its own, faster rate on a separate stream, so it is
 polled without blocking and the most recent orientation is carried forward onto whichever scene
@@ -28,6 +29,7 @@ from nav.pose.imu_orientation import pose_from_imu
 from nav.pose.neon_mount import NEON_IMU_MOUNT
 from nav.sources.camera_model import CameraCalibration, CameraModelError, Undistorter, scale_intrinsics
 from nav.sources.config import NeonConfig
+from nav.sources.neon_device import NeonDeviceError, NeonDeviceProcess, NeonStreamEnded
 from nav.sources.rgb import RgbFrame
 from nav.types import FrameTiming
 
@@ -41,6 +43,8 @@ CLOSE_OFFSET_MEASUREMENTS = 20
 # Long enough that a dropped IMU packet does not stall the scene stream, short enough that the
 # orientation never lags a frame behind. The IMU runs far faster than the scene camera.
 IMU_POLL_TIMEOUT_SECONDS = 0.0
+# A real orientation is a unit quaternion. Anything this short is an empty reading, not a rotation.
+MINIMUM_QUATERNION_LENGTH = 0.5
 # How long one receive may block. Short, so Ctrl+C lands within a quarter of a second even when
 # the stream has stopped, which a receive with no timeout does not allow.
 RECEIVE_POLL_SECONDS = 0.25
@@ -51,18 +55,6 @@ NEON_SCENE_SIZE = (1200, 1600)  # height, width
 
 class NeonCalibrationError(ValueError):
     """The device could not give us its camera calibration, so the run cannot place anything."""
-
-
-def apply_opencv_pyav_import_workaround() -> None:
-    """
-    Open and close a one-pixel OpenCV window before the Pupil Labs client is imported.
-
-    Works around an import-order crash between OpenCV and PyAV on Windows. The old script did this
-    at module scope with no explanation. Kept because a rewrite that drops a workaround on the
-    grounds that the new design makes it unnecessary rediscovers the bug a week later.
-    """
-    cv2.imshow("opencv pyav import order", np.zeros(1))
-    cv2.destroyAllWindows()
 
 
 class NeonLiveRgbSource:
@@ -79,9 +71,10 @@ class NeonLiveRgbSource:
         # Companion app cannot answer, in which case capture times are left out.
         self._clock_offset_seconds: float | None = None
         self._clock_offset_measured = False
-        # The failures a request to the device can end in. The client's own DeviceError joins these
-        # once the client is imported in _connect, so this file stays importable without it.
-        self._device_failures: tuple[type[BaseException], ...] = (OSError, ValueError)
+        self._warned_about_empty_imu = False
+        # The failures a request to the device can end in. NeonDeviceError is a ConnectionError,
+        # named anyway so the tuple says what it means.
+        self._device_failures: tuple[type[BaseException], ...] = (NeonDeviceError, OSError, ValueError)
 
     @property
     def undistorter(self) -> Undistorter | None:
@@ -97,30 +90,13 @@ class NeonLiveRgbSource:
         if self._device is not None:
             return self._device
 
-        apply_opencv_pyav_import_workaround()
-
-        # Optional dependency. Absent in any environment installed without the glasses extra.
-        from pupil_labs.realtime_api.device import DeviceError
-        from pupil_labs.realtime_api.simple import Device, discover_one_device
-
-        self._device_failures = (DeviceError, OSError, ValueError)
-
-        if self._config.address is None:
-            log.info("discovering a Neon, up to %.0f s", self._config.discovery_timeout_seconds)
-            device = discover_one_device(max_search_duration_seconds=self._config.discovery_timeout_seconds)
-            if device is None:
-                # Discovery uses mDNS, which university networks routinely block between subnets.
-                # That is what the old script's hard-coded address was working around.
-                raise ConnectionError(
-                    f"no Neon found within {self._config.discovery_timeout_seconds:.0f} s. "
-                    "If the network blocks mDNS, read the address off the Companion app's "
-                    "streaming screen and pass --neon-address"
-                )
-            log.info("discovered a Neon at %s:%s", device.address, device.port)
-        else:
-            log.info("connecting to the Neon at %s:%s", self._config.address, self._config.port)
-            device = Device(address=self._config.address, port=self._config.port)
-
+        device = NeonDeviceProcess(self._config)
+        try:
+            device.start()
+        except BaseException:
+            # A child that started and then failed to connect is still a process. Leave none behind.
+            device.close()
+            raise
         self._device = device
         return device
 
@@ -208,11 +184,16 @@ class NeonLiveRgbSource:
             self._clock_offset_measured = True
 
         while True:
-            matched = self._receive_matched(device)
+            try:
+                matched = self._receive_matched(device)
+            except NeonStreamEnded:
+                # Only a played-back capture ends. The run finishes the way a recording does.
+                log.info("the capture has been played to the end")
+                return
             arrival_seconds = laptop_time_seconds()
             self._poll_imu(device)
 
-            image_rgb = cv2.cvtColor(matched.scene.bgr_pixels, cv2.COLOR_BGR2RGB)
+            image_rgb = cv2.cvtColor(matched.frame.bgr_pixels, cv2.COLOR_BGR2RGB)
             undistorter = self._undistorter_for(image_rgb.shape[:2])
 
             gaze_pixel = None
@@ -227,10 +208,10 @@ class NeonLiveRgbSource:
 
             capture_seconds = None
             if self._clock_offset_seconds is not None:
-                capture_seconds = matched.scene.timestamp_unix_seconds + self._clock_offset_seconds
+                capture_seconds = matched.frame.timestamp_unix_seconds + self._clock_offset_seconds
 
             yield RgbFrame(
-                timestamp_seconds=matched.scene.timestamp_unix_seconds,
+                timestamp_seconds=matched.frame.timestamp_unix_seconds,
                 image_rgb=undistorter.undistort_image(image_rgb),
                 gaze_pixel=gaze_pixel,
                 pose=pose,
@@ -269,9 +250,17 @@ class NeonLiveRgbSource:
         # so there is no order to guess at, and guessing wrong would flip pitch and quietly break
         # the floor fit.
         quaternion = datum.quaternion
-        self._latest_orientation_wxyz = np.array(
-            [quaternion.w, quaternion.x, quaternion.y, quaternion.z]
-        )
+        orientation = np.array([quaternion.w, quaternion.x, quaternion.y, quaternion.z])
+        length = float(np.linalg.norm(orientation))
+        if not np.isfinite(length) or length < MINIMUM_QUATERNION_LENGTH:
+            # The glasses sent nothing but zero quaternions for minutes at a time on 2026-10-05.
+            # A zero is no orientation at all, so it is skipped like a reading without one, and the
+            # last real orientation carries on. Letting it through ended the run on its first frame.
+            if not self._warned_about_empty_imu:
+                log.warning("the Neon's IMU is sending empty orientations, frames carry the last real one or none")
+                self._warned_about_empty_imu = True
+            return
+        self._latest_orientation_wxyz = orientation
 
     def close(self) -> None:
         if self._device is None:

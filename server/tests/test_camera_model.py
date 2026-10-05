@@ -87,6 +87,22 @@ def test_zero_distortion_leaves_the_matrix_and_the_image_unchanged() -> None:
     assert np.array_equal(undistorter.undistort_image(image), image)
 
 
+def test_undistorted_pixels_are_square() -> None:
+    # The Neon's own calibration, as read off the device. OpenCV's alpha 0 matrix for it has fx 636
+    # and fy 754, which squashes the picture the depth model sees.
+    neon = CameraCalibration(
+        camera_matrix=np.array([[890.9483, 0.0, 807.2718], [0.0, 890.5604, 608.4522], [0.0, 0.0, 1.0]]),
+        distortion_coefficients=np.array([-0.1307, 0.1092, -0.0003, -0.0005, 0.0, 0.1702, 0.0519, 0.0255]),
+        image_size=(1200, 1600),
+    )
+
+    matrix = Undistorter(neon).camera_matrix
+
+    assert matrix[0, 0] == pytest.approx(matrix[1, 1])
+    # The larger of OpenCV's two, so the straightened view keeps the full 77 degrees vertically.
+    assert matrix[1, 1] == pytest.approx(754.4, abs=0.5)
+
+
 def test_barrel_undistortion_narrows_the_field_of_view() -> None:
     # The crop that keeps the border clean costs some of the edges. This is the number the
     # hardware check reports, so it has to move the right way.

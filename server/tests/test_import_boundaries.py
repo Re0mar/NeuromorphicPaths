@@ -21,8 +21,9 @@ from conftest import MINIMUM_FILE_COUNT, NAV_ROOT
 ALLOWED_IMPORTERS = {
     "torch": {Path("sources/estimator.py")},
     "depth_anything_3": {Path("sources/estimator.py")},
-    # The live client and the recording reader are one distribution with two entry points.
-    "pupil_labs": {Path("sources/neon_live.py"), Path("sources/neon_plugin.py")},
+    # The live client and the recording reader are one distribution with two entry points. The
+    # live client runs in its own process, so the file that starts that process holds the import.
+    "pupil_labs": {Path("sources/neon_device.py"), Path("sources/neon_stream.py"), Path("sources/neon_plugin.py")},
     "aiohttp": {Path("sinks/web.py")},
 }
 

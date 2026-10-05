@@ -18,7 +18,7 @@ import sys
 import cv2
 
 # Local package imports
-from nav.sources.neon_live import apply_opencv_pyav_import_workaround
+from nav.sources.neon_device import apply_opencv_pyav_import_workaround
 
 GAZE_RADIUS_PIXELS = 80
 GAZE_COLOR = (0, 0, 255)
