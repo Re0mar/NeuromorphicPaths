@@ -85,7 +85,8 @@ Any combination works, all three included. Each display is named at most once, s
 same means two servers on one port. One display named is exactly what it always was.
 
 The depth view is the depth image the planner saw, in gray with near bright and far dark, and a dim
-brown where there is no reading. On it are each obstacle group's nearest point as a ring sized by
+brown where there is no reading. It is turned a quarter turn at a time so the floor is at the bottom,
+because the Pixel sends its depth image sideways to how the phone is held. On it are each obstacle group's nearest point as a ring sized by
 its clearance, amber for a group and magenta for a wall, the chosen path laid on the floor as a
 ribbon the body's width, and one line of text. The ribbon is colored and filled the way the band
 in the view from above is. Its fill also fades to nothing toward the end of the plan, and its

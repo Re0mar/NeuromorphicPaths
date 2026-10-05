@@ -26,7 +26,7 @@ from nav.sinks.floor_geometry import (
     project_points,
 )
 from nav.sinks.path_style import BORDER_OPACITY, GROUP_RGB, WALL_RGB, path_color_rgb, path_fill_opacity
-from nav.types import DebugView, PlannedPath
+from nav.types import DebugView, Plane, PlannedPath
 
 log = logging.getLogger(__name__)
 
@@ -53,6 +53,9 @@ DEPTH_PERCENTILES = (2.0, 98.0)
 GROUP_RING_MIN_RADIUS = 5
 GROUP_RING_PIXELS_PER_METER = 8
 GROUP_RING_MAX_RADIUS = 40
+# Below this share of the floor normal lying in the image plane, the camera is looking at the floor
+# and the picture has no up to turn toward. A camera pitched 72 degrees down sits right at it.
+UPRIGHT_MIN_IMAGE_COMPONENT = 0.3
 
 
 def render_arrow(heading_radians: float, path: PlannedPath) -> np.ndarray:
@@ -112,6 +115,29 @@ def render_field(field: np.ndarray, grid: np.ndarray, path: PlannedPath) -> np.n
     return cv2.resize(image, None, fx=FIELD_INSET_SCALE, fy=FIELD_INSET_SCALE, interpolation=cv2.INTER_NEAREST)
 
 
+def upright_quarter_turns(floor: Plane) -> int:
+    """
+    How many counter-clockwise quarter turns bring the floor's down to the bottom of the picture.
+
+    Reads the floor the scene handed over, whose normal already points up: against gravity when the
+    pose knows gravity, against the image's own up otherwise. It is the plane the planner used, so
+    the picture turns with the plan rather than with a second reading of the pose.
+
+    :param floor: The floor, camera frame, normal pointing up.
+    :return: 0 to 3, for np.rot90. 0 when the camera looks at the floor and the picture has no up.
+    :rtype: int
+    """
+    normal = np.asarray(floor.normal, dtype=np.float64)
+    # Down in the image, x right and y down.
+    down_x, down_y = -normal[0], -normal[1]
+    if np.hypot(down_x, down_y) < UPRIGHT_MIN_IMAGE_COMPONENT * np.linalg.norm(normal):
+        return 0
+    if abs(down_y) >= abs(down_x):
+        return 0 if down_y > 0 else 2
+    # A counter-clockwise turn carries the left edge to the bottom, three carry the right edge there.
+    return 1 if down_x < 0 else 3
+
+
 def render_depth_view(view: DebugView, path: PlannedPath) -> np.ndarray:
     """
     The depth image the planner saw, with the obstacle groups and the chosen path drawn on it.
@@ -123,9 +149,13 @@ def render_depth_view(view: DebugView, path: PlannedPath) -> np.ndarray:
     as wide as the body: each step's lateral offset at the forward distance walking speed covers by
     then. Its fill fades to nothing at the far end, and its borders do not fade.
 
+    The picture is turned by a quarter turn at a time so the floor is at the bottom. The Pixel sends
+    its depth image the way the sensor reads it, sideways to how the phone is held, and without the
+    turn "ahead" runs across the picture.
+
     :param view: The frame, the obstacles, the floor and where it came from.
     :param path: The path the planner chose for that frame.
-    :return: A BGR image, the depth image scaled up by a whole number.
+    :return: A BGR image, the depth image scaled up by a whole number and turned upright.
     :rtype: np.ndarray
     """
     depth = np.asarray(view.frame.depth_meters, dtype=np.float32)
@@ -156,6 +186,9 @@ def render_depth_view(view: DebugView, path: PlannedPath) -> np.ndarray:
             continue
         radius = int(np.clip(GROUP_RING_MIN_RADIUS + GROUP_RING_PIXELS_PER_METER * point.clearance_meters, GROUP_RING_MIN_RADIUS, GROUP_RING_MAX_RADIUS))
         cv2.circle(image, pixel, radius, COLOR_WALL if point.is_wall else COLOR_GROUP, 2)
+
+    # Everything above is drawn where the sensor put it. Turned now, so the text below reads upright.
+    image = np.ascontiguousarray(np.rot90(image, upright_quarter_turns(view.floor)))
 
     nearest = min((point.clearance_meters for point in view.obstacles.points), default=None)
     nearest_text = "nearest -" if nearest is None else f"nearest {nearest:.2f} m"

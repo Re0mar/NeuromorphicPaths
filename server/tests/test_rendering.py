@@ -23,6 +23,7 @@ from nav.sinks.rendering import (
     render_arrow,
     render_depth_view,
     render_field,
+    upright_quarter_turns,
 )
 from nav.types import DebugView, DepthFrame, FloorSource, ObstaclePoint, ObstacleSet, Plane, PlannedPath, Pose
 from nav.walker import WalkerConfig
@@ -332,3 +333,47 @@ def test_encode_png_round_trips_through_imdecode() -> None:
 def test_encode_png_refuses_an_empty_image() -> None:
     with pytest.raises(ValueError, match="empty"):
         encode_png(np.zeros((0, 0, 3), dtype=np.uint8))
+
+
+# ------------------------------------------------------------------ turning the view upright
+
+
+@pytest.mark.parametrize(
+    ("normal", "turns"),
+    [
+        # Normal points up in the camera frame. Down is its opposite, x right and y down.
+        (np.array([0.0, -1.0, 0.0]), 0),  # down along +y, already at the bottom
+        (np.array([1.0, 0.0, 0.0]), 1),  # down along -x, the left edge, one turn brings it down
+        (np.array([0.0, 1.0, 0.0]), 2),  # down along -y, the top, upside down
+        (np.array([-1.0, 0.0, 0.0]), 3),  # down along +x, the right edge, as on a Pixel held upright
+        (np.array([-0.65, -0.04, -0.76]), 3),  # a real Pixel floor, frame 400 of pixel_walk_3
+    ],
+)
+def test_the_view_turns_so_the_floor_is_at_the_bottom(normal: np.ndarray, turns: int) -> None:
+    assert upright_quarter_turns(Plane(normal, 1.0)) == turns
+
+
+def test_a_camera_facing_the_floor_is_not_turned() -> None:
+    # Frame 1500 of pixel_walk_3. The floor fills the view and the picture has no up.
+    assert upright_quarter_turns(Plane(np.array([-0.01, -0.01, -1.0]), 0.71)) == 0
+
+
+def test_an_upright_frame_keeps_its_size_and_a_sideways_one_swaps_it() -> None:
+    view = _floor_view()
+    sideways = DebugView(view.frame, view.obstacles, Plane(np.array([-1.0, 0.0, 0.0]), 1.6), FloorSource.FITTED, WALKING_SPEED, BODY_HALF_WIDTH)
+    scale = DEPTH_VIEW_TARGET_WIDTH // WIDTH
+
+    assert render_depth_view(view, _one_step_path()).shape == (HEIGHT * scale, WIDTH * scale, 3)
+    assert render_depth_view(sideways, _one_step_path()).shape == (WIDTH * scale, HEIGHT * scale, 3)
+
+
+def test_the_text_line_is_drawn_after_the_turn() -> None:
+    # On a turned view the text still sits along the top rows. Drawn before the turn, it would have
+    # ended up along a side edge instead.
+    view = _floor_view()
+    sideways = DebugView(view.frame, view.obstacles, Plane(np.array([-1.0, 0.0, 0.0]), 1.6), FloorSource.FITTED, WALKING_SPEED, BODY_HALF_WIDTH)
+    image = render_depth_view(sideways, _one_step_path())
+
+    text_rows = image[:TEXT_BAND_ROWS]
+    assert np.any(np.all(text_rows == 255, axis=2)), "white text along the top"
+    assert not np.any(np.all(image[:, -TEXT_BAND_ROWS:][TEXT_BAND_ROWS:] == 255, axis=2)), "no white text down the right edge"
