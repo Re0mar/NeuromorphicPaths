@@ -16,17 +16,20 @@ import pytest
 
 # Local package imports
 from nav.evaluation import replay as replay_module
-from nav.evaluation.check_planner import main
+from nav.evaluation.check_planner import format_numbers, main
 from nav.evaluation.config import PlannerNumbersConfig
 from nav.evaluation.planner_numbers import (
     ClearanceBand,
     PairCause,
+    PlannerNumbers,
     PlannerInput,
     ReplayedFrame,
     clearance_band,
     disagreement_pairs,
     horizon_reach_meters,
     is_pinned,
+    in_restated_band,
+    nearest_beside_clearance,
     nearest_heading_clearance,
     pair_cause,
     plan_disagreement,
@@ -502,3 +505,88 @@ def test_flips_command_refuses_a_percentile_outside_0_to_100(recording: Path, ca
         main(["flips", str(recording), "--percentile", "150"])
     assert stopped.value.code == 2
     assert "--percentile is from 0 to 100, got 150" in capsys.readouterr().err
+
+
+# *******************************************
+# The restated band
+# *******************************************
+
+
+def test_something_near_just_beside_the_corridor_takes_a_frame_out_of_the_restated_band() -> None:
+    # The nearest corridor point is 3.5 m out, so the plain band counts it. A point 0.8 m to the side
+    # 2 m out is nearer than 3 m within 1.0 m of the line, so the restated band doesn't.
+    beside = ObstacleSet(0.0, (point(0.0, 4.0, 3.5), point(0.8, 2.0, 1.8, group=2)), 2)
+    assert clearance_band(nearest_heading_clearance(beside, CONFIG), PLANNER, CONFIG) is ClearanceBand.BAND
+    assert nearest_beside_clearance(beside, CONFIG) == 1.8
+    assert not in_restated_band(beside, PLANNER, CONFIG)
+
+
+def test_a_frame_with_its_sides_clear_stays_in_the_restated_band() -> None:
+    clear_sides = ObstacleSet(0.0, (point(0.0, 4.0, 3.5), point(1.2, 2.0, 1.9, group=2), point(0.8, 4.0, 3.2, group=3)), 3)
+    assert in_restated_band(clear_sides, PLANNER, CONFIG)
+
+
+def test_the_beside_edges_are_inclusive_at_one_meter_and_at_three_meters() -> None:
+    at_the_edge = ObstacleSet(0.0, (point(0.0, 4.0, 3.5), point(1.0, 2.0, 1.8, group=2)), 2)
+    assert not in_restated_band(at_the_edge, PLANNER, CONFIG)
+    just_past = ObstacleSet(0.0, (point(0.0, 4.0, 3.5), point(1.01, 2.0, 1.8, group=2)), 2)
+    assert in_restated_band(just_past, PLANNER, CONFIG)
+    exactly_three = ObstacleSet(0.0, (point(0.0, 4.0, 3.5), point(0.8, 3.4, 3.0, group=2)), 2)
+    assert in_restated_band(exactly_three, PLANNER, CONFIG)
+
+
+def test_whole_walk_numbers_keep_the_plain_band_beside_the_restated_one() -> None:
+    limit = sidestep_limit_degrees(PLANNER)
+    plain_only = (point(0.0, 4.0, 3.5), point(0.8, 2.0, 1.8, group=2))
+    both = (point(0.0, 4.0, 3.5),)
+    frames = [frame(0.0, limit, points=plain_only), frame(0.1, limit, points=both), frame(0.2, 0.0, points=both)]
+    numbers = whole_walk_numbers(frames, PLANNER, CONFIG)
+    assert numbers.frames_by_band[ClearanceBand.BAND] == 3
+    assert numbers.pinned_by_band[ClearanceBand.BAND] == 2
+    assert numbers.restated_band_frames == 2
+    assert numbers.restated_band_pinned == 1
+
+
+def test_a_beside_reach_narrower_than_the_corridor_is_refused() -> None:
+    with pytest.raises(ValueError, match="beside_meters of 0.3 m must reach at least the heading corridor"):
+        PlannerNumbersConfig(beside_meters=0.3)
+
+
+def test_the_numbers_command_judges_the_band_on_the_restated_figure(recording: Path, capsys) -> None:
+    code, out, _ = run(["numbers", recording], capsys)
+    assert code == 0
+    assert "restated band, 3.00 to 5.32 m, nothing nearer within 1 m: pinned" in out
+    assert "restated band pinned" in out
+
+
+def test_a_clear_frame_with_clear_sides_is_not_in_the_restated_band() -> None:
+    # Nothing ahead at all within the corridor and nothing beside it: clear, not band.
+    assert not in_restated_band(ObstacleSet(0.0, (point(2.0, 3.0, 3.2),), 1), PLANNER, CONFIG)
+
+
+def test_the_band_verdict_reads_the_restated_figure_not_the_plain_one() -> None:
+    numbers = PlannerNumbers(
+        frames=400,
+        sidestep_limit_degrees=35.5,
+        horizon_reach_meters=5.32,
+        pinned_by_band={ClearanceBand.CLOSE: 0, ClearanceBand.NEAR: 0, ClearanceBand.BAND: 20, ClearanceBand.CLEAR: 0},
+        frames_by_band={ClearanceBand.CLOSE: 0, ClearanceBand.NEAR: 0, ClearanceBand.BAND: 200, ClearanceBand.CLEAR: 200},
+        restated_band_frames=120,
+        restated_band_pinned=70,
+        pinned_frames=20,
+        distinct_headings=10,
+        alarm_on_frames=0,
+        alarm_changes=0,
+        raised_past_close=0,
+        longest_hold_seconds=0.0,
+        near_noise_median_meters=None,
+        near_noise_readings=0,
+        disagreement_median_meters=None,
+        disagreement_p90_meters=None,
+        disagreement_pairs=0,
+        pairs_without_world=0,
+        duplicate_pairs=0,
+    )
+    text = format_numbers("made up", numbers, PLANNER, CONFIG)
+    # The plain band is 10 % of 200 and would pass. The restated band is 58.3 % of 120 and fails.
+    assert "FAIL  restated band pinned 58.3 % of 120, target at most 50 %" in text

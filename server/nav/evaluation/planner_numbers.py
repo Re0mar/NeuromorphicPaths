@@ -70,6 +70,9 @@ class PlannerNumbers:
     horizon_reach_meters: float
     pinned_by_band: dict[ClearanceBand, int]
     frames_by_band: dict[ClearanceBand, int]
+    # The restated band: band frames with nothing nearer than its low edge within beside_meters.
+    restated_band_frames: int
+    restated_band_pinned: int
     pinned_frames: int
     distinct_headings: int
     alarm_on_frames: int
@@ -139,6 +142,28 @@ def clearance_band(nearest_meters: float, planner_config: PlannerConfig, config:
     return ClearanceBand.CLEAR
 
 
+def nearest_beside_clearance(obstacles: ObstacleSet, config: PlannerNumbersConfig) -> float:
+    """The clearance of the nearest point ahead within beside_meters of the walker's line, or inf when there is none."""
+    return min(
+        (
+            point.clearance_meters for point in obstacles.points
+            if point.forward_meters > 0.0 and abs(point.lateral_meters) <= config.beside_meters
+        ),
+        default=float("inf"),
+    )
+
+
+def in_restated_band(obstacles: ObstacleSet, planner_config: PlannerConfig, config: PlannerNumbersConfig) -> bool:
+    """
+    Whether a frame is in the restated band: in the plain band, and nothing nearer than its low edge beside the line.
+
+    The plain band reads only the heading corridor, so a frame with something 2 m away just outside it
+    still counted as "3 to 5.32 m ahead". This one doesn't count it.
+    """
+    in_plain_band = clearance_band(nearest_heading_clearance(obstacles, config), planner_config, config) is ClearanceBand.BAND
+    return in_plain_band and nearest_beside_clearance(obstacles, config) >= config.band_low_meters
+
+
 def share(count: int, total: int, config: PlannerNumbersConfig) -> float | None:
     """count over total, or None when total is too few frames for a share to mean anything."""
     if total < config.min_frames_for_a_share:
@@ -204,6 +229,8 @@ def whole_walk_numbers(frames: Sequence[ReplayedFrame], planner_config: PlannerC
     for band, at_limit in zip(bands, pinned):
         frames_by_band[band] += 1
         pinned_by_band[band] += int(at_limit)
+    restated = [in_restated_band(frame.input.obstacles, planner_config, config) for frame in frames]
+    restated_pinned = sum(1 for inside, at_limit in zip(restated, pinned) if inside and at_limit)
 
     alarms = [frame.path.alarm for frame in frames]
     changes = sum(1 for before, after in zip(alarms, alarms[1:]) if before != after)
@@ -251,6 +278,8 @@ def whole_walk_numbers(frames: Sequence[ReplayedFrame], planner_config: PlannerC
         horizon_reach_meters=horizon_reach_meters(planner_config),
         pinned_by_band=pinned_by_band,
         frames_by_band=frames_by_band,
+        restated_band_frames=sum(restated),
+        restated_band_pinned=restated_pinned,
         pinned_frames=int(pinned.sum()),
         distinct_headings=len(np.unique(np.round(headings, config.distinct_heading_decimals))),
         alarm_on_frames=sum(alarms),

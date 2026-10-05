@@ -54,6 +54,9 @@ class Expected:
     pinned_all_percent: float
     pinned_band_percent: float
     pinned_clear_percent: float
+    # The restated band, as counts: both slices hold under the 100 frames a share needs.
+    restated_band_pinned: int
+    restated_band_frames: int
     distinct_headings: int
     alarm_on_percent: float
     alarm_changes: int
@@ -69,6 +72,8 @@ EXPECTED = {
         pinned_all_percent=39.607,  # 383 of 967, one frame 0.10 points
         pinned_band_percent=1.852,  # 2 of 108, one frame 0.93 points
         pinned_clear_percent=0.0,  # 0 of 100, one frame 1.00 point
+        restated_band_pinned=0,
+        restated_band_frames=52,
         distinct_headings=21,
         alarm_on_percent=47.156,  # 456 of 967
         alarm_changes=26,
@@ -81,6 +86,8 @@ EXPECTED = {
         pinned_all_percent=36.009,  # 166 of 461, one frame 0.22 points
         pinned_band_percent=5.217,  # 6 of 115, one frame 0.87 points
         pinned_clear_percent=0.0,  # 0 of 100, one frame 1.00 point
+        restated_band_pinned=6,
+        restated_band_frames=54,
         distinct_headings=16,
         alarm_on_percent=27.766,  # 128 of 461
         alarm_changes=12,
@@ -120,7 +127,13 @@ def test_the_planner_gives_the_pinned_numbers_on_the_slice(name: str) -> None:
         for field, value in measured.items()
         if abs(value - getattr(expected, field)) > SHARE_TOLERANCE_POINTS
     ]
-    for field, value in (("distinct_headings", numbers.distinct_headings), ("alarm_changes", numbers.alarm_changes)):
+    counts = (
+        ("distinct_headings", numbers.distinct_headings),
+        ("alarm_changes", numbers.alarm_changes),
+        ("restated_band_pinned", numbers.restated_band_pinned),
+        ("restated_band_frames", numbers.restated_band_frames),
+    )
+    for field, value in counts:
         if abs(value - getattr(expected, field)) > COUNT_TOLERANCE:
             moved.append(f"{field} {value}, pinned {getattr(expected, field)}")
     for field, value in (("disagreement_median_meters", numbers.disagreement_median_meters), ("disagreement_p90_meters", numbers.disagreement_p90_meters)):

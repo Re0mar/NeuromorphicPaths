@@ -177,8 +177,15 @@ class PlannerNumbersConfig:
     min_frames_for_a_share: int = 100
     # At most this share of clear-corridor frames may sit at the limit.
     clear_target_share: float = 0.10
-    # At most this share of band frames may sit at the limit. Recorded unmet since 2026-10-03.
+    # At most this share of band frames may sit at the limit. Recorded unmet since 2026-10-03, met since
+    # the prior toward the previous plan on 2026-10-05. Judged on the restated band below.
     band_target_share: float = 0.50
+    # The restated band, chosen 2026-10-05: a band frame counts only if nothing nearer than band_low_meters
+    # sits within this far to either side of the walker's line. The heading corridor alone missed things
+    # just beside it. On the classroom walk, 42 of the 59 band frames with the arrow at its limit had
+    # something nearer than 3 m 0.5 to 1.0 m to the side. The plain band, on the corridor alone, is still
+    # reported beside it, so the figures recorded before this stay comparable.
+    beside_meters: float = 1.0
 
     # What a pair of consecutive plans that disagree is, checked in the order PairCause lists them.
     # The walker's origin moving faster than this between two frames is the tracker relocalizing. The
@@ -220,3 +227,8 @@ class PlannerNumbersConfig:
                 raise ValueError(f"{name} is a share, at most 1, got {getattr(self, name)}")
         if self.close_meters >= self.band_low_meters:
             raise ValueError(f"close_meters of {self.close_meters} m must be short of band_low_meters of {self.band_low_meters} m")
+        if self.beside_meters < self.heading_corridor_half_width_meters:
+            raise ValueError(
+                f"beside_meters of {self.beside_meters} m must reach at least the heading corridor's "
+                f"{self.heading_corridor_half_width_meters} m, or the restated band would count frames the plain one doesn't"
+            )

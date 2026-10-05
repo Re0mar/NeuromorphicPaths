@@ -182,6 +182,8 @@ def format_numbers(name: str, numbers: PlannerNumbers, planner_config: PlannerCo
         label = BAND_LABELS[band].format(**edges)
         lines.append(f"  {label:<32} pinned {_share_text(numbers.pinned_by_band[band], numbers.frames_by_band[band])}")
     lines.append(f"  {'all planned frames':<32} pinned {_share_text(numbers.pinned_frames, numbers.frames)}")
+    restated_label = f"{config.band_low_meters:.2f} to {numbers.horizon_reach_meters:.2f} m, nothing nearer within {config.beside_meters:g} m"
+    lines.append(f"restated band, {restated_label}: pinned {_share_text(numbers.restated_band_pinned, numbers.restated_band_frames)}")
     lines.append(f"distinct headings, to {config.distinct_heading_decimals} decimals of a degree: {numbers.distinct_headings}")
     lines.append("")
     lines.append(f"alarm on {_share_text(numbers.alarm_on_frames, numbers.frames)}, {numbers.alarm_changes} state changes")
@@ -198,12 +200,12 @@ def format_numbers(name: str, numbers: PlannerNumbers, planner_config: PlannerCo
     lines.append(f"  pairs without a world frame: {numbers.pairs_without_world}, pairs with an equal timestamp: {numbers.duplicate_pairs}")
     lines.append("")
     lines.append("verdicts:")
-    for label, band, target in (
-        ("clear-corridor pinned", ClearanceBand.CLEAR, config.clear_target_share),
-        (f"{config.band_low_meters:.0f} to {numbers.horizon_reach_meters:.2f} m pinned", ClearanceBand.BAND, config.band_target_share),
+    # The band's verdict reads the restated band, chosen 2026-10-05. The plain band is printed above.
+    for label, pinned, count, target in (
+        ("clear-corridor pinned", numbers.pinned_by_band[ClearanceBand.CLEAR], numbers.frames_by_band[ClearanceBand.CLEAR], config.clear_target_share),
+        ("restated band pinned", numbers.restated_band_pinned, numbers.restated_band_frames, config.band_target_share),
     ):
-        count = numbers.frames_by_band[band]
-        measured = share(numbers.pinned_by_band[band], count, config)
+        measured = share(pinned, count, config)
         if measured is None:
             lines.append(f"  FAIL  {label}: too few frames, {count}")
             continue
