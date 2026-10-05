@@ -47,7 +47,7 @@ guards and watching it go red. Do the same for a new one.
 | Run type | What belongs in it | Trigger | Budget | Status |
 |---|---|---|---|---|
 | Gate | line endings, the import boundaries, the kind enums staying in `config.py`, the no-environment rule, the wire format document matching the encoder | every pull request | seconds | ❌ not in place. These tests exist and run locally; no pipeline runs them |
-| Verify | the rest of the suite: codec, scene, planner, user model, sinks, runtime, end to end on a synthetic video | on request, or when a pull request leaves draft | under a minute | ❌ not in place. Run by hand before every commit |
+| Verify | the rest of the suite: codec, scene, planner, user model, sinks, runtime, end to end on a synthetic video, and the planner's golden numbers on two committed slices of recorded walks | on request, or when a pull request leaves draft | under a minute | ❌ not in place. Run by hand before every commit |
 | Perf | `test_the_default_grid_plans_in_under_ten_milliseconds` is the one timing assertion, and it lives in Verify because it takes milliseconds | | | ❌ not in place, and not expected: the pipeline's budget is a frame rate on one laptop, measured by `--verbose` on a real recording |
 | Stress | | | | ❌ not in place, and not expected: one sender, one browser, one phone |
 | Nightly | a run of the real estimator on the committed outdoor recording, checking the floor height it reports against the measured 1.84 m | | | ❌ not in place. This is the gap a pull-request check cannot see: the model, the weights and the recording are all outside the repository |
@@ -59,6 +59,36 @@ Can it answer from this repository alone, with no model weights, no device and n
 it is Verify, and Gate if it also needs no OpenCV or Open3D call. Everything else is Nightly, and
 until Nightly exists it is a command in `server/README.md` run by hand with the result written
 down.
+
+## Updating the golden values
+
+`test_planner_golden.py` plans two committed slices of recorded walks and checks the planner's
+whole-walk numbers on each: how often the arrow sits at its sidestep limit, overall, with something
+3 to 5.32 m ahead and with a clear corridor, how many headings it takes, how often the alarm is on
+and how often it switches, and how far consecutive plans disagree. The slices are under
+`fixtures/`, one from `pixel_walk_3` and one from the classroom walk `pixel_display_run`, about
+1 MB together. It takes about 30 seconds.
+
+These are the one place in the suite where the expected values were captured from the code rather
+than worked out in the test. That is what a golden test is: a record of what the planner does,
+so a change to it can't go unnoticed. The arithmetic check beside it is
+`test_a_hand_built_slice_gives_the_numbers_worked_out_by_hand` in `test_evaluation_fixture.py`.
+
+**When the values move.** A planner change moves them, and that is the point. Update the values
+in `EXPECTED` in the same commit as the change, and say in the commit message which figures moved,
+by how much, and why that is the intended effect. A commit that moves them with no planner change
+in it has found a defect. Tolerances are 0.5 percentage points on a share, 1 on a count and
+0.005 m on a disagreement. Below 200 frames one frame is worth more than 0.5 points, so a share
+over fewer frames has to match to the frame. Another machine or numpy install can flip a plan that
+is a near tie, and a share moving by one frame there is real information, not noise to widen the
+tolerance for.
+
+**When a slice has to be re-cut.** When the scene changes what it hands the planner, or the walker
+changes size, the slices no longer show what today's scene would see. The test refuses a slice
+cut with another walker by name. Re-cut from the recordings with `python -m nav.evaluation.fixture`.
+The exact commands are in `test_planner_golden.py`'s docstring, and `find` proposes a window when
+the old one no longer qualifies. Rerun the test, update `EXPECTED`, and commit the slices and the
+values together.
 
 ## What CI actually runs
 
