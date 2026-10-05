@@ -237,6 +237,33 @@ log directory, so the flags are there to read back.
 
 Completed avoidances are written to `episodes.jsonl` in the same directory, one JSON line each.
 
+## Checking the planner on a recording
+
+`nav.evaluation.check_planner` replays a recording through the scene and planner and prints the
+figures the planner is judged by. Pass the same scene flags the recording needs, as for any replay.
+
+```
+.venv/Scripts/python -m nav.evaluation.check_planner numbers frame_logs/walk
+.venv/Scripts/python -m nav.evaluation.check_planner flips frame_logs/walk
+.venv/Scripts/python -m nav.evaluation.check_planner band frame_logs/walk
+```
+
+- `numbers`: how often the arrow sits at its sidestep limit, split by how far away the nearest thing
+  ahead is, how often it swings from one limit to the other, the alarm figures, and how much
+  consecutive plans disagree. Each target gets PASS or FAIL, or NOT JUDGED under 100 frames.
+- `flips`: the frame pairs whose plans disagree the most, sorted into side flips, new obstacles,
+  phone turns, shifts on the same side and tracker jumps, with the largest few to open in the recording.
+- `band`: with something 3 to 5.32 m ahead and the arrow at its limit, which cause would release it,
+  found by re-planning each frame without one suspected cause at a time.
+
+`--set <field>=<value>` changes a planner setting for the run, and the output marks it.
+`--cached` keeps the scene pass between runs. The measured results and the exact commands behind
+them are in `../docs/evaluation/arrow_flips_and_band.md`.
+
+`tests/test_planner_golden.py` pins the same figures on two committed slices of recorded walks. A
+planner change moves them on purpose: update the expected values in the same commit and say why.
+`tests/README.md` says how to cut a new slice.
+
 ## The layers
 
 **Sources** are device specific and yield `DepthFrame` objects. The two RGB sources share one
@@ -245,7 +272,9 @@ floor, keep what is between ankle and head height, group into cells, and measure
 group's distance has been wobbling. That wobble is N and the distance is S. **Planner** builds a
 field over future time and lateral position from two surprises, the professor's, which grows
 with N over S, and the surprise of the body touching something, and runs dynamic programming
-through it. **User model** watches the planner's output and the walker's heading and measures
+through it. It also remembers the plan it made one frame earlier, relative to the walker, and
+charges any path for straying from it over the first second, so a near-tie doesn't flip sides
+every frame. **User model** watches the planner's output and the walker's heading and measures
 what each avoidance cost in bits. It never steers. **Sinks** are device specific and take a
 `PlannedPath`. The runtime runs scene and planner on the newest frame in a thread so the source
 is never blocked.
@@ -276,3 +305,5 @@ values in `tests/test_laptop_path_fixture.py` and decoded by the app's test.
 - The user model's time constant, b, is a placeholder until a walker is measured.
 - The planner's walker sway, how far a person drifts from the line the arrow asks for, is an
   assumed 0.10 m. No recorded walk had anyone steering by the arrow, so it has not been measured.
+- The planner's memory of its previous plan was tuned and checked on replays only. It has not run
+  live on the phone or the glasses yet.

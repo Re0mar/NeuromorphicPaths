@@ -147,3 +147,97 @@ class EvaluationConfig:
             raise ValueError(
                 f"{name} of {seconds} s is not a whole number of {self.resample_step_seconds} s steps"
             )
+
+
+@dataclass(frozen=True)
+class PlannerNumbersConfig:
+    """
+    What the planner's own whole-walk numbers are counted by: pinned, the clearance bands, the heading's corridor.
+
+    The values are the ones every recorded heading and alarm figure was measured with, from 2026-10-02
+    on. Changing one restates those figures, so a change here is a change to the record too.
+    """
+
+    # The corridor the heading is judged through: the 0.35 m footprint plus 0.15 m. Fixed here on
+    # purpose. The alarm's corridor narrowed later, to the 0.30 m body, and reading the heading through
+    # it moved a clear-corridor figure from 9.1 % to 14.0 % with no change to the arrow.
+    heading_corridor_half_width_meters: float = 0.50
+    # Nothing farther than this from the footprint may raise the alarm. Also the top of the closest band.
+    close_meters: float = 1.0
+    # The low edge of the band the sideways weight was tuned against. Its high edge is the horizon's
+    # reach, borrowed from the planner, because the band is about what the plan can see.
+    band_low_meters: float = 3.0
+    # Corridor groups this close give the near noise the post safety tests are set from.
+    noise_near_meters: float = 2.0
+    # A heading this close to the sidestep limit counts as pinned at it.
+    pinned_tolerance_degrees: float = 0.5
+    # Headings are told apart to this many decimals of a degree.
+    distinct_heading_decimals: int = 2
+    # A share over fewer frames than this moves by whole percentage points per frame, so it isn't a result.
+    min_frames_for_a_share: int = 100
+    # At most this share of clear-corridor frames may sit at the limit.
+    clear_target_share: float = 0.10
+    # At most this share of band frames may sit at the limit. Recorded unmet since 2026-10-03, met since
+    # the prior toward the previous plan on 2026-10-05. Judged on the restated band below.
+    band_target_share: float = 0.50
+    # The restated band, chosen 2026-10-05: a band frame counts only if nothing nearer than band_low_meters
+    # sits within this far to either side of the walker's line. The heading corridor alone missed things
+    # just beside it. On the classroom walk, 42 of the 59 band frames with the arrow at its limit had
+    # something nearer than 3 m 0.5 to 1.0 m to the side. The plain band, on the corridor alone, is still
+    # reported beside it, so the figures recorded before this stay comparable.
+    beside_meters: float = 1.0
+
+    # What a pair of consecutive plans that disagree is, checked in the order PairCause lists them.
+    # The walker's origin moving faster than this between two frames is the tracker relocalizing. The
+    # same figure the turn evaluation uses, read from it rather than restated.
+    tracker_jump_speed_mps: float = EvaluationConfig.max_plausible_step_speed_mps
+    # The walker frame turning faster than this is the tracker's orientation jumping, not a person
+    # turning: 24 degrees between two frames at 30 Hz, faster than a head or a hand-held phone turns.
+    # The classroom walk has pairs turning 54 to 76 degrees in 33 ms, over 1300 degrees a second.
+    max_turn_rate_degrees_per_second: float = 720.0
+    # A full swing counts only between frames this close in time. The same gap breaks the turn
+    # evaluation's track, read from it rather than restated.
+    swing_max_gap_seconds: float = EvaluationConfig.max_interpolation_gap_seconds
+    # The phone's turn explains a pair when lining up the two frames' axes removes at least this share of
+    # the disagreement. A share, not an angle, so a pair where the phone turned and the plan also flipped
+    # sides still reads as a flip.
+    axis_turn_explained_share: float = 0.5
+    # A plan passing a point closer than this has no side of it. It went through. The body half-width as
+    # of 2026-10-04, fixed here so tuning the planner's body can't change how pairs are classified.
+    side_clearance_meters: float = 0.30
+    # An earlier frame saw a point when one of its points lies within this of it in the world. One scene cell.
+    same_point_meters: float = 0.25
+
+    def __post_init__(self) -> None:
+        for field in dataclasses.fields(self):
+            value = getattr(self, field.name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"{field.name} must be a number, got {value!r}")
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{field.name} must be a finite number of zero or more, got {value}")
+        for name in ("distinct_heading_decimals", "min_frames_for_a_share"):
+            if getattr(self, name) != int(getattr(self, name)):
+                raise ValueError(f"{name} must be a whole number, got {getattr(self, name)}")
+        for name in (
+            "heading_corridor_half_width_meters",
+            "close_meters",
+            "pinned_tolerance_degrees",
+            "min_frames_for_a_share",
+            "tracker_jump_speed_mps",
+            "max_turn_rate_degrees_per_second",
+            "swing_max_gap_seconds",
+            "axis_turn_explained_share",
+            "same_point_meters",
+        ):
+            if getattr(self, name) == 0:
+                raise ValueError(f"{name} must be above zero")
+        for name in ("clear_target_share", "band_target_share", "axis_turn_explained_share"):
+            if getattr(self, name) > 1.0:
+                raise ValueError(f"{name} is a share, at most 1, got {getattr(self, name)}")
+        if self.close_meters >= self.band_low_meters:
+            raise ValueError(f"close_meters of {self.close_meters} m must be short of band_low_meters of {self.band_low_meters} m")
+        if self.beside_meters < self.heading_corridor_half_width_meters:
+            raise ValueError(
+                f"beside_meters of {self.beside_meters} m must reach at least the heading corridor's "
+                f"{self.heading_corridor_half_width_meters} m, or the restated band would count frames the plain one doesn't"
+            )

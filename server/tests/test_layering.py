@@ -33,14 +33,21 @@ SHARED_LAYERS = (
     "nav.evaluation.replay",
     "nav.evaluation.report",
     "nav.evaluation.__main__",
+    "nav.evaluation.check_planner",
+    "nav.evaluation.fixture",
 )
 # Every module of nav.evaluation, named, so the check below can't pass by importing fewer of them.
 EVALUATION_MODULES = (
     "nav.evaluation",
     "nav.evaluation.__main__",
+    "nav.evaluation.arguments",
+    "nav.evaluation.band_attribution",
+    "nav.evaluation.check_planner",
     "nav.evaluation.config",
+    "nav.evaluation.fixture",
     "nav.evaluation.frames",
     "nav.evaluation.overrides",
+    "nav.evaluation.planner_numbers",
     "nav.evaluation.replay",
     "nav.evaluation.report",
     "nav.evaluation.scoring",

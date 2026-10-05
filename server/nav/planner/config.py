@@ -70,5 +70,28 @@ class PlannerConfig:
     # Ours. The arrow points at where the path is this far ahead. On the classroom walk the arrow
     # takes 20 values instead of 3, and sits at the sidestep limit on 75.8 % of frames instead of 87.6 %.
     heading_lookahead_seconds: float = 1.0
+    # Ours. A prior toward the plan the walker was already following, held in the walker's own frame.
+    # His dynamic program keeps nothing between frames, and on the recorded walks the arrow swung from
+    # one sidestep limit to the other 65 to 127 times a minute, at his weight with or without the
+    # contact term, and at ours.
+    # Off only to compare against the planner without memory.
+    previous_plan_prior_enabled: bool = True
+    # Ours. How far from the previous plan a position may be before the prior counts it as surprising,
+    # one standard deviation. Swept 2026-10-05 on contact_walk_1, pixel_walk_3 and the classroom walk,
+    # last segments. Over the first second, every spread from 0.125 to 0.5 m held every limit and cut the
+    # full swings from 77, 76 and 105 a minute to 0 to 6.5. At 0.25 m: 0, 1.3 and 0 a minute, the 90th
+    # percentile of plan disagreement 0.254, 0.449 and 0.273 m (was 1.176, 1.102, 1.303), and the arrow at
+    # its limit with something 3 to 5.32 m ahead on 1.6 % of pixel_walk_3's band frames and 30.3 % of the
+    # classroom's (was 58.2 and 59.0). 0.25 rather than the sharpest 0.125, for margin: the arrow stops
+    # coming back to straight once the obstacle is gone at 0.05 m, and the swings climb again from 1.0 m.
+    previous_plan_spread_meters: float = 0.25
+    # Ours. The prior covers the rows the walker reaches in this long, about as long as they need to act
+    # on the arrow. Rows beyond it stay free to replan. Over the whole 3.8 s horizon, spreads of 0.125 to
+    # 0.5 m held the arrow at its limit on 12 to 17 % of the classroom's clear-corridor frames, over the
+    # 10 % allowed, because the far rows were committed to before anything new came into view.
+    previous_plan_prior_seconds: float = 1.0
+    # Ours. A previous plan older than this says nothing about the next one. Half a second is 0.7 m of
+    # walking, and about fifteen frames dropped at 30 Hz.
+    previous_plan_max_gap_seconds: float = 0.5
     goal_distance_meters: float = 4.0  # Old file's goal_dist.
     goal_tolerance_meters: float = 1.5  # Half a typical hallway's width, so the goal term picks among safe paths.

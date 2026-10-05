@@ -19,6 +19,7 @@ import os
 import pickle
 import re
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +32,7 @@ import nav
 from nav.evaluation.config import EvaluationConfig
 from nav.evaluation.frames import PlannedFrame
 from nav.evaluation.overrides import apply_overrides
+from nav.evaluation.planner_numbers import PlannerInput, ReplayedFrame
 from nav.evaluation.scoring import (
     LaggedCorrelation,
     TurnScore,
@@ -43,6 +45,7 @@ from nav.evaluation.scoring import (
 )
 from nav.evaluation.track import WalkerTrack, walker_track
 from nav.evaluation.turns import StraightSpread, Turn, TurnTag, detect_turns, straight_stretch_spread, tag_turn
+from nav.planner.alarm import alarm_raised
 from nav.planner.config import GoalMode, PlannerConfig
 from nav.planner.pipeline import PlannerPipeline
 from nav.runtime.loop import RUN_CONFIG_FILENAME, gaze_on_the_ground
@@ -100,6 +103,17 @@ class PlannedScene:
     image_width_pixels: int
     image_height_pixels: int
     gaze_ground_point: np.ndarray | None
+
+    def planner_input(self) -> PlannerInput:
+        """The part of this frame the planner and the whole-walk numbers read."""
+        return PlannerInput(
+            timestamp_seconds=self.timestamp_seconds,
+            obstacles=self.obstacles,
+            origin=self.origin,
+            lateral_axis=self.lateral_axis,
+            forward_axis=self.forward_axis,
+            gaze_ground_point=self.gaze_ground_point,
+        )
 
 
 @dataclass(frozen=True)
@@ -355,6 +369,33 @@ def cache_key(log_dir: Path, scene_config: SceneConfig, walker: WalkerConfig) ->
     return digest.hexdigest()[:16]
 
 
+def replayed_frames(
+    inputs: Sequence[PlannerInput],
+    planner_config: PlannerConfig,
+    walker: WalkerConfig,
+    goal_mode: GoalMode,
+    keep_fields: bool = False,
+) -> list[ReplayedFrame]:
+    """
+    Plan every input with one planner for the whole sequence, the way the loop does.
+
+    This is the only place the replay plans, so the turn scores, the whole-walk numbers and the
+    band breakdown can't plan differently.
+
+    :param inputs: In timestamp order.
+    :param keep_fields: Also keep each frame's field, for a breakdown by term.
+    :return: Each input with its path and the alarm's decision before the hold.
+    :rtype: list[ReplayedFrame]
+    """
+    planner = PlannerPipeline(planner_config, walker)
+    frames = []
+    for row in inputs:
+        path = planner.plan(row.obstacles, 0.0, goal_mode, row.gaze_ground_point)
+        field = planner.last_field.copy() if keep_fields else None
+        frames.append(ReplayedFrame(input=row, path=path, raise_decision=alarm_raised(row.obstacles, planner_config), field=field))
+    return frames
+
+
 def planner_pass(scene: ScenePass, planner_config: PlannerConfig, walker: WalkerConfig, goal_mode: GoalMode) -> list[PlannedFrame]:
     """
     Plan every frame the scene accepted, with one planner for the whole log, the way the loop does.
@@ -362,10 +403,10 @@ def planner_pass(scene: ScenePass, planner_config: PlannerConfig, walker: Walker
     :return: Each frame with the planner's own arrow.
     :rtype: list[PlannedFrame]
     """
-    planner = PlannerPipeline(planner_config, walker)
+    replayed = replayed_frames([row.planner_input() for row in scene.planned], planner_config, walker, goal_mode)
     frames = []
-    for row in scene.planned:
-        path = planner.plan(row.obstacles, 0.0, goal_mode, row.gaze_ground_point)
+    for row, replayed_frame in zip(scene.planned, replayed, strict=True):
+        path = replayed_frame.path
         frames.append(
             PlannedFrame(
                 timestamp_seconds=row.timestamp_seconds,
