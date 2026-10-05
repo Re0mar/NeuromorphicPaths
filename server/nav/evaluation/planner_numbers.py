@@ -56,6 +56,9 @@ class ReplayedFrame:
     path: PlannedPath
     # alarm_raised before the hold. The path's alarm is after it.
     raise_decision: bool
+    # The field the plan was made from, every term and both priors, when the replay was asked to keep
+    # it. A grid the size of the horizon per frame, so only the breakdown that reads it asks.
+    field: np.ndarray | None = None
 
 
 @dataclass(frozen=True)

@@ -369,14 +369,21 @@ def cache_key(log_dir: Path, scene_config: SceneConfig, walker: WalkerConfig) ->
     return digest.hexdigest()[:16]
 
 
-def replayed_frames(inputs: Sequence[PlannerInput], planner_config: PlannerConfig, walker: WalkerConfig, goal_mode: GoalMode) -> list[ReplayedFrame]:
+def replayed_frames(
+    inputs: Sequence[PlannerInput],
+    planner_config: PlannerConfig,
+    walker: WalkerConfig,
+    goal_mode: GoalMode,
+    keep_fields: bool = False,
+) -> list[ReplayedFrame]:
     """
     Plan every input with one planner for the whole sequence, the way the loop does.
 
-    This is the only place the replay plans, so the turn scores and the whole-walk numbers can't
-    plan differently.
+    This is the only place the replay plans, so the turn scores, the whole-walk numbers and the
+    band breakdown can't plan differently.
 
     :param inputs: In timestamp order.
+    :param keep_fields: Also keep each frame's field, for a breakdown by term.
     :return: Each input with its path and the alarm's decision before the hold.
     :rtype: list[ReplayedFrame]
     """
@@ -384,7 +391,8 @@ def replayed_frames(inputs: Sequence[PlannerInput], planner_config: PlannerConfi
     frames = []
     for row in inputs:
         path = planner.plan(row.obstacles, 0.0, goal_mode, row.gaze_ground_point)
-        frames.append(ReplayedFrame(input=row, path=path, raise_decision=alarm_raised(row.obstacles, planner_config)))
+        field = planner.last_field.copy() if keep_fields else None
+        frames.append(ReplayedFrame(input=row, path=path, raise_decision=alarm_raised(row.obstacles, planner_config), field=field))
     return frames
 
 

@@ -8,13 +8,18 @@ Run from server/ with its venv:
     python -m nav.evaluation.check_planner numbers frame_logs/pixel_walk_3 --set lateral_kinetic_weight=0.055 --set contact_term_enabled=false
 
     python -m nav.evaluation.check_planner flips frame_logs/contact_walk_1 --percentile 90
+    python -m nav.evaluation.check_planner band frame_logs/pixel_walk_3
 
 `numbers` prints every whole-walk figure the heading and alarm are judged by, each with the frame
 count it was taken over, and a pass or fail against each target. `flips` takes the consecutive plan
 pairs at or above a percentile of disagreement and says what each is: a tracker jump, the phone
-turning, a new obstacle, a side flip around something both frames saw, or a shift on the same side. One scene runs across the whole
-walk, as the live run does, and the chosen segment's frames are planned with one planner. The floor
-fit is seeded, so one cold pass is a verdict on one machine. --cached reuses a scene pass.
+turning, a new obstacle, a side flip around something both frames saw, or a shift on the same side.
+`band` takes every frame with something 3 to 5.32 m ahead and the arrow at its limit, splits its
+cost by term, and says which known causes explain it, by re-planning the frame without each one.
+
+One scene runs across the whole walk, as the live run does, and the chosen segment's frames are
+planned with one planner. The floor fit is seeded, so one cold pass is a verdict on one machine.
+--cached reuses a scene pass.
 
 Exit codes: 0 printed, 1 a recording or an override refused, 2 a usage error such as a segment the
 walk doesn't have, 3 nothing to measure because the segment has no planned frame.
@@ -24,10 +29,16 @@ walk doesn't have, 3 nothing to measure because the segment has no planned frame
 import argparse
 import dataclasses
 import sys
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
+
+# Third party imports
+import numpy as np
 
 # Local package imports
 from nav.evaluation.arguments import add_replay_arguments
+from nav.evaluation.band_attribution import ON_HOLD, TERM_NAMES, BandAttribution, PinCandidate, band_attribution
 from nav.evaluation.config import EvaluationConfig, PlannerNumbersConfig
 from nav.evaluation.overrides import OverrideRefused, apply_overrides
 from nav.evaluation.planner_numbers import (
@@ -41,7 +52,8 @@ from nav.evaluation.planner_numbers import (
     whole_walk_numbers,
 )
 from nav.evaluation.replay import RecordingRefused, clone_state, goal_mode_for, replayed_frames, scene_config_for, scene_pass, segment_bounds
-from nav.planner.config import PlannerConfig
+from nav.evaluation.track import floor_heading_radians, walker_track, wrap_radians
+from nav.planner.config import GoalMode, PlannerConfig
 from nav.sources.framecodec import FrameDecodeError
 from nav.walker import WalkerConfig
 
@@ -67,7 +79,8 @@ def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     subcommands = parser.add_subparsers(dest="subcommand", required=True)
     numbers = subcommands.add_parser("numbers", help="every whole-walk heading and alarm figure, with pass or fail")
     flips = subcommands.add_parser("flips", help="what the consecutive plan pairs at or above a disagreement percentile are")
-    for subcommand in (numbers, flips):
+    band = subcommands.add_parser("band", help="what holds the arrow at its limit with something 3 to 5.32 m ahead")
+    for subcommand in (numbers, flips, band):
         subcommand.add_argument("log_dirs", type=Path, nargs="+", help="frame logs written by --record-to")
         subcommand.add_argument("--segment", type=int, default=-1, help="which segment to plan, counted from zero, negative from the end. The last by default")
         add_replay_arguments(subcommand)
@@ -93,12 +106,26 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_USAGE
 
 
-def segment_frames(log_dir: Path, arguments: argparse.Namespace, planner_config: PlannerConfig) -> tuple[list[ReplayedFrame], str, str]:
+@dataclass(frozen=True)
+class SegmentReplay:
+    """One segment of a walk, replayed, with the poses the walker's track is built from."""
+
+    frames: list[ReplayedFrame]
+    scene_source: str
+    cache_state: str
+    goal_mode: GoalMode
+    cell_size_meters: float
+    pose_times_seconds: np.ndarray
+    pose_positions_world: np.ndarray
+
+
+def segment_frames(log_dir: Path, arguments: argparse.Namespace, planner_config: PlannerConfig, keep_fields: bool = False) -> SegmentReplay:
     """
     Replay one segment of a walk: one scene pass over the whole log, then the segment's frames planned.
 
-    :return: The segment's replayed frames, where the scene config came from, and how the cache was used.
-    :rtype: tuple[list[ReplayedFrame], str, str]
+    :param keep_fields: Keep each frame's field, for the band breakdown.
+    :return: The segment's replayed frames and poses, where the scene config came from, and how the cache was used.
+    :rtype: SegmentReplay
     :raises SegmentMissing: When the walk has no segment at that index.
     """
     walker = WalkerConfig()
@@ -110,7 +137,41 @@ def segment_frames(log_dir: Path, arguments: argparse.Namespace, planner_config:
     except IndexError:
         raise SegmentMissing(f"{log_dir.name} has {len(bounds)} segments, so there is no segment {arguments.segment}") from None
     inputs = [row.planner_input() for row in passed.planned if start <= row.timestamp_seconds <= end]
-    return replayed_frames(inputs, planner_config, walker, goal_mode_for(log_dir)), scene_source, passed.cache_state
+    goal_mode = goal_mode_for(log_dir)
+    inside = (passed.pose_times_seconds >= start) & (passed.pose_times_seconds <= end)
+    return SegmentReplay(
+        frames=replayed_frames(inputs, planner_config, walker, goal_mode, keep_fields=keep_fields),
+        scene_source=scene_source,
+        cache_state=passed.cache_state,
+        goal_mode=goal_mode,
+        cell_size_meters=scene_config.cell_size_meters,
+        pose_times_seconds=passed.pose_times_seconds[inside],
+        pose_positions_world=passed.pose_positions_world[inside],
+    )
+
+
+def travel_offset_lookup(replay: SegmentReplay) -> Callable[[float], float | None]:
+    """
+    The walker's direction of travel to the right of the phone's forward at each frame, from the pose track.
+
+    The track's heading and the floor heading of the phone's forward are both positive to the right, so
+    the offset is their difference. Unknown where the track has no heading, which is while standing or
+    near a break, or where the frame has no world pose.
+    """
+    config = EvaluationConfig()
+    track = walker_track(replay.pose_times_seconds, replay.pose_positions_world, config)
+    forward_by_time = {frame.input.timestamp_seconds: frame.input.forward_axis for frame in replay.frames}
+
+    def offset_at(timestamp: float) -> float | None:
+        forward = forward_by_time.get(timestamp)
+        if forward is None or track.times_seconds.size == 0:
+            return None
+        index = int(np.argmin(np.abs(track.times_seconds - timestamp)))
+        if abs(track.times_seconds[index] - timestamp) > config.resample_step_seconds / 2 or not np.isfinite(track.heading_radians[index]):
+            return None
+        return float(wrap_radians(track.heading_radians[index] - floor_heading_radians(forward)))
+
+    return offset_at
 
 
 def format_numbers(name: str, numbers: PlannerNumbers, planner_config: PlannerConfig, config: PlannerNumbersConfig) -> str:
@@ -163,13 +224,17 @@ def _run(arguments: argparse.Namespace) -> int:
         print(f"  {field.name} = {getattr(planner_config, field.name)}{marker}")
     measured_any = False
     for log_dir in arguments.log_dirs:
-        frames, scene_source, cache_state = segment_frames(log_dir, arguments, planner_config)
+        replay = segment_frames(log_dir, arguments, planner_config, keep_fields=arguments.subcommand == "band")
+        frames, scene_source, cache_state = replay.frames, replay.scene_source, replay.cache_state
         print(f"\n{log_dir.name}, segment {arguments.segment}: {len(frames)} planned frames. Scene settings from {scene_source}. Scene cache {cache_state}")
         if not frames:
             print(f"nothing measured: segment {arguments.segment} of {log_dir.name} has no planned frame", file=sys.stderr)
             continue
         measured_any = True
-        if arguments.subcommand == "flips":
+        if arguments.subcommand == "band":
+            attribution = band_attribution(frames, travel_offset_lookup(replay), planner_config, WalkerConfig(), replay.goal_mode, replay.cell_size_meters, config)
+            print(format_band(log_dir.name, attribution, config), end="")
+        elif arguments.subcommand == "flips":
             threshold, pairs = disagreement_pairs(frames, planner_config, config, arguments.percentile)
             print(format_flips(log_dir.name, threshold, pairs, arguments.percentile, arguments.largest), end="")
         else:
@@ -192,6 +257,31 @@ def format_flips(name: str, threshold: float | None, pairs: list[DiagnosedPair],
             f"  {pair.earlier_seconds:.3f} to {pair.later_seconds:.3f} s: {pair.disagreement_meters:.3f} m, {pair.cause.value}, "
             f"heading {pair.earlier_heading_degrees:+.1f} to {pair.later_heading_degrees:+.1f} deg, axis turned {pair.axis_turn_degrees:+.1f} deg{point}"
         )
+    return f"=== {name}\n" + "\n".join(lines) + "\n"
+
+
+def format_band(name: str, attribution: BandAttribution, config: PlannerNumbersConfig) -> str:
+    """How many pinned band frames each cause explains, which are on hold, and the ceiling without the fixable ones."""
+    lines = [f"{attribution.pinned_band_frames} of {attribution.band_frames} band frames have the arrow at its limit"]
+    if attribution.pinned_band_frames:
+        lines.append("each cause, and how many of those frames it explains (a frame can be explained by several):")
+        for candidate in PinCandidate:
+            hold = ", on hold" if candidate in ON_HOLD else ""
+            unknown = attribution.unknown_by[candidate]
+            unknown_text = f", {unknown} untested" if unknown else ""
+            lines.append(f"  {candidate.value:<16} {attribution.explained_by[candidate]:>4}{unknown_text}{hold}")
+        lines.append(f"explained only by causes on hold: {attribution.only_on_hold}")
+        lines.append(f"explained by a cause that can be fixed here: {attribution.fixable}")
+        lines.append(f"explained by more than one: {attribution.several}")
+        lines.append(f"explained by none: {attribution.unexplained}")
+        if attribution.band_frames:
+            ceiling = 100.0 * (attribution.pinned_band_frames - attribution.fixable) / attribution.band_frames
+            lines.append(f"band share with every fixable cause removed: {ceiling:.1f} %, against {100.0 * attribution.pinned_band_frames / attribution.band_frames:.1f} % now")
+        mean_terms = {name: float(np.mean([frame.term_difference[name] for frame in attribution.frames])) for name in TERM_NAMES}
+        lines.append("mean cost of the chosen path minus straight on, by term: " + ", ".join(f"{name} {value:+.2f}" for name, value in mean_terms.items()))
+        unexplained = [frame for frame in attribution.frames if not frame.explained and not frame.unknown][:10]
+        if unexplained:
+            lines.append("unexplained frames, to open in the recording: " + ", ".join(f"{frame.timestamp_seconds:.3f}" for frame in unexplained))
     return f"=== {name}\n" + "\n".join(lines) + "\n"
 
 
