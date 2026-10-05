@@ -15,6 +15,7 @@ from nav.planner.dynamic_programming import plan
 from nav.planner.field import CostTerm, cost_field, lateral_grid, step_count
 from nav.planner.goal import goal_position, goal_term
 from nav.planner.heading import lookahead_heading, lookahead_step_index
+from nav.planner.previous_plan import PreviousPlanPrior, check_previous_plan_config
 from nav.planner.surprise import CollisionSurprise
 from nav.types import ObstacleSet, PlannedPath
 from nav.walker import WalkerConfig
@@ -49,6 +50,9 @@ class PlannerPipeline:
         check_contact_config(config)
         self._terms = planner_terms(config)
         self._alarm_hold = AlarmHold(config.alarm_hold_seconds)
+        # Checked at construction even when off, so switching it on can't start a run with a bad constant.
+        check_previous_plan_config(config)
+        self._previous_plan = PreviousPlanPrior(config, self._times) if config.previous_plan_prior_enabled else None
         self._last_field: np.ndarray | None = None
 
     @property
@@ -87,11 +91,17 @@ class PlannerPipeline:
         field = cost_field(obstacles, self._grid, config, self._walker, self._terms)
         goal = goal_position(goal_mode, config, gaze_ground_point)
         field[-1] += goal_term(self._grid, goal, config)
+        if self._previous_plan is not None:
+            prior = self._previous_plan.field(self._grid, obstacles.timestamp_seconds, goal)
+            if prior is not None:
+                field += prior
         self._last_field = field
         after_field = time.perf_counter()
 
         offsets, cost = plan(field, start_lateral_meters, self._grid, config)
         after_plan = time.perf_counter()
+        if self._previous_plan is not None:
+            self._previous_plan.remember(offsets, obstacles.timestamp_seconds, goal)
 
         # Where the arrow points: at where the path is a lookahead from now, not at its first step.
         heading = lookahead_heading(offsets, self._lookahead_index, config)

@@ -153,8 +153,11 @@ def test_a_hand_built_slice_gives_the_numbers_worked_out_by_hand(tmp_path: Path)
     # Nine empty frames are clear, the three with the wall 0.5 m out are close.
     assert numbers.frames_by_band[ClearanceBand.CLEAR] == 9
     assert numbers.frames_by_band[ClearanceBand.CLOSE] == 3
-    # With nothing in view the goal straight ahead decides, so the heading is exactly zero.
-    assert all(frames[index].path.first_heading_radians == 0.0 for index in (0, 1, 2, 6, 7, 8, 9, 10, 11))
+    # With nothing in view the goal straight ahead decides, so the heading is exactly zero before the
+    # wall. After it, the prior toward the previous plan carries the sidestep into the first empty frame
+    # and lets go on the next, well inside the lookahead the release floor allows.
+    assert all(frames[index].path.first_heading_radians == 0.0 for index in (0, 1, 2, 7, 8, 9, 10, 11))
+    assert 0.0 < abs(frames[6].path.first_heading_radians) < np.radians(35.0)
     assert numbers.pinned_by_band[ClearanceBand.CLEAR] == 0
     # Raised at 0.375, 0.5 and 0.625 s. The hold runs 0.5 s from when the alarm was first raised, so
     # it is still up at 0.75 s and down at 0.875 s: four frames on, one change up and one down. The

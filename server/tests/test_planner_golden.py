@@ -6,8 +6,10 @@ Each slice is a contiguous stretch of a walk as the scene handed it to the plann
 A planner change moves these numbers, and the commit that makes the change updates them, on purpose,
 with the reason in the commit message. A change that moves them by accident shows up here.
 
-The expected values were captured from the planner at e983176 plus the commit that adds this test,
-nav code fd7a6849e2ba, on 2026-10-04. They are a snapshot, not arithmetic. The arithmetic check
+The expected values are a snapshot of the planner, not arithmetic. First captured 2026-10-04 at
+e983176 plus the commit that added this test. Updated 2026-10-05 for the prior toward the previous
+plan (previous_plan_spread_meters 0.25 over the first 1.0 s), which moved every heading figure and no
+alarm figure. The arithmetic check
 beside them is `test_a_hand_built_slice_gives_the_numbers_worked_out_by_hand` in
 test_evaluation_fixture.py, which a uniform defect in the planner can't satisfy by accident.
 
@@ -63,25 +65,27 @@ class Expected:
 EXPECTED = {
     # pixel_walk_3, last segment, 1537469.27 to 1537502.30 s, 967 frames, outdoors.
     "golden_pixel_walk_3.json.gz": Expected(
-        pinned_all_percent=58.325,  # 564 of 967, one frame 0.10 points
-        pinned_band_percent=59.259,  # 64 of 108, one frame 0.93 points
+        # Before the prior: 564 of 967 pinned, band 64 of 108, p90 1.3046 m.
+        pinned_all_percent=39.607,  # 383 of 967, one frame 0.10 points
+        pinned_band_percent=1.852,  # 2 of 108, one frame 0.93 points
         pinned_clear_percent=0.0,  # 0 of 100, one frame 1.00 point
         distinct_headings=21,
         alarm_on_percent=47.156,  # 456 of 967
         alarm_changes=26,
-        disagreement_median_meters=0.0765,  # over 964 pairs
-        disagreement_p90_meters=1.3046,
+        disagreement_median_meters=0.0668,  # over 964 pairs
+        disagreement_p90_meters=0.3993,
     ),
     # pixel_display_run, the classroom walk, last segment, 1566203.61 to 1566219.20 s, 461 frames.
     "golden_pixel_display_run.json.gz": Expected(
-        pinned_all_percent=49.241,  # 227 of 461, one frame 0.22 points
-        pinned_band_percent=41.739,  # 48 of 115, one frame 0.87 points
+        # Before the prior: 227 of 461 pinned, band 48 of 115, 19 distinct headings, p90 1.1095 m.
+        pinned_all_percent=36.009,  # 166 of 461, one frame 0.22 points
+        pinned_band_percent=5.217,  # 6 of 115, one frame 0.87 points
         pinned_clear_percent=0.0,  # 0 of 100, one frame 1.00 point
-        distinct_headings=19,
+        distinct_headings=16,
         alarm_on_percent=27.766,  # 128 of 461
         alarm_changes=12,
-        disagreement_median_meters=0.0643,  # over 460 pairs
-        disagreement_p90_meters=1.1095,
+        disagreement_median_meters=0.0521,  # over 460 pairs
+        disagreement_p90_meters=0.3573,
     ),
 }
 

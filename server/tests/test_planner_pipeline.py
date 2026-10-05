@@ -334,6 +334,106 @@ def test_the_shipped_weight_clears_the_post_under_the_margin_conditions(sway: fl
     assert abs(path.lateral_offsets_meters[k_reach]) > WALKER.radius_meters, path.lateral_offsets_meters[: k_reach + 1]
 
 
+FRAME_SECONDS = 1.0 / 30.0  # The Pixel's ARCore frame rate.
+
+
+def _approaching_post(time: float, start_forward: float, block_left: bool, noise: float = MEASURED_NEAR_NOISE_METERS) -> ObstacleSet:
+    """
+    A post just right of center, walked toward at walking pace, with the left side walled off when asked.
+
+    In the walker's frame, as the scene reports it: the post comes nearer by walking speed times time.
+    """
+    forward = start_forward - CONFIG.walking_speed_mps * time
+    points = [_point(0.02, forward, group=1, noise=noise)]
+    if block_left:
+        points += [_point(float(lateral), forward, group=10 + index, noise=0.3, is_wall=True) for index, lateral in enumerate(np.arange(-0.25, -3.01, -0.25))]
+    return _set(*points, timestamp=time)
+
+
+def _side_at_the_post(path: PlannedPath, forward: float) -> float:
+    k_reach = int(np.ceil(forward / (CONFIG.walking_speed_mps * CONFIG.time_step_seconds)))
+    return float(path.lateral_offsets_meters[k_reach])
+
+
+def _seconds_until_the_plan_switches_right(config: PlannerConfig, block_at_forward: float, noise: float = MEASURED_NEAR_NOISE_METERS) -> float:
+    """Walk toward the post, wall off the left once it is block_at_forward ahead, and time the switch."""
+    pipeline = PlannerPipeline(config, WALKER)
+    start_forward = 3.0
+    block_time = (start_forward - block_at_forward) / CONFIG.walking_speed_mps
+    time = 0.0
+    while time < block_time:
+        path = pipeline.plan(_approaching_post(time, start_forward, block_left=False, noise=noise))
+        time += FRAME_SECONDS
+    # The test only means something if the plan was passing on the left when the wall appeared.
+    assert _side_at_the_post(path, start_forward - CONFIG.walking_speed_mps * (time - FRAME_SECONDS)) < 0.02 - config.body_half_width_meters
+    while time < start_forward / CONFIG.walking_speed_mps:
+        forward = start_forward - CONFIG.walking_speed_mps * time
+        path = pipeline.plan(_approaching_post(time, start_forward, block_left=True, noise=noise))
+        if _side_at_the_post(path, forward) > 0.02 + config.body_half_width_meters:
+            return time - block_time
+        time += FRAME_SECONDS
+    return float("inf")
+
+
+def test_a_newly_blocked_side_still_switches_the_plan_in_time() -> None:
+    # The floor any memory between frames must keep. The left closes when the post is 1.5 m ahead,
+    # 1.5 / 1.4 = 1.07 s away. Getting the body past it on the right takes the body's 0.30 m half-width,
+    # the width the contact term prices, plus the post's 0.02 m off center: 0.32 s at the 1.0 m/s
+    # sidestep. So the plan may take at most 0.75 s to switch.
+    block_at_forward = 1.5
+    allowed = block_at_forward / CONFIG.walking_speed_mps - (CONFIG.body_half_width_meters + 0.02) / CONFIG.max_lateral_speed_mps
+    assert _seconds_until_the_plan_switches_right(CONFIG, block_at_forward) <= allowed
+
+
+@pytest.mark.parametrize("noise", [MEASURED_NEAR_NOISE_METERS, OTHER_WALK_NEAR_NOISE_METERS])
+@pytest.mark.parametrize("sway", [0.05, 0.20])
+def test_the_switch_holds_under_the_margin_conditions(sway: float, noise: float) -> None:
+    # The same corners the post margin tests use: half to twice the assumed sway, at either walk's
+    # near noise. A memory between frames must not cost the switch at any of them.
+    block_at_forward = 1.5
+    allowed = block_at_forward / CONFIG.walking_speed_mps - (CONFIG.body_half_width_meters + 0.02) / CONFIG.max_lateral_speed_mps
+    config = replace(CONFIG, walker_sway_meters=sway)
+    assert _seconds_until_the_plan_switches_right(config, block_at_forward, noise) <= allowed
+
+
+def _seconds_until_straight_after_the_post_is_gone(config: PlannerConfig) -> float:
+    """Walk toward a post for a second so the arrow sidesteps, then empty the view and time the return."""
+    pipeline = PlannerPipeline(config, WALKER)
+    time = 0.0
+    while time < 1.0:
+        pipeline.plan(_set(_point(0.0, 2.5 - CONFIG.walking_speed_mps * time, group=1, noise=MEASURED_NEAR_NOISE_METERS), timestamp=time))
+        time += FRAME_SECONDS
+    cleared_at = time
+    while time < cleared_at + 5.0:
+        path = pipeline.plan(ObstacleSet(time, (), 0))
+        if abs(np.degrees(path.first_heading_radians)) < STRAIGHT_DEGREES:
+            return time - cleared_at
+        time += FRAME_SECONDS
+    return float("inf")
+
+
+# The arrow within this of straight ahead says "carry on". The evaluation's dead band uses the same figure.
+STRAIGHT_DEGREES = 5.0
+
+
+def test_with_nothing_in_view_the_arrow_comes_back_to_straight_within_the_lookahead() -> None:
+    # The other floor a memory between frames must keep: once nothing is in the way it lets go. The
+    # arrow reads the plan a lookahead ahead, so a sidestep that outlives the obstacle by more than that
+    # is the memory holding on, not the plan finishing.
+    assert _seconds_until_straight_after_the_post_is_gone(CONFIG) <= CONFIG.heading_lookahead_seconds
+
+
+def test_a_post_approached_over_many_frames_is_cleared_on_every_frame() -> None:
+    # One pipeline across the approach, as a live run plans, so any memory between frames is in play.
+    pipeline = PlannerPipeline(CONFIG, WALKER)
+    for index in range(int(2.0 / CONFIG.walking_speed_mps / FRAME_SECONDS)):
+        time = index * FRAME_SECONDS
+        forward = 3.0 - CONFIG.walking_speed_mps * time
+        path = pipeline.plan(_set(_point(0.0, forward, group=1, noise=MEASURED_NEAR_NOISE_METERS), timestamp=time))
+        if forward <= 2.0:
+            assert abs(_side_at_the_post(path, forward)) > WALKER.radius_meters, f"walked into the post at {forward:.2f} m"
+
+
 def test_without_contact_the_shipped_weight_walks_into_the_post() -> None:
     # The shipped weight depends on the contact term. Removing it should fail here, not on a walk.
     post = _set(_point(0.0, 1.5, group=1, noise=MEASURED_NEAR_NOISE_METERS))
