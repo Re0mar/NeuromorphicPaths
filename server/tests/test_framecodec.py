@@ -318,6 +318,8 @@ def test_path_round_trip() -> None:
         first_heading_radians=0.42,
         alarm=True,
         cumulative_cost_bits=12.5,
+        scene_information_bits=0.37,
+        avoidance_surprise_bits=0.51,
     )
 
     decoded = decode_path(encode_path(original))
@@ -327,11 +329,22 @@ def test_path_round_trip() -> None:
     assert decoded.first_heading_radians == pytest.approx(original.first_heading_radians)
     assert decoded.alarm is True
     assert decoded.cumulative_cost_bits == pytest.approx(original.cumulative_cost_bits)
+    assert decoded.scene_information_bits == pytest.approx(0.37)
+    assert decoded.avoidance_surprise_bits == pytest.approx(0.51)
 
 
 @pytest.mark.parametrize(
     "missing",
-    ["timestamp_seconds", "times_seconds", "lateral_offsets_meters", "first_heading_radians", "alarm", "cumulative_cost_bits"],
+    [
+        "timestamp_seconds",
+        "times_seconds",
+        "lateral_offsets_meters",
+        "first_heading_radians",
+        "alarm",
+        "cumulative_cost_bits",
+        "scene_information_bits",
+        "avoidance_surprise_bits",
+    ],
 )
 def test_a_path_message_missing_a_field_is_refused(missing: str) -> None:
     message = {
@@ -341,6 +354,8 @@ def test_a_path_message_missing_a_field_is_refused(missing: str) -> None:
         "first_heading_radians": 0.0,
         "alarm": False,
         "cumulative_cost_bits": 0.0,
+        "scene_information_bits": 0.0,
+        "avoidance_surprise_bits": 0.0,
     }
     del message[missing]
 
@@ -359,11 +374,59 @@ def test_a_path_with_mismatched_array_lengths_is_refused() -> None:
             "first_heading_radians": 0.0,
             "alarm": False,
             "cumulative_cost_bits": 0.0,
+            "scene_information_bits": 0.0,
+            "avoidance_surprise_bits": 0.0,
         }
     ).encode("utf-8")
 
     with pytest.raises(FrameDecodeError, match="do not make a path"):
         decode_path(message)
+
+
+def test_the_path_json_matches_the_wire_docs_example() -> None:
+    # A round trip passes even when a key is misspelled the same way on both sides. This pins the
+    # exact key names and values against the example the document shows the phone's maintainer.
+    stated = PlannedPath(
+        timestamp_seconds=12.345,
+        times_seconds=np.array([0.0, 0.1, 0.2]),
+        lateral_offsets_meters=np.array([0.0, 0.05, 0.12]),
+        first_heading_radians=0.0423,
+        alarm=False,
+        cumulative_cost_bits=18.4,
+        scene_information_bits=0.37,
+        avoidance_surprise_bits=0.51,
+    )
+    document = (Path(__file__).parent.parent / "docs" / "arcore_wire_format.md").read_text(encoding="utf-8")
+    path_section = document.split("## What the laptop sends back", 1)[1].split("\n## ", 1)[0]
+    example = json.loads(path_section.split("```json", 1)[1].split("```", 1)[0])
+
+    assert json.loads(encode_path(stated)) == example
+
+
+@pytest.mark.parametrize(
+    ("field", "wrong_value", "expected"),
+    [
+        ("avoidance_surprise_bits", True, "avoidance_surprise_bits must be a number, got bool"),
+        ("scene_information_bits", "0.37", "scene_information_bits must be a number, got str"),
+    ],
+)
+def test_a_path_with_a_wrongly_typed_bits_field_is_refused(field: str, wrong_value: object, expected: str) -> None:
+    # Each case breaks exactly one rule, and the match names the field, so the guard is what fired
+    # rather than some later error that happens to share the type.
+    message = {
+        "timestamp_seconds": 1.0,
+        "times_seconds": [0.0],
+        "lateral_offsets_meters": [0.0],
+        "first_heading_radians": 0.0,
+        "alarm": False,
+        "cumulative_cost_bits": 0.0,
+        "scene_information_bits": 0.0,
+        "avoidance_surprise_bits": 0.0,
+    }
+    message[field] = wrong_value
+
+    with pytest.raises(FrameDecodeError, match=expected):
+        decode_path(json.dumps(message).encode("utf-8"))
 
 
 def test_the_wire_is_little_endian_regardless_of_the_host() -> None:
@@ -436,12 +499,15 @@ def test_the_format_document_carries_the_path_field_table() -> None:
     path_section = document.split("## What the laptop sends back", 1)[1].split("\n## ", 1)[0]
     assert "| Field | Produced by | On the wire | Read by | Value domain | Who enforces it |" in path_section
 
-    written = json.loads(encode_path(PlannedPath(1.0, np.array([0.0]), np.array([0.0]), 0.0, False, 0.0)))
+    written = json.loads(encode_path(PlannedPath(1.0, np.array([0.0]), np.array([0.0]), 0.0, False, 0.0, scene_information_bits=0.0, avoidance_surprise_bits=0.0)))
     for key in written:
         assert f"| `{key}` |" in path_section, key
 
 
-@pytest.mark.parametrize("field", ["first_heading_radians", "cumulative_cost_bits"])
+@pytest.mark.parametrize(
+    "field",
+    ["first_heading_radians", "cumulative_cost_bits", "scene_information_bits", "avoidance_surprise_bits"],
+)
 def test_a_path_with_a_non_finite_scalar_never_reaches_the_encoder(field: str) -> None:
     # PlannedPath refuses this itself, so encode_path's allow_nan=False is defense in depth that no
     # real PlannedPath can reach. This is the test that proves the first line of defense holds.
@@ -452,10 +518,31 @@ def test_a_path_with_a_non_finite_scalar_never_reaches_the_encoder(field: str) -
         "first_heading_radians": 0.0,
         "alarm": False,
         "cumulative_cost_bits": 0.0,
+        "scene_information_bits": 0.0,
+        "avoidance_surprise_bits": 0.0,
     }
     fields[field] = np.nan
 
     with pytest.raises(ValueError, match=field):
+        PlannedPath(**fields)
+
+
+@pytest.mark.parametrize("field", ["scene_information_bits", "avoidance_surprise_bits"])
+def test_planned_path_refuses_negative_bits(field: str) -> None:
+    # Both are divergences or squared ratios, never below zero. A negative one is a bug upstream.
+    fields = {
+        "timestamp_seconds": 1.0,
+        "times_seconds": np.array([0.0]),
+        "lateral_offsets_meters": np.array([0.0]),
+        "first_heading_radians": 0.0,
+        "alarm": False,
+        "cumulative_cost_bits": 0.0,
+        "scene_information_bits": 0.0,
+        "avoidance_surprise_bits": 0.0,
+    }
+    fields[field] = -0.1
+
+    with pytest.raises(ValueError, match=f"{field} must be finite and zero or more, got -0.1"):
         PlannedPath(**fields)
 
 
@@ -494,3 +581,9 @@ def test_a_gravity_flag_that_is_not_a_boolean_is_refused_by_name() -> None:
 
     with pytest.raises(FrameDecodeError, match="pose.orientation_is_gravity_aligned must be true or false"):
         decode_frame(_rebuild(header, body))
+
+
+def test_planned_path_has_no_default_for_either_new_number() -> None:
+    # A default would let a construction site that forgot them send a plausible zero on both wires.
+    with pytest.raises(TypeError, match="scene_information_bits.*avoidance_surprise_bits"):
+        PlannedPath(1.0, np.array([0.0]), np.array([0.0]), 0.0, False, 0.0)

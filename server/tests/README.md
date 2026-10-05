@@ -48,7 +48,7 @@ guards and watching it go red. Do the same for a new one.
 |---|---|---|---|---|
 | Gate | line endings, the import boundaries, the kind enums staying in `config.py`, the no-environment rule, the wire format document matching the encoder | every pull request | seconds | ❌ not in place. These tests exist and run locally; no pipeline runs them |
 | Verify | the rest of the suite: codec, scene, planner, user model, sinks, runtime, end to end on a synthetic video | on request, or when a pull request leaves draft | under a minute | ❌ not in place. Run by hand before every commit |
-| Perf | `test_the_default_grid_plans_in_under_ten_milliseconds` is the one timing assertion, and it lives in Verify because it takes milliseconds | | | ❌ not in place, and not expected: the pipeline's budget is a frame rate on one laptop, measured by `--verbose` on a real recording |
+| Perf | `test_the_default_grid_plans_in_under_ten_milliseconds` and `test_the_default_grid_plans_and_measures_information_in_under_ten_milliseconds` are the two timing assertions, and they live in Verify because they take milliseconds. The depth view's drawing time is measured by hand, not asserted | | | ❌ not in place, and not expected: the pipeline's budget is a frame rate on one laptop, measured by `--verbose` on a real recording |
 | Stress | | | | ❌ not in place, and not expected: one sender, one browser, one phone |
 | Nightly | a run of the real estimator on the committed outdoor recording, checking the floor height it reports against the measured 1.84 m | | | ❌ not in place. This is the gap a pull-request check cannot see: the model, the weights and the recording are all outside the repository |
 | Weekly | | | | ❌ not in place, and not expected |
@@ -56,7 +56,11 @@ guards and watching it go red. Do the same for a new one.
 ## Deciding which run type a new test belongs in
 
 Can it answer from this repository alone, with no model weights, no device and no display? Then
-it is Verify, and Gate if it also needs no OpenCV or Open3D call. Everything else is Nightly, and
+it is Verify, and Gate if it also needs no OpenCV or Open3D call.
+
+The web page's drawing is the one thing here no test reaches, because the repository has no
+JavaScript runner. `test_web_sink.py` checks that the served page reads every key the laptop sends.
+Whether it draws them correctly is checked by eye, on a replay served with `--sink web`. Everything else is Nightly, and
 until Nightly exists it is a command in `server/README.md` run by hand with the result written
 down.
 

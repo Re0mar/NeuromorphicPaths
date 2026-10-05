@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 # Local package imports
-from nav.planner.alarm import AlarmHold, alarm_raised, corridor_points, corridor_time_to_contact
+from nav.planner.alarm import AlarmHold, alarm_raised, avoidance_surprise_bits, corridor_points, corridor_time_to_contact
 from nav.planner.config import PlannerConfig
 from nav.planner.pipeline import PlannerPipeline
 from nav.types import ObstaclePoint, ObstacleSet
@@ -199,3 +199,45 @@ def test_a_bad_hold_is_refused(hold: float) -> None:
 def test_a_non_finite_timestamp_is_refused(timestamp: float) -> None:
     with pytest.raises(ValueError, match="timestamp"):
         AlarmHold(0.5).update(True, timestamp)
+
+
+def _at_clearance(clearance: float, lateral: float = 0.0) -> ObstaclePoint:
+    # Clearance given directly, so the time to contact is exact rather than derived from a footprint.
+    return ObstaclePoint(lateral, 2.0, 1, clearance, 0.1, None, None, False, np.zeros(3))
+
+
+def test_avoidance_surprise_is_zero_with_an_empty_corridor() -> None:
+    assert avoidance_surprise_bits(_set(), CONFIG) == 0.0
+    # The same fixture with a group moved into the corridor reads above zero, so the zero above is
+    # the empty corridor and not a function that always says zero.
+    assert avoidance_surprise_bits(_set(_at_clearance(1.0)), CONFIG) > 0.0
+
+
+def test_avoidance_surprise_is_0_72_bits_at_one_second_to_contact() -> None:
+    # 1.4 m of clearance at 1.4 m/s is one second, and (1 / 1)^2 / (2 ln 2) is 0.7213 bits.
+    assert avoidance_surprise_bits(_set(_at_clearance(1.4)), CONFIG) == pytest.approx(1.0 / (2.0 * np.log(2.0)))
+
+
+def test_avoidance_surprise_stays_finite_at_zero_clearance() -> None:
+    floored_seconds = CONFIG.clearance_epsilon_meters / CONFIG.walking_speed_mps
+    expected = (1.0 / floored_seconds) ** 2 / (2.0 * np.log(2.0))
+
+    assert avoidance_surprise_bits(_set(_at_clearance(0.0)), CONFIG) == pytest.approx(expected)
+
+
+def test_avoidance_surprise_reads_the_nearest_group_in_the_corridor() -> None:
+    near_and_far = _set(_at_clearance(2.8), ObstaclePoint(0.0, 1.0, 2, 1.4, 0.1, None, None, False, np.zeros(3)))
+
+    assert avoidance_surprise_bits(near_and_far, CONFIG) == pytest.approx(1.0 / (2.0 * np.log(2.0)))
+
+
+def test_a_group_outside_the_corridor_adds_no_avoidance_surprise() -> None:
+    assert avoidance_surprise_bits(_set(_at_clearance(0.1, lateral=EDGE + 0.05)), CONFIG) == 0.0
+    assert avoidance_surprise_bits(_set(_at_clearance(0.1, lateral=EDGE - 0.05)), CONFIG) > 0.0
+
+
+def test_avoidance_surprise_refuses_a_walking_speed_of_zero() -> None:
+    # Time to contact divides by walking speed. The refusal names the setting, where a missing check
+    # would surface as a bare ZeroDivisionError.
+    with pytest.raises(ValueError, match="walking_speed_mps must be above zero, got 0.0"):
+        avoidance_surprise_bits(_set(_at_clearance(1.0)), replace(CONFIG, walking_speed_mps=0.0))
