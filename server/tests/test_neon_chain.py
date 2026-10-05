@@ -46,7 +46,7 @@ class LevelFloorEstimator:
         """Nothing to warm."""
 
     def estimate(self, image_rgb: np.ndarray) -> DepthEstimate:
-        return DepthEstimate(depth_meters=LEVEL_GLASSES_SCENE.depth_meters.copy(), intrinsics=None, confidence=None)
+        return DepthEstimate(depth=LEVEL_GLASSES_SCENE.depth_meters.copy(), intrinsics=None, confidence=None)
 
 
 def test_a_fake_neon_frame_reaches_the_scene_with_gravity_up_device_intrinsics_and_timing() -> None:

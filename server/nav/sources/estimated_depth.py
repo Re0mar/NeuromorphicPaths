@@ -47,8 +47,9 @@ class EstimatedDepthSource:
 
         for rgb_frame in self._rgb_source.frames():
             estimate = self._estimator.estimate(rgb_frame.image_rgb)
-            depth_meters = apply_confidence_filter(estimate, self._config.confidence_drop_percentile)
-            intrinsics = self._intrinsics_for(rgb_frame, estimate, depth_meters.shape)
+            depth = apply_confidence_filter(estimate, self._config.confidence_drop_percentile)
+            intrinsics = self._intrinsics_for(rgb_frame, estimate, depth.shape)
+            depth_meters = to_meters(depth, intrinsics, estimate.canonical_focal_pixels)
 
             timing = None
             if rgb_frame.timing is not None:
@@ -93,6 +94,26 @@ class EstimatedDepthSource:
             )
             self._warned_about_fallback_intrinsics = True
         return fallback_intrinsics(*depth_shape, self._config.fallback_half_field_of_view_degrees)
+
+
+def to_meters(depth: np.ndarray, intrinsics: np.ndarray, canonical_focal_pixels: float | None) -> np.ndarray:
+    """
+    Convert depth estimated for a canonical focal length into meters for this camera.
+
+    Same rule as Depth Anything 3's own apply_metric_scaling: the mean of the two focal lengths,
+    in pixels at the depth image's resolution, over the canonical one. Skipping it put the glasses'
+    floor 2.9 m below a walker whose eyes were 1.5 m up, and the floor check refused it.
+
+    :param depth: Depth as the estimator returned it, NaN where dropped.
+    :param intrinsics: Camera matrix at the depth image's resolution.
+    :param canonical_focal_pixels: The focal the depth assumes, or None when it is already meters.
+    :return: Depth in meters. The input itself when there was nothing to convert.
+    :rtype: np.ndarray
+    """
+    if canonical_focal_pixels is None:
+        return depth
+    focal_pixels = (intrinsics[0, 0] + intrinsics[1, 1]) / 2.0
+    return (depth * np.float32(focal_pixels / canonical_focal_pixels)).astype(np.float32)
 
 
 def _gaze_in_depth_pixels(

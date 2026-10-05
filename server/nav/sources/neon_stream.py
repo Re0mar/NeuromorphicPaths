@@ -29,6 +29,7 @@ import queue
 import struct
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -59,6 +60,8 @@ DECODE_POLL_SECONDS = 0.25
 # falling behind, which is the delay this module exists to prevent, so it is logged.
 DECODE_BACKLOG_WARNING_PACKETS = 300
 BACKLOG_WARNING_INTERVAL_SECONDS = 10.0
+# How long a replay sleeps at a time while waiting for the next packet to be due.
+REPLAY_SLEEP_SLICE_SECONDS = 0.1
 
 
 @dataclass(frozen=True)
@@ -145,8 +148,18 @@ class SceneDecoder:
 class NeonStreamDevice:
     """Receives on a background thread, and answers the simple Device's calls from what it kept."""
 
-    def __init__(self, config: NeonConfig) -> None:
+    def __init__(
+        self,
+        config: NeonConfig,
+        decoder_factory: Callable[[list[bytes]], "SceneDecoder"] | None = None,
+    ) -> None:
+        """
+        :param config: Where the glasses are, or which capture to play back.
+        :param decoder_factory: Builds the decoder from the stream's parameter sets. None means the
+            real H.264 decoder. Tests pass one that needs no PyAV.
+        """
         self._config = config
+        self._decoder_factory = decoder_factory if decoder_factory is not None else SceneDecoder
         self._condition = threading.Condition()
         self._newest_frame: tuple[object, float] | None = None
         self._frames_decoded = 0
@@ -272,7 +285,7 @@ class NeonStreamDevice:
                 async for data in RTSPRawStreamer.receive(streamer):
                     if decoder is None:
                         try:
-                            decoder = SceneDecoder([bytes(param) for param in streamer.sprop_parameter_set_payloads])
+                            decoder = self._decoder_factory([bytes(param) for param in streamer.sprop_parameter_set_payloads])
                         except Exception as not_yet:  # noqa: BLE001, the stream description arrives with the first packets
                             log.debug("waiting for the stream description (%s)", type(not_yet).__name__)
                             continue
@@ -310,7 +323,7 @@ class NeonStreamDevice:
         offset = meta.get("time_offset")
         offset_ms = 0.0 if offset is None else float(offset["median_ms"])
         self._time_offset = StreamTimeEcho(StreamEstimate(offset_ms), StreamEstimate(0.0 if offset is None else float(offset["round_trip_median_ms"])))
-        decoder = SceneDecoder([base64.b64decode(param) for param in meta["sprop"]])
+        decoder = self._decoder_factory([base64.b64decode(param) for param in meta["sprop"]])
 
         packets = list(_read_packets(capture / SCENE_PACKETS_FILENAME))
         gaze = _read_lines(capture / GAZE_FILENAME)
@@ -334,9 +347,13 @@ class NeonStreamDevice:
         for stamp, kind, payload in events:
             if self._stopping.is_set():
                 return
+            # In slices, so a close lands within one rather than after the gap to the next packet.
             wait = (stamp - first_stamp) - (time.monotonic() - started)
-            if wait > 0:
-                await asyncio.sleep(wait)
+            while wait > 0 and not self._stopping.is_set():
+                await asyncio.sleep(min(wait, REPLAY_SLEEP_SLICE_SECONDS))
+                wait = (stamp - first_stamp) - (time.monotonic() - started)
+            if self._stopping.is_set():
+                return
             shifted = stamp + self._replay_shift_seconds
             if kind == "scene":
                 self._on_packet(decoder, payload, shifted)
@@ -345,7 +362,12 @@ class NeonStreamDevice:
             else:
                 self._on_imu(shifted, payload["w"], payload["x"], payload["y"], payload["z"])
         # Finished means decoded too, or the last frames would be lost to the end-of-replay check.
-        await asyncio.to_thread(self._packets.join)
+        # Polled rather than joined. A join on a helper thread waited for good once a close had
+        # stopped the decoder with packets still queued, and Python waits for that thread on exit.
+        while self._packets.unfinished_tasks and not self._stopping.is_set():
+            await asyncio.sleep(REPLAY_SLEEP_SLICE_SECONDS)
+        if self._stopping.is_set():
+            return
         log.info("replay finished")
         with self._condition:
             self._replay_finished = True

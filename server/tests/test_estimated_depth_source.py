@@ -18,8 +18,14 @@ from nav.clock import laptop_time_seconds
 from nav.pose.imu_orientation import pose_from_imu
 from nav.pose.neon_mount import NEON_IMU_MOUNT
 from nav.sources.config import EstimatorConfig
-from nav.sources.estimated_depth import EstimatedDepthSource
-from nav.sources.estimator import DepthEstimate, apply_confidence_filter, fallback_intrinsics
+from nav.sources.estimated_depth import EstimatedDepthSource, to_meters
+from nav.sources.estimator import (
+    METRIC_MODEL_CANONICAL_FOCAL_PIXELS,
+    DepthEstimate,
+    apply_confidence_filter,
+    canonical_focal_for,
+    fallback_intrinsics,
+)
 from nav.sources.rgb import RgbFrame
 from nav.sources.video_file import VideoFileRgbSource
 from nav.types import FrameTiming
@@ -203,7 +209,7 @@ def test_fallback_intrinsics_put_the_principal_point_at_the_centre_with_the_foca
 def test_confidence_filter_drops_exactly_the_requested_percentile() -> None:
     confidence = np.arange(100, dtype=np.float32).reshape(10, 10)
     estimate = DepthEstimate(
-        depth_meters=np.ones((10, 10), dtype=np.float32),
+        depth=np.ones((10, 10), dtype=np.float32),
         intrinsics=np.eye(3),
         confidence=confidence,
     )
@@ -218,7 +224,7 @@ def test_confidence_filter_drops_exactly_the_requested_percentile() -> None:
 
 def test_confidence_filter_leaves_depth_alone_when_asked_for_nothing() -> None:
     estimate = DepthEstimate(
-        depth_meters=np.ones((10, 10), dtype=np.float32),
+        depth=np.ones((10, 10), dtype=np.float32),
         intrinsics=np.eye(3),
         confidence=np.arange(100, dtype=np.float32).reshape(10, 10),
     )
@@ -228,7 +234,7 @@ def test_confidence_filter_leaves_depth_alone_when_asked_for_nothing() -> None:
 
 def test_confidence_filter_leaves_depth_alone_when_the_model_offers_no_confidence() -> None:
     estimate = DepthEstimate(
-        depth_meters=np.ones((10, 10), dtype=np.float32),
+        depth=np.ones((10, 10), dtype=np.float32),
         intrinsics=np.eye(3),
         confidence=None,
     )
@@ -240,7 +246,7 @@ def test_confidence_filter_survives_a_map_with_no_finite_values() -> None:
     # A model that returned all-NaN confidence would otherwise make np.percentile return NaN and
     # the comparison would silently drop nothing, which looks identical to a working filter.
     estimate = DepthEstimate(
-        depth_meters=np.ones((4, 4), dtype=np.float32),
+        depth=np.ones((4, 4), dtype=np.float32),
         intrinsics=np.eye(3),
         confidence=np.full((4, 4), np.nan, dtype=np.float32),
     )
@@ -271,3 +277,73 @@ def test_the_estimator_is_warmed_once_before_the_first_frame() -> None:
     list(source.frames())
 
     assert stub.calls == ["warm_up", "estimate", "estimate"]
+
+
+class CanonicalDepthEstimator:
+    """Answers like the metric checkpoint: one raw value everywhere, for a 300 px focal."""
+
+    device = "cuda"
+
+    def __init__(self, raw_depth: float, height: int, width: int) -> None:
+        self._raw_depth = raw_depth
+        self._shape = (height, width)
+
+    def warm_up(self) -> None:
+        """Nothing to warm."""
+
+    def estimate(self, image_rgb: np.ndarray) -> DepthEstimate:
+        return DepthEstimate(
+            depth=np.full(self._shape, self._raw_depth, dtype=np.float32),
+            intrinsics=None,
+            confidence=None,
+            canonical_focal_pixels=METRIC_MODEL_CANONICAL_FOCAL_PIXELS,
+        )
+
+
+def test_canonical_depth_is_converted_with_the_cameras_focal_at_the_depth_resolution() -> None:
+    # Camera focal 600 px on a 64 wide frame is 150 px on the 16 wide depth image, half of 300.
+    camera_matrix = np.array([[600.0, 0.0, 32.0], [0.0, 600.0, 24.0], [0.0, 0.0, 1.0]])
+    estimator = CanonicalDepthEstimator(raw_depth=3.0, height=12, width=16)
+    source = EstimatedDepthSource(ListRgbSource([_rgb_frame(camera_matrix=camera_matrix)]), estimator, EstimatorConfig())
+
+    frame = next(iter(source.frames()))
+
+    assert frame.depth_meters == pytest.approx(np.full((12, 16), 1.5))
+
+
+def test_canonical_depth_without_a_calibration_converts_with_the_fallback_focal() -> None:
+    estimator = CanonicalDepthEstimator(raw_depth=3.0, height=12, width=16)
+    config = EstimatorConfig()
+    source = EstimatedDepthSource(ListRgbSource([_rgb_frame()]), estimator, config)
+
+    frame = next(iter(source.frames()))
+
+    fallback_focal = fallback_intrinsics(12, 16, config.fallback_half_field_of_view_degrees)[0, 0]
+    assert frame.depth_meters == pytest.approx(np.full((12, 16), 3.0 * fallback_focal / METRIC_MODEL_CANONICAL_FOCAL_PIXELS))
+
+
+def test_depth_already_in_meters_passes_through_unconverted() -> None:
+    depth = np.array([[1.0, np.nan]], dtype=np.float32)
+
+    assert to_meters(depth, np.diag([600.0, 600.0, 1.0]), canonical_focal_pixels=None) is depth
+
+
+def test_conversion_averages_the_two_focal_lengths_and_keeps_dropped_pixels_dropped() -> None:
+    converted = to_meters(np.array([[2.0, np.nan]], dtype=np.float32), np.diag([200.0, 400.0, 1.0]), canonical_focal_pixels=300.0)
+
+    assert converted[0, 0] == pytest.approx(2.0)
+    assert np.isnan(converted[0, 1])
+    assert converted.dtype == np.float32
+
+
+@pytest.mark.parametrize(
+    ("model_name", "expected"),
+    [
+        ("depth-anything/DA3METRIC-LARGE", METRIC_MODEL_CANONICAL_FOCAL_PIXELS),
+        # The nested model converts inside the library, and the relative ones are not meters at all.
+        ("depth-anything/DA3NESTED-GIANT-LARGE", None),
+        ("depth-anything/DA3-LARGE", None),
+    ],
+)
+def test_only_the_standalone_metric_checkpoint_needs_converting(model_name: str, expected: float | None) -> None:
+    assert canonical_focal_for(model_name) == expected

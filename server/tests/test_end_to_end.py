@@ -82,7 +82,7 @@ def test_video_to_log_to_replay_round_trip(tmp_path: Path) -> None:
     # 2. The log reads back as what the stub produced.
     replayed = list(LoggedDepthFrameSource(log_dir).frames())
     assert len(replayed) == FRAME_COUNT
-    expected = stub.estimate(np.zeros((48, 64, 3), dtype=np.uint8)).depth_meters
+    expected = stub.estimate(np.zeros((48, 64, 3), dtype=np.uint8)).depth
     assert replayed[0].depth_meters.shape == expected.shape
     valid = np.isfinite(expected)
     assert replayed[0].depth_meters[valid] == pytest.approx(expected[valid])
@@ -325,7 +325,7 @@ class FloorlessDepthEstimator(StubDepthEstimator):
 
     def estimate(self, image_rgb: np.ndarray):
         estimate = super().estimate(image_rgb)
-        return dataclasses.replace(estimate, depth_meters=np.full_like(estimate.depth_meters, np.nan))
+        return dataclasses.replace(estimate, depth=np.full_like(estimate.depth, np.nan))
 
 
 def _processed_count(caplog: pytest.LogCaptureFixture) -> int:

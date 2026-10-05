@@ -25,7 +25,6 @@ import argparse
 import asyncio
 import base64
 import json
-import struct
 import sys
 import time
 from pathlib import Path
@@ -36,7 +35,14 @@ import numpy as np
 # Local package imports
 from nav.sources.neon_device import apply_opencv_pyav_import_workaround
 
-PACKET_HEADER = struct.Struct("<dI")  # timestamp in seconds, payload length in bytes
+# The format the replay reads. Defined once, where it is read, so the two cannot drift apart.
+from nav.sources.neon_stream import (
+    GAZE_FILENAME,
+    IMU_FILENAME,
+    META_FILENAME,
+    PACKET_HEADER,
+    SCENE_PACKETS_FILENAME,
+)
 
 
 async def capture(address: str, port: int, seconds: float, out_dir: Path) -> None:
@@ -67,7 +73,7 @@ async def capture(address: str, port: int, seconds: float, out_dir: Path) -> Non
 
     async def record_scene() -> None:
         async with RTSPVideoFrameStreamer(world.url) as streamer:
-            with (out_dir / "scene_packets.bin").open("wb") as packets:
+            with (out_dir / SCENE_PACKETS_FILENAME).open("wb") as packets:
                 # The raw packets, not decoded frames. RTSPRawStreamer.receive is the undecoded stream.
                 async for data in RTSPRawStreamer.receive(streamer):
                     if not scene_meta:
@@ -110,8 +116,8 @@ async def capture(address: str, port: int, seconds: float, out_dir: Path) -> Non
     print(f"recording {seconds:.0f} s to {out_dir}", flush=True)
     await asyncio.gather(
         record_scene(),
-        record_lines(gaze, RTSPGazeStreamer, "gaze.jsonl", "gaze", gaze_record),
-        record_lines(imu, RTSPImuStreamer, "imu.jsonl", "imu", imu_record),
+        record_lines(gaze, RTSPGazeStreamer, GAZE_FILENAME, "gaze", gaze_record),
+        record_lines(imu, RTSPImuStreamer, IMU_FILENAME, "imu", imu_record),
         progress(),
     )
 
@@ -124,9 +130,8 @@ async def capture(address: str, port: int, seconds: float, out_dir: Path) -> Non
         "scene_distortion_coefficients": np.asarray(calibration.scene_distortion_coefficients).tolist(),
         **scene_meta,
     }
-    (out_dir / "meta.json").write_bytes(json.dumps(meta, indent=2).encode("utf-8"))
+    (out_dir / META_FILENAME).write_bytes(json.dumps(meta, indent=2).encode("utf-8"))
     print(f"done: {counts}", flush=True)
-
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Record a Neon's raw stream for playback.")
@@ -139,7 +144,6 @@ def main(argv: list[str] | None = None) -> int:
     apply_opencv_pyav_import_workaround()
     asyncio.run(capture(arguments.neon_address, arguments.neon_port, arguments.seconds, Path(arguments.out_dir)))
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

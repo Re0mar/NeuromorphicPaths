@@ -21,17 +21,35 @@ from nav.sources.config import EstimatorConfig
 
 log = logging.getLogger(__name__)
 
+# The divisor in the library's own apply_metric_scaling, and in the metric model's usage notes.
+METRIC_MODEL_CANONICAL_FOCAL_PIXELS = 300.0
+
 
 @dataclass(frozen=True)
 class DepthEstimate:
     """One frame's depth, the camera it implies, and how sure the model was."""
 
-    depth_meters: np.ndarray
+    # Meters when canonical_focal_pixels is None. Otherwise meters for a camera with that focal
+    # length, and the composed source converts once it has picked the real one.
+    depth: np.ndarray
     # None when the model offers none, which the metric model does for a plain image. Choosing what
     # to use instead belongs to the composed source, because only it knows whether the camera
     # brought a calibration of its own.
     intrinsics: np.ndarray | None
     confidence: np.ndarray | None
+    canonical_focal_pixels: float | None = None
+
+
+def canonical_focal_for(model_name: str) -> float | None:
+    """
+    The focal length a checkpoint's depth assumes, or None when its depth is already meters.
+
+    Depth Anything 3's metric model answers as if every camera had a 300 px focal at the resolution
+    it ran at. Meters are output times the real focal over 300. The library only converts inside
+    its nested model, so a standalone metric checkpoint hands back the raw value.
+    Measured on one glasses frame: 1.91, 2.91 and 3.55 m raw at 504, 336 and 280 px, 1.51 to 1.56 m converted.
+    """
+    return METRIC_MODEL_CANONICAL_FOCAL_PIXELS if "METRIC" in model_name.upper() else None
 
 
 class DepthEstimatorProtocol(Protocol):
@@ -55,8 +73,10 @@ def fallback_intrinsics(height: int, width: int, half_field_of_view_degrees: flo
     """
     Build a pinhole camera matrix from an assumed field of view.
 
-    Used only when the model returns no intrinsics of its own. The depth is still metric, but the
-    unprojected points will be wrong in x and y by whatever the real field of view differs by.
+    Used only when the camera brings no calibration and the model returns no intrinsics.
+    The metric model's depth is converted with this focal, which cancels it out of x and y.
+    So a wrong field of view scales distances along the view direction by assumed over real focal,
+    and leaves the camera height alone.
 
     :param height: Depth image height in pixels.
     :param width: Depth image width in pixels.
@@ -83,11 +103,11 @@ def apply_confidence_filter(estimate: DepthEstimate, drop_percentile: float) -> 
 
     :param estimate: The estimate to filter. Unchanged, a copy is returned.
     :param drop_percentile: Percentage of least confident pixels to drop, 0 to below 100.
-    :return: A copy of depth_meters with dropped pixels set to NaN.
+    :return: A copy of the depth with dropped pixels set to NaN.
     :rtype: np.ndarray
     """
     if estimate.confidence is None or drop_percentile <= 0.0:
-        return estimate.depth_meters
+        return estimate.depth
 
     # The old file took this percentile over the strided subsample, because it filtered inside the
     # unprojection loop. Here it runs over the whole map, before the scene ever strides. On a
@@ -95,10 +115,10 @@ def apply_confidence_filter(estimate: DepthEstimate, drop_percentile: float) -> 
     usable = np.isfinite(estimate.confidence)
     if not np.any(usable):
         log.warning("confidence map has no finite values, dropping nothing")
-        return estimate.depth_meters
+        return estimate.depth
 
     threshold = np.percentile(estimate.confidence[usable], drop_percentile)
-    filtered = estimate.depth_meters.copy()
+    filtered = estimate.depth.copy()
     # Keeps >= threshold, matching the old file's `ok &= c >= np.percentile(...)`.
     filtered[~usable | (estimate.confidence < threshold)] = np.nan
     return filtered
@@ -161,15 +181,20 @@ class DepthEstimator:
         Run the model on one frame.
 
         :param image_rgb: (H, W, 3) uint8 RGB image.
-        :return: Metric depth, the model's intrinsics at the depth resolution when it offers them,
-            and confidence when offered.
+        :return: Depth at the canonical focal the checkpoint assumes, the model's intrinsics at the
+            depth resolution when it offers them, and confidence when offered.
         :rtype: DepthEstimate
         """
         with self._torch.inference_mode():
             prediction = self._model.inference([image_rgb], process_res=self._config.process_resolution)
 
-        depth_meters = np.asarray(prediction.depth[0], dtype=np.float32)
+        depth = np.asarray(prediction.depth[0], dtype=np.float32)
         confidence = None if prediction.conf is None else np.asarray(prediction.conf[0], dtype=np.float32)
         intrinsics = None if prediction.intrinsics is None else np.asarray(prediction.intrinsics[0], dtype=np.float64)
 
-        return DepthEstimate(depth_meters=depth_meters, intrinsics=intrinsics, confidence=confidence)
+        return DepthEstimate(
+            depth=depth,
+            intrinsics=intrinsics,
+            confidence=confidence,
+            canonical_focal_pixels=canonical_focal_for(self._config.model_name),
+        )

@@ -95,7 +95,7 @@ class EstimatorConfig:
     confidence_drop_percentile: float = 30.0  # The old file's conf_pct. Drops the least certain pixels.
     # Used only when the model returns no intrinsics, which the metric model does for a plain video.
     # The old file assumed about 100 degrees horizontal. A phone camera is nearer 75, so a run on
-    # phone footage should set this to match, or the cloud is stretched sideways.
+    # phone footage should set this to match, or distances straight ahead come out short.
     fallback_half_field_of_view_degrees: float = 50.0
 
 

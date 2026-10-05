@@ -159,9 +159,12 @@ down, a meter below the real floor, and nothing refused it.
 A phone held in the hand and pointed at the pavement still leans about 40 degrees from gravity,
 so the live runs set `--floor-max-tilt 50`. The metric model returns no camera intrinsics for a
 plain video, so `video_file` assumes `--fallback-fov` degrees of horizontal field of view, 100 by
-default. A phone is nearer 75, and the wrong value stretches the cloud sideways and overstates the
-camera's height. That one was found on the first outdoor recording, where the estimator read the
-camera 2.27 m above the floor at 100 degrees and 1.84 m at 75. `neon_live` ignores the flag. It
+default. A phone is nearer 75. The metric model answers as if every camera had a 300 pixel focal
+length, and the depth source converts its output to meters with the focal it was given. So the
+assumed field of view sets how far away things straight ahead come out: too wide, and they read
+short. The camera's height above the floor does not depend on it, because the focal cancels out of
+up and sideways. Before that conversion was added, the first outdoor recording read the camera
+2.27 m above the floor at 100 degrees and 1.84 m at 75, and those two figures no longer apply. `neon_live` ignores the flag. It
 reads the glasses' own calibration when it connects, straightens every frame and the gaze point
 with it, and hands the straightened camera matrix on, so there is nothing to guess.
 
@@ -242,8 +245,11 @@ that between subnets, in which case read the address off the Companion app's str
 `check_neon.py` connects, receives one frame and exits 0, or says which path it tried and exits
 1. On success it also prints the camera matrix after straightening, how many degrees of field of
 view the straightening crops off, and the measured offset between the laptop's clock and the
-glasses'. It exits 1 if the glasses do not hand over their calibration. The `neon_live` and `neon_plugin` commands above were not run while building this, because
-there were no glasses and no plugin recording on hand. The Pixel runs on 2026-10-02 used the
+glasses'. It exits 1 if the glasses do not hand over their calibration. `check_neon.py` and the
+`neon_live` command with `--neon-address` were run on 2026-10-05 with the glasses worn, on a school
+network where discovery was not tried. The figures from that day are under *Measured on the
+glasses* below. The `neon_plugin` command has not been run, because there was no plugin recording
+on hand. The Pixel runs on 2026-10-02 used the
 `web` sink over wifi and USB. The `phone_app` sink has been run against the suite's fake phone,
 through the same entry point, and not yet with the Pixel. Everything else was run as shown.
 
@@ -260,6 +266,26 @@ recording accepted. The recording run writes its whole configuration to `run_con
 log directory, so the flags are there to read back.
 
 Completed avoidances are written to `episodes.jsonl` in the same directory, one JSON line each.
+
+### Recording what the glasses send
+
+A frame log starts after the depth model, so it cannot test anything upstream of it. To replay the
+glasses from the network up, record their raw stream while they are worn:
+
+```
+.venv/Scripts/python examples/capture_neon_stream.py --neon-address 10.0.0.5 --seconds 240 frame_logs/captures/walk
+.venv/Scripts/python -m nav --source neon_live --neon-replay frame_logs/captures/walk --sink web
+```
+
+The capture keeps the scene video as the compressed packets the glasses sent, with the gaze, the
+IMU, the calibration and the clock offset beside it. Nothing is decoded while recording, so the
+capture never falls behind. `--neon-replay` feeds it through the same decoder, depth model, scene
+and planner as a live run, at the pace it was recorded, with the timestamps moved to now. The run
+ends when the capture does. A 240 s capture is about 200 MB.
+
+The glasses' client runs in a process of its own, at above-normal priority, and hands frames over
+through shared memory. In the same process, the depth model and the planner held Python's global
+lock long enough to starve the video decoder, and frames reached the planner 4 to 12 s late.
 
 Every frame the planner took, or tried to, gets a line in `timing.jsonl` in the same directory:
 when the frame was captured, when it reached the laptop, when its depth was ready, when its plan
@@ -335,6 +361,98 @@ across the language boundary: `tests/fixtures/pixel_app_frame.bin`, written by t
 and decoded here, and `tests/fixtures/laptop_path.bin`, written by `encode_path` from stated
 values in `tests/test_laptop_path_fixture.py` and decoded by the app's test.
 
+## Driving haptics from the path
+
+Nothing in the pipeline vibrates anything yet. This is what a haptics driver could listen to.
+
+Every planned path goes out as the same JSON message, to the phone over the path connection on 9100
+and to the web page. A vibration motor, a wristband or the phone's own haptics can be driven from
+either. The fields and their exact meaning are in `docs/arcore_wire_format.md`, under *What the
+laptop sends back*.
+
+The useful values come in two kinds, and it helps to think of a pair of headphones. Some values
+are a level, like the volume control: they say how strongly to buzz, or how fast. Others are a
+switch, like the noise cancelling button: they say whether a mode is on.
+
+| Field | Kind | What it says | Range now | What it could drive |
+|---|---|---|---|---|
+| `first_heading_radians` | level, with a side | Where the path is heading, read 1 s ahead. Positive is right | 0 straight ahead, up to ±0.62 rad (±35.5 degrees) | Which side buzzes, and how strongly |
+| `avoidance_surprise_bits` | level | How soon the walker reaches the nearest thing in its way | 0 with nothing in the way, 0.72 at 1 s to contact, rising as contact nears | How urgent the buzz is: its strength or its pulse rate |
+| `alarm` | switch | Something in the walker's corridor is under 0.7 s away at walking pace, or was in the last 0.5 s | `true` or `false` | A distinct pattern that means stop or step aside |
+| `scene_information_bits` | level, usable as a switch | How much what the camera saw changed the plan from the plan with nothing in view | 0 for an empty scene, at most about 6.3 | Whether to say anything at all. At 0, the scene changed nothing, so the motor can stay quiet |
+| `lateral_offsets_meters`, `times_seconds` | the whole plan | Where to be sideways, 0.1 s apart, out to 3.8 s | positive is right | A warning before a turn the plan already contains |
+
+`cumulative_cost_bits` is not on the list. The contract says it is for display and logging, not
+for steering, because its size depends on how many costs the planner adds up, not on how close
+anything is.
+
+Four things about these values matter for haptics more than for the screen:
+
+- **The heading flattens at its limit.** ±35.5 degrees is how far the walker can sidestep at
+  1.0 m/s while walking at 1.4 m/s. With something 3 to 5.32 m ahead, the arrow sat at that limit
+  on 30.3 % of the classroom recording's frames and 1.6 % of `pixel_walk_3`'s. Heading strength
+  mapped straight onto vibration strength buzzes at full in exactly those moments.
+  `avoidance_surprise_bits` is the value that still changes there.
+- **The alarm already holds, the heading does not.** Once raised, the alarm stays up for at least
+  0.5 s, so it does not flicker from one path to the next. The heading's only steadying is the
+  planner's pull toward its previous plan, which took swings from one sidestep limit to the other
+  from 76 to 105 a minute down to 0 to 1.3 on the Pixel recordings. That pull lapses when the
+  previous plan is more than 0.5 s old, and on the glasses walk 56 % of the gaps between plans
+  were longer than that. On the glasses, a driver that ramps its strength over a few paths will
+  feel steadier than one that jumps.
+- **Paths come about 1.7 times a second on the glasses.** Measured on 2026-10-05 at
+  `--process-resolution 336` on the Quadro T2000 laptop, over the school Wi-Fi. The longest gap
+  between two paths was 1.4 s. A driver has to hold the last value between paths, and should stop
+  once no path has come for longer than that, rather than keep buzzing on old news.
+- **A path describes the world as it was when the frame was captured.** On that walk a frame's
+  capture to its finished plan took 0.9 s at the median and 2.0 s at the 95th percentile, and the
+  arrow on the phone looked another 0.5 to 1.5 s behind to the walker, judged by eye rather than
+  measured. `timestamp_seconds` is the frame's own stamp, so a driver on the laptop's clock can
+  tell how old a path is. For the glasses, that stamp is on the Neon's clock, 1.27 to 1.33 s behind
+  the laptop's on that day.
+
+## Measured on the glasses
+
+One session, 2026-10-05, in a classroom. The conditions apply to every figure below:
+
+| | |
+|---|---|
+| Laptop | Quadro T2000 with Max-Q, 4 GB, driver 581.95, on mains power |
+| Software | Python 3.12.10, torch 2.14.1+cu126, DA3METRIC-LARGE, `--process-resolution 336` unless a row says otherwise |
+| Network | the school Wi-Fi, laptop and Companion phone on it, address given with `--neon-address`. Round trip 7 to 8 ms |
+| Clocks | laptop 1274 ms ahead of the Neon on the walk, 1286 ms on the second capture, 0.0 ms drift over the replay |
+| Not recorded | the Companion phone's model and app version. The walk had no timed warm-up. The pipeline had been run several times earlier in the session |
+
+**Latency on the live walk.** About 5.5 minutes indoors, 570 frames after the first 10 s, from
+`timing_report.py`. Median, 95th percentile, worst:
+
+| Share | median | 95th | worst |
+|---|---|---|---|
+| capture to arrival | 155 ms | 714 ms | 1.6 s |
+| arrival to depth ready | 431 ms | 776 ms | 1.3 s |
+| depth ready to plan done | 275 ms | 753 ms | 1.5 s |
+| capture to plan done | 905 ms | 2.0 s | 2.9 s |
+
+1.68 planned frames a second, longest gap 1.4 s. The decoder fell behind 15 times for a moment.
+The arrow on the phone's browser page looked another 0.5 to 1.5 s behind to the walker, by eye.
+Standing still for about 30 s, 504 planned 0.69 frames a second and 280 planned 2.34.
+
+**The floor.** The live walk ran before the depth was converted from the model's 300 pixel focal
+length, so its figure, `fitted` on 243 of 570 frames (42.6 %), describes the bug and not the
+pipeline. The second capture replayed with the conversion, 432 frames: `fitted` on 395 (91 %),
+the camera a median of 1.56 m above the floor, 1.41 to 1.66 m between the 10th and 90th
+percentiles. The 37 others were walls, refused for leaning a median of 82.6 degrees. The same 432
+frames at the old scale fitted 13 (3 %).
+
+**On a replay.** `check_planner numbers` on that replay's frame log printed the same output three
+times running. The arrow sat at its sidestep limit on 5.1 % of frames, and the alarm was on for
+24.1 %. On the `--neon-replay` run, the scene took a median of 126 ms a frame and the planner 131 ms,
+with 95th percentiles of 423 and 371 ms. A raw capture replayed through `--neon-replay` took a median of 86 ms on the laptop
+from a packet being fed in to its decoded frame reaching the pipeline, 137 ms at the 95th percentile.
+
+The choice of the glasses assumed about 10 frames a second at reduced resolution. The measured 1.68 is the
+figure to plan with on this laptop. The depth model alone tops out at about 3.5 a second at 280.
+
 ## Known limits
 
 - ARCore depth is computed from motion. It stops updating when the walker stands still, drops
@@ -349,3 +467,6 @@ values in `tests/test_laptop_path_fixture.py` and decoded by the app's test.
   assumed 0.10 m. No recorded walk had anyone steering by the arrow, so it has not been measured.
 - The planner's memory of its previous plan was tuned and checked on replays only. It has not run
   live on the phone or the glasses yet.
+- The depth conversion from the model's 300 pixel focal was checked on a replayed glasses capture,
+  not on a live walk. Every `video_file` figure taken before it was added used depth at the wrong
+  scale.

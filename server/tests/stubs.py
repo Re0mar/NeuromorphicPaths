@@ -77,7 +77,7 @@ class StubDepthEstimator:
             confidence = np.full((self.height, self.width), self.confidence_value, dtype=np.float32)
 
         return DepthEstimate(
-            depth_meters=depth_meters,
+            depth=depth_meters,
             intrinsics=intrinsics if self.returns_intrinsics else None,
             confidence=confidence,
         )
@@ -94,7 +94,7 @@ class WrongShapeDepthEstimator:
 
     def estimate(self, image_rgb: np.ndarray) -> DepthEstimate:
         return DepthEstimate(
-            depth_meters=np.ones((4, 4, 4), dtype=np.float32),
+            depth=np.ones((4, 4, 4), dtype=np.float32),
             intrinsics=fallback_intrinsics(4, 4),
             confidence=None,
         )
