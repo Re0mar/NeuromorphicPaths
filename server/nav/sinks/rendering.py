@@ -18,7 +18,14 @@ import cv2
 import numpy as np
 
 # Local package imports
-from nav.scene.floor import ground_axes
+from nav.sinks.floor_geometry import (
+    NEAR_PLANE_METERS,
+    clip_segment_to_near_plane,
+    clip_to_near_plane,
+    floor_point,
+    project_points,
+)
+from nav.sinks.path_style import BORDER_OPACITY, GROUP_RGB, WALL_RGB, path_color_rgb, path_fill_opacity
 from nav.types import DebugView, PlannedPath
 
 log = logging.getLogger(__name__)
@@ -32,9 +39,11 @@ COLOR_ALARM = (0, 0, 255)
 COLOR_OUTLINE = (0, 0, 0)
 COLOR_TEXT = (255, 255, 255)
 COLOR_PATH = (255, 255, 255)
-COLOR_GROUP = (0, 200, 255)
-COLOR_WALL = (255, 0, 255)
-COLOR_INVALID_DEPTH = (40, 40, 40)
+COLOR_GROUP = GROUP_RGB[::-1]
+COLOR_WALL = WALL_RGB[::-1]
+# A dim brown rather than a gray, because the depth view is gray now and far depth is near black.
+# A hue of its own means no reading is never mistaken for far away.
+COLOR_INVALID_DEPTH = (20, 40, 70)
 FIELD_INSET_SCALE = 3
 # The depth view is scaled up by a whole number so the Pixel's 160 by 90 is legible at 640 by
 # 360 and a 640-wide estimated frame stays as it is. A fixed factor would make the estimator's
@@ -107,11 +116,12 @@ def render_depth_view(view: DebugView, path: PlannedPath) -> np.ndarray:
     """
     The depth image the planner saw, with the obstacle groups and the chosen path drawn on it.
 
-    Valid depth is mapped from the frame's own 2nd to 98th percentile onto a colormap, so a
-    close scene and a far one both use the full range. Invalid pixels are dark grey. Each group's
-    nearest point is a ring at its projected pixel, sized by clearance, magenta for a wall. The
-    path is a polyline on the floor: each step's lateral offset at the forward distance walking
-    speed covers by then. Points behind the camera or outside the image are skipped.
+    Valid depth is mapped from the frame's own 2nd to 98th percentile onto gray, near bright and
+    far dark, so a close scene and a far one both use the full range and the path's colors stand
+    out against any depth. Invalid pixels are a dim brown. Each group's nearest point is a ring at
+    its projected pixel, sized by clearance, magenta for a wall. The path is a ribbon on the floor
+    as wide as the body: each step's lateral offset at the forward distance walking speed covers by
+    then. Its fill fades to nothing at the far end, and its borders do not fade.
 
     :param view: The frame, the obstacles, the floor and where it came from.
     :param path: The path the planner chose for that frame.
@@ -131,9 +141,13 @@ def render_depth_view(view: DebugView, path: PlannedPath) -> np.ndarray:
         # Invalid pixels are NaN or zero here and are masked out below, but a NaN cast to uint8
         # is undefined, so they are zeroed before the cast rather than after.
         normalized = np.where(valid, np.clip((depth - low) / span, 0.0, 1.0), 0.0)
-        colored = cv2.applyColorMap((normalized * 255).astype(np.uint8), cv2.COLORMAP_TURBO)
-        image[valid] = colored[valid]
+        # Near is bright. Gray rather than a colormap, so the path's blue to red is never lost in it.
+        gray = ((1.0 - normalized) * 255).astype(np.uint8)
+        image[valid] = np.repeat(gray[valid][:, None], 3, axis=1)
     image = cv2.resize(image, (columns * scale, rows * scale), interpolation=cv2.INTER_NEAREST)
+
+    # The ribbon first, so a group ring on the path stays visible on top of it.
+    _draw_path_ribbon(image, view, path, scale)
 
     intrinsics = view.frame.intrinsics
     for point in view.obstacles.points:
@@ -142,8 +156,6 @@ def render_depth_view(view: DebugView, path: PlannedPath) -> np.ndarray:
             continue
         radius = int(np.clip(GROUP_RING_MIN_RADIUS + GROUP_RING_PIXELS_PER_METER * point.clearance_meters, GROUP_RING_MIN_RADIUS, GROUP_RING_MAX_RADIUS))
         cv2.circle(image, pixel, radius, COLOR_WALL if point.is_wall else COLOR_GROUP, 2)
-
-    _draw_path_on_floor(image, view, path, scale)
 
     nearest = min((point.clearance_meters for point in view.obstacles.points), default=None)
     nearest_text = "nearest -" if nearest is None else f"nearest {nearest:.2f} m"
@@ -175,28 +187,117 @@ def encode_png(image: np.ndarray) -> bytes:
 
 def _project(point_camera: np.ndarray, intrinsics: np.ndarray, scale: int, image_shape: tuple) -> tuple[int, int] | None:
     """The scaled pixel a camera-frame point lands on, or None when it is behind the camera or outside the image."""
-    x, y, z = (float(value) for value in point_camera)
-    if not np.isfinite(z) or z <= 0.0:
+    column, row, in_front = project_points(np.asarray(point_camera, dtype=np.float64), intrinsics)
+    if not bool(in_front):
         return None
-    column = (intrinsics[0, 0] * x / z + intrinsics[0, 2]) * scale
-    row = (intrinsics[1, 1] * y / z + intrinsics[1, 2]) * scale
+    column, row = float(column) * scale, float(row) * scale
     if not (0 <= column < image_shape[1] and 0 <= row < image_shape[0]):
         return None
     return int(column), int(row)
 
 
-def _draw_path_on_floor(image: np.ndarray, view: DebugView, path: PlannedPath, scale: int) -> None:
-    # The walker stands on the floor directly below the camera. Each step is that point moved
-    # forward by what walking speed covers in the step's time, and sideways by its offset.
-    floor = view.floor
-    lateral_axis, forward_axis = ground_axes(floor)
-    foot = -floor.offset_meters * floor.normal
-    pixels = []
-    for time_seconds, offset_meters in zip(path.times_seconds, path.lateral_offsets_meters, strict=True):
-        point = foot + forward_axis * (view.walking_speed_mps * float(time_seconds)) + lateral_axis * float(offset_meters)
-        pixel = _project(point, view.frame.intrinsics, scale, image.shape)
-        if pixel is not None:
-            pixels.append(pixel)
-    if len(pixels) >= 2:
-        cv2.polylines(image, [np.array(pixels, dtype=np.int32).reshape(-1, 1, 2)], False, COLOR_OUTLINE, 4)
-        cv2.polylines(image, [np.array(pixels, dtype=np.int32).reshape(-1, 1, 2)], False, COLOR_PATH, 2)
+def _scaled_pixels(points_camera: np.ndarray, intrinsics: np.ndarray, scale: int) -> np.ndarray:
+    """Pixels for points already known to be in front of the camera, shaped for cv2.fillPoly and cv2.polylines."""
+    column, row, _ = project_points(points_camera, intrinsics)
+    return np.round(np.column_stack((column * scale, row * scale))).astype(np.int32).reshape(-1, 1, 2)
+
+
+def _draw_path_ribbon(image: np.ndarray, view: DebugView, path: PlannedPath, scale: int) -> None:
+    """
+    The path as a ribbon on the floor, the body's width, drawn onto the image in place.
+
+    The fill is one quadrilateral per step, faded linearly by the time at its far end, so the last
+    one is clear and the ribbon is always seen running out. Its opacity is also scaled by how much
+    the scene shaped the plan. The two borders are drawn at one opacity along their whole length,
+    with a dark outline under each, so the direction stays readable after the fill has gone.
+
+    Polygons are cut at the camera's near plane rather than dropped, and OpenCV clips them at the
+    image edge, so a ribbon running out under the camera or off the side leaves no gap.
+    """
+    times = path.times_seconds
+    if len(times) < 2:
+        return
+    forward = view.walking_speed_mps * times
+    # Edges offset along the floor's lateral axis. At the sidestep angles the planner allows, that
+    # is within a few centimeters of offsetting perpendicular to the path.
+    left = floor_point(view.floor, forward, path.lateral_offsets_meters - view.body_half_width_meters)
+    right = floor_point(view.floor, forward, path.lateral_offsets_meters + view.body_half_width_meters)
+    intrinsics = view.frame.intrinsics
+    color = np.array(path_color_rgb(path.avoidance_surprise_bits)[::-1], dtype=np.float32)  # BGR from here on.
+    fill_opacity = path_fill_opacity(path.scene_information_bits)
+    end_time = float(times[-1])
+
+    # Every edge point projected once. Only a piece that reaches inside the near plane is clipped
+    # and projected again, which on a level walk is the one or two pieces under the camera.
+    left_pixels, left_beyond = _edge_pixels(left, intrinsics, scale)
+    right_pixels, right_beyond = _edge_pixels(right, intrinsics, scale)
+
+    # One alpha mask for the whole fill, blended once. Segments that share an edge overwrite rather
+    # than stack, so no stripe shows where two of them meet.
+    fill_alpha = np.zeros(image.shape[:2], dtype=np.float32)
+    for step in range(len(times) - 1):
+        corners = [left_beyond[step], left_beyond[step + 1], right_beyond[step + 1], right_beyond[step]]
+        if all(corners):
+            polygon = np.array([left_pixels[step], left_pixels[step + 1], right_pixels[step + 1], right_pixels[step]]).reshape(-1, 1, 2)
+        else:
+            quadrilateral = clip_to_near_plane(np.array([left[step], left[step + 1], right[step + 1], right[step]]))
+            if len(quadrilateral) < 3:
+                continue
+            polygon = _scaled_pixels(quadrilateral, intrinsics, scale)
+        fade = 1.0 - float(times[step + 1]) / end_time if end_time > 0.0 else 1.0
+        cv2.fillPoly(fill_alpha, [polygon], float(fill_opacity * fade))
+    _blend(image, fill_alpha, color)
+
+    # The borders on a layer of their own, at a single opacity. Outlines first, then the colored
+    # lines over them, so one segment's outline never covers the next segment's color.
+    segments = []
+    for points, pixels, beyond in ((left, left_pixels, left_beyond), (right, right_pixels, right_beyond)):
+        for step in range(len(times) - 1):
+            if beyond[step] and beyond[step + 1]:
+                segments.append(pixels[step : step + 2].reshape(-1, 1, 2))
+                continue
+            clipped = clip_segment_to_near_plane(points[step], points[step + 1])
+            if clipped is not None:
+                segments.append(_scaled_pixels(clipped, intrinsics, scale))
+    border_layer = np.zeros_like(image)
+    border_alpha = np.zeros(image.shape[:2], dtype=np.float32)
+    for line_color, thickness in ((COLOR_OUTLINE, 4), (tuple(int(channel) for channel in color), 2)):
+        cv2.polylines(border_layer, segments, False, line_color, thickness)
+        cv2.polylines(border_alpha, segments, False, BORDER_OPACITY, thickness)
+    _blend(image, border_alpha, border_layer)
+
+
+def _edge_pixels(points_camera: np.ndarray, intrinsics: np.ndarray, scale: int) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Scaled pixels for a run of points, and which lie beyond the near plane.
+
+    A pixel is only meaningful where its point lies beyond the plane. Elsewhere it is a placeholder
+    the caller must not draw, and the caller clips that piece instead.
+
+    :return: (pixels (n, 2) int32, beyond (n,) bool).
+    :rtype: tuple[np.ndarray, np.ndarray]
+    """
+    beyond = points_camera[:, 2] >= NEAR_PLANE_METERS
+    column, row, _ = project_points(points_camera, intrinsics)
+    pixels = np.column_stack((np.nan_to_num(column) * scale, np.nan_to_num(row) * scale))
+    return np.round(pixels).astype(np.int32), beyond
+
+
+def _blend(image: np.ndarray, alpha: np.ndarray, paint: np.ndarray) -> None:
+    """
+    Paint over the image at a per-pixel opacity, in place, touching only the box the paint covers.
+
+    :param image: The BGR image to paint on.
+    :param alpha: (rows, columns) opacity, zero where nothing is painted.
+    :param paint: One BGR color (3,), or a whole BGR layer the image's size.
+    """
+    covered_rows = np.flatnonzero(alpha.any(axis=1))
+    if covered_rows.size == 0:
+        return
+    covered_columns = np.flatnonzero(alpha.any(axis=0))
+    window = (slice(covered_rows[0], covered_rows[-1] + 1), slice(covered_columns[0], covered_columns[-1] + 1))
+    weight = alpha[window][..., None]
+    region = image[window].astype(np.float32)
+    paint_region = paint[window].astype(np.float32) if paint.ndim == 3 else paint
+    # Adding a half and truncating rounds, without a separate rounding pass over the window.
+    image[window] = (region + (paint_region - region) * weight + 0.5).astype(np.uint8)

@@ -3,16 +3,21 @@ A browser as the display: one static page and one websocket, served from a threa
 
 The only file in the package allowed to import aiohttp. The server runs its own asyncio loop in
 its own thread, and the pipeline's publisher thread hands it messages through
-call_soon_threadsafe, so the two never share a loop. No video is sent. Each planned path goes out
-as a text frame with the path's JSON, and when the loop hands this sink a debug view, a binary
-frame follows with a PNG of the depth image the planner saw, groups and path drawn on it. The
-page draws the arrow and turns red on alarm, and shows the picture under it when one arrives.
+call_soon_threadsafe, so the two never share a loop. No video is sent.
+
+Each planned path goes out as a text frame, the path's JSON with a kind of "path". When the loop
+hands this sink a debug view, two more frames follow: a second kind of text message, the plan view,
+with the planner's field and what the page needs to draw it top-down, then a binary frame with a
+PNG of the depth image the planner saw, groups and path drawn on it. The page dispatches text
+frames on their kind. It draws the arrow and turns red on alarm, draws the plan view, and shows the
+picture when one arrives.
 """
 
 # Standard library imports
 import asyncio
 import logging
 import threading
+from enum import Enum
 from pathlib import Path
 
 # Third party imports
@@ -21,7 +26,8 @@ import numpy as np
 # Local package imports
 from nav.sinks.config import WebConfig
 from nav.sinks.rendering import encode_png, render_depth_view
-from nav.sources.framecodec import encode_path
+from nav.sinks.web_messages import WebMessageKind, plan_view_message, web_text_message
+from nav.sources.framecodec import path_message
 from nav.types import DebugView, PlannedPath
 
 log = logging.getLogger(__name__)
@@ -29,11 +35,19 @@ log = logging.getLogger(__name__)
 PAGE_PATH = Path(__file__).parent / "web_page.html"
 STARTUP_TIMEOUT_SECONDS = 5.0
 SHUTDOWN_TIMEOUT_SECONDS = 2.0
-# How many messages may wait for the browsers. A depth view is about 128 KB, so this is a couple of
-# megabytes at worst. The queue has to be bounded: the pipeline hands over a path and a picture per
-# planned frame and never waits, while one browser that stops reading suspends the send loop for
-# every browser, so an unbounded queue grows for as long as that lasts.
+# How many messages may wait for the browsers. A depth view is about 128 KB and a plan view about
+# 40 KB, so this is a few megabytes at worst. The queue has to be bounded: the pipeline hands over a
+# path, a plan view and a picture per planned frame and never waits, while one browser that stops
+# reading suspends the send loop for every browser, so an unbounded queue grows for as long as that lasts.
 OUTGOING_QUEUE_LIMIT = 32
+
+
+class _Slot(Enum):
+    """Which newest-of-its-kind message a payload replaces. A browser that connects gets one of each, in this order."""
+
+    PATH = 1
+    PLAN_VIEW = 2
+    DEPTH_PNG = 3
 
 
 class WebSink:
@@ -75,28 +89,34 @@ class WebSink:
         """Queue the path for every browser. Starts the server on the first call."""
         if self._thread is None:
             self.start()
-        self._enqueue(encode_path(path).decode("utf-8"))
+        self._enqueue(_Slot.PATH, web_text_message(WebMessageKind.PATH, path_message(path)))
 
     def publish_debug(self, path: PlannedPath, field: np.ndarray, grid: np.ndarray, view: DebugView) -> None:
         """
-        Queue the path's JSON, then a PNG of the depth view, for every browser.
+        Queue the path's JSON, then the plan view, then a PNG of the depth view, for every browser.
 
-        The field is not sent. The browser gets what a person tuning the planner looks at, which
-        is the depth image with the groups and the path on it. A view that will not render costs
-        the picture and never the path.
+        Each one that cannot be built costs itself and nothing else. A plan view that will not
+        build still leaves the path and the picture, and a view that will not render still leaves
+        the path and the plan view.
         """
         self.publish(path)
+        try:
+            plan_view = web_text_message(WebMessageKind.PLAN_VIEW, plan_view_message(path, field, grid, view))
+        except ValueError as unbuildable:
+            log.warning("plan view not sent (caught %s, expected): %s", type(unbuildable).__name__, unbuildable)
+        else:
+            self._enqueue(_Slot.PLAN_VIEW, plan_view)
         try:
             png = encode_png(render_depth_view(view, path))
         except ValueError as unrenderable:
             log.warning("depth view not sent (caught %s, expected): %s", type(unrenderable).__name__, unrenderable)
             return
-        self._enqueue(png)
+        self._enqueue(_Slot.DEPTH_PNG, png)
 
     def close(self) -> None:
         if self._thread is None:
             return
-        self._enqueue(None)
+        self._enqueue(None, None)
         self._thread.join(SHUTDOWN_TIMEOUT_SECONDS)
         if self._thread.is_alive():
             log.warning("web sink thread did not stop within %.0f s", SHUTDOWN_TIMEOUT_SECONDS)
@@ -106,20 +126,22 @@ class WebSink:
         if self._dropped:
             log.info("%d messages were dropped because the browsers were not keeping up", self._dropped)
 
-    def _enqueue(self, message: str | bytes | None) -> None:
+    def _enqueue(self, slot: _Slot | None, message: str | bytes | None) -> None:
         # publish runs on the publisher's thread. The queue belongs to the server's loop, so the
-        # put is handed to that loop rather than touched from here.
+        # put is handed to that loop rather than touched from here. Both values go as arguments,
+        # never through a closure, so a later frame cannot rebind what this one queued.
         if self._loop is None or self._outgoing is None:
             return
-        self._loop.call_soon_threadsafe(self._offer, message)
+        self._loop.call_soon_threadsafe(self._offer, slot, message)
 
-    def _offer(self, message: str | bytes | None) -> None:
+    def _offer(self, slot: _Slot | None, message: str | bytes | None) -> None:
         """
         Put the message on the queue, making room by discarding the oldest when it is full.
 
         Runs on the server's loop, which is the only thread allowed to touch the queue. Dropping
         the oldest rather than refusing the newest is what a display wants: a frame nobody has
-        managed to send yet is already out of date, and the next one replaces it anyway.
+        managed to send yet is already out of date, and the next one replaces it anyway. A None
+        message is the shutdown sentinel.
         """
         if self._outgoing is None:
             return
@@ -129,7 +151,7 @@ class WebSink:
             except asyncio.QueueEmpty:
                 break
             self._dropped += 1
-        self._outgoing.put_nowait(message)
+        self._outgoing.put_nowait(None if message is None else (slot, message))
 
     def _serve(self) -> None:
         # Optional dependency, present only with the web extra. Imported where it is used so the
@@ -150,13 +172,14 @@ class WebSink:
 
     async def _run(self, web) -> None:
         self._loop = asyncio.get_running_loop()
+        self._loop.set_exception_handler(_quiet_client_resets)
         self._outgoing = asyncio.Queue(maxsize=OUTGOING_QUEUE_LIMIT)
         sockets: set = set()
         page = PAGE_PATH.read_text(encoding="utf-8")
         # The newest of each kind, written by the send loop below and read when a browser
         # connects, so a page opened mid-run shows something at once rather than waiting for the
         # next planned frame, which on a still phone is never. Loop-thread state only.
-        latest: dict[str, str | bytes | None] = {"text": None, "png": None}
+        latest: dict[_Slot, str | bytes | None] = {slot: None for slot in _Slot}
 
         async def serve_page(request):
             return web.Response(text=page, content_type="text/html")
@@ -173,8 +196,9 @@ class WebSink:
             sockets.add(socket)
             log.info("browser connected, %d open", len(sockets))
             try:
-                for kind in ("text", "png"):
-                    message = latest[kind]
+                # Enum order: the path, then the plan view, then the picture, as a live frame sends them.
+                for slot in _Slot:
+                    message = latest[slot]
                     if message is not None:
                         await send(socket, message)
                 async for _ in socket:
@@ -200,10 +224,11 @@ class WebSink:
 
         try:
             while True:
-                message = await self._outgoing.get()
-                if message is None:
+                queued = await self._outgoing.get()
+                if queued is None:
                     break
-                latest["png" if isinstance(message, bytes) else "text"] = message
+                slot, message = queued
+                latest[slot] = message
                 for socket in list(sockets):
                     try:
                         await send(socket, message)
@@ -216,3 +241,20 @@ class WebSink:
             for socket in list(sockets):
                 await socket.close()
             await runner.cleanup()
+
+
+def _quiet_client_resets(loop: asyncio.AbstractEventLoop, context: dict) -> None:
+    """
+    The server loop's exception handler: a browser that dropped its socket is logged as expected.
+
+    On Windows, asyncio's proactor loop reports a socket the browser reset as an error in its own
+    callback, after the socket handler has already seen the browser go. A phone browser that gets
+    backgrounded does this routinely. Anything else goes to asyncio's default handler unchanged.
+
+    :param loop: The loop the exception came from.
+    :param context: asyncio's description of what failed.
+    """
+    if isinstance(context.get("exception"), ConnectionResetError):
+        log.info("a browser's connection was reset (caught ConnectionResetError, expected): %s", context.get("message"))
+        return
+    loop.default_exception_handler(context)

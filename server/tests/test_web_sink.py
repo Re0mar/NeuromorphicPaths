@@ -18,7 +18,8 @@ import pytest
 # Local package imports
 from nav.sinks.config import WebConfig
 from nav.sinks.web import OUTGOING_QUEUE_LIMIT, WebSink
-from nav.sources.framecodec import encode_path
+from nav.sinks.web_messages import OBSTACLE_KEYS, PLAN_VIEW_KEYS, WebMessageKind
+from nav.sources.framecodec import path_message
 from nav.types import DebugSink, DebugView, DepthFrame, FloorSource, ObstacleSet, Plane, PlannedPath, Pose
 
 RECEIVE_TIMEOUT_SECONDS = 3.0
@@ -26,7 +27,7 @@ VIEW_SIDE = 4
 
 
 def _path(heading: float = 0.1, alarm: bool = False) -> PlannedPath:
-    return PlannedPath(1.0, np.array([0.0, 0.1]), np.array([0.0, 0.05]), heading, alarm, 2.5)
+    return PlannedPath(1.0, np.array([0.0, 0.1]), np.array([0.0, 0.05]), heading, alarm, 2.5, scene_information_bits=0.0, avoidance_surprise_bits=0.0)
 
 
 def _view() -> DebugView:
@@ -39,7 +40,7 @@ def _view() -> DebugView:
         ground_plane=None,
         gaze_pixel=None,
     )
-    return DebugView(frame, ObstacleSet(1.0, (), 0), Plane(np.array([0.0, -1.0, 0.0]), 1.6), FloorSource.FITTED, 1.4)
+    return DebugView(frame, ObstacleSet(1.0, (), 0), Plane(np.array([0.0, -1.0, 0.0]), 1.6), FloorSource.FITTED, 1.4, 0.30)
 
 
 def _field() -> tuple[np.ndarray, np.ndarray]:
@@ -86,7 +87,7 @@ def test_a_published_path_reaches_a_connected_browser(sink: WebSink) -> None:
     # The publish has to happen after the client is connected, or there is nobody to send to.
     received = asyncio.run(_receive_one(sink.port, after_connect=lambda: sink.publish(path)))
 
-    assert json.loads(received) == json.loads(encode_path(path))
+    assert json.loads(received) == {"kind": WebMessageKind.PATH.value, **path_message(path)}
 
 
 def test_the_page_is_served_at_the_root(sink: WebSink) -> None:
@@ -102,6 +103,24 @@ def test_the_page_is_served_at_the_root(sink: WebSink) -> None:
 
     assert "<canvas" in page
     assert "/ws" in page
+
+
+def test_the_served_page_reads_every_plan_view_key_it_is_sent(sink: WebSink) -> None:
+    # A weak check, on purpose: it catches a key renamed on one side, not a wrong drawing. The
+    # drawing is checked by eye on a replay, because the repo has no JavaScript runner.
+    async def fetch() -> str:
+        import aiohttp
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"http://127.0.0.1:{sink.port}/") as response:
+                return await response.text()
+
+    page = asyncio.run(fetch())
+
+    for key in PLAN_VIEW_KEYS + OBSTACLE_KEYS:
+        assert f".{key}" in page, f"the page never reads {key}"
+    for kind in WebMessageKind:
+        assert f'"{kind.value}"' in page, f"the page never dispatches on {kind.value}"
 
 
 def test_a_client_that_disconnects_does_not_break_the_next_publish(sink: WebSink) -> None:
@@ -152,7 +171,7 @@ def test_closing_an_unstarted_sink_does_not_raise() -> None:
 
 
 def test_a_browser_that_stops_reading_cannot_grow_the_queue_without_bound(sink: WebSink, caplog: pytest.LogCaptureFixture) -> None:
-    # The pipeline hands over a path and a 128 KB picture per planned frame and never waits, while
+    # The pipeline hands over a path, a plan view and a 128 KB picture per planned frame and never waits, while
     # one browser whose window has closed suspends the send loop for every browser. Unbounded, a
     # backgrounded phone browser grew that queue by hundreds of megabytes over a walk.
     async def scenario() -> int:
@@ -171,7 +190,7 @@ def test_a_browser_that_stops_reading_cannot_grow_the_queue_without_bound(sink: 
     depth = asyncio.run(scenario())
 
     assert depth <= OUTGOING_QUEUE_LIMIT, f"the queue grew to {depth}"
-    assert sink.dropped > 0, "600 messages through a queue of 32 must have dropped some"
+    assert sink.dropped > 0, "900 messages through a queue of 32 must have dropped some"
 
     with caplog.at_level("INFO", logger="nav.sinks.web"):
         sink.close()
@@ -183,34 +202,54 @@ def test_the_web_sink_is_a_debug_sink() -> None:
     assert isinstance(WebSink(WebConfig(port=0)), DebugSink)
 
 
-def test_a_debug_publish_sends_json_then_a_png_to_a_connected_browser(sink: WebSink) -> None:
+def test_a_debug_publish_sends_path_then_plan_view_then_png(sink: WebSink) -> None:
     path = _path(heading=0.3)
     field, grid = _field()
 
-    text, png = asyncio.run(_receive_frames(sink.port, lambda: sink.publish_debug(path, field, grid, _view()), count=2))
+    path_text, plan_text, png = asyncio.run(_receive_frames(sink.port, lambda: sink.publish_debug(path, field, grid, _view()), count=3))
 
-    assert json.loads(text) == json.loads(encode_path(path))
+    assert json.loads(path_text) == {"kind": WebMessageKind.PATH.value, **path_message(path)}
+    plan_view = json.loads(plan_text)
+    assert plan_view["kind"] == WebMessageKind.PLAN_VIEW.value
+    assert np.array(plan_view["field"]).shape == field.shape
     assert isinstance(png, bytes)
     decoded = cv2.imdecode(np.frombuffer(png, dtype=np.uint8), cv2.IMREAD_COLOR)
     # A 4 by 4 frame scaled up by a whole number to the target width.
     assert decoded.shape == (640, 640, 3)
 
 
-def test_a_browser_connecting_late_gets_the_latest_json_and_png_at_once(sink: WebSink) -> None:
+def test_a_browser_connecting_late_gets_the_latest_of_each_kind_at_once(sink: WebSink) -> None:
     # Published before anyone is connected. A page opened afterwards must not sit blank until the
     # next planned frame, which on a still phone never comes.
     path = _path(heading=0.4)
     field, grid = _field()
     sink.publish_debug(path, field, grid, _view())
-    time.sleep(0.3)  # Let the server loop take both messages off its queue.
+    time.sleep(0.3)  # Let the server loop take all three messages off its queue.
 
-    text, png = asyncio.run(_receive_frames(sink.port, lambda: None, count=2))
+    path_text, plan_text, png = asyncio.run(_receive_frames(sink.port, lambda: None, count=3))
 
-    assert json.loads(text)["first_heading_radians"] == pytest.approx(0.4)
+    assert json.loads(path_text)["kind"] == WebMessageKind.PATH.value
+    assert json.loads(path_text)["first_heading_radians"] == pytest.approx(0.4)
+    assert json.loads(plan_text)["kind"] == WebMessageKind.PLAN_VIEW.value
     assert isinstance(png, bytes) and png[:8] == b"\x89PNG\r\n\x1a\n"
 
 
-def test_a_png_encode_failure_still_sends_the_json(sink: WebSink, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+async def _receive_texts_then_check_quiet(port: int, after_connect, texts: int) -> tuple[list, bool]:
+    """The first few text frames after connecting, and whether anything at all followed them."""
+    import aiohttp
+
+    async with aiohttp.ClientSession() as session:
+        async with session.ws_connect(f"ws://127.0.0.1:{port}/ws") as socket:
+            after_connect()
+            received = [await asyncio.wait_for(socket.receive(), RECEIVE_TIMEOUT_SECONDS) for _ in range(texts)]
+            try:
+                await asyncio.wait_for(socket.receive(), 0.5)
+                return [message.data for message in received], True
+            except TimeoutError:
+                return [message.data for message in received], False
+
+
+def test_a_png_encode_failure_still_sends_the_path_and_the_plan_view(sink: WebSink, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     import nav.sinks.web as web_module
 
     def broken(view, path):
@@ -220,22 +259,54 @@ def test_a_png_encode_failure_still_sends_the_json(sink: WebSink, monkeypatch: p
     path = _path(heading=0.5)
     field, grid = _field()
 
-    async def scenario() -> tuple[str, bool]:
-        import aiohttp
+    with caplog.at_level("WARNING", logger="nav.sinks.web"):
+        texts, more_arrived = asyncio.run(_receive_texts_then_check_quiet(sink.port, lambda: sink.publish_debug(path, field, grid, _view()), 2))
 
-        async with aiohttp.ClientSession() as session:
-            async with session.ws_connect(f"ws://127.0.0.1:{sink.port}/ws") as socket:
-                with caplog.at_level("WARNING", logger="nav.sinks.web"):
-                    sink.publish_debug(path, field, grid, _view())
-                    text = await asyncio.wait_for(socket.receive_str(), RECEIVE_TIMEOUT_SECONDS)
-                try:
-                    await asyncio.wait_for(socket.receive(), 0.5)
-                    return text, True
-                except TimeoutError:
-                    return text, False
-
-    text, more_arrived = asyncio.run(scenario())
-
-    assert json.loads(text)["first_heading_radians"] == pytest.approx(0.5)
-    assert not more_arrived, "nothing may follow the JSON when the picture failed"
+    assert json.loads(texts[0])["first_heading_radians"] == pytest.approx(0.5)
+    assert json.loads(texts[1])["kind"] == WebMessageKind.PLAN_VIEW.value
+    assert not more_arrived, "nothing may follow the plan view when the picture failed"
     assert any("depth view not sent" in record.message for record in caplog.records)
+
+
+def test_a_plan_view_that_cannot_be_built_still_sends_the_path_and_the_png(sink: WebSink, caplog: pytest.LogCaptureFixture) -> None:
+    path = _path(heading=0.6)
+    field, grid = _field()
+    wrong_field = np.zeros((field.shape[0] + 1, field.shape[1]))
+
+    with caplog.at_level("WARNING", logger="nav.sinks.web"):
+        received = asyncio.run(_receive_frames(sink.port, lambda: sink.publish_debug(path, wrong_field, grid, _view()), count=2))
+
+    assert json.loads(received[0])["kind"] == WebMessageKind.PATH.value
+    assert isinstance(received[1], bytes), "the picture follows the path straight away"
+    assert any("plan view not sent" in record.message for record in caplog.records)
+    # The same publish with a field that fits sends all three, so the gap above is the bad field.
+    good = asyncio.run(_receive_frames(sink.port, lambda: sink.publish_debug(path, field, grid, _view()), count=4))
+    kinds = [json.loads(message)["kind"] for message in good if isinstance(message, str)]
+    assert WebMessageKind.PLAN_VIEW.value in kinds
+
+
+class _RecordingLoop:
+    """Stands in for the loop's default handler, so the test sees what was passed on to it."""
+
+    def __init__(self) -> None:
+        self.passed_on: list[dict] = []
+
+    def default_exception_handler(self, context: dict) -> None:
+        self.passed_on.append(context)
+
+
+def test_a_browser_resetting_its_socket_is_logged_as_expected_not_as_an_error(caplog: pytest.LogCaptureFixture) -> None:
+    from nav.sinks.web import _quiet_client_resets
+
+    loop = _RecordingLoop()
+    reset = {"message": "Exception in callback _call_connection_lost", "exception": ConnectionResetError(10054, "reset")}
+
+    with caplog.at_level("INFO", logger="nav.sinks.web"):
+        _quiet_client_resets(loop, reset)
+
+    assert loop.passed_on == []
+    assert any("caught ConnectionResetError, expected" in record.message for record in caplog.records)
+    # Anything else still reaches asyncio's own handler, so a real fault is not swallowed.
+    other = {"message": "something else", "exception": RuntimeError("not a reset")}
+    _quiet_client_resets(loop, other)
+    assert loop.passed_on == [other]

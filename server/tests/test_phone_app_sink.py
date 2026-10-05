@@ -21,7 +21,7 @@ TEST_TIMEOUT_SECONDS = 3.0
 
 
 def _path(heading: float = 0.1) -> PlannedPath:
-    return PlannedPath(1.0, np.array([0.0, 0.1]), np.array([0.0, 0.05]), heading, False, 2.5)
+    return PlannedPath(1.0, np.array([0.0, 0.1]), np.array([0.0, 0.05]), heading, False, 2.5, scene_information_bits=0.0, avoidance_surprise_bits=0.0)
 
 
 def _listening_sink() -> PhoneAppSink:

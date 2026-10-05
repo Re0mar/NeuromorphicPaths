@@ -8,13 +8,14 @@ import time
 import numpy as np
 
 # Local package imports
-from nav.planner.alarm import AlarmHold, alarm_raised, check_alarm_config
+from nav.planner.alarm import AlarmHold, alarm_raised, avoidance_surprise_bits, check_alarm_config
 from nav.planner.config import GoalMode, PlannerConfig
 from nav.planner.contact import ContactSurprise, check_contact_config
-from nav.planner.dynamic_programming import plan
+from nav.planner.dynamic_programming import plan, start_cell_index
 from nav.planner.field import CostTerm, cost_field, lateral_grid, step_count
 from nav.planner.goal import goal_position, goal_term
 from nav.planner.heading import lookahead_heading, lookahead_step_index
+from nav.planner.information import scene_information_bits
 from nav.planner.surprise import CollisionSurprise
 from nav.types import ObstacleSet, PlannedPath
 from nav.walker import WalkerConfig
@@ -86,12 +87,22 @@ class PlannerPipeline:
 
         field = cost_field(obstacles, self._grid, config, self._walker, self._terms)
         goal = goal_position(goal_mode, config, gaze_ground_point)
-        field[-1] += goal_term(self._grid, goal, config)
+        goal_row = goal_term(self._grid, goal, config)
+        field[-1] += goal_row
         self._last_field = field
         after_field = time.perf_counter()
 
         offsets, cost = plan(field, start_lateral_meters, self._grid, config)
         after_plan = time.perf_counter()
+
+        # The prior is the planner with nothing in view: no obstacle terms, the same goal. A prior
+        # without the goal would credit the scene with a turn the gaze caused.
+        prior_field = np.zeros_like(field)
+        prior_field[-1] += goal_row
+        start_cell = start_cell_index(self._grid, start_lateral_meters)
+        information = scene_information_bits(field, prior_field, start_cell, self._grid, config, self._lookahead_index)
+        avoidance = avoidance_surprise_bits(obstacles, config)
+        after_information = time.perf_counter()
 
         # Where the arrow points: at where the path is a lookahead from now, not at its first step.
         heading = lookahead_heading(offsets, self._lookahead_index, config)
@@ -99,13 +110,17 @@ class PlannerPipeline:
         alarm = self._alarm_hold.update(alarm_raised(obstacles, config), obstacles.timestamp_seconds)
 
         log.debug(
-            "planner %.1f ms: field %.1f, dp %.1f, %d groups, cost %.2f, heading %.1f deg, alarm %s",
-            (after_plan - started) * 1000,
+            "planner %.1f ms: field %.1f, dp %.1f, info %.1f, %d groups, cost %.2f, heading %.1f deg, "
+            "information %.2f bits, avoidance %.2f bits, alarm %s",
+            (after_information - started) * 1000,
             (after_field - started) * 1000,
             (after_plan - after_field) * 1000,
+            (after_information - after_plan) * 1000,
             obstacles.groups_in_view,
             cost,
             np.degrees(heading),
+            information,
+            avoidance,
             alarm,
         )
 
@@ -116,4 +131,6 @@ class PlannerPipeline:
             first_heading_radians=heading,
             alarm=alarm,
             cumulative_cost_bits=cost,
+            scene_information_bits=information,
+            avoidance_surprise_bits=avoidance,
         )

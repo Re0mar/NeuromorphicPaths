@@ -18,7 +18,7 @@ from nav.types import DebugSink, DebugView, DepthFrame, FloorSource, ObstacleSet
 
 
 def _path(heading: float = 0.1) -> PlannedPath:
-    return PlannedPath(1.0, np.array([0.0, 0.1]), np.array([0.0, 0.05]), heading, False, 2.5)
+    return PlannedPath(1.0, np.array([0.0, 0.1]), np.array([0.0, 0.05]), heading, False, 2.5, scene_information_bits=0.0, avoidance_surprise_bits=0.0)
 
 
 def _view() -> DebugView:
@@ -30,7 +30,7 @@ def _view() -> DebugView:
         ground_plane=None,
         gaze_pixel=None,
     )
-    return DebugView(frame, ObstacleSet(1.0, (), 0), Plane(np.array([0.0, -1.0, 0.0]), 1.6), FloorSource.FITTED, 1.4)
+    return DebugView(frame, ObstacleSet(1.0, (), 0), Plane(np.array([0.0, -1.0, 0.0]), 1.6), FloorSource.FITTED, 1.4, 0.30)
 
 
 class PlainSink:

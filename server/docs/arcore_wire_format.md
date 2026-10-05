@@ -143,7 +143,9 @@ instant, and the next frame produces the next one within a frame interval.
   "lateral_offsets_meters": [0.0, 0.05, 0.12],
   "first_heading_radians": 0.0423,
   "alarm": false,
-  "cumulative_cost_bits": 18.4
+  "cumulative_cost_bits": 18.4,
+  "scene_information_bits": 0.37,
+  "avoidance_surprise_bits": 0.51
 }
 ```
 
@@ -154,10 +156,15 @@ instant, and the next frame produces the next one within a frame interval.
 | `first_heading_radians` | Where the path is heading. The planner reads the path a fixed time ahead, set on the laptop, and takes the angle from here to there. Positive is right |
 | `alarm` | Something in the walker's way is close at walking pace, or was a moment ago. Turn the display red |
 | `cumulative_cost_bits` | Total cost of the chosen path: the surprise of how unsure the readings of near things are, plus the surprise of the body touching something, plus the costs of moving sideways and of ending away from the goal. Quoted in bits by the course's convention. For display and logging, not for steering |
+| `scene_information_bits` | How far what the camera saw moved the plan from what the planner would do with nothing in view, measured where the arrow reads the path. 0 for an empty scene. It is not a confidence: an empty corridor gives a plan the planner is completely sure of and 0 bits. Drives how solid the drawn path looks |
+| `avoidance_surprise_bits` | How soon the walker reaches the nearest thing in its way, as the course's avoidance surprise: (1 s over the time to contact) squared, over 2 ln 2. 0 with nothing in the way, 0.72 at one second to contact. Drives the drawn path's color, blue at 0 and red from 0.72 |
 
 `times_seconds` and `lateral_offsets_meters` always have the same length.
 
-Every key is required and every number is finite. Per field, who produces it and who checks it:
+Every key is required and every number is finite. The app does not read `scene_information_bits`
+or `avoidance_surprise_bits` yet, and it can ignore them safely, because it checks only the keys it
+reads. They are there for the path drawing on the phone, which will use them the way the laptop's
+web page does. Per field, who produces it and who checks it:
 
 | Field | Produced by | On the wire | Read by | Value domain | Who enforces it |
 |---|---|---|---|---|---|
@@ -167,6 +174,8 @@ Every key is required and every number is finite. Per field, who produces it and
 | `first_heading_radians` | planner, from the path a fixed time ahead | JSON number | the arrow | finite, positive is right, within the sidestep limit | both sides |
 | `alarm` | planner, from what is in the walker's way | JSON boolean | display color | `true` or `false`, never a number | you refuse a number where the boolean belongs |
 | `cumulative_cost_bits` | planner | JSON number | display, logging | finite, zero or more | both sides |
+| `scene_information_bits` | planner, from the cheapest path through each cell at the arrow's lookahead | JSON number | the web page now, the phone's path drawing later | finite, zero or more. At most about 6.3 bits with the laptop's current settings | laptop refuses a negative or non-finite value before encoding |
+| `avoidance_surprise_bits` | planner, from the nearest group in the walker's corridor | JSON number | the web page now, the phone's path drawing later | finite, zero or more | laptop refuses a negative or non-finite value before encoding |
 
 ---
 

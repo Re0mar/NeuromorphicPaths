@@ -342,3 +342,16 @@ def test_without_contact_the_shipped_weight_walks_into_the_post() -> None:
 
     k_reach = int(np.ceil(1.5 / (CONFIG.walking_speed_mps * CONFIG.time_step_seconds)))
     assert abs(path.lateral_offsets_meters[k_reach]) <= WALKER.radius_meters
+
+
+def test_a_planned_path_carries_both_new_numbers() -> None:
+    pipeline = PlannerPipeline(CONFIG, WALKER)
+
+    empty = pipeline.plan(_set())
+    assert empty.scene_information_bits == pytest.approx(0.0, abs=1e-12)
+    assert empty.avoidance_surprise_bits == 0.0
+
+    # A post a little to the right, 1.5 m ahead. In the corridor, and close enough to move the plan.
+    post = pipeline.plan(_set(_point(0.1, 1.5, 1)))
+    assert post.scene_information_bits > 0.0
+    assert post.avoidance_surprise_bits > 0.0

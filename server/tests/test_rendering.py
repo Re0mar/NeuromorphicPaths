@@ -34,15 +34,16 @@ IDENTITY = np.array([1.0, 0.0, 0.0, 0.0])
 CONFIG = SceneConfig()
 WALKER = WalkerConfig()
 WALKING_SPEED = 1.4
+BODY_HALF_WIDTH = 0.30
 
 
 def _path(offsets: np.ndarray, alarm: bool = False) -> PlannedPath:
-    return PlannedPath(0.0, np.arange(len(offsets)) * 0.1, offsets, 0.0, alarm, 1.0)
+    return PlannedPath(0.0, np.arange(len(offsets)) * 0.1, offsets, 0.0, alarm, 1.0, scene_information_bits=0.0, avoidance_surprise_bits=0.0)
 
 
 def _one_step_path() -> PlannedPath:
     """A path whose single step is at the walker's own feet, which projects behind the camera and draws nothing."""
-    return PlannedPath(0.0, np.array([0.0]), np.array([0.0]), 0.0, False, 0.0)
+    return PlannedPath(0.0, np.array([0.0]), np.array([0.0]), 0.0, False, 0.0, scene_information_bits=0.0, avoidance_surprise_bits=0.0)
 
 
 def _frame(depth: np.ndarray, intrinsics: np.ndarray) -> DepthFrame:
@@ -54,7 +55,7 @@ def _scene_view(obstacles: ObstacleSet | None = None) -> DebugView:
     scene = clean_scene(box_lateral_meters=0.5, box_forward_meters=3.0, box_height_meters=1.0, box_half_width_meters=0.1)
     frame = _frame(scene.depth_meters, scene.intrinsics)
     found = obstacles if obstacles is not None else ScenePipeline(CONFIG, WALKER).process(frame)
-    return DebugView(frame, found, scene.floor_plane_camera, FloorSource.FITTED, WALKING_SPEED)
+    return DebugView(frame, found, scene.floor_plane_camera, FloorSource.FITTED, WALKING_SPEED, BODY_HALF_WIDTH)
 
 
 def _obstacle(camera_point: np.ndarray, clearance: float = 1.0, is_wall: bool = False) -> ObstaclePoint:
@@ -146,12 +147,28 @@ def test_the_depth_view_has_the_scaled_size_and_a_valid_pixel_is_colored() -> No
     assert tuple(image[90 * scale, 20 * scale]) != COLOR_INVALID_DEPTH
 
 
-def test_invalid_depth_pixels_are_drawn_grey() -> None:
+def test_near_depth_is_brighter_than_far_depth_and_gray() -> None:
+    # Lower in the image is nearer floor. Column 20 is clear of the path, which is one step here anyway.
+    image = render_depth_view(_scene_view(ObstacleSet(0.0, (), 0)), _one_step_path())
+    scale = DEPTH_VIEW_TARGET_WIDTH // WIDTH
+    near = image[90 * scale, 20 * scale]
+    far = image[70 * scale, 20 * scale]
+
+    assert near[0] == near[1] == near[2], "depth is drawn in gray"
+    assert int(near[0]) > int(far[0])
+
+
+def test_invalid_depth_stays_distinguishable_from_the_farthest_gray() -> None:
+    # Far depth is near black. A gray marker for no reading would read as far away.
+    assert len(set(COLOR_INVALID_DEPTH)) > 1, "the invalid color must not be a gray"
+
+
+def test_invalid_depth_pixels_are_drawn_in_their_own_color() -> None:
     scene = clean_scene()
     depth = scene.depth_meters.copy()
     depth[40:50, 0:10] = np.nan
     depth[40:50, 118:128] = 0.0
-    view = DebugView(_frame(depth, scene.intrinsics), ObstacleSet(0.0, (), 0), scene.floor_plane_camera, FloorSource.FITTED, WALKING_SPEED)
+    view = DebugView(_frame(depth, scene.intrinsics), ObstacleSet(0.0, (), 0), scene.floor_plane_camera, FloorSource.FITTED, WALKING_SPEED, BODY_HALF_WIDTH)
 
     image = render_depth_view(view, _one_step_path())
 
@@ -192,26 +209,87 @@ def test_a_group_behind_the_camera_is_skipped_not_drawn() -> None:
     assert np.array_equal(_below_text(behind), _below_text(without))
 
 
-def test_the_path_is_drawn_along_the_floor() -> None:
-    # A wide-angle camera over a level floor, so the path's steps land inside the image: the
-    # polyline runs down the middle column, nearer steps lower, and nowhere else.
-    intrinsics = np.array([[30.0, 0.0, WIDTH / 2.0], [0.0, 30.0, HEIGHT / 2.0], [0.0, 0.0, 1.0]])
+def _floor_view(focal_pixels: float = 30.0) -> DebugView:
+    """A level floor 1.6 m under a camera with no depth readings, so the ribbon is all that changes."""
+    intrinsics = np.array([[focal_pixels, 0.0, WIDTH / 2.0], [0.0, focal_pixels, HEIGHT / 2.0], [0.0, 0.0, 1.0]])
     frame = _frame(np.full((HEIGHT, WIDTH), np.nan, dtype=np.float32), intrinsics)
     level_floor = Plane(np.array([0.0, -1.0, 0.0]), 1.6)
-    view = DebugView(frame, ObstacleSet(0.0, (), 0), level_floor, FloorSource.FITTED, WALKING_SPEED)
+    return DebugView(frame, ObstacleSet(0.0, (), 0), level_floor, FloorSource.FITTED, WALKING_SPEED, BODY_HALF_WIDTH)
 
-    drawn = render_depth_view(view, _path(np.zeros(STEPS)))
+
+def _styled_path(offsets: np.ndarray, information: float = 0.0, avoidance: float = 0.0) -> PlannedPath:
+    return PlannedPath(0.0, np.arange(len(offsets)) * 0.1, offsets, 0.0, False, 1.0, scene_information_bits=information, avoidance_surprise_bits=avoidance)
+
+
+def _pixel_on_floor(forward: float, lateral: float, focal_pixels: float = 30.0) -> tuple[int, int]:
+    """Row and column, scaled, where a level-floor point lands. Worked out from the pinhole model, not the renderer."""
+    scale = DEPTH_VIEW_TARGET_WIDTH // WIDTH
+    return int(round((focal_pixels * 1.6 / forward + HEIGHT / 2.0) * scale)), int(round((focal_pixels * lateral / forward + WIDTH / 2.0) * scale))
+
+
+def test_the_ribbon_is_drawn_the_bodys_width_on_the_floor() -> None:
+    # Step 20 is 2.8 m ahead. Its edges at 0.3 m to either side land 16 px either side of the
+    # middle at this scale, and each border reaches 2 px past its edge.
+    view = _floor_view()
+    drawn = render_depth_view(view, _styled_path(np.zeros(STEPS)))
+    blank = render_depth_view(view, _one_step_path())
+    row, _ = _pixel_on_floor(2.8, 0.0)
+    _, left_column = _pixel_on_floor(2.8, -BODY_HALF_WIDTH)
+    _, right_column = _pixel_on_floor(2.8, BODY_HALF_WIDTH)
+
+    changed_columns = np.nonzero(np.any(drawn[row] != blank[row], axis=1))[0]
+
+    assert abs(int(changed_columns.min()) - left_column) <= 3
+    assert abs(int(changed_columns.max()) - right_column) <= 3
+
+
+def test_the_fill_fades_to_nothing_at_the_far_end_while_the_borders_stay() -> None:
+    view = _floor_view()
+    drawn = render_depth_view(view, _styled_path(np.zeros(STEPS))).astype(int)
+    blank = render_depth_view(view, _one_step_path()).astype(int)
+    near_row, middle = _pixel_on_floor(1.4, 0.0)
+    far_row, _ = _pixel_on_floor(5.25, 0.0)
+    _, far_border = _pixel_on_floor(5.25, BODY_HALF_WIDTH)
+
+    assert np.abs(drawn[near_row, middle] - blank[near_row, middle]).max() > 50, "the fill is strong near the walker"
+    assert np.abs(drawn[far_row, middle] - blank[far_row, middle]).max() <= 3, "the fill has gone by the far end"
+    border_window = np.abs(drawn[far_row - 2 : far_row + 3, far_border - 3 : far_border + 4] - blank[far_row - 2 : far_row + 3, far_border - 3 : far_border + 4])
+    assert border_window.max() > 30, "the border is still there at the far end"
+
+
+def test_the_ribbons_color_follows_the_avoidance_surprise() -> None:
+    view = _floor_view()
+    row, column = _pixel_on_floor(1.4, 0.0)
+
+    calm = render_depth_view(view, _styled_path(np.zeros(STEPS), avoidance=0.0))[row, column].astype(int)
+    urgent = render_depth_view(view, _styled_path(np.zeros(STEPS), avoidance=0.72))[row, column].astype(int)
+
+    # BGR. Blue at zero bits, red at 0.72.
+    assert calm[0] > urgent[0]
+    assert urgent[2] > calm[2]
+
+
+def test_the_fill_is_more_opaque_with_more_scene_information() -> None:
+    view = _floor_view()
+    blank = render_depth_view(view, _one_step_path()).astype(int)
+    row, column = _pixel_on_floor(1.4, 0.0)
+
+    faint = np.abs(render_depth_view(view, _styled_path(np.zeros(STEPS), information=0.0)).astype(int)[row, column] - blank[row, column]).sum()
+    solid = np.abs(render_depth_view(view, _styled_path(np.zeros(STEPS), information=1.0)).astype(int)[row, column] - blank[row, column]).sum()
+
+    assert solid > faint
+
+
+def test_a_ribbon_crossing_the_image_edge_is_clipped_not_dropped() -> None:
+    # A narrower field of view, and a path that drifts 3 m right, so its far end leaves the image
+    # on the right. Clipped, it runs right up to the edge.
+    view = _floor_view(focal_pixels=120.0)
+    drawn = render_depth_view(view, _styled_path(np.linspace(0.0, 3.0, STEPS)))
     blank = render_depth_view(view, _one_step_path())
 
     changed = np.any(drawn != blank, axis=2)
-    rows, columns = np.nonzero(changed)
-    scale = DEPTH_VIEW_TARGET_WIDTH // WIDTH
-    assert changed.any(), "the path drew nothing"
-    assert np.abs(columns - WIDTH / 2.0 * scale).max() < 4 * scale, "a straight path is a vertical line down the middle"
-    # The farthest step (5.3 m) projects at row 57, and steps nearer than 1.1 m fall off the
-    # bottom edge, so the line runs from there to the edge and never above the horizon.
-    assert rows.min() >= 56 * scale - 4
-    assert rows.max() > 80 * scale and rows.max() < HEIGHT * scale
+
+    assert changed[TEXT_BAND_ROWS:, -1].any(), "the ribbon must reach the right edge"
 
 
 def test_a_path_step_outside_the_image_is_skipped() -> None:
@@ -233,10 +311,10 @@ def test_the_floor_source_and_the_alarm_are_written_on_the_view() -> None:
     # The text is drawn, not asserted by OCR. What can be asserted is that the two words change
     # the picture, which is what a line that is never drawn would fail.
     view = _scene_view(ObstacleSet(0.0, (), 0))
-    supplied = DebugView(view.frame, view.obstacles, view.floor, FloorSource.SUPPLIED, WALKING_SPEED)
+    supplied = DebugView(view.frame, view.obstacles, view.floor, FloorSource.SUPPLIED, WALKING_SPEED, BODY_HALF_WIDTH)
 
     assert np.any(render_depth_view(view, _one_step_path()) != render_depth_view(supplied, _one_step_path()))
-    assert np.any(render_depth_view(view, _one_step_path()) != render_depth_view(view, PlannedPath(0.0, np.array([0.0]), np.array([0.0]), 0.0, True, 0.0)))
+    assert np.any(render_depth_view(view, _one_step_path()) != render_depth_view(view, PlannedPath(0.0, np.array([0.0]), np.array([0.0]), 0.0, True, 0.0, scene_information_bits=0.0, avoidance_surprise_bits=0.0)))
 
 
 # ------------------------------------------------------------------ the PNG encoder
