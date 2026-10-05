@@ -42,7 +42,7 @@ COLOR_PATH = (255, 255, 255)
 COLOR_GROUP = GROUP_RGB[::-1]
 COLOR_WALL = WALL_RGB[::-1]
 # A dim brown rather than a gray, because the depth view is gray now and far depth is near black.
-# A hue of its own means no reading is never mistaken for far away.
+# A separate hue means a missing reading never looks like far depth.
 COLOR_INVALID_DEPTH = (20, 40, 70)
 FIELD_INSET_SCALE = 3
 # The depth view is scaled up by a whole number so the Pixel's 160 by 90 is legible at 640 by
