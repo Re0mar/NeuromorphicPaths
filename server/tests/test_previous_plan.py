@@ -198,6 +198,15 @@ def test_the_alarm_does_not_depend_on_the_prior() -> None:
     assert True in alarms_with and False in alarms_with, "the scenes must raise and clear the alarm"
 
 
+def test_holding_a_side_is_not_counted_as_scene_information() -> None:
+    # A post pushes the plan aside, then the view empties. The prior still pulls toward the old
+    # sidestep, but that is the walker's memory: with nothing in view, the camera added nothing.
+    pipeline = PlannerPipeline(CONFIG, WALKER)
+    pipeline.plan(post(0.0, 1.5, 0.0))
+    after = pipeline.plan(ObstacleSet(FRAME_SECONDS, (), 0))
+    assert after.scene_information_bits == pytest.approx(0.0, abs=1e-9)
+
+
 def test_last_field_includes_the_prior() -> None:
     pipeline = PlannerPipeline(CONFIG, WALKER)
     empty = ObstacleSet(0.0, (), 0)

@@ -184,6 +184,8 @@ def format_numbers(name: str, numbers: PlannerNumbers, planner_config: PlannerCo
     lines.append(f"  {'all planned frames':<32} pinned {_share_text(numbers.pinned_frames, numbers.frames)}")
     restated_label = f"{config.band_low_meters:.2f} to {numbers.horizon_reach_meters:.2f} m, nothing nearer within {config.beside_meters:g} m"
     lines.append(f"restated band, {restated_label}: pinned {_share_text(numbers.restated_band_pinned, numbers.restated_band_frames)}")
+    per_minute = 60.0 * numbers.full_swings / numbers.span_seconds if numbers.span_seconds > 0 else 0.0
+    lines.append(f"full swings, from the limit on one side to the other between consecutive frames: {numbers.full_swings}, {per_minute:.1f} a minute")
     lines.append(f"distinct headings, to {config.distinct_heading_decimals} decimals of a degree: {numbers.distinct_headings}")
     lines.append("")
     lines.append(f"alarm on {_share_text(numbers.alarm_on_frames, numbers.frames)}, {numbers.alarm_changes} state changes")
@@ -264,7 +266,10 @@ def format_flips(name: str, threshold: float | None, pairs: list[DiagnosedPair],
 
 def format_band(name: str, attribution: BandAttribution, config: PlannerNumbersConfig) -> str:
     """How many pinned band frames each cause explains, which are on hold, and the ceiling without the fixable ones."""
-    lines = [f"{attribution.pinned_band_frames} of {attribution.band_frames} band frames have the arrow at its limit"]
+    lines = [
+        f"{attribution.pinned_band_frames} of {attribution.band_frames} band frames have the arrow at its limit",
+        f"band frames with any wall point: {attribution.band_frames_with_walls}, holding {attribution.band_wall_points} wall points of {attribution.band_points}",
+    ]
     if attribution.pinned_band_frames:
         lines.append("each cause, and how many of those frames it explains (a frame can be explained by several):")
         for candidate in PinCandidate:
@@ -276,6 +281,15 @@ def format_band(name: str, attribution: BandAttribution, config: PlannerNumbersC
         lines.append(f"explained by a cause that can be fixed here: {attribution.fixable}")
         lines.append(f"explained by more than one: {attribution.several}")
         lines.append(f"explained by none: {attribution.unexplained}")
+        beside = sum(1 for frame in attribution.frames if frame.near_beside)
+        beside_unexplained = sum(1 for frame in attribution.frames if frame.near_beside and not frame.explained and not frame.unknown)
+        lines.append(
+            f"with something nearer than {config.band_low_meters:g} m within {config.beside_meters:g} m of the line: {beside} of them, "
+            f"{beside_unexplained} of the {attribution.unexplained} explained by none"
+        )
+        offsets = [abs(frame.phone_offset_degrees) for frame in attribution.frames if PinCandidate.PHONE_POINTING in frame.explained]
+        if offsets:
+            lines.append(f"where the phone pointing explains it, the phone was off the walking direction by median {np.median(offsets):.1f} deg, from {min(offsets):.1f} to {max(offsets):.1f}")
         if attribution.band_frames:
             ceiling = 100.0 * (attribution.pinned_band_frames - attribution.fixable) / attribution.band_frames
             lines.append(f"band share with every fixable cause removed: {ceiling:.1f} %, against {100.0 * attribution.pinned_band_frames / attribution.band_frames:.1f} % now")

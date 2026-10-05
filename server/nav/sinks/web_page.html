@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Walking path</title>
 <style>
-  :root { --bg: #181818; --fg: #eeeeee; --arrow: #3fdf5f; --alarm-bg: #7a1010; }
+  :root { --bg: #181818; --fg: #eeeeee; --arrow: #3fdf5f; --alarm-bg: #7a1010; --panel: #222222; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font-family: system-ui, sans-serif; }
   body.alarm { background: var(--alarm-bg); }
   main { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100%; gap: 16px; padding: 16px; box-sizing: border-box; }
@@ -13,27 +13,66 @@
   #depth[hidden] { display: none; }
   #status { font-size: 1.1rem; }
   #link { font-size: 0.9rem; opacity: 0.7; }
+  /* A fixed size, so the canvas never collapses inside the flex column, shrunk only on a narrow phone. */
+  #plan-panel { width: min(360px, 100%); display: flex; flex-direction: column; gap: 8px; }
+  /* About as tall as the map it holds: 6.5 m across by 6.1 m ahead, margins included. */
+  #plan { width: 100%; aspect-ratio: 20 / 19; background: var(--panel); border-radius: 4px; }
+  #plan-panel[hidden] { display: none; }
+  #layers { display: flex; gap: 16px; font-size: 0.95rem; }
+  #layers label { display: flex; align-items: center; gap: 4px; }
+  #legend, #information { font-size: 0.85rem; opacity: 0.8; }
 </style>
 </head>
 <body>
 <main>
   <canvas id="arrow" width="320" height="320"></canvas>
-  <img id="depth" alt="The depth image the planner saw, with the obstacle groups and the chosen path drawn on it" hidden>
   <div id="status">Waiting for the laptop.</div>
+  <section id="plan-panel" hidden>
+    <div id="layers">
+      <label><input type="checkbox" id="show-field" checked> Field</label>
+      <label><input type="checkbox" id="show-path" checked> Path</label>
+      <label><input type="checkbox" id="show-obstacles" checked> Obstacles</label>
+    </div>
+    <canvas id="plan" aria-label="The planner's view from above: the cost of every spot ahead, the planned path, and the obstacles"></canvas>
+    <div id="information"></div>
+    <div id="legend">Seen from above, walking up the screen. Brighter cells cost more to walk through.
+      Gray cells are floor the camera could not see, which the planner treats as empty. The band is the planned path, as wide as the body, more solid the more the scene shaped it, and
+      redder the sooner something is in the way. Dots are obstacles, squares are walls.</div>
+  </section>
+  <img id="depth" alt="The depth image the planner saw, with the obstacle groups and the chosen path drawn on it" hidden>
   <div id="link">Not connected.</div>
 </main>
 <script>
   // Draws the arrow the planner chose. Red background when something in the walker's way is close.
-  // Under the arrow, the depth image the planner saw, when the laptop sends one: a text frame is
-  // the path's JSON, a binary frame is a PNG, and a page served by a sink that sends no PNG keeps
-  // working with the arrow alone. Reconnects on its own, because the laptop restarts more often
-  // than the page reloads.
+  // Under it, the planner's view from above and the depth image the planner saw, when the laptop
+  // sends them. Text frames say what they are in their kind: "path" for the arrow, "plan_view" for
+  // the view from above. A binary frame is the depth PNG. A page served by a sink that sends only
+  // paths keeps working with the arrow alone. Reconnects on its own, because the laptop restarts
+  // more often than the page reloads. Everything drawn here was computed on the laptop. The page
+  // never decides a color, an opacity or a path.
   const canvas = document.getElementById("arrow");
   const context = canvas.getContext("2d");
   const depth = document.getElementById("depth");
   const status = document.getElementById("status");
   const link = document.getElementById("link");
+  const planPanel = document.getElementById("plan-panel");
+  const plan = document.getElementById("plan");
+  const information = document.getElementById("information");
+  const toggles = {
+    field: document.getElementById("show-field"),
+    path: document.getElementById("show-path"),
+    obstacles: document.getElementById("show-obstacles"),
+  };
   let depthUrl = null;
+  // The newest plan view, kept so a toggle can redraw it without asking the laptop for anything.
+  let latestPlanView = null;
+
+  // A dark-to-bright sequential ramp for the field, in the spirit of viridis. The field's own colors,
+  // not the path's: the path's colors come from the laptop.
+  const FIELD_RAMP = [[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37]];
+  const SIDE_MARGIN_METERS = 0.2;
+  const AHEAD_MARGIN_METERS = 0.3;
+  const BEHIND_MARGIN_METERS = 0.3;
 
   function drawArrow(headingRadians, alarm) {
     const width = canvas.width, height = canvas.height;
@@ -66,6 +105,132 @@
     status.textContent = (message.alarm ? "Obstacle close. " : "") + "Heading " + (degrees >= 0 ? "+" : "") + degrees + " degrees.";
   }
 
+  function rgba(rgb, opacity) {
+    return "rgba(" + rgb[0] + ", " + rgb[1] + ", " + rgb[2] + ", " + opacity + ")";
+  }
+
+  function fieldColor(fraction) {
+    const scaled = Math.min(Math.max(fraction, 0), 1) * (FIELD_RAMP.length - 1);
+    const low = Math.floor(scaled), high = Math.min(low + 1, FIELD_RAMP.length - 1), mix = scaled - low;
+    return FIELD_RAMP[low].map((channel, index) => Math.round(channel + mix * (FIELD_RAMP[high][index] - channel)));
+  }
+
+  function percentile(values, share) {
+    const sorted = values.slice().sort((a, b) => a - b);
+    return sorted[Math.min(sorted.length - 1, Math.floor(share * sorted.length))];
+  }
+
+  function drawPlan(view) {
+    // The backing store follows the device's pixel ratio so lines stay sharp on a phone.
+    const ratio = window.devicePixelRatio || 1;
+    const cssWidth = plan.clientWidth, cssHeight = plan.clientHeight;
+    plan.width = Math.round(cssWidth * ratio);
+    plan.height = Math.round(cssHeight * ratio);
+    const draw = plan.getContext("2d");
+    draw.setTransform(ratio, 0, 0, ratio, 0, 0);
+    draw.clearRect(0, 0, cssWidth, cssHeight);
+
+    const grid = view.grid_meters, times = view.times_seconds;
+    const forward = times.map((time) => time * view.walking_speed_mps);
+    const cellWidth = grid.length > 1 ? grid[1] - grid[0] : 0.1;
+    const rowDepth = forward.length > 1 ? forward[1] - forward[0] : 0.1;
+    // One scale for both axes, so a meter sideways looks as long as a meter ahead.
+    const spanSideways = (grid[grid.length - 1] - grid[0]) + cellWidth + 2 * SIDE_MARGIN_METERS;
+    const spanAhead = forward[forward.length - 1] + rowDepth + AHEAD_MARGIN_METERS + BEHIND_MARGIN_METERS;
+    const pixelsPerMeter = Math.min(cssWidth / spanSideways, cssHeight / spanAhead);
+    const originX = cssWidth / 2, originY = cssHeight - BEHIND_MARGIN_METERS * pixelsPerMeter;
+    const toX = (lateral) => originX + lateral * pixelsPerMeter;
+    const toY = (ahead) => originY - ahead * pixelsPerMeter;
+
+    if (toggles.field.checked) {
+      // Clipped at the frame's 98th percentile, as the laptop's field inset is, so one capped point
+      // does not leave everything else dark.
+      const values = view.field.flat();
+      const ceiling = Math.max(percentile(values, 0.98), 1e-9);
+      for (let step = 0; step < forward.length; step++) {
+        for (let cell = 0; cell < grid.length; cell++) {
+          const seen = !view.floor_seen || view.floor_seen[step][cell];
+          draw.fillStyle = seen ? rgba(fieldColor(view.field[step][cell] / ceiling), 1) : "rgb(110, 110, 110)";
+          const left = toX(grid[cell] - cellWidth / 2), top = toY(forward[step] + rowDepth / 2);
+          draw.fillRect(left, top, cellWidth * pixelsPerMeter + 0.5, rowDepth * pixelsPerMeter + 0.5);
+        }
+      }
+    }
+
+    if (toggles.obstacles.checked) {
+      for (const obstacle of view.obstacles) {
+        const x = toX(obstacle.lateral_meters), y = toY(obstacle.forward_meters);
+        draw.fillStyle = rgba(obstacle.is_wall ? view.wall_color_rgb : view.group_color_rgb, 1);
+        draw.strokeStyle = "black";
+        draw.lineWidth = 1;
+        draw.beginPath();
+        if (obstacle.is_wall) draw.rect(x - 4, y - 4, 8, 8);
+        else draw.arc(x, y, 4, 0, 2 * Math.PI);
+        draw.fill();
+        draw.stroke();
+      }
+    }
+
+    if (toggles.path.checked) drawPathBand(draw, view, forward, toX, toY, pixelsPerMeter);
+  }
+
+  function drawPathBand(draw, view, forward, toX, toY, pixelsPerMeter) {
+    const offsets = view.path_offsets_meters, half = view.path_width_meters / 2;
+    const left = offsets.map((offset, step) => [toX(offset - half), toY(forward[step])]);
+    const right = offsets.map((offset, step) => [toX(offset + half), toY(forward[step])]);
+
+    // The fill, at the laptop's opacity for how much the scene shaped the plan.
+    draw.beginPath();
+    left.forEach(([x, y], index) => (index === 0 ? draw.moveTo(x, y) : draw.lineTo(x, y)));
+    right.slice().reverse().forEach(([x, y]) => draw.lineTo(x, y));
+    draw.closePath();
+    draw.fillStyle = rgba(view.path_color_rgb, view.path_fill_opacity);
+    draw.fill();
+
+    // The two borders at their fixed opacity, each with a thin dark outline under it.
+    for (const edge of [left, right]) {
+      for (const [color, width] of [[rgba([0, 0, 0], view.path_border_opacity), 4], [rgba(view.path_color_rgb, view.path_border_opacity), 2]]) {
+        draw.beginPath();
+        edge.forEach(([x, y], index) => (index === 0 ? draw.moveTo(x, y) : draw.lineTo(x, y)));
+        draw.strokeStyle = color;
+        draw.lineWidth = width;
+        draw.stroke();
+      }
+    }
+
+    // The start dot at the walker, and an arrowhead where the plan ends.
+    const last = offsets.length - 1;
+    draw.fillStyle = "white";
+    draw.beginPath();
+    draw.arc(toX(offsets[0]), toY(forward[0]), 5, 0, 2 * Math.PI);
+    draw.fill();
+    if (last >= 1) {
+      const tipX = toX(offsets[last]), tipY = toY(forward[last]);
+      const angle = Math.atan2(tipY - toY(forward[last - 1]), tipX - toX(offsets[last - 1]));
+      const size = Math.max(8, half * pixelsPerMeter);
+      draw.beginPath();
+      draw.moveTo(tipX + size * Math.cos(angle), tipY + size * Math.sin(angle));
+      draw.lineTo(tipX + size * Math.cos(angle + 2.4), tipY + size * Math.sin(angle + 2.4));
+      draw.lineTo(tipX + size * Math.cos(angle - 2.4), tipY + size * Math.sin(angle - 2.4));
+      draw.closePath();
+      draw.fillStyle = rgba(view.path_color_rgb, 1);
+      draw.fill();
+    }
+  }
+
+  function showPlanView(view) {
+    latestPlanView = view;
+    planPanel.hidden = false;
+    information.textContent = "How much the scene shaped the plan: " + view.scene_information_bits.toFixed(2) + " bits. "
+      + "How soon something is in the way: " + view.avoidance_surprise_bits.toFixed(2) + " bits.";
+    drawPlan(view);
+  }
+
+  for (const toggle of Object.values(toggles)) {
+    toggle.addEventListener("change", () => { if (latestPlanView) drawPlan(latestPlanView); });
+  }
+  window.addEventListener("resize", () => { if (latestPlanView) drawPlan(latestPlanView); });
+
   function showDepth(blob) {
     // One object URL alive at a time. Revoking the previous one after the new image has loaded
     // keeps the browser from holding every frame the laptop ever sent.
@@ -83,8 +248,13 @@
     socket.onopen = () => { link.textContent = "Connected to " + location.host + "."; };
     socket.onmessage = (event) => {
       if (typeof event.data === "string") {
-        try { showPath(JSON.parse(event.data)); }
-        catch (error) { status.textContent = "Bad message from the laptop."; }
+        let message;
+        try { message = JSON.parse(event.data); }
+        catch (error) { status.textContent = "Bad message from the laptop."; return; }
+        // Every text message says what it is. A kind this page does not know is skipped, so a
+        // newer laptop can add one without breaking an older page.
+        if (message.kind === "path") showPath(message);
+        else if (message.kind === "plan_view") showPlanView(message);
         return;
       }
       showDepth(event.data);

@@ -193,3 +193,20 @@ def test_term_fields_refuses_a_frame_without_its_field() -> None:
     frame = replayed_frames([PlannerInput(0.0, PINNED_BAND, None, None, None, None)], PLANNER, WALKER, GoalMode.AHEAD)[0]
     with pytest.raises(ValueError, match="replayed without its field"):
         term_fields(frame, frame.input.obstacles, PLANNER, WALKER, GoalMode.AHEAD)
+
+
+def test_the_attribution_counts_walls_over_every_band_frame() -> None:
+    attribution = band_attribution(replayed(PINNED_BAND), lambda time: 0.0, PLANNER, WALKER, GoalMode.AHEAD, CELL, CONFIG)
+    assert attribution.band_frames_with_walls == 1
+    assert attribution.band_wall_points == len(PINNED_BAND.points) == attribution.band_points
+
+
+def test_a_frame_keeps_its_phone_offset_and_whether_something_sits_beside_it() -> None:
+    attribution = band_attribution(replayed(PINNED_BAND), lambda time: math.radians(10.0), PLANNER, WALKER, GoalMode.AHEAD, CELL, CONFIG)
+    frame = attribution.frames[0]
+    assert frame.phone_offset_degrees == pytest.approx(10.0)
+    # Every point of this wall is 4 m out, so nothing nearer than 3 m sits beside the line.
+    assert frame.near_beside is False
+    beside = scene(*wall(-3.0, 1.0, 4.0), point(0.8, 2.0, 99))
+    beside_frame = band_attribution(replayed(beside), lambda time: 0.0, PLANNER, WALKER, GoalMode.AHEAD, CELL, CONFIG).frames
+    assert beside_frame and beside_frame[0].near_beside is True

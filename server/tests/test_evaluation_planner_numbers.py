@@ -86,7 +86,16 @@ def frame(
     axes: tuple[np.ndarray, np.ndarray] = (LATERAL, FORWARD),
 ) -> ReplayedFrame:
     lateral = np.broadcast_to(np.asarray(offsets, dtype=np.float64), (STEPS,)).copy()
-    path = PlannedPath(time, np.arange(STEPS) * PLANNER.time_step_seconds, lateral, math.radians(heading_degrees), alarm, 0.0)
+    path = PlannedPath(
+        time,
+        np.arange(STEPS) * PLANNER.time_step_seconds,
+        lateral,
+        math.radians(heading_degrees),
+        alarm,
+        0.0,
+        scene_information_bits=0.0,
+        avoidance_surprise_bits=0.0,
+    )
     return ReplayedFrame(planned_input(time, points, origin, axes), path, raised)
 
 
@@ -574,6 +583,8 @@ def test_the_band_verdict_reads_the_restated_figure_not_the_plain_one() -> None:
         restated_band_frames=120,
         restated_band_pinned=70,
         pinned_frames=20,
+        full_swings=0,
+        span_seconds=60.0,
         distinct_headings=10,
         alarm_on_frames=0,
         alarm_changes=0,
@@ -590,3 +601,19 @@ def test_the_band_verdict_reads_the_restated_figure_not_the_plain_one() -> None:
     text = format_numbers("made up", numbers, PLANNER, CONFIG)
     # The plain band is 10 % of 200 and would pass. The restated band is 58.3 % of 120 and fails.
     assert "FAIL  restated band pinned 58.3 % of 120, target at most 50 %" in text
+
+
+def test_a_full_swing_is_the_limit_on_one_side_then_the_other() -> None:
+    limit = sidestep_limit_degrees(PLANNER)
+    # Left limit, right limit, right limit, left limit, then 30 degrees left, then the right limit.
+    headings = [-limit, limit, limit, -limit, -30.0, limit]
+    numbers = whole_walk_numbers([frame(0.5 * index, heading) for index, heading in enumerate(headings)], PLANNER, CONFIG)
+    # Two swings: 0 to 1 and 2 to 3. 30 degrees isn't at the limit, so 4 to 5 isn't one.
+    assert numbers.full_swings == 2
+    assert numbers.span_seconds == pytest.approx(2.5)
+
+
+def test_the_numbers_command_prints_the_swings_a_minute(recording: Path, capsys) -> None:
+    code, out, _ = run(["numbers", recording], capsys)
+    assert code == 0
+    assert "full swings, from the limit on one side to the other between consecutive frames:" in out

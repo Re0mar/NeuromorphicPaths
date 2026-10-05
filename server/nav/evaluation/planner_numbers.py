@@ -74,6 +74,10 @@ class PlannerNumbers:
     restated_band_frames: int
     restated_band_pinned: int
     pinned_frames: int
+    # Consecutive frames with the arrow at its limit on one side and then at its limit on the other.
+    full_swings: int
+    # From the first frame to the last, for a rate per minute.
+    span_seconds: float
     distinct_headings: int
     alarm_on_frames: int
     alarm_changes: int
@@ -229,6 +233,10 @@ def whole_walk_numbers(frames: Sequence[ReplayedFrame], planner_config: PlannerC
     for band, at_limit in zip(bands, pinned):
         frames_by_band[band] += 1
         pinned_by_band[band] += int(at_limit)
+    full_swings = sum(
+        1 for before, after, before_pinned, after_pinned in zip(headings, headings[1:], pinned, pinned[1:])
+        if before_pinned and after_pinned and np.sign(before) != np.sign(after)
+    )
     restated = [in_restated_band(frame.input.obstacles, planner_config, config) for frame in frames]
     restated_pinned = sum(1 for inside, at_limit in zip(restated, pinned) if inside and at_limit)
 
@@ -281,6 +289,8 @@ def whole_walk_numbers(frames: Sequence[ReplayedFrame], planner_config: PlannerC
         restated_band_frames=sum(restated),
         restated_band_pinned=restated_pinned,
         pinned_frames=int(pinned.sum()),
+        full_swings=full_swings,
+        span_seconds=frames[-1].input.timestamp_seconds - frames[0].input.timestamp_seconds,
         distinct_headings=len(np.unique(np.round(headings, config.distinct_heading_decimals))),
         alarm_on_frames=sum(alarms),
         alarm_changes=changes,

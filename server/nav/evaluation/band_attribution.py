@@ -32,6 +32,7 @@ from nav.evaluation.planner_numbers import (
     clearance_band,
     horizon_reach_meters,
     is_pinned,
+    nearest_beside_clearance,
     nearest_heading_clearance,
     sidestep_limit_degrees,
 )
@@ -77,6 +78,11 @@ class FrameAttribution:
     explained: frozenset[PinCandidate]
     # Causes that couldn't be tested on this frame, such as the phone offset while standing.
     unknown: frozenset[PinCandidate]
+    # The walker's direction of travel to the right of the phone's forward, where it is known.
+    phone_offset_degrees: float | None = None
+    # Something nearer than the band's low edge within beside_meters of the line: the frame is in the
+    # plain band but not the restated one.
+    near_beside: bool = False
 
 
 @dataclass(frozen=True)
@@ -96,6 +102,10 @@ class BandAttribution:
     # Explained by none, counting a frame with an untested cause as untested rather than unexplained.
     unexplained: int
     frames: list[FrameAttribution]
+    # Over every band frame, pinned or not, so a zero for walls can be read against how many there were.
+    band_frames_with_walls: int = 0
+    band_wall_points: int = 0
+    band_points: int = 0
 
 
 def term_fields(
@@ -259,11 +269,16 @@ def band_attribution(
     limit = sidestep_limit_degrees(planner_config)
     attributed = []
     band_frames = 0
+    walls = [0, 0, 0]  # band frames with a wall point, wall points, points
     for frame in frames:
         obstacles = frame.input.obstacles
         if clearance_band(nearest_heading_clearance(obstacles, config), planner_config, config) is not ClearanceBand.BAND:
             continue
         band_frames += 1
+        wall_points = sum(1 for point in obstacles.points if point.is_wall)
+        walls[0] += int(wall_points > 0)
+        walls[1] += wall_points
+        walls[2] += len(obstacles.points)
         heading = float(np.degrees(frame.path.first_heading_radians))
         if not is_pinned(heading, limit, config):
             continue
@@ -295,17 +310,20 @@ def band_attribution(
                 term_difference=difference,
                 explained=frozenset(explained),
                 unknown=frozenset(unknown),
+                phone_offset_degrees=None if offset is None else float(np.degrees(offset)),
+                near_beside=nearest_beside_clearance(obstacles, config) < config.band_low_meters,
             )
         )
-    return summarize_attribution(attributed, band_frames)
+    return summarize_attribution(attributed, band_frames, tuple(walls))
 
 
-def summarize_attribution(attributed: list[FrameAttribution], band_frames: int) -> BandAttribution:
+def summarize_attribution(attributed: list[FrameAttribution], band_frames: int, walls: tuple[int, int, int] = (0, 0, 0)) -> BandAttribution:
     """
     Count how many pinned band frames each cause explains. A frame explained by several counts in each.
 
     :param attributed: Every pinned band frame of a walk.
     :param band_frames: How many band frames the walk had, pinned or not.
+    :param walls: Over every band frame: how many held a wall point, the wall points, and all points.
     :rtype: BandAttribution
     """
     return BandAttribution(
@@ -318,4 +336,7 @@ def summarize_attribution(attributed: list[FrameAttribution], band_frames: int) 
         several=sum(1 for each in attributed if len(each.explained) > 1),
         unexplained=sum(1 for each in attributed if not each.explained and not each.unknown),
         frames=attributed,
+        band_frames_with_walls=walls[0],
+        band_wall_points=walls[1],
+        band_points=walls[2],
     )
