@@ -193,3 +193,54 @@ def test_close_before_start_and_close_twice_do_not_raise() -> None:
     sink = _listening_sink()
     sink.close()
     sink.close()
+
+
+def test_the_phone_sink_reports_sent_after_the_write() -> None:
+    sent: list[float] = []
+    sink = PhoneAppSink(PhoneAppConfig(port=0, bind_address="127.0.0.1"), on_sent=sent.append)
+    sink.start()
+    phone = FakePhone(sink)
+    try:
+        sink.publish(_path())
+        assert phone.read_path().timestamp_seconds == 1.0
+    finally:
+        phone.close()
+        sink.close()
+
+    assert sent == [1.0]
+
+
+def test_a_path_with_no_phone_reports_no_send() -> None:
+    """Nothing reached a phone, so a send time here would credit the network with a path it never carried."""
+    sent: list[float] = []
+    sink = PhoneAppSink(PhoneAppConfig(port=0, bind_address="127.0.0.1"), on_sent=sent.append)
+    sink.start()
+    try:
+        sink.publish(_path())
+    finally:
+        sink.close()
+
+    assert sent == []
+
+
+def test_a_raising_sent_hook_leaves_the_phone_sink_serving(caplog: pytest.LogCaptureFixture) -> None:
+    """A measurement bug must cost the measurement, never the arrow on the walker's phone."""
+
+    def broken_hook(timestamp_seconds: float) -> None:
+        raise RuntimeError("a bug in the timing log")
+
+    sink = PhoneAppSink(PhoneAppConfig(port=0, bind_address="127.0.0.1"), on_sent=broken_hook)
+    sink.start()
+    phone = FakePhone(sink)
+    try:
+        with caplog.at_level(logging.ERROR):
+            sink.publish(_path(0.1))
+            sink.publish(_path(0.2))
+        assert phone.read_path().first_heading_radians == pytest.approx(0.1)
+        assert phone.read_path().first_heading_radians == pytest.approx(0.2)
+    finally:
+        phone.close()
+        sink.close()
+
+    errors = [record for record in caplog.records if "sent hook" in record.message]
+    assert len(errors) == 1, "logged once, not once per path"

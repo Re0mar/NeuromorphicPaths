@@ -277,12 +277,26 @@ Completed avoidances are written to `episodes.jsonl` in the same directory, one 
 ### The timing log
 
 A run with `--record-to` also writes `timing.jsonl` into that directory, one line for every frame
-the planner took or tried to take. A run without `--record-to` writes none. Each line says when
-the frame was captured, when it reached the laptop, when its depth was ready, when its plan was
-done, and where its floor came from. A frame the scene refused for having no usable floor still
-gets a line, with no floor and no plan time, so the floor acceptance rate reads back the way it
-happened. A frame the planner refused after the floor was found keeps its floor and has no plan
-time.
+the laptop received. `--timing-log <file>` writes the same log to that file without recording any
+frames, which is what a replay that only measures uses. A run with neither writes none, and the
+two together are refused, as is a `--timing-log` file that already holds lines.
+
+Each line says when the frame was captured, when it reached the laptop, when the worker started on
+it, how long the scene, the planner and the user model took, when its depth was ready, when its
+plan was done, when the phone sink finished writing its path to the phone, and where its floor
+came from. Its `outcome` says what became of it:
+
+- `published`: planned, and its path handed to every display. `sent_seconds` is empty when no
+  phone was connected or the run has no phone sink.
+- `superseded`: planned, and a newer plan went out first. Only the newest path is ever sent.
+- `dropped`: replaced by a newer frame before the worker took it.
+- `skipped`: refused. A frame the scene refused for having no usable floor has no floor and no
+  plan time, so the floor acceptance rate reads back the way it happened. A frame the planner
+  refused after the floor was found keeps its floor.
+- `in_flight`: still unfinished when the run ended.
+
+A line is written when its frame's fate is settled, so the file is in that order, not in frame
+order. Sort by `timestamp_seconds` for frame order.
 
 The times are on the laptop's clock. Capture is only there for a source that measured the offset
 between its clock and the laptop's, which today is the Neon. Summarize a run with:
@@ -293,12 +307,45 @@ between its clock and the laptop's, which today is the Neon. Summarize a run wit
 
 It leaves out the first 10 seconds by default, while the network and the GPU warm up, and prints
 each share's median, 95th percentile and worst case, the planned frame rate, the longest gap
-between plans, and the floor sources. `--verbose` prints the same shares per frame while a run is
-going, along with the observed heading.
+between plans, and the floor sources. A log with the newer fields also gets the laptop's shares
+toward the phone: the queue wait, the processing, the publish wait, and arrival to sent.
+`--verbose` prints the same shares per frame while a run is going, along with the observed heading.
+
+The report takes a record directory or a `--timing-log` file. Given the Pixel's own timing log too,
+pulled off the phone as `pixel_app/README.md` describes, it joins the two frame by frame and prints
+the whole delay from the phone handling a frame to the arrow drawn from it. The shares are the
+phone, the network (both hops together), the laptop and the display, with every count the figures
+rest on and a verdict on whether the phone's two clocks share a base:
+
+```
+.venv/Scripts/python examples/timing_report.py frame_logs/walk --phone timing_from_phone/timing_2026-10-06T10-12-03Z.jsonl --json frame_logs/walk/report.json
+```
+
+`--json` saves the figures. `--compare` sets saved reports side by side, at least three runs a side,
+and flags any share whose run-to-run spreads overlap, because a difference inside that spread is
+not a result:
+
+```
+.venv/Scripts/python examples/timing_report.py --compare --before frame_logs/before_1.json frame_logs/before_2.json frame_logs/before_3.json --after frame_logs/after_1.json frame_logs/after_2.json frame_logs/after_3.json
+```
 
 Run it on a live run or a `--neon-replay` run, not on a `--source logged` replay. A logged replay
 carries the original run's capture, arrival and depth times beside its own plan times, so its
 shares mix two runs. The report says so when it sees one.
+
+To measure the laptop on a recorded Pixel walk, send the walk over the network instead, so the
+laptop runs exactly what it runs on a live walk and stamps arrival itself. Three terminals, from
+`server/`, started in this order:
+
+```
+.venv/Scripts/python -m nav --source arcore_tcp --arcore-accept-timeout 600 --sink phone_app --sink web --floor-max-tilt 50 --timing-log frame_logs/replay_timing_1.jsonl
+.venv/Scripts/python tests/fake_path_reader.py --port 9100 --wait 30
+.venv/Scripts/python tests/fake_arcore_sender.py --port 9000 --log-dir frame_logs/wifi_run_2 --realtime --wait 30
+```
+
+The page is at `http://127.0.0.1:8765` while it runs. The reader stands in for the phone on the
+path port, so each published path gets a send time. Use the recording's own `--floor-max-tilt`,
+from its `run_config.json`. Each run needs a new `--timing-log` file.
 
 ### Recording what the glasses send
 

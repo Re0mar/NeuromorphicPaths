@@ -30,9 +30,15 @@ CONSECUTIVE_SKIPS_PER_WARNING = 10
 class NewestFrameWorker(threading.Thread, Generic[Result]):
     """A thread that always works on the most recently submitted frame."""
 
-    def __init__(self, process: Callable[[DepthFrame], Result]) -> None:
+    def __init__(self, process: Callable[[DepthFrame], Result], on_dropped: Callable[[DepthFrame], None] | None = None) -> None:
+        """
+        :param process: Runs on this thread for each frame taken.
+        :param on_dropped: Called on the submitting thread with each frame replaced before it was
+            taken. Must not block, because that thread is the one reading frames.
+        """
         super().__init__(name="pipeline-worker", daemon=True)
         self._process = process
+        self._on_dropped = on_dropped
         self._lock = threading.Lock()
         self._pending: DepthFrame | None = None
         self._latest: Result | None = None
@@ -48,10 +54,14 @@ class NewestFrameWorker(threading.Thread, Generic[Result]):
     def submit(self, frame: DepthFrame) -> None:
         """Hand over a frame. If the previous one was never picked up, it is dropped and counted."""
         with self._lock:
-            if self._pending is not None:
+            replaced = self._pending
+            if replaced is not None:
                 self.dropped += 1
             self._pending = frame
             self.submitted += 1
+        # Outside the lock, so the callback can never hold up the worker taking the new frame.
+        if replaced is not None and self._on_dropped is not None:
+            self._on_dropped(replaced)
 
     def latest_result(self) -> Result | None:
         """

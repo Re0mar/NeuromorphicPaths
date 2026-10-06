@@ -12,6 +12,7 @@ display that has gone, or has not arrived yet, is not a reason to stop planning.
 import logging
 import socket
 import threading
+from collections.abc import Callable
 
 # Local package imports
 from nav.sinks.config import PhoneAppConfig
@@ -29,8 +30,15 @@ ACCEPTOR_JOIN_SECONDS = 2.0
 class PhoneAppSink:
     """Sends every path to whichever phone is connected. Listens from the first publish, not from construction."""
 
-    def __init__(self, config: PhoneAppConfig) -> None:
+    def __init__(self, config: PhoneAppConfig, on_sent: Callable[[float], None] | None = None) -> None:
+        """
+        :param config: Port and bind address.
+        :param on_sent: Called with the path's `timestamp_seconds` once its bytes are written to the
+            phone's socket. The timing log hangs off this, so it is the moment the laptop let go.
+        """
         self._config = config
+        self._on_sent = on_sent
+        self._on_sent_failed = False
         self._listener: socket.socket | None = None
         self._client: socket.socket | None = None
         self._lock = threading.Lock()
@@ -142,6 +150,20 @@ class PhoneAppSink:
                 if self._client is client:
                     self._client = None
             client.close()
+            return
+        self._report_sent(path.timestamp_seconds)
+
+    def _report_sent(self, timestamp_seconds: float) -> None:
+        if self._on_sent is None:
+            return
+        try:
+            self._on_sent(timestamp_seconds)
+        except Exception as unexpected_error:
+            # The hook only measures. Letting it raise would reach the fan-out, which drops this
+            # sink for the rest of the run, and the walker would lose the arrow over a timing bug.
+            if not self._on_sent_failed:
+                log.error("UNEXPECTED %s from the sent hook, the phone keeps its paths", type(unexpected_error).__name__, exc_info=True)
+            self._on_sent_failed = True
 
     def close(self) -> None:
         """Stop accepting, drop the phone, and say once how many paths went nowhere."""

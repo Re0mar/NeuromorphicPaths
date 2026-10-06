@@ -86,7 +86,7 @@ def test_the_sink_is_started_before_the_source_yields_a_frame(monkeypatch: pytes
 
     import nav.runtime.loop as loop_module
 
-    monkeypatch.setattr(loop_module, "build_sink", lambda config: RecordingSink())
+    monkeypatch.setattr(loop_module, "build_sink", lambda config, **hooks: RecordingSink())
     monkeypatch.setattr(loop_module, "build_source", lambda config: OneFrameSource())
 
     assert run(build_run_config(["--source", "arcore_tcp", "--sink", "none"])) == 0
@@ -134,7 +134,7 @@ def test_a_sink_that_raises_an_unexpected_error_ends_the_run_with_exit_one_and_a
     import nav.runtime.loop as loop_module
 
     original = loop_module.build_sink
-    loop_module.build_sink = lambda run_config: BrokenSink()
+    loop_module.build_sink = lambda run_config, **hooks: BrokenSink()
     try:
         with caplog.at_level("ERROR"):
             exit_code = run(config)

@@ -1,5 +1,5 @@
 """
-Stands in for the Pixel app, sending synthetic depth frames in the real wire format.
+Stands in for the Pixel app, sending synthetic or recorded depth frames in the real wire format.
 
 Every frame goes through the same encode_frame the laptop decodes with. Nothing in here builds
 bytes by hand except send_raw, which exists so the negative tests can put garbage on the wire,
@@ -8,10 +8,16 @@ and which no shipping code may call.
 Run it from a second terminal to drive the live source without a phone:
 
     python tests/fake_arcore_sender.py --port 9000 --count 100 --gap 0.1
+
+Or send a recorded walk at its recorded pace. The laptop then runs exactly as on a live walk,
+arrival stamps and all, which a `--source logged` replay does not:
+
+    python tests/fake_arcore_sender.py --port 9000 --log-dir frame_logs/wifi_run_2 --realtime --wait 30
 """
 
 # Standard library imports
 import argparse
+import dataclasses
 import socket
 import sys
 import time
@@ -27,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 # Local package imports
 from nav.sources.estimator import fallback_intrinsics
 from nav.sources.framecodec import encode_frame, write_message
+from nav.sources.logged import LoggedDepthFrameSource
 from nav.types import DepthFrame, Plane, Pose
 
 DEFAULT_DEPTH_SHAPE = (120, 160)
@@ -34,6 +41,7 @@ CAMERA_HEIGHT_METERS = 1.6
 BOX_DISTANCE_METERS = 3.0
 FORWARD_STEP_METERS_PER_FRAME = 0.05
 FRAME_INTERVAL_SECONDS = 1.0 / 30.0
+CONNECT_RETRY_SECONDS = 0.1
 
 
 def synthetic_frames(count: int, depth_shape: tuple[int, int] = DEFAULT_DEPTH_SHAPE) -> Iterator[DepthFrame]:
@@ -122,7 +130,7 @@ class FakeArCoreSender:
         return self._sock
 
 
-def send_frames(address: str, port: int, frames: Iterable[DepthFrame], frame_gap_seconds: float = 0.0) -> int:
+def send_frames(address: str, port: int, frames: Iterable[DepthFrame], frame_gap_seconds: float = 0.0, wait_seconds: float = 0.0) -> int:
     """
     Connect, send every frame, disconnect. Returns how many were sent.
 
@@ -130,11 +138,21 @@ def send_frames(address: str, port: int, frames: Iterable[DepthFrame], frame_gap
     :param port: The laptop's listening port.
     :param frames: The frames to send, encoded one by one.
     :param frame_gap_seconds: Sleep between frames, to look like a camera rather than a burst.
+    :param wait_seconds: Keep retrying a refused connection this long, so the sender can start first.
     :return: Frames sent.
     :rtype: int
     """
     sender = FakeArCoreSender(address, port)
-    sender.connect()
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            sender.connect()
+            break
+        except ConnectionRefusedError:
+            # The laptop isn't listening yet. Expected when the two are started together.
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(CONNECT_RETRY_SECONDS)
     sent = 0
     try:
         for frame in frames:
@@ -147,15 +165,43 @@ def send_frames(address: str, port: int, frames: Iterable[DepthFrame], frame_gap
     return sent
 
 
+def recorded_frames(log_dir: Path, realtime: bool) -> Iterator[DepthFrame]:
+    """
+    A recorded Pixel walk, frame by frame, as the phone sent it.
+
+    Read with the replay's own reader, so the frames are exactly the ones `--source logged` would
+    give. The timing block is cleared, because the phone never sends one, and `arcore_tcp` stamps
+    arrival itself. That's what makes a replay sent this way measure the laptop like a live walk.
+
+    :param log_dir: A frame log written by `--record-to`.
+    :param realtime: Space the frames by the gaps between their recorded timestamps.
+    :return: The frames, in recorded order.
+    :rtype: Iterator[DepthFrame]
+    """
+    for frame in LoggedDepthFrameSource(log_dir, realtime=realtime).frames():
+        yield dataclasses.replace(frame, timing=None)
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Send synthetic ARCore depth frames to the laptop pipeline.")
+    parser = argparse.ArgumentParser(description="Send synthetic or recorded ARCore depth frames to the laptop pipeline.")
     parser.add_argument("--address", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=9000)
-    parser.add_argument("--count", type=int, default=100)
-    parser.add_argument("--gap", type=float, default=FRAME_INTERVAL_SECONDS, help="seconds between frames")
+    parser.add_argument("--count", type=int, default=100, help="synthetic frames to send. Ignored with --log-dir")
+    parser.add_argument("--gap", type=float, default=FRAME_INTERVAL_SECONDS, help="seconds between synthetic frames")
+    parser.add_argument("--log-dir", help="send this recorded frame log instead of synthetic frames")
+    parser.add_argument("--realtime", action="store_true", help="with --log-dir, keep the recording's spacing between frames")
+    parser.add_argument("--wait", type=float, default=0.0, help="seconds to keep retrying the connection while the laptop starts")
     arguments = parser.parse_args(argv)
+    if arguments.realtime and arguments.log_dir is None:
+        parser.error("--realtime only applies to --log-dir")
 
-    sent = send_frames(arguments.address, arguments.port, synthetic_frames(arguments.count), arguments.gap)
+    if arguments.log_dir is None:
+        frames = synthetic_frames(arguments.count)
+        gap_seconds = arguments.gap
+    else:
+        frames = recorded_frames(Path(arguments.log_dir), arguments.realtime)
+        gap_seconds = 0.0
+    sent = send_frames(arguments.address, arguments.port, frames, gap_seconds, wait_seconds=arguments.wait)
     print(f"sent {sent} frames to {arguments.address}:{arguments.port}")
     return 0
 

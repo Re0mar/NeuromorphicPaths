@@ -19,15 +19,19 @@ recording tap and replays them through the real scene, and about 30 seconds is t
 below. `pytest -rs` is already in
 `pyproject.toml`, so a skipped test prints its reason in the summary. With only the `dev` extra,
 the Neon tests that need PyAV or the Pupil Labs client skip, because those come with the
-`glasses` extra. With both extras installed, nothing skips: 1257 passed on 2026-10-05.
+`glasses` extra. With both extras installed, nothing skips: 1326 passed on 2026-10-06. With only
+the `dev` extra, 1311 passed and 15 skipped the same day.
 
 ## Adding a test
 
 One file per module under test, `tests/test_<module>.py`, importing from `nav` the way anything
 else does. There is no `sys.path` trick and no package marker in `tests/`, so a test file is a
 script that `pytest` collects, and the helpers beside them (`stubs.py`, `synthetic_depth.py`,
-`fake_arcore_sender.py`, `neon_captures.py` for writing Neon captures with real H.264, and
-`fake_neon_client.py` for standing in for the Pupil Labs client) are imported by bare name.
+`fake_arcore_sender.py` for standing in for the phone on the depth port, synthetic frames or a
+recorded walk, `fake_path_reader.py` for standing in for it on the path port, `neon_captures.py`
+for writing Neon captures with real H.264, and `fake_neon_client.py` for standing in for the
+Pupil Labs client) are imported by bare name. The two phone stand-ins also run as scripts, which
+is how a recorded walk is measured without the phone.
 
 A new test is obliged to assert:
 

@@ -267,3 +267,15 @@ def test_text_writes_use_lf_on_every_platform(tmp_path: Path) -> None:
     append_text_lf(target, "second\n")
 
     assert target.read_bytes() == b"first\nsecond\n"
+
+
+def test_a_folder_holding_only_timing_and_run_config_is_still_accepted_for_recording(tmp_path: Path) -> None:
+    """A run whose phone never connected leaves these two and no frames. That folder holds no recording."""
+    log_dir = tmp_path / "run"
+    log_dir.mkdir()
+    (log_dir / "timing.jsonl").write_bytes(b"")
+    (log_dir / "run_config.json").write_bytes(b"{}\n")
+
+    _record(log_dir, _frames(1))
+
+    assert len(sorted(log_dir.glob("frame_*.bin"))) == 1

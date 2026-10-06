@@ -28,7 +28,7 @@ from nav.main import main
 from nav.runtime.loop import RUN_CONFIG_FILENAME, HeadingBaseline, gaze_on_the_ground, wrap_angle, yaw_from_quaternion
 from nav.runtime.loop import run
 from nav.runtime.tap import RecordingTap
-from nav.runtime.timing import TIMING_FILENAME, read_timing_log
+from nav.runtime.timing import TIMING_FILENAME, FrameOutcome, TimingRecord, read_timing_log
 from nav.scene.pipeline import ScenePipeline
 from nav.sinks.web_messages import WebMessageKind
 from nav.sources.framecodec import INDEX_FILENAME, decode_path, read_message
@@ -343,6 +343,23 @@ def _processed_count(caplog: pytest.LogCaptureFixture) -> int:
     return _report_counts(caplog)[0]
 
 
+def _dropped_count(caplog: pytest.LogCaptureFixture) -> int:
+    report = next(record.message for record in caplog.records if " processed, " in record.message)
+    return int(report.split(" processed, ")[1].split(" dropped as stale")[0])
+
+
+def _taken_lines(lines: list[TimingRecord], caplog: pytest.LogCaptureFixture) -> list[TimingRecord]:
+    """
+    The lines of the frames the worker took, after checking the rest are exactly the ones it dropped.
+
+    Every frame received gets a line, and one replaced before the worker took it is marked dropped.
+    The end-of-run report's stale count is what says none of those went missing.
+    """
+    assert sum(line.outcome is FrameOutcome.DROPPED for line in lines) == _dropped_count(caplog)
+    assert not any(line.outcome is FrameOutcome.IN_FLIGHT for line in lines), "a frame was still open when the run ended"
+    return [line for line in lines if line.outcome is not FrameOutcome.DROPPED]
+
+
 def _floor_report(caplog: pytest.LogCaptureFixture) -> str:
     lines = [record.message for record in caplog.records if record.message.startswith("floor over")]
     assert len(lines) == 1, "the end-of-run report has no floor-source line, or more than one"
@@ -371,7 +388,7 @@ def test_a_skipped_frame_still_writes_a_timing_line_with_no_floor(tmp_path: Path
     with caplog.at_level(logging.INFO):
         assert run(config) == 0
 
-    lines = read_timing_log(log_dir)
+    lines = _taken_lines(read_timing_log(log_dir), caplog)
     processed, skipped = _report_counts(caplog)
     assert skipped > 0, "the floorless estimator was meant to make the worker skip"
     assert processed == 0
@@ -419,7 +436,7 @@ def test_a_planner_refusal_keeps_the_floor_the_scene_found(
     with caplog.at_level(logging.INFO):
         assert run(config) == 0
 
-    lines = read_timing_log(log_dir)
+    lines = _taken_lines(read_timing_log(log_dir), caplog)
     processed, skipped = _report_counts(caplog)
     assert processed > 0 and skipped > 0, "the run needs both planned and refused frames to mean anything"
     assert len(lines) == processed + skipped
@@ -464,10 +481,13 @@ def test_a_planner_refusal_on_a_second_fallback_still_records_the_previous_floor
     with caplog.at_level(logging.INFO):
         assert run(config) == 0
 
-    lines = read_timing_log(log_dir)
+    lines = _taken_lines(read_timing_log(log_dir), caplog)
     processed, skipped = _report_counts(caplog)
     assert skipped >= 2, "the run needs two fallbacks in a row to mean anything"
-    assert [line.floor_source for line in lines] == [FloorSource.FITTED] + [FloorSource.PREVIOUS] * skipped
+    # In frame order. A line is written when its frame's fate is settled, so the one planned
+    # frame's line can land after the refusals that followed it.
+    in_frame_order = sorted(lines, key=lambda line: line.timestamp_seconds)
+    assert [line.floor_source for line in in_frame_order] == [FloorSource.FITTED] + [FloorSource.PREVIOUS] * skipped
     # The report lists the commoner source first, and with two or more fallbacks that is previous.
     assert _floor_report(caplog) == f"floor over {processed + skipped} frames taken: previous {skipped} ({100 * skipped / (1 + skipped):.0f}%), fitted 1 ({100 / (1 + skipped):.0f}%)"
 
@@ -493,7 +513,7 @@ def test_a_grouping_refusal_after_the_floor_keeps_that_floor(
     with caplog.at_level(logging.INFO):
         assert run(config) == 0
 
-    lines = read_timing_log(log_dir)
+    lines = _taken_lines(read_timing_log(log_dir), caplog)
     _, skipped = _report_counts(caplog)
     assert skipped > 0
     assert len(lines) == skipped
@@ -521,7 +541,7 @@ def test_a_frame_that_fails_after_its_plan_is_written_once(
     with caplog.at_level(logging.INFO):
         assert run(config) == 0
 
-    lines = read_timing_log(log_dir)
+    lines = _taken_lines(read_timing_log(log_dir), caplog)
     _, skipped = _report_counts(caplog)
     assert skipped > 0
     assert len(lines) == skipped
@@ -536,9 +556,12 @@ def test_a_recorded_run_writes_one_timing_line_per_frame_it_took(tmp_path: Path,
     with caplog.at_level(logging.INFO):
         assert run(config) == 0
 
-    lines = read_timing_log(log_dir)
+    lines = _taken_lines(read_timing_log(log_dir), caplog)
     assert len(lines) == _processed_count(caplog)
     assert all(line.plan_done_seconds is not None for line in lines)
+    # No phone sink in this run, so every plan went out with no send to stamp.
+    assert all(line.outcome in (FrameOutcome.PUBLISHED, FrameOutcome.SUPERSEDED) for line in lines)
+    assert all(line.sent_seconds is None for line in lines)
     assert all(line.arrival_seconds <= line.depth_ready_seconds <= line.plan_done_seconds for line in lines)
     assert all(line.capture_seconds is None for line in lines), "a file's timestamps are not on any clock"
     # The walk's floor acceptance is read back from this field, and the stub's floor is fitted.
@@ -586,7 +609,7 @@ def test_a_recorded_replay_of_frames_without_timing_writes_lines_with_no_times(t
     with caplog.at_level(logging.INFO):
         assert run(config) == 0
 
-    lines = read_timing_log(replay_log)
+    lines = _taken_lines(read_timing_log(replay_log), caplog)
     processed, skipped = _report_counts(caplog)
     assert processed > 0
     assert len(lines) == processed + skipped

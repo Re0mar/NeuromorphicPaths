@@ -58,7 +58,7 @@ def _ten_frames() -> list[TimingRecord]:
 
 def _write_log(directory: Path, records: list[TimingRecord]) -> Path:
     """Through the writer the loop uses, so the reader is tested against what a run produces."""
-    timing_log = TimingLog(directory)
+    timing_log = TimingLog.in_directory(directory)
     for record in records:
         timing_log.append(record)
     return directory / TIMING_FILENAME
@@ -189,7 +189,7 @@ def test_timing_log_lines_end_in_lf_only_and_read_back_equal(tmp_path: Path) -> 
 
 def test_an_unused_timing_log_leaves_no_file(tmp_path: Path) -> None:
     """A run that planned nothing should not leave an empty log that reads as zero frames measured."""
-    TimingLog(tmp_path)
+    TimingLog.in_directory(tmp_path)
 
     assert not (tmp_path / TIMING_FILENAME).exists()
 

@@ -11,6 +11,7 @@ import json
 import logging
 import time
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, is_dataclass
 from enum import Enum
 from pathlib import Path
@@ -23,7 +24,7 @@ from nav.clock import laptop_time_seconds
 from nav.config import RunConfig, build_sink, build_source
 from nav.planner.pipeline import PlannerPipeline
 from nav.runtime.textio import append_text_lf, write_text_lf
-from nav.runtime.timing import TimingLog, TimingRecord
+from nav.runtime.timing import StageDurations, TimingLog, TimingRecorder
 from nav.runtime.worker import NewestFrameWorker
 from nav.scene.floor import ground_axes
 from nav.scene.pipeline import ScenePipeline
@@ -134,43 +135,30 @@ def run(config: RunConfig) -> int:
     planner = PlannerPipeline(config.planner, config.walker)
     meter = WorkMeter(config.usermodel)
     baseline = HeadingBaseline(HEADING_BASELINE_SECONDS)
-    timing_log = TimingLog(Path(config.tap.log_dir)) if config.tap.log_dir is not None else None
+    timing = TimingRecorder(_timing_log(config))
     # Floor sources over the frames the worker took, None for a frame skipped with no usable floor.
     # This is the live run's floor acceptance figure.
     floor_counts: Counter[FloorSource | None] = Counter()
 
-    def record_timing(frame: DepthFrame, plan_done_seconds: float | None, floor_source: FloorSource | None) -> None:
-        floor_counts[floor_source] += 1
-        if timing_log is None:
-            return
-        timing = frame.timing
-        timing_log.append(
-            TimingRecord(
-                timestamp_seconds=frame.timestamp_seconds,
-                capture_seconds=None if timing is None else timing.capture_seconds,
-                arrival_seconds=None if timing is None else timing.arrival_seconds,
-                depth_ready_seconds=None if timing is None else timing.depth_ready_seconds,
-                plan_done_seconds=plan_done_seconds,
-                floor_source=floor_source,
-            )
-        )
-
     def process(frame: DepthFrame) -> FrameResult:
+        timing.frame_taken(frame)
         try:
-            result, plan_done_seconds = plan_frame(frame)
+            result, plan_done_seconds, stages = plan_frame(frame)
         except ValueError:
             # The worker skips the frame on this. It can come from the scene refusing the frame or
             # from any later step, the planner included, so the floor is read off the scene rather
             # than assumed missing. The scene clears its source at the start of every frame, so a
             # refusal reads None here. The line is written anyway, or the floor acceptance read back
             # from the log counts only planned frames and reads perfect however many were refused.
-            record_timing(frame, None, scene.last_floor_source)
+            floor_counts[scene.last_floor_source] += 1
+            timing.frame_skipped(frame, scene.last_floor_source)
             raise
-        # Written here, after everything that can raise, so no frame ever gets a second line.
-        record_timing(frame, plan_done_seconds, scene.last_floor_source)
+        # Recorded here, after everything that can raise, so no frame is both planned and skipped.
+        floor_counts[scene.last_floor_source] += 1
+        timing.frame_planned(frame, plan_done_seconds, scene.last_floor_source, stages)
         return result
 
-    def plan_frame(frame: DepthFrame) -> tuple[FrameResult, float]:
+    def plan_frame(frame: DepthFrame) -> tuple[FrameResult, float, StageDurations]:
         started = time.perf_counter()
         obstacles = scene.process(frame)
         after_scene = time.perf_counter()
@@ -209,13 +197,18 @@ def run(config: RunConfig) -> int:
             body_half_width_meters=config.planner.body_half_width_meters,
         )
         result = FrameResult(path=path, field=field if field is not None else np.zeros((1, len(planner.grid))), grid=planner.grid, view=view)
-        return result, plan_done_seconds
+        stages = StageDurations(
+            scene_milliseconds=(after_scene - started) * 1000,
+            planner_milliseconds=(after_planner - after_scene) * 1000,
+            usermodel_milliseconds=(finished - after_planner) * 1000,
+        )
+        return result, plan_done_seconds, stages
 
-    sink = build_sink(config)
+    sink = build_sink(config, on_path_sent=timing.path_sent)
     source = build_source(config)
-    worker: NewestFrameWorker[FrameResult] = NewestFrameWorker(process)
+    worker: NewestFrameWorker[FrameResult] = NewestFrameWorker(process, on_dropped=timing.frame_dropped)
     worker.start()
-    publisher = NewestResultPublisher(sink)
+    publisher = NewestResultPublisher(sink, on_published=timing.path_published)
 
     exit_code = 0
     frames_in = 0
@@ -259,9 +252,12 @@ def run(config: RunConfig) -> int:
         log.error("UNEXPECTED %s in the loop, may need a handler", type(unexpected_error).__name__, exc_info=True)
         exit_code = 1
     finally:
+        # The timing log closes last, so every frame's last stamp from the worker, the sinks and
+        # the source is queued before its writer stops.
         worker.stop()
         sink.close()
         source.close()
+        timing.close()
         _report(worker, meter, frames_in, config, floor_counts)
 
     return exit_code
@@ -270,8 +266,13 @@ def run(config: RunConfig) -> int:
 class NewestResultPublisher:
     """Hands each new result to the sink once, however many source frames arrive while it is new."""
 
-    def __init__(self, sink) -> None:
+    def __init__(self, sink, on_published: Callable[[float], None] | None = None) -> None:
+        """
+        :param sink: Every display, behind one sink.
+        :param on_published: Called with the path's `timestamp_seconds` after every display has been handed it.
+        """
         self._sink = sink
+        self._on_published = on_published
         self._last: FrameResult | None = None
 
     def publish(self, worker: NewestFrameWorker) -> None:
@@ -285,6 +286,22 @@ class NewestResultPublisher:
             self._sink.publish_debug(result.path, result.field, result.grid, result.view)
         else:
             self._sink.publish(result.path)
+        if self._on_published is not None:
+            self._on_published(result.path.timestamp_seconds)
+
+
+def _timing_log(config: RunConfig) -> TimingLog | None:
+    """
+    Where this run's timing lines go, or None for a run that keeps none.
+
+    --timing-log names a file, for a run that measures without recording. A recording run keeps
+    timing.jsonl beside its frames. The parser refuses the two together.
+    """
+    if config.timing_log is not None:
+        return TimingLog(Path(config.timing_log))
+    if config.tap.log_dir is not None:
+        return TimingLog.in_directory(Path(config.tap.log_dir))
+    return None
 
 
 def _latency_shares(frame: DepthFrame, plan_done_seconds: float) -> str:

@@ -35,6 +35,10 @@ SHARED_LAYERS = (
     "nav.evaluation.__main__",
     "nav.evaluation.check_planner",
     "nav.evaluation.fixture",
+    # The timing log and its report read logs after a walk, on any machine, with nothing installed
+    # beyond the dev extra.
+    "nav.runtime.timing",
+    "nav.runtime.timing_join",
 )
 # Every module of nav.evaluation, named, so the check below can't pass by importing fewer of them.
 EVALUATION_MODULES = (
