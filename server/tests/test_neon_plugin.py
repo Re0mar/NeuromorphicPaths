@@ -14,11 +14,12 @@ import numpy as np
 import pytest
 
 # Local package imports
+from nav.pose.imu_orientation import pose_from_imu
+from nav.pose.neon_mount import NEON_IMU_MOUNT
 from nav.sources.config import NeonPluginConfig, NeonPluginModel
 from nav.sources.neon_plugin import (
     PLUGIN_CACHE_RELATIVE_DIR,
     NeonPluginDepthFrameSource,
-    scale_intrinsics,
     xyzw_to_wxyz,
 )
 
@@ -116,14 +117,16 @@ def test_intrinsics_are_scaled_to_the_quarter_resolution_map(tmp_path: Path) -> 
     assert frame.intrinsics == pytest.approx(SCENE_CAMERA_MATRIX * np.array([[0.25], [0.25], [1.0]]))
 
 
-def test_imu_orientation_becomes_a_normalised_pose(tmp_path: Path) -> None:
+def test_imu_orientation_becomes_the_mounted_camera_pose(tmp_path: Path) -> None:
     recording = tmp_path / "rec"
     _write_cache(recording)
 
     frame = next(iter(_source(recording).frames()))
 
-    assert np.linalg.norm(frame.pose.orientation) == pytest.approx(1.0)
-    assert frame.pose.orientation[0] > 0.9  # mostly w, the small pitch kept
+    # The recorded IMU is the same IMU the live stream reads, so it goes through the same mount.
+    expected = pose_from_imu(np.array([2.0, 0.2, 0.0, 0.0]), NEON_IMU_MOUNT)
+    assert frame.pose.orientation == pytest.approx(expected.orientation)
+    assert frame.pose.orientation_is_gravity_aligned is True
 
 
 def test_gaze_is_rescaled_to_depth_pixels(tmp_path: Path) -> None:
@@ -143,6 +146,7 @@ def test_a_recording_with_no_imu_gets_identity_poses(tmp_path: Path, caplog: pyt
         frames = list(_source(recording, FakeReader(quaternions_wxyz=None)).frames())
 
     assert all(frame.pose.orientation == pytest.approx([1.0, 0.0, 0.0, 0.0]) for frame in frames)
+    assert all(frame.pose.orientation_is_gravity_aligned is False for frame in frames)
     assert any("no IMU data" in record.message for record in caplog.records)
 
 
@@ -155,16 +159,45 @@ def test_a_recording_with_no_gaze_yields_no_gaze(tmp_path: Path) -> None:
     assert all(frame.gaze_pixel is None for frame in frames)
 
 
-def test_a_non_finite_imu_sample_falls_back_to_identity_for_that_frame(tmp_path: Path) -> None:
+@pytest.mark.parametrize("empty_sample", [np.zeros(4), np.full(4, np.nan)], ids=["zero", "nan"])
+def test_an_empty_imu_sample_mid_recording_carries_the_last_real_orientation(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    empty_sample: np.ndarray,
+) -> None:
+    """An empty reading is a missing sample, so the replay goes on with the last real one, as live does."""
+    # Each frame a different pitch, so carrying the wrong frame's orientation shows.
     recording = tmp_path / "rec"
     _write_cache(recording)
-    quaternions = np.tile(np.array([1.0, 0.0, 0.0, 0.0]), (FRAME_COUNT, 1))
-    quaternions[2] = np.nan
+    quaternions = np.array([[1.0, 0.05 * index, 0.0, 0.0] for index in range(FRAME_COUNT)])
+    quaternions[2] = empty_sample
+    quaternions[4] = empty_sample
+
+    with caplog.at_level("WARNING"):
+        frames = list(_source(recording, FakeReader(quaternions_wxyz=quaternions)).frames())
+
+    assert len(frames) == FRAME_COUNT
+    assert frames[2].pose.orientation == pytest.approx(pose_from_imu(quaternions[1], NEON_IMU_MOUNT).orientation)
+    assert frames[2].pose.orientation_is_gravity_aligned is True
+    assert frames[3].pose.orientation == pytest.approx(pose_from_imu(quaternions[3], NEON_IMU_MOUNT).orientation)
+    assert frames[4].pose.orientation == pytest.approx(pose_from_imu(quaternions[3], NEON_IMU_MOUNT).orientation)
+    empty_warnings = [record for record in caplog.records if "empty IMU orientations" in record.message]
+    assert len(empty_warnings) == 1, "warned once per replay, not once per empty sample"
+
+
+def test_empty_imu_samples_before_any_real_one_give_identity_without_gravity(tmp_path: Path) -> None:
+    """With no real reading yet, nothing knows where up is, so the scene must not be told it does."""
+    recording = tmp_path / "rec"
+    _write_cache(recording)
+    quaternions = np.tile(np.array([1.0, 0.1, 0.0, 0.0]), (FRAME_COUNT, 1))
+    quaternions[:2] = 0.0
 
     frames = list(_source(recording, FakeReader(quaternions_wxyz=quaternions)).frames())
 
-    assert frames[2].pose.orientation == pytest.approx([1.0, 0.0, 0.0, 0.0])
-    assert len(frames) == FRAME_COUNT
+    for frame in frames[:2]:
+        assert frame.pose.orientation == pytest.approx([1.0, 0.0, 0.0, 0.0])
+        assert frame.pose.orientation_is_gravity_aligned is False
+    assert frames[2].pose.orientation_is_gravity_aligned is True
 
 
 def test_the_sample_tolerance_reaches_the_reader(tmp_path: Path) -> None:
@@ -247,16 +280,3 @@ def test_quaternion_columns_are_reordered_from_the_recordings_xyzw() -> None:
 def test_quaternion_reorder_refuses_the_wrong_shape() -> None:
     with pytest.raises(ValueError, match=r"\(N, 4\)"):
         xyzw_to_wxyz(np.zeros((3, 3)))
-
-
-def test_scale_intrinsics_refuses_a_zero_source_size() -> None:
-    with pytest.raises(ValueError, match="positive"):
-        scale_intrinsics(SCENE_CAMERA_MATRIX, (0, 1600), (300, 400))
-
-
-def test_scale_intrinsics_leaves_the_homogeneous_row_alone() -> None:
-    scaled = scale_intrinsics(SCENE_CAMERA_MATRIX, SCENE_SIZE, DEPTH_SIZE)
-
-    assert scaled[2] == pytest.approx([0.0, 0.0, 1.0])
-    assert scaled[0, 0] == pytest.approx(225.0)
-    assert scaled[1, 2] == pytest.approx(150.0)

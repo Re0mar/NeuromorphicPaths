@@ -502,3 +502,27 @@ def test_degrade_with_depth_noise_is_seeded_and_leaves_holes_alone() -> None:
     assert np.array_equal(noisy, degrade_with_depth_noise(depth, sigma_meters=0.02, seed=11), equal_nan=True)
     assert np.array_equal(np.isnan(noisy), holes)
     assert np.std(noisy[~holes] - depth[~holes]) == pytest.approx(0.02, rel=0.2)
+
+
+def test_a_frame_refused_after_a_fitted_one_reports_no_floor_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    The floor source describes the frame just processed, not the last one that had a floor.
+
+    The runtime reads it after a failed frame to say whether that frame had a floor, so a value left
+    over from the frame before would count a refusal as a fit.
+    """
+    import nav.scene.pipeline as scene_module
+
+    scene = clean_scene()
+    pipeline = ScenePipeline(CONFIG, WALKER)
+    pipeline.process(_frame(scene))
+    assert pipeline.last_floor_source is FloorSource.FITTED
+
+    def refuse(*args, **kwargs):
+        raise ValueError("no floor found")
+
+    monkeypatch.setattr(scene_module, "fit_floor", refuse)
+    with pytest.raises(ValueError, match="no floor found"):
+        pipeline.process(_frame(scene, timestamp=0.1))
+
+    assert pipeline.last_floor_source is None

@@ -13,6 +13,7 @@ import logging
 import socket
 import threading
 import time
+from collections import Counter
 from pathlib import Path
 
 # Third party imports
@@ -22,12 +23,12 @@ import pytest
 # Local package imports
 from nav.config import GoalMode, RunConfig, SinkKind, SourceKind, build_run_config
 from nav.main import main
-from nav.runtime.loop import EPISODES_FILENAME, RUN_CONFIG_FILENAME, FrameResult, NewestResultPublisher, _report, run
+from nav.runtime.loop import EPISODES_FILENAME, RUN_CONFIG_FILENAME, FrameResult, NewestResultPublisher, _latency_shares, _report, run
 from nav.runtime.tap import RecordingTap
 from nav.runtime.worker import NewestFrameWorker
 from nav.sources.config import ArCoreConfig, LoggedConfig, TapConfig
 from nav.sources.framecodec import INDEX_FILENAME
-from nav.types import DebugView, DepthFrame, FloorSource, ObstacleSet, Plane, PlannedPath, Pose
+from nav.types import DebugView, DepthFrame, FloorSource, FrameTiming, ObstacleSet, Plane, PlannedPath, Pose
 from nav.usermodel.config import UserModelConfig
 from nav.usermodel.work import WorkMeter
 from fake_arcore_sender import send_frames, synthetic_frames
@@ -263,7 +264,7 @@ def test_run_config_json_carries_every_field_of_the_run_configuration(tmp_path: 
     config = build_run_config(["--source", "arcore_tcp", "--sink", "none", "--record-to", str(log_dir)])
     log_dir.mkdir()
 
-    _report(NewestFrameWorker(lambda frame: None), WorkMeter(UserModelConfig()), 0, config)
+    _report(NewestFrameWorker(lambda frame: None), WorkMeter(UserModelConfig()), 0, config, Counter())
 
     recorded = json.loads((log_dir / RUN_CONFIG_FILENAME).read_text(encoding="utf-8"))
     expected = {field.name for field in dataclasses.fields(RunConfig)} - {"estimator_factory"}
@@ -282,13 +283,69 @@ def test_completed_episodes_are_written_beside_the_frames(tmp_path: Path) -> Non
     meter.observe(_path(heading=0.0, cost=2.0), 0.0, 0.5)
     assert len(meter.completed_episodes()) == 1
 
-    _report(NewestFrameWorker(lambda frame: None), meter, 0, config)
+    _report(NewestFrameWorker(lambda frame: None), meter, 0, config, Counter())
 
     lines = (log_dir / EPISODES_FILENAME).read_bytes()
     assert b"\r" not in lines
     episode = json.loads(lines.decode("utf-8").splitlines()[0])
     assert episode["work_bits"] == pytest.approx(7.0)
     assert episode["start_seconds"] == pytest.approx(0.0)
+
+
+def test_the_verbose_shares_are_measured_between_the_right_stamps() -> None:
+    """
+    Each share in the --verbose line is the gap between two named stamps, worked out here by hand.
+
+    A frame from a source that has no depth step gets arrival to plan instead, and no timing gets nothing.
+    """
+    timed = dataclasses.replace(
+        next(synthetic_frames(1)),
+        timing=FrameTiming(capture_seconds=99.95, arrival_seconds=100.0, depth_ready_seconds=100.1),
+    )
+    depth_in_frame = dataclasses.replace(
+        timed,
+        timing=FrameTiming(capture_seconds=None, arrival_seconds=100.0, depth_ready_seconds=None),
+    )
+
+    assert _latency_shares(timed, plan_done_seconds=100.13) == ", capture to arrival 50 ms, arrival to depth 100 ms, depth to plan 30 ms"
+    assert _latency_shares(depth_in_frame, plan_done_seconds=100.13) == ", arrival to plan 130 ms"
+    assert _latency_shares(next(synthetic_frames(1)), plan_done_seconds=100.13) == ""
+
+
+def test_the_verbose_line_carries_the_observed_heading(caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    The mount check reads the wearer's turn off this line, so it has to be the observed one.
+
+    Two frames a tenth of a second apart, the second turned 30 degrees about the vertical. The
+    baseline moves 0.1 s / 5 s = 2 percent of the way, so the observed heading is 30 * 0.98 = 29.4.
+    """
+    import nav.runtime.loop as loop_module
+
+    first, second = list(synthetic_frames(2))
+    half_turn = np.radians(30.0) / 2
+    # The synthetic pose is a half turn about x, (0, 1, 0, 0). A turn about world y composed on
+    # top of it is (0, cos, 0, -sin) of half the angle.
+    turned = dataclasses.replace(second.pose, orientation=np.array([0.0, np.cos(half_turn), 0.0, -np.sin(half_turn)]))
+    frames = [first, dataclasses.replace(second, pose=turned, timestamp_seconds=first.timestamp_seconds + 0.1)]
+
+    class OneFrameAtATimeSource:
+        def frames(self):
+            for frame in frames:
+                yield frame
+                # The worker keeps only the newest frame, so the first must be taken before the second comes.
+                time.sleep(0.5)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(loop_module, "build_source", lambda config: OneFrameAtATimeSource())
+    with caplog.at_level(logging.DEBUG, logger="nav.runtime.loop"):
+        assert run(build_run_config(["--source", "arcore_tcp", "--sink", "none"])) == 0
+
+    frame_lines = [record.message for record in caplog.records if record.message.startswith("frame ")]
+    assert len(frame_lines) == 2, "both frames must be planned for the second one's heading to mean anything"
+    assert "observed 0.0 deg" in frame_lines[0]
+    assert "observed 29.4 deg" in frame_lines[1]
 
 
 def test_verbose_raises_only_the_pipelines_loggers(tmp_path: Path) -> None:

@@ -208,6 +208,40 @@ def test_a_header_that_is_not_utf8_is_refused() -> None:
         decode_frame(b"\xff\xfe invalid" + HEADER_TERMINATOR + b"")
 
 
+def _payload_with_raw_timestamp(raw_number: str) -> bytes:
+    """A valid payload whose timestamp is replaced by literal JSON text, which json.dumps cannot write."""
+    header_bytes, terminator, body = _build_payload({"timestamp_seconds": "RAW"}).partition(HEADER_TERMINATOR)
+    return header_bytes.replace(b'"RAW"', raw_number.encode("ascii")) + terminator + body
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_in_message"),
+    [
+        # Past a float's range, so float() overflows. numpy raised TypeError on it before.
+        (_payload_with_raw_timestamp("1" + "0" * 399), "timestamp_seconds is an integer too large for a float"),
+        # Past Python's 4300-digit limit, so json raises a plain ValueError, not a JSONDecodeError.
+        (_payload_with_raw_timestamp("1" + "0" * 4999), "header holds a number json will not parse"),
+        # Deep enough to exhaust the parser's recursion.
+        (b"[" * 100_000 + b"]" * 100_000 + HEADER_TERMINATOR, "header nests too deeply"),
+    ],
+    ids=["400 digits", "5000 digits", "deep nesting"],
+)
+def test_a_header_json_cannot_hold_is_a_decode_error(payload: bytes, expected_in_message: str) -> None:
+    """
+    The port listens on every interface and the source drops a frame only on FrameDecodeError.
+
+    Any other exception from one bad frame ends the run, so each of these has to come out as one.
+    """
+    with pytest.raises(FrameDecodeError, match=expected_in_message):
+        decode_frame(payload)
+
+
+def test_a_path_json_cannot_hold_is_a_decode_error() -> None:
+    """The path decoder reads bytes off a socket too, and goes through the same parse."""
+    with pytest.raises(FrameDecodeError, match="path nests too deeply"):
+        decode_path(b"[" * 100_000 + b"]" * 100_000)
+
+
 def test_encoding_a_non_finite_intrinsic_is_our_bug_not_a_decode_error() -> None:
     broken = INTRINSICS.copy()
     broken[0, 0] = np.nan

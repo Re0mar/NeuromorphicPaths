@@ -31,6 +31,27 @@ build, which is fine for a recording and too slow for a live walk. For live use 
 build that matches your driver from pytorch.org first, then run the line above. The first run
 downloads the metric depth checkpoint, 1.3 GB.
 
+### The CUDA build, as installed on the Quadro T2000 laptop
+
+On 2026-10-03, with NVIDIA driver 581.95 (which reports CUDA 13.0), the line that worked was:
+
+```
+.venv/Scripts/python -m pip install torch==2.14.1+cu126 --index-url https://download.pytorch.org/whl/cu126
+.venv/Scripts/python -m pip install -e ".[dev,glasses]"
+```
+
+The cu126 build was picked over cu130 because its kernel list includes the T2000's Turing GPU,
+sm_75. `torch.cuda.get_arch_list()` prints that list. Installing the glasses extra afterwards kept
+the CUDA build in place. Check it did, every
+time, because a package that depends on torch can pull the CPU build back in without saying so:
+
+```
+.venv/Scripts/python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+```
+
+The version must end in `+cu126` and the third value must be `True`. A `neon_live` run on a CPU
+estimator also says so in its log, and still runs.
+
 If pip stalls on a 401 from a private package index, your machine has a user-level `pip.ini`
 pointing somewhere that needs a token. Put this in `.venv/pip.ini` and it talks to PyPI only:
 
@@ -138,10 +159,21 @@ down, a meter below the real floor, and nothing refused it.
 
 A phone held in the hand and pointed at the pavement still leans about 40 degrees from gravity,
 so the live runs set `--floor-max-tilt 50`. The metric model returns no camera intrinsics for a
-plain video, so the pipeline assumes `--fallback-fov` degrees of horizontal field of view, 100
-by default for the Neon. A phone is nearer 75, and the wrong value stretches the cloud sideways
-and overstates the camera's height. That one was found on the first outdoor recording, where the
-estimator read the camera 2.27 m above the floor at 100 degrees and 1.84 m at 75.
+plain video, so `video_file` assumes `--fallback-fov` degrees of horizontal field of view, 100 by
+default. A phone is nearer 75.
+
+The metric model answers as if every camera had a 300 pixel focal length, and the depth source
+converts its output to meters with the focal it was given. So the assumed field of view only
+changes distances along the direction the camera points. Too wide, and they come out short. Up and
+sideways don't move, because the focal cancels out of both. For a level camera that leaves the
+floor where it was. Tilted down, the floor tilts and moves too. On a camera pitched 40 degrees
+down with a real 75 degree view, assuming 100 reads a 1.5 m height as 1.19 m and leans the floor
+12.5 degrees. The first outdoor recording read the camera 2.27 m above the floor at 100 degrees
+and 1.84 m at 75, but that was before the conversion existed, so those two figures no longer apply.
+
+`neon_live` ignores the flag. It reads the glasses' own calibration when it connects, straightens
+every frame and the gaze point with it, and hands the straightened camera matrix on, so there is
+nothing to guess.
 
 Phone videos also carry a rotation tag. The video source applies it, so a portrait recording
 comes through upright.
@@ -218,8 +250,13 @@ that between subnets, in which case read the address off the Companion app's str
 ```
 
 `check_neon.py` connects, receives one frame and exits 0, or says which path it tried and exits
-1. The `neon_live` and `neon_plugin` commands above were not run while building this, because
-there were no glasses and no plugin recording on hand. The Pixel runs on 2026-10-02 used the
+1. On success it also prints the camera matrix after straightening, how many degrees of field of
+view the straightening crops off, and the measured offset between the laptop's clock and the
+glasses'. It exits 1 if the glasses do not hand over their calibration. `check_neon.py` and the
+`neon_live` command with `--neon-address` were run on 2026-10-05 with the glasses worn, on a school
+network where discovery was not tried. The figures from that day are under *Measured on the
+glasses* below. The `neon_plugin` command has not been run, because there was no plugin recording
+on hand. The Pixel runs on 2026-10-02 used the
 `web` sink over wifi and USB. The `phone_app` sink has been run against the suite's fake phone,
 through the same entry point, and not yet with the Pixel. Everything else was run as shown.
 
@@ -236,6 +273,58 @@ recording accepted. The recording run writes its whole configuration to `run_con
 log directory, so the flags are there to read back.
 
 Completed avoidances are written to `episodes.jsonl` in the same directory, one JSON line each.
+
+### The timing log
+
+A run with `--record-to` also writes `timing.jsonl` into that directory, one line for every frame
+the planner took or tried to take. A run without `--record-to` writes none. Each line says when
+the frame was captured, when it reached the laptop, when its depth was ready, when its plan was
+done, and where its floor came from. A frame the scene refused for having no usable floor still
+gets a line, with no floor and no plan time, so the floor acceptance rate reads back the way it
+happened. A frame the planner refused after the floor was found keeps its floor and has no plan
+time.
+
+The times are on the laptop's clock. Capture is only there for a source that measured the offset
+between its clock and the laptop's, which today is the Neon. Summarize a run with:
+
+```
+.venv/Scripts/python examples/timing_report.py frame_logs/walk
+```
+
+It leaves out the first 10 seconds by default, while the network and the GPU warm up, and prints
+each share's median, 95th percentile and worst case, the planned frame rate, the longest gap
+between plans, and the floor sources. `--verbose` prints the same shares per frame while a run is
+going, along with the observed heading.
+
+Run it on a live run or a `--neon-replay` run, not on a `--source logged` replay. A logged replay
+carries the original run's capture, arrival and depth times beside its own plan times, so its
+shares mix two runs. The report says so when it sees one.
+
+### Recording what the glasses send
+
+A frame log starts after the depth model, so it can't test anything upstream of it. To replay the
+glasses from the network up, record their raw stream while they're worn:
+
+```
+.venv/Scripts/python examples/capture_neon_stream.py --neon-address 10.0.0.5 --seconds 240 frame_logs/captures/walk
+.venv/Scripts/python -m nav --source neon_live --neon-replay frame_logs/captures/walk --sink web --record-to frame_logs/walk_replay
+```
+
+The capture keeps the scene video as the compressed packets the glasses sent, with the gaze, the
+IMU, the calibration and the clock offset beside it. Nothing is decoded while recording, so the
+capture doesn't fall behind the way a decoder can. `meta.json` is written as soon as the
+stream description arrives with the first packets, so a capture stopped early can still be replayed. `--neon-replay` feeds the
+capture through the same decoder, depth model, scene and planner as a live run, at the pace it was
+recorded, with the timestamps moved to now. The run ends when the capture does. A 240 s capture is
+about 200 MB.
+
+The glasses' client runs in a process of its own, at above-normal priority, and hands frames over
+through shared memory. When it ran in the same process as everything else, frames reached the
+planner 4 to 12 s late. Three things stacked up. The depth model and the planner held Python's
+global lock while the client decoded on one thread. The client converted all 30 frames a second
+to color whether anyone wanted them or not. And the depth model leaked about 7 threads on every
+call. Frames go through shared memory rather than the pipe between the two processes, because a
+1600 by 1200 frame is 5.8 MB to copy.
 
 ## Checking the planner on a recording
 
@@ -293,6 +382,19 @@ across the language boundary: `tests/fixtures/pixel_app_frame.bin`, written by t
 and decoded here, and `tests/fixtures/laptop_path.bin`, written by `encode_path` from stated
 values in `tests/test_laptop_path_fixture.py` and decoded by the app's test.
 
+## Driving haptics and headphones from the path
+
+Nothing in the pipeline vibrates or plays a sound yet. Which values in the path message are worth
+listening to, what they mean in numbers, and how they could drive a vibration motor, stereo
+balance, volume or a noise cancelling switch is in
+[`../docs/guides/drive_feedback_from_the_path.md`](../docs/guides/drive_feedback_from_the_path.md).
+
+## Measured on the glasses
+
+Latency, frame rate and floor figures from the first session with the Neon glasses, with the
+conditions they were taken under and the commands that rerun them, are in
+[`../docs/evaluation/neon_glasses_first_session.md`](../docs/evaluation/neon_glasses_first_session.md).
+
 ## Known limits
 
 - ARCore depth is computed from motion. It stops updating when the walker stands still, drops
@@ -307,3 +409,6 @@ values in `tests/test_laptop_path_fixture.py` and decoded by the app's test.
   assumed 0.10 m. No recorded walk had anyone steering by the arrow, so it has not been measured.
 - The planner's memory of its previous plan was tuned and checked on replays only. It has not run
   live on the phone or the glasses yet.
+- The depth conversion from the model's 300 pixel focal was checked on a replayed glasses capture,
+  not on a live walk. Every `video_file` figure taken before it was added used depth at the wrong
+  scale.

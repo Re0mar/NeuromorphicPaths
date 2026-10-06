@@ -85,7 +85,9 @@ def test_frames_are_rgb_the_right_way_round(synthetic_video: Path) -> None:
     assert first.image_rgb.dtype == np.uint8
     # A plain video knows nothing about the wearer.
     assert first.gaze_pixel is None
-    assert first.imu_orientation_wxyz is None
+    assert first.pose is None
+    # And has no calibration, so the intrinsics fall back to the model's or a guess.
+    assert first.camera_matrix is None
 
 
 def test_missing_file_is_refused_before_opencv_sees_it(tmp_path: Path) -> None:

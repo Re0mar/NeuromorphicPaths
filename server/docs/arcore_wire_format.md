@@ -57,6 +57,22 @@ forgot look identical otherwise, and only one of those is a bug worth telling yo
 Every number must be finite. A JSON `NaN` or `Infinity` is not valid JSON anyway, and the laptop's
 parser rejects it rather than reading it as a number.
 
+### `timing`, which the app does not send
+
+One more key exists, and it is not yours to send. The laptop adds `timing` to each frame itself,
+when the frame reaches it, and writes it into the frame log so a recorded walk keeps its latency
+figures. The app leaves it out, and the laptop reads a frame without it exactly as before.
+
+| Field | Type | Unit | Notes |
+|---|---|---|---|
+| `timing.capture_seconds` | number, `null`, or absent | seconds | When the sensor captured the frame, on the laptop's clock. Absent or `null` when the offset between the two clocks is unknown, which is always the case for this app today |
+| `timing.arrival_seconds` | number | seconds | When the laptop received the frame. Required whenever `timing` is present |
+| `timing.depth_ready_seconds` | number, `null`, or absent | seconds | When depth was ready. Absent or `null` for a frame that arrived with its depth, as this app's do |
+
+All three are on the laptop's clock: wall time since the Unix epoch, read once when the pipeline
+started and advanced by a clock that never runs backwards. Depth ready can never come before
+arrival, and a frame that says so is refused by name.
+
 ---
 
 ## Depth values
@@ -120,9 +136,10 @@ When the format changes in a way that would break an older reader, the version g
 sides change together. Adding a new optional field does not need a version bump, because an older
 reader ignores keys it does not know. Changing the meaning or the unit of an existing field does.
 
-`orientation_is_gravity_aligned` is the one key added this way so far, and it is the one key the
-laptop will accept as absent. An absent key is read as `true`, because every frame log that existed
-when it was added came from this app. Send it anyway.
+Two keys have been added this way. `orientation_is_gravity_aligned` is accepted as absent and read
+as `true`, because every frame log that existed when it was added came from this app. Send it
+anyway. `timing` is accepted as absent and read as no timing at all, because the app never sends
+it. Neither one needed the version to go up.
 
 ---
 
@@ -241,6 +258,7 @@ this table is that nothing is aligned by assuming both sides derive from the sam
 | `pose.orientation_is_gravity_aligned` | Android, constant for this app | JSON boolean | scene, picks gravity or image-up for the floor | true or false | decoder, defaulting to true for a recording older than the key |
 | `ground_plane` | ARCore plane, when found | JSON object or null | scene floor fit | null means fit one here | decoder, scene falls back |
 | `gaze_pixel` | not sent by the Pixel | JSON null | planner goal | null | decoder |
+| `timing` | the laptop, on arrival. Never the app | JSON object, absent from the app's frames | the timing log and `--verbose` | arrival required and finite, the other two finite, null or absent, depth ready not before arrival | decoder, and `FrameTiming` when the laptop builds it |
 
 ---
 

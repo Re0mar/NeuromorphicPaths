@@ -70,6 +70,37 @@ class Pose:
 
 
 @dataclass(frozen=True)
+class FrameTiming:
+    """When one frame was captured and how far along the laptop it has got, on the laptop clock.
+
+    Seconds since the Unix epoch, from nav.clock. Capture is the sensor's own stamp moved onto that
+    clock, None when the offset between the two clocks is unknown. Depth ready is None for a source
+    whose frames arrive with depth already in them.
+    """
+
+    capture_seconds: float | None
+    arrival_seconds: float
+    depth_ready_seconds: float | None
+
+    def __post_init__(self) -> None:
+        # Every share in the timing log is measured from arrival, so a record without one has
+        # nothing to measure from. The type says float, and nothing else would stop a None.
+        if self.arrival_seconds is None:
+            raise ValueError("arrival_seconds is required, got None")
+        for field_name in ("capture_seconds", "arrival_seconds", "depth_ready_seconds"):
+            value = getattr(self, field_name)
+            if value is not None and not np.isfinite(value):
+                raise ValueError(f"{field_name} must be finite, got {value}")
+        # Both of these are read off the same monotonic laptop clock, so the order cannot break
+        # unless the code stamped them in the wrong order. Capture is not checked against arrival,
+        # because a clock offset a few milliseconds off can legitimately put capture after arrival.
+        if self.depth_ready_seconds is not None and self.depth_ready_seconds < self.arrival_seconds:
+            raise ValueError(
+                f"depth_ready_seconds {self.depth_ready_seconds} is before arrival_seconds {self.arrival_seconds}"
+            )
+
+
+@dataclass(frozen=True)
 class DepthFrame:
     """One frame of depth in meters, with everything the scene layer needs to place it in space."""
 
@@ -79,10 +110,17 @@ class DepthFrame:
     pose: Pose
     ground_plane: Plane | None
     gaze_pixel: np.ndarray | None
+    # Measurement only. Nothing in the scene or the planner reads it, and a frame without it is a
+    # complete frame.
+    timing: FrameTiming | None = None
 
     def __post_init__(self) -> None:
         # Every source builds one of these, and a wrongly shaped array from any of them would
         # otherwise surface as a broadcasting error deep inside unprojection.
+        if not np.isfinite(self.timestamp_seconds):
+            # The clearance history, the planner's previous plan and the timing log all order
+            # frames by this. A NaN breaks all three without an error from any of them.
+            raise ValueError(f"timestamp_seconds must be finite, got {self.timestamp_seconds}")
         if self.depth_meters.ndim != 2:
             raise ValueError(f"depth_meters must be (height, width), got shape {self.depth_meters.shape}")
         if self.intrinsics.shape != (3, 3):

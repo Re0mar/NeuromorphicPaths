@@ -21,7 +21,7 @@ NeuromorphicPaths/
       runtime/               the loop that runs all of the above, frame by frame
       evaluation/            replays recorded walks and scores the planner on them
     tests/                   the test suite, plus small committed recordings to test against
-    examples/                small scripts, like checking the Neon glasses are reachable
+    examples/                small scripts: check the Neon glasses, record their stream, summarize timing
     docs/                    the message format between the Pixel app and the laptop
   pixel_app/                 Android app for a Google Pixel: sends depth to the laptop, shows the arrow
   SidewalkVision/            Android app that runs on its own on a phone with the Neon glasses
@@ -102,6 +102,23 @@ the arrow and the browser shows the page:
 .venv/Scripts/python -m nav --source arcore_tcp --arcore-accept-timeout 600 --reconnect --sink phone_app --sink web --floor-max-tilt 50 --record-to frame_logs/<new walk> --verbose
 ```
 
+**Run it live with the Neon glasses.** Needs the glasses extra and a CUDA build of torch, both in
+[`server/README.md`](server/README.md). Open the Companion app with the glasses plugged in, read the
+phone's address off its streaming screen, and open the page in a browser:
+
+```
+.venv/Scripts/python examples/check_neon.py --neon-address <phone address>
+.venv/Scripts/python -m nav --source neon_live --neon-address <phone address> --process-resolution 336 --sink web --record-to frame_logs/<new walk> --verbose
+```
+
+**Record the glasses' raw stream, and replay it later** without the glasses, through the same
+decoder, depth model and planner:
+
+```
+.venv/Scripts/python examples/capture_neon_stream.py --neon-address <phone address> --seconds 240 frame_logs/captures/<new walk>
+.venv/Scripts/python -m nav --source neon_live --neon-replay frame_logs/captures/<new walk> --process-resolution 336 --sink web
+```
+
 **Score the planner on a walk.** How often the arrow sits at its limit, how often it swings from one
 side to the other, and what the alarm did:
 
@@ -118,5 +135,7 @@ side to the other, and what the alarm did:
 | build and run the Pixel app | [`pixel_app/README.md`](pixel_app/README.md) |
 | change the messages between the phone and the laptop | [`server/docs/arcore_wire_format.md`](server/docs/arcore_wire_format.md) |
 | see what has been measured on recorded walks | [`docs/evaluation/`](docs/evaluation/) |
+| see how the glasses did on real hardware: latency, frame rate, floor | [`docs/evaluation/neon_glasses_first_session.md`](docs/evaluation/neon_glasses_first_session.md) |
+| drive a vibration motor or headphones from the planner's output | [`docs/guides/drive_feedback_from_the_path.md`](docs/guides/drive_feedback_from_the_path.md) |
 | score the arrow against how the walker actually turned | [`docs/guides/score_the_arrow_against_turns.md`](docs/guides/score_the_arrow_against_turns.md) |
 | build the diagrams | [`docs/README.md`](docs/README.md) |
