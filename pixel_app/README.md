@@ -17,6 +17,19 @@ JAVA_HOME="/c/Program Files/Android/Android Studio/jbr" ANDROID_HOME="$LOCALAPPD
 The debug APK lands in `app/build/outputs/apk/debug/`. The same toolchain versions as the group's
 app on the `restart` branch: Gradle 9.6, AGP 9.4.1, Kotlin 2.2.10, minSdk 34.
 
+For any walk whose timing goes in a report, build the release APK instead. A debuggable build draws
+slower, and the arrow's draw time is part of what gets measured. It's signed with the debug key so
+it installs like the debug one, and it isn't meant for a store:
+
+```
+JAVA_HOME="/c/Program Files/Android/Android Studio/jbr" ANDROID_HOME="$LOCALAPPDATA/Android/Sdk" ./gradlew.bat :app:assembleRelease
+adb install -r app/build/outputs/apk/release/app-release.apk
+```
+
+The debug key belongs to the laptop that built the APK. A phone holding the app from another
+laptop's build refuses this one with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`. Uninstall the app
+first in that case.
+
 ## Run
 
 1. Start the laptop listening, from `server/`:
@@ -26,7 +39,10 @@ app on the `restart` branch: Gradle 9.6, AGP 9.4.1, Kotlin 2.2.10, minSdk 34.
    Each needs an inbound firewall rule on the laptop, and the rule has to name the Python that
    owns the socket, which with a venv is the base interpreter and not the venv's launcher. See
    `server/README.md`.
-2. Install and open the app. It asks for the camera, then for ARCore if the phone lacks it.
+2. Install and open the app. It asks for the camera, then for ARCore if the phone lacks it. On
+   Android 17 it also asks for local network access. Allow it: a laptop on home or lab Wi-Fi sits
+   at a private address such as `192.168.x` or `10.x`, and without the permission the connection
+   times out. A refusal shows as a Permission line above the status lines.
 3. Type the laptop's address, leave the two ports unless the laptop was started with others,
    and tap Connect. The app opens both connections to that one address.
 

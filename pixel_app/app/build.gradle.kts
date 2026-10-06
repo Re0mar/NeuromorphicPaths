@@ -26,6 +26,10 @@ android {
             optimization {
                 enable = false
             }
+            // Signed with the debug key so a release build installs on the team's phones. It exists
+            // for timing: a debuggable build draws slower, and the arrow's draw time is measured.
+            // This is not a publishing setup, and nothing built this way goes to a store.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
     compileOptions {
