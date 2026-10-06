@@ -10,6 +10,7 @@ The TCP source here is proven against the fake sender, which encodes with the sa
 """
 
 # Standard library imports
+import json
 import socket
 import threading
 import time
@@ -269,8 +270,63 @@ def test_synthetic_frames_carry_a_real_floor_plane() -> None:
     depth = frame.depth_meters[row, column]
     focal_y = frame.intrinsics[1, 1]
     principal_y = frame.intrinsics[1, 2]
-    # Unproject the bottom-centre pixel and check it satisfies normal . p + offset == 0.
+    # Unproject the bottom-center pixel and check it satisfies normal . p + offset == 0.
     point = np.array([0.0, (row - principal_y) * depth / focal_y, depth])
 
     assert frame.ground_plane is not None
     assert frame.ground_plane.normal @ point + frame.ground_plane.offset_meters == pytest.approx(0.0, abs=1e-3)
+
+
+def test_a_received_frame_carries_its_arrival_time() -> None:
+    source = _listening_source()
+    before = time.time()
+    try:
+        _in_background(lambda: send_frames("127.0.0.1", source.port, list(synthetic_frames(2))))
+        received = _collect(source)
+    finally:
+        source.close()
+
+    assert len(received) == 2
+    for frame in received:
+        # Arrival only. The phone's capture time needs a clock offset this source does not measure.
+        assert frame.timing.arrival_seconds == pytest.approx(before, abs=5.0)
+        assert frame.timing.capture_seconds is None
+        assert frame.timing.depth_ready_seconds is None
+    # Strictly later. Each frame is stamped when it is read, and two reads cannot share one
+    # 100 ns reading of the performance counter, so an equal pair means one stamp reused.
+    assert received[1].timing.arrival_seconds > received[0].timing.arrival_seconds
+
+
+def test_a_header_with_a_number_json_cannot_hold_drops_one_frame(caplog: pytest.LogCaptureFixture) -> None:
+    """
+    The port listens on every interface, so one bad header from anyone must drop that frame, not end the run.
+
+    A 400-digit integer used to escape the decoder as a TypeError and end frames().
+    """
+    source = _listening_source()
+    frames = list(synthetic_frames(2))
+    header_bytes, terminator, body = encode_frame(frames[0])[LENGTH_PREFIX.size :].partition(b"\n")
+    header = json.loads(header_bytes)
+    header["timestamp_seconds"] = "RAW"
+    oversized_header = json.dumps(header).encode("utf-8").replace(b'"RAW"', b"1" + b"0" * 399)
+    oversized = oversized_header + terminator + body
+
+    def send() -> None:
+        sender = FakeArCoreSender("127.0.0.1", source.port)
+        sender.connect()
+        try:
+            sender.send_frame(frames[0])
+            sender.send_raw(LENGTH_PREFIX.pack(len(oversized)) + oversized)
+            sender.send_frame(frames[1])
+        finally:
+            sender.close()
+
+    try:
+        _in_background(send)
+        with caplog.at_level("WARNING"):
+            received = _collect(source)
+    finally:
+        source.close()
+
+    assert [frame.timestamp_seconds for frame in received] == pytest.approx([frames[0].timestamp_seconds, frames[1].timestamp_seconds])
+    assert any("frame dropped" in record.message and "too large for a float" in record.message for record in caplog.records)

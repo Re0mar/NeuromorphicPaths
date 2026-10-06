@@ -15,7 +15,9 @@ from pathlib import Path
 import cv2
 
 # Local package imports
+from nav.clock import laptop_time_seconds
 from nav.sources.rgb import RgbFrame
+from nav.types import FrameTiming
 
 log = logging.getLogger(__name__)
 
@@ -84,7 +86,11 @@ class VideoFileRgbSource:
                 timestamp_seconds=timestamp_seconds,
                 image_rgb=cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB),
                 gaze_pixel=None,
-                imu_orientation_wxyz=None,
+                pose=None,
+                camera_matrix=None,
+                # A file's timestamps are positions in the recording, not times on any clock, so
+                # there is no capture time to report. Arrival is when the frame was decoded.
+                timing=FrameTiming(capture_seconds=None, arrival_seconds=laptop_time_seconds(), depth_ready_seconds=None),
             )
             index += 1
 

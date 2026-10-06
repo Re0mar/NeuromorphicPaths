@@ -7,7 +7,7 @@ beyond the DepthEstimate it returns.
 """
 
 # Standard library imports
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 # Third party imports
 import numpy as np
@@ -24,9 +24,17 @@ class StubDepthEstimator:
     recovers a real plane from it and the height band means what it says. A stub that returned an
     arbitrary ramp would let a broken floor fit pass.
 
-    One deviation from the real estimator, named here because it is where it is configured: this
-    stub always returns intrinsics. The metric model returns none for a plain video, and the
-    fallback-intrinsics branch of DepthEstimator.estimate runs only with the real model loaded.
+    Two deviations from the real estimator, named here because this is where they are configured.
+
+    It returns intrinsics by default. The metric model returns none for a plain video. Set
+    returns_intrinsics False to behave like it, which is how the composed source's fallback path is
+    tested.
+
+    It returns meters with canonical_focal_pixels None, as the nested checkpoint does. The default
+    metric checkpoint returns raw depth for a 300 px focal, which the composed source converts. So a
+    test built on this stub runs no conversion, and cannot fail if the conversion breaks. The
+    conversion is covered by CanonicalDepthEstimator in test_estimated_depth_source.py and by the
+    estimator in test_neon_chain.py.
     """
 
     height: int = 48
@@ -36,8 +44,17 @@ class StubDepthEstimator:
     box_rows: tuple[int, int] = (18, 30)
     box_columns: tuple[int, int] = (26, 38)
     confidence_value: float | None = 1.0
+    returns_intrinsics: bool = True
+    # The real estimator reports where it runs. A test asking about the CPU warning sets this.
+    device: str = "cuda"
+    # Mutable through a frozen dataclass on purpose: the one thing a test reads back from the stub.
+    calls: list = field(default_factory=list, compare=False)
+
+    def warm_up(self) -> None:
+        self.calls.append("warm_up")
 
     def estimate(self, image_rgb: np.ndarray) -> DepthEstimate:
+        self.calls.append("estimate")
         intrinsics = fallback_intrinsics(self.height, self.width)
         focal_y = intrinsics[1, 1]
         principal_y = intrinsics[1, 2]
@@ -66,16 +83,25 @@ class StubDepthEstimator:
         if self.confidence_value is not None:
             confidence = np.full((self.height, self.width), self.confidence_value, dtype=np.float32)
 
-        return DepthEstimate(depth_meters=depth_meters, intrinsics=intrinsics, confidence=confidence)
+        return DepthEstimate(
+            depth=depth_meters,
+            intrinsics=intrinsics if self.returns_intrinsics else None,
+            confidence=confidence,
+        )
 
 
 @dataclass(frozen=True)
 class WrongShapeDepthEstimator:
     """Returns depth with the wrong number of dimensions, to prove DepthFrame refuses it."""
 
+    device: str = "cuda"
+
+    def warm_up(self) -> None:
+        """Nothing to warm."""
+
     def estimate(self, image_rgb: np.ndarray) -> DepthEstimate:
         return DepthEstimate(
-            depth_meters=np.ones((4, 4, 4), dtype=np.float32),
+            depth=np.ones((4, 4, 4), dtype=np.float32),
             intrinsics=fallback_intrinsics(4, 4),
             confidence=None,
         )

@@ -11,6 +11,7 @@ they came from. A test enforces that.
 
 # Standard library imports
 import argparse
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -29,6 +30,7 @@ from nav.sinks.web import WebSink
 from nav.sources.arcore_tcp import ArCoreTcpSource
 from nav.sources.config import (
     ArCoreConfig,
+    DepthCheckpoint,
     EstimatorConfig,
     LoggedConfig,
     NeonConfig,
@@ -36,6 +38,7 @@ from nav.sources.config import (
     NeonPluginModel,
     TapConfig,
     VideoConfig,
+    depth_checkpoint_from_name,
 )
 from nav.sources.estimated_depth import EstimatedDepthSource
 from nav.sources.estimator import DepthEstimator, DepthEstimatorProtocol
@@ -46,6 +49,8 @@ from nav.sources.video_file import URL_MARKER, VideoFileRgbSource
 from nav.types import DepthFrameSource, PathSink
 from nav.usermodel.config import UserModelConfig
 from nav.walker import WalkerConfig
+
+log = logging.getLogger(__name__)
 
 
 class SourceKind(Enum):
@@ -70,6 +75,9 @@ class SinkKind(Enum):
 # These two sources carry RGB only, so they need the depth estimator composed in behind them.
 # The other three already deliver depth, so asking them for a model name would be meaningless.
 ESTIMATOR_BACKED_SOURCES = frozenset({SourceKind.VIDEO_FILE, SourceKind.NEON_LIVE})
+# Of those, the ones a person walks with while the estimator runs, where a CPU estimator is worth a
+# warning. A recording on the CPU is only slow to process.
+LIVE_ESTIMATOR_SOURCES = frozenset({SourceKind.NEON_LIVE})
 
 
 @dataclass(frozen=True)
@@ -134,6 +142,15 @@ def _percentile(text: str) -> float:
     return value
 
 
+def _depth_checkpoint(text: str) -> DepthCheckpoint:
+    """A checkpoint name, refused at parse time with the accepted names when it is unknown or relative."""
+    try:
+        return depth_checkpoint_from_name(text)
+    except ValueError as refused:
+        # argparse prints an ArgumentTypeError's own message. A plain ValueError becomes "invalid value".
+        raise argparse.ArgumentTypeError(str(refused)) from refused
+
+
 def build_parser() -> argparse.ArgumentParser:
     """
     Build the argument parser, one group per layer.
@@ -163,6 +180,10 @@ def build_parser() -> argparse.ArgumentParser:
     neon = parser.add_argument_group("neon_live source")
     neon.add_argument("--neon-address", help="the Neon's address, or omit it to discover the device")
     neon.add_argument("--neon-port", type=_port_number, default=NeonConfig.port)
+    neon.add_argument(
+        "--neon-replay",
+        help="a folder written by examples/capture_neon_stream.py, played back at its recorded pace in place of the glasses",
+    )
 
     arcore = parser.add_argument_group("arcore_tcp source")
     arcore.add_argument("--arcore-port", type=_port_number, default=ArCoreConfig.port)
@@ -190,14 +211,22 @@ def build_parser() -> argparse.ArgumentParser:
     estimator = parser.add_argument_group("depth estimator")
     # Every default below is read from its dataclass rather than restated, so each value has one
     # home and a test can check the parser against it.
-    estimator.add_argument("--model", default=EstimatorConfig.model_name, help="Depth Anything 3 checkpoint")
+    estimator.add_argument(
+        "--model",
+        type=_depth_checkpoint,
+        default=EstimatorConfig.model_name,
+        help="Depth Anything 3 checkpoint, by its hub name. Only the ones that give meters are accepted",
+    )
     estimator.add_argument("--process-resolution", type=_positive_int, default=EstimatorConfig.process_resolution)
     estimator.add_argument("--confidence-drop-percentile", type=_percentile, default=EstimatorConfig.confidence_drop_percentile)
     estimator.add_argument(
         "--fallback-fov",
         type=_positive_float,
         default=2 * EstimatorConfig.fallback_half_field_of_view_degrees,
-        help="horizontal field of view in degrees, used when the model returns no intrinsics. A phone is about 75",
+        help=(
+            "horizontal field of view in degrees, used when the camera has no calibration and the model "
+            "returns no intrinsics. A phone is about 75. Ignored by neon_live, which uses the device's own calibration"
+        ),
     )
 
     tap = parser.add_argument_group("recording tap")
@@ -268,6 +297,10 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
         parser.error(f"--reconnect only applies to {SourceKind.ARCORE_TCP.value}, not {source_kind.value}")
     if arguments.realtime and source_kind is not SourceKind.LOGGED:
         parser.error(f"--realtime only applies to {SourceKind.LOGGED.value}, not {source_kind.value}")
+    if arguments.neon_replay is not None and source_kind is not SourceKind.NEON_LIVE:
+        parser.error(f"--neon-replay only applies to {SourceKind.NEON_LIVE.value}, not {source_kind.value}")
+    if arguments.neon_replay is not None and arguments.neon_address is not None:
+        parser.error("--neon-address and --neon-replay cannot be used together, a replay plays a capture in place of the glasses")
 
     video = None
     neon = None
@@ -285,7 +318,9 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
             video = VideoConfig(path=arguments.path)
         case SourceKind.NEON_LIVE:
             # No address is the normal case. The source discovers the device instead.
-            neon = NeonConfig(address=arguments.neon_address, port=arguments.neon_port)
+            if arguments.neon_replay is not None and not (Path(arguments.neon_replay) / "meta.json").is_file():
+                parser.error(f"--neon-replay {arguments.neon_replay} is not a capture folder, it has no meta.json")
+            neon = NeonConfig(address=arguments.neon_address, port=arguments.neon_port, replay_dir=arguments.neon_replay)
         case SourceKind.ARCORE_TCP:
             arcore = ArCoreConfig(port=arguments.arcore_port, accept_timeout_seconds=arguments.arcore_accept_timeout)
         case SourceKind.NEON_PLUGIN:
@@ -367,7 +402,16 @@ def build_estimated_depth_source(rgb_source: RgbSource, config: RunConfig) -> Es
         raise ValueError(f"{config.source_kind.value} needs an estimator config and none was built")
 
     build = config.estimator_factory if config.estimator_factory is not None else DepthEstimator
-    return EstimatedDepthSource(rgb_source, build(config.estimator), config.estimator)
+    estimator = build(config.estimator)
+    if config.source_kind in LIVE_ESTIMATOR_SOURCES and estimator.device == "cpu":
+        # Warned rather than refused. The run still works, and on a laptop without an NVIDIA GPU
+        # it is the only way to check the glasses connect at all.
+        log.warning(
+            "the depth estimator is on the CPU, so a live %s walk will run at a fraction of a frame a second. "
+            "Install the CUDA build of torch, see server/README.md",
+            config.source_kind.value,
+        )
+    return EstimatedDepthSource(rgb_source, estimator, config.estimator)
 
 
 def build_source(config: RunConfig) -> DepthFrameSource:

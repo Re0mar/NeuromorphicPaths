@@ -57,6 +57,22 @@ forgot look identical otherwise, and only one of those is a bug worth telling yo
 Every number must be finite. A JSON `NaN` or `Infinity` is not valid JSON anyway, and the laptop's
 parser rejects it rather than reading it as a number.
 
+### `timing`, which the app does not send
+
+One more key exists, and it is not yours to send. The laptop adds `timing` to each frame itself,
+when the frame reaches it, and writes it into the frame log so a recorded walk keeps its latency
+figures. The app leaves it out, and the laptop reads a frame without it exactly as before.
+
+| Field | Type | Unit | Notes |
+|---|---|---|---|
+| `timing.capture_seconds` | number, `null`, or absent | seconds | When the sensor captured the frame, on the laptop's clock. Absent or `null` when the offset between the two clocks is unknown, which is always the case for this app today |
+| `timing.arrival_seconds` | number | seconds | When the laptop received the frame. Required whenever `timing` is present |
+| `timing.depth_ready_seconds` | number, `null`, or absent | seconds | When depth was ready. Absent or `null` for a frame that arrived with its depth, as this app's do |
+
+All three are on the laptop's clock: wall time since the Unix epoch, read once when the pipeline
+started and advanced by a clock that never runs backwards. Depth ready can never come before
+arrival, and a frame that says so is refused by name.
+
 ---
 
 ## Depth values
@@ -120,9 +136,10 @@ When the format changes in a way that would break an older reader, the version g
 sides change together. Adding a new optional field does not need a version bump, because an older
 reader ignores keys it does not know. Changing the meaning or the unit of an existing field does.
 
-`orientation_is_gravity_aligned` is the one key added this way so far, and it is the one key the
-laptop will accept as absent. An absent key is read as `true`, because every frame log that existed
-when it was added came from this app. Send it anyway.
+Two keys have been added this way. `orientation_is_gravity_aligned` is accepted as absent and read
+as `true`, because every frame log that existed when it was added came from this app. Send it
+anyway. `timing` is accepted as absent and read as no timing at all, because the app never sends
+it. Neither one needed the version to go up.
 
 ---
 
@@ -143,7 +160,9 @@ instant, and the next frame produces the next one within a frame interval.
   "lateral_offsets_meters": [0.0, 0.05, 0.12],
   "first_heading_radians": 0.0423,
   "alarm": false,
-  "cumulative_cost_bits": 18.4
+  "cumulative_cost_bits": 18.4,
+  "scene_information_bits": 0.37,
+  "avoidance_surprise_bits": 0.51
 }
 ```
 
@@ -153,11 +172,16 @@ instant, and the next frame produces the next one within a frame interval.
 | `lateral_offsets_meters` | Where to be at that time, sideways from straight ahead. Positive is right |
 | `first_heading_radians` | Where the path is heading. The planner reads the path a fixed time ahead, set on the laptop, and takes the angle from here to there. Positive is right |
 | `alarm` | Something in the walker's way is close at walking pace, or was a moment ago. Turn the display red |
-| `cumulative_cost_bits` | Total cost of the chosen path. For display and logging, not for steering |
+| `cumulative_cost_bits` | Total cost of the chosen path: the surprise of how unsure the readings of near things are, plus the surprise of the body touching something, plus the costs of moving sideways and of ending away from the goal. Quoted in bits by the course's convention. For display and logging, not for steering |
+| `scene_information_bits` | How far what the camera saw moved the plan from what the planner would do with nothing in view, measured where the arrow reads the path. 0 for an empty scene. It is not a confidence: an empty corridor gives a plan the planner is completely sure of and 0 bits. Drives how solid the drawn path looks |
+| `avoidance_surprise_bits` | How soon the walker reaches the nearest thing in its way, as the course's avoidance surprise: (1 s over the time to contact) squared, over 2 ln 2. 0 with nothing in the way, 0.72 at one second to contact. Drives the drawn path's color, blue at 0 and red from 0.72 |
 
 `times_seconds` and `lateral_offsets_meters` always have the same length.
 
-Every key is required and every number is finite. Per field, who produces it and who checks it:
+Every key is required and every number is finite. The app does not read `scene_information_bits`
+or `avoidance_surprise_bits` yet, and it can ignore them safely, because it checks only the keys it
+reads. They are there for the path drawing on the phone, which will use them the way the laptop's
+web page does. Per field, who produces it and who checks it:
 
 | Field | Produced by | On the wire | Read by | Value domain | Who enforces it |
 |---|---|---|---|---|---|
@@ -167,6 +191,8 @@ Every key is required and every number is finite. Per field, who produces it and
 | `first_heading_radians` | planner, from the path a fixed time ahead | JSON number | the arrow | finite, positive is right, within the sidestep limit | both sides |
 | `alarm` | planner, from what is in the walker's way | JSON boolean | display color | `true` or `false`, never a number | you refuse a number where the boolean belongs |
 | `cumulative_cost_bits` | planner | JSON number | display, logging | finite, zero or more | both sides |
+| `scene_information_bits` | planner, from the cheapest path through each cell at the arrow's lookahead | JSON number | the web page now, the phone's path drawing later | finite, zero or more. At most about 6.3 bits with the laptop's current settings | laptop refuses a negative or non-finite value before encoding |
+| `avoidance_surprise_bits` | planner, from the nearest group in the walker's corridor | JSON number | the web page now, the phone's path drawing later | finite, zero or more | laptop refuses a negative or non-finite value before encoding |
 
 ---
 
@@ -232,6 +258,7 @@ this table is that nothing is aligned by assuming both sides derive from the sam
 | `pose.orientation_is_gravity_aligned` | Android, constant for this app | JSON boolean | scene, picks gravity or image-up for the floor | true or false | decoder, defaulting to true for a recording older than the key |
 | `ground_plane` | ARCore plane, when found | JSON object or null | scene floor fit | null means fit one here | decoder, scene falls back |
 | `gaze_pixel` | not sent by the Pixel | JSON null | planner goal | null | decoder |
+| `timing` | the laptop, on arrival. Never the app | JSON object, absent from the app's frames | the timing log and `--verbose` | arrival required and finite, the other two finite, null or absent, depth ready not before arrival | decoder, and `FrameTiming` when the laptop builds it |
 
 ---
 

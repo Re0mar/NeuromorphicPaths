@@ -7,7 +7,7 @@ import pytest
 # Local package imports
 from nav.planner.config import GoalMode, PlannerConfig
 from nav.planner.goal import goal_position, goal_term
-from nav.planner.surprise import lateral_grid
+from nav.planner.field import lateral_grid
 
 CONFIG = PlannerConfig()
 

@@ -8,15 +8,17 @@ reconnects forever can never be run to completion in a test.
 """
 
 # Standard library imports
+import dataclasses
 import logging
 import socket
 import time
 from collections.abc import Iterator
 
 # Local package imports
+from nav.clock import laptop_time_seconds
 from nav.sources.config import ArCoreConfig
 from nav.sources.framecodec import FrameDecodeError, StreamClosedError, decode_frame, read_message
-from nav.types import DepthFrame
+from nav.types import DepthFrame, FrameTiming
 
 log = logging.getLogger(__name__)
 
@@ -102,6 +104,7 @@ class ArCoreTcpSource:
                     log.info("connection lost after %d frames: %s", received, socket_error)
                     return
 
+                arrival_seconds = laptop_time_seconds()
                 try:
                     frame = decode_frame(payload)
                 except FrameDecodeError as decode_error:
@@ -109,6 +112,13 @@ class ArCoreTcpSource:
                     # connection stays up. Dropping the connection for it would cost every frame after.
                     log.warning("frame dropped (caught %s, expected): %s", type(decode_error).__name__, decode_error)
                     continue
+
+                # Arrival only. The phone's capture time on this clock needs an offset between the
+                # two clocks, which this source does not measure yet.
+                frame = dataclasses.replace(
+                    frame,
+                    timing=FrameTiming(capture_seconds=None, arrival_seconds=arrival_seconds, depth_ready_seconds=None),
+                )
 
                 if received == 0:
                     log.info("first frame: depth %s, has_position=%s", frame.depth_meters.shape, frame.pose.has_position)

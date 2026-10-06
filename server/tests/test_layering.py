@@ -28,6 +28,31 @@ SHARED_LAYERS = (
     # because the torch import is inside DepthEstimator.__init__ and nothing else may need it.
     "nav.sources.estimated_depth",
     "nav.sources.estimator",
+    # The evaluation replays recordings through the scene and planner, so it is held to the same rule.
+    "nav.evaluation",
+    "nav.evaluation.replay",
+    "nav.evaluation.report",
+    "nav.evaluation.__main__",
+    "nav.evaluation.check_planner",
+    "nav.evaluation.fixture",
+)
+# Every module of nav.evaluation, named, so the check below can't pass by importing fewer of them.
+EVALUATION_MODULES = (
+    "nav.evaluation",
+    "nav.evaluation.__main__",
+    "nav.evaluation.arguments",
+    "nav.evaluation.band_attribution",
+    "nav.evaluation.check_planner",
+    "nav.evaluation.config",
+    "nav.evaluation.fixture",
+    "nav.evaluation.frames",
+    "nav.evaluation.overrides",
+    "nav.evaluation.planner_numbers",
+    "nav.evaluation.replay",
+    "nav.evaluation.report",
+    "nav.evaluation.scoring",
+    "nav.evaluation.track",
+    "nav.evaluation.turns",
 )
 
 
@@ -46,6 +71,24 @@ def test_shared_layers_import_without_device_packages() -> None:
         text=True,
     )
     assert completed.returncode == 0, completed.stderr
+
+
+def test_every_evaluation_module_imports_without_device_packages() -> None:
+    """The module list comes from the subprocess that did the importing, not from this one."""
+    script = (
+        "import sys\n"
+        f"for name in {BLOCKED_PACKAGES!r}:\n"
+        "    sys.modules[name] = None\n"
+        f"import {', '.join(SHARED_LAYERS)}\n"
+        "print(' '.join(sorted(name for name in sys.modules if name == 'nav.evaluation' or name.startswith('nav.evaluation.'))))\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert tuple(completed.stdout.split()) == EVALUATION_MODULES
 
 
 def test_blocking_actually_blocks() -> None:

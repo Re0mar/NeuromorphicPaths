@@ -5,6 +5,9 @@ The frame-to-frame properties live here because no single stage can show them: a
 staying put while the walker advances, and N rising as that box gets nearer.
 """
 
+# Standard library imports
+import dataclasses
+
 # Third party imports
 import numpy as np
 import pytest
@@ -12,12 +15,13 @@ import pytest
 # Local package imports
 from nav.scene.config import SceneConfig
 from nav.scene.pipeline import ScenePipeline
-from nav.types import DepthFrame, FloorSource, ObstacleSet, Plane, Pose
+from nav.types import DepthFrame, FloorSource, ObstaclePoint, ObstacleSet, Plane, Pose
 from nav.walker import WalkerConfig
 from synthetic_depth import (
     CAMERA_HEIGHT_METERS,
     PITCH_DEGREES,
     clean_scene,
+    degrade_with_depth_noise,
     degrade_with_holes,
     degrade_with_zero_rows,
     degrade_without_floor,
@@ -446,3 +450,79 @@ def test_an_empty_depth_image_after_a_good_frame_yields_no_groups() -> None:
     obstacles = pipeline.process(_frame(scene, timestamp=0.1, depth=np.full_like(scene.depth_meters, np.nan)))
 
     assert obstacles.groups_in_view == 0
+
+
+def _assert_identical_obstacles(first: ObstacleSet, second: ObstacleSet) -> None:
+    # ObstaclePoint holds numpy arrays, so dataclass == raises instead of answering. Each field
+    # is compared exactly: floats with ==, arrays with array_equal, None with None.
+    assert first.timestamp_seconds == second.timestamp_seconds
+    assert first.groups_in_view == second.groups_in_view
+    assert len(first.points) == len(second.points)
+    for first_point, second_point in zip(first.points, second.points):
+        for field in dataclasses.fields(ObstaclePoint):
+            first_value, second_value = getattr(first_point, field.name), getattr(second_point, field.name)
+            if isinstance(first_value, np.ndarray) or isinstance(second_value, np.ndarray):
+                assert first_value is not None and second_value is not None, field.name
+                assert np.array_equal(first_value, second_value), field.name
+            else:
+                assert first_value == second_value, field.name
+
+
+def test_two_pipelines_fed_the_same_noisy_frames_give_identical_obstacles() -> None:
+    # Replays are how every tuning decision gets made, so two runs over the same frames have to
+    # agree exactly. No plane is supplied, so every frame's floor is fitted, and the noise is what
+    # makes a fit's randomness show at all.
+    scenes = [clean_scene(box_forward_meters=distance, box_half_width_meters=0.2) for distance in (4.0, 3.8, 3.6, 3.4, 3.2)]
+    frames = [
+        _frame(
+            scene,
+            timestamp=index * 0.1,
+            depth=degrade_with_depth_noise(scene.depth_meters, sigma_meters=0.02, seed=index),
+        )
+        for index, scene in enumerate(scenes)
+    ]
+    first_pipeline, second_pipeline = ScenePipeline(CONFIG, WALKER), ScenePipeline(CONFIG, WALKER)
+
+    for frame in frames:
+        first = first_pipeline.process(frame)
+        second = second_pipeline.process(frame)
+
+        assert first_pipeline.last_floor_source is FloorSource.FITTED
+        assert second_pipeline.last_floor_source is FloorSource.FITTED
+        assert first.groups_in_view > 0, "the box must be in view, or there is nothing to compare"
+        _assert_identical_obstacles(first, second)
+
+
+def test_degrade_with_depth_noise_is_seeded_and_leaves_holes_alone() -> None:
+    depth = degrade_with_holes(clean_scene().depth_meters, fraction=0.1, seed=3)
+    holes = np.isnan(depth)
+
+    noisy = degrade_with_depth_noise(depth, sigma_meters=0.02, seed=11)
+
+    assert np.array_equal(noisy, degrade_with_depth_noise(depth, sigma_meters=0.02, seed=11), equal_nan=True)
+    assert np.array_equal(np.isnan(noisy), holes)
+    assert np.std(noisy[~holes] - depth[~holes]) == pytest.approx(0.02, rel=0.2)
+
+
+def test_a_frame_refused_after_a_fitted_one_reports_no_floor_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    The floor source describes the frame just processed, not the last one that had a floor.
+
+    The runtime reads it after a failed frame to say whether that frame had a floor, so a value left
+    over from the frame before would count a refusal as a fit.
+    """
+    import nav.scene.pipeline as scene_module
+
+    scene = clean_scene()
+    pipeline = ScenePipeline(CONFIG, WALKER)
+    pipeline.process(_frame(scene))
+    assert pipeline.last_floor_source is FloorSource.FITTED
+
+    def refuse(*args, **kwargs):
+        raise ValueError("no floor found")
+
+    monkeypatch.setattr(scene_module, "fit_floor", refuse)
+    with pytest.raises(ValueError, match="no floor found"):
+        pipeline.process(_frame(scene, timestamp=0.1))
+
+    assert pipeline.last_floor_source is None

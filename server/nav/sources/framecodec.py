@@ -24,7 +24,7 @@ from pathlib import Path
 import numpy as np
 
 # Local package imports
-from nav.types import DepthFrame, Plane, PlannedPath, Pose
+from nav.types import DepthFrame, FrameTiming, Plane, PlannedPath, Pose
 
 WIRE_VERSION = 1
 
@@ -144,6 +144,14 @@ def encode_frame(frame: DepthFrame) -> bytes:
         ),
         "gaze_pixel": None if frame.gaze_pixel is None else frame.gaze_pixel.tolist(),
     }
+    # Written only when there is something to write, so a frame from a source that keeps no timing
+    # encodes exactly as it did before the key existed.
+    if frame.timing is not None:
+        header["timing"] = {
+            "capture_seconds": frame.timing.capture_seconds,
+            "arrival_seconds": frame.timing.arrival_seconds,
+            "depth_ready_seconds": frame.timing.depth_ready_seconds,
+        }
 
     try:
         # allow_nan=False turns a non-finite intrinsic or pose into an error here, rather than into
@@ -172,13 +180,7 @@ def decode_frame(payload: bytes) -> DepthFrame:
     if not terminator:
         raise FrameDecodeError("payload has no newline after the header, so the header is truncated")
 
-    try:
-        header = json.loads(header_bytes.decode("utf-8"))
-    except json.JSONDecodeError as json_error:
-        raise FrameDecodeError(f"header is not valid JSON: {json_error}") from json_error
-    except UnicodeDecodeError as encoding_error:
-        raise FrameDecodeError(f"header is not valid UTF-8: {encoding_error}") from encoding_error
-
+    header = _parse_json(header_bytes, "header")
     if not isinstance(header, dict):
         raise FrameDecodeError(f"header must be a JSON object, got {type(header).__name__}")
 
@@ -195,6 +197,8 @@ def decode_frame(payload: bytes) -> DepthFrame:
         "pose": _decode_pose(_required(header, "pose")),
         "ground_plane": _decode_ground_plane(_required(header, "ground_plane")),
         "gaze_pixel": _optional_vector(_required(header, "gaze_pixel"), "gaze_pixel", length=2),
+        # Optional. The Pixel app never sends it, and frame logs written before it existed lack it.
+        "timing": _decode_timing(header["timing"]) if "timing" in header else None,
     }
 
     try:
@@ -205,16 +209,32 @@ def decode_frame(payload: bytes) -> DepthFrame:
         raise FrameDecodeError(f"fields decoded but do not make a frame: {inconsistent_error}") from inconsistent_error
 
 
-def encode_path(path: PlannedPath) -> bytes:
-    """Serialize a PlannedPath to JSON bytes for the phone and web sinks."""
-    message = {
+def path_message(path: PlannedPath) -> dict:
+    """
+    A PlannedPath as the JSON object both wires carry, before serializing.
+
+    The one place the path's keys are spelled. The phone's encoding and the web's envelope are both
+    built from it, so neither can drop a key the other sends.
+
+    :param path: The path to describe.
+    :return: Plain Python numbers, lists and a bool, ready for json.dumps.
+    :rtype: dict
+    """
+    return {
         "timestamp_seconds": float(path.timestamp_seconds),
         "times_seconds": path.times_seconds.tolist(),
         "lateral_offsets_meters": path.lateral_offsets_meters.tolist(),
         "first_heading_radians": float(path.first_heading_radians),
         "alarm": bool(path.alarm),
         "cumulative_cost_bits": float(path.cumulative_cost_bits),
+        "scene_information_bits": float(path.scene_information_bits),
+        "avoidance_surprise_bits": float(path.avoidance_surprise_bits),
     }
+
+
+def encode_path(path: PlannedPath) -> bytes:
+    """Serialize a PlannedPath to JSON bytes for the phone and web sinks."""
+    message = path_message(path)
     try:
         return json.dumps(message, allow_nan=False).encode("utf-8")
     except ValueError as non_finite_error:
@@ -223,13 +243,7 @@ def encode_path(path: PlannedPath) -> bytes:
 
 def decode_path(payload: bytes) -> PlannedPath:
     """Parse a path message. Used by the tests and by anything reading back what a sink sent."""
-    try:
-        message = json.loads(payload.decode("utf-8"))
-    except json.JSONDecodeError as json_error:
-        raise FrameDecodeError(f"path is not valid JSON: {json_error}") from json_error
-    except UnicodeDecodeError as encoding_error:
-        raise FrameDecodeError(f"path is not valid UTF-8: {encoding_error}") from encoding_error
-
+    message = _parse_json(payload, "path")
     if not isinstance(message, dict):
         raise FrameDecodeError(f"path must be a JSON object, got {type(message).__name__}")
 
@@ -241,6 +255,8 @@ def decode_path(payload: bytes) -> PlannedPath:
             first_heading_radians=_number(_required(message, "first_heading_radians"), "first_heading_radians"),
             alarm=_boolean(_required(message, "alarm"), "alarm"),
             cumulative_cost_bits=_number(_required(message, "cumulative_cost_bits"), "cumulative_cost_bits"),
+            scene_information_bits=_number(_required(message, "scene_information_bits"), "scene_information_bits"),
+            avoidance_surprise_bits=_number(_required(message, "avoidance_surprise_bits"), "avoidance_surprise_bits"),
         )
     except ValueError as inconsistent_error:
         if isinstance(inconsistent_error, FrameDecodeError):
@@ -300,6 +316,24 @@ def read_message_from_file(path: Path) -> bytes:
     return payload
 
 
+def _parse_json(raw: bytes, what: str) -> object:
+    # Bytes from any host on the network land here, so every way json can refuse them has to come
+    # out as FrameDecodeError. That drops one frame, and anything else ends the run.
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as encoding_error:
+        raise FrameDecodeError(f"{what} is not valid UTF-8: {encoding_error}") from encoding_error
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as json_error:
+        raise FrameDecodeError(f"{what} is not valid JSON: {json_error}") from json_error
+    except ValueError as digit_limit_error:
+        # Python refuses to parse an integer longer than 4300 digits, with a plain ValueError.
+        raise FrameDecodeError(f"{what} holds a number json will not parse: {digit_limit_error}") from digit_limit_error
+    except RecursionError as nesting_error:
+        raise FrameDecodeError(f"{what} nests too deeply to parse") from nesting_error
+
+
 def _required(header: dict, key: str) -> object:
     if key not in header:
         raise FrameDecodeError(f"header is missing the key {key!r}")
@@ -311,9 +345,14 @@ def _number(value: object, field: str) -> float:
     # reporting rather than silently reading as 1.0.
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise FrameDecodeError(f"{field} must be a number, got {type(value).__name__}")
-    if not np.isfinite(value):
+    try:
+        number = float(value)
+    except OverflowError as overflow_error:
+        # A JSON integer has no size limit, and one past a float's range is not a measurement.
+        raise FrameDecodeError(f"{field} is an integer too large for a float") from overflow_error
+    if not np.isfinite(number):
         raise FrameDecodeError(f"{field} must be finite, got {value}")
-    return float(value)
+    return number
 
 
 def _boolean(value: object, field: str) -> bool:
@@ -393,10 +432,9 @@ def _decode_pose(block: object) -> Pose:
     raw_position = _required(block, "position_xyz")
     position = None if raw_position is None else _vector(raw_position, "pose.position_xyz", length=3)
 
-    # The one optional key in the header, and the only one with a default that is not simply the
-    # safe answer. Every frame log that existed when this key was added was recorded from the
-    # phone, whose world is gravity-aligned, and those recordings are what the planner is tuned
-    # against. Reading them as un-aligned would reintroduce the defect the key exists to fix, so
+    # An optional key, and the only one with a default that is not simply the safe answer. Every
+    # frame log that existed when this key was added was recorded from the phone, whose world is
+    # gravity-aligned, and those recordings are what the planner is tuned against. Reading them as un-aligned would reintroduce the defect the key exists to fix, so
     # an absent key means the sender predates it and is assumed to be the phone. Everything
     # written from now on says so explicitly, including a video file's un-aligned identity pose.
     gravity_aligned = True
@@ -414,6 +452,26 @@ def _decode_pose(block: object) -> Pose:
         if isinstance(inconsistent_error, FrameDecodeError):
             raise
         raise FrameDecodeError(f"pose is inconsistent: {inconsistent_error}") from inconsistent_error
+
+
+def _decode_timing(block: object) -> FrameTiming:
+    if not isinstance(block, dict):
+        raise FrameDecodeError(f"timing must be a JSON object, got {type(block).__name__}")
+
+    def optional_number(key: str) -> float | None:
+        value = block.get(key)
+        return None if value is None else _number(value, f"timing.{key}")
+
+    try:
+        return FrameTiming(
+            capture_seconds=optional_number("capture_seconds"),
+            arrival_seconds=_number(_required(block, "arrival_seconds"), "timing.arrival_seconds"),
+            depth_ready_seconds=optional_number("depth_ready_seconds"),
+        )
+    except ValueError as inconsistent_error:
+        if isinstance(inconsistent_error, FrameDecodeError):
+            raise
+        raise FrameDecodeError(f"timing is inconsistent: {inconsistent_error}") from inconsistent_error
 
 
 def _decode_ground_plane(block: object) -> Plane | None:

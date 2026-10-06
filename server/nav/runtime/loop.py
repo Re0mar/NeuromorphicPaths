@@ -10,6 +10,7 @@ when the source ends or the user interrupts.
 import json
 import logging
 import time
+from collections import Counter
 from dataclasses import dataclass, is_dataclass
 from enum import Enum
 from pathlib import Path
@@ -18,14 +19,16 @@ from pathlib import Path
 import numpy as np
 
 # Local package imports
+from nav.clock import laptop_time_seconds
 from nav.config import RunConfig, build_sink, build_source
 from nav.planner.pipeline import PlannerPipeline
 from nav.runtime.textio import append_text_lf, write_text_lf
+from nav.runtime.timing import TimingLog, TimingRecord
 from nav.runtime.worker import NewestFrameWorker
 from nav.scene.floor import ground_axes
 from nav.scene.pipeline import ScenePipeline
 from nav.scene.transform import rotation_matrix_from_quaternion_wxyz
-from nav.types import DebugSink, DebugView, DepthFrame, PlannedPath
+from nav.types import DebugSink, DebugView, DepthFrame, FloorSource, PlannedPath
 from nav.usermodel.work import WorkMeter
 
 log = logging.getLogger(__name__)
@@ -50,10 +53,14 @@ class FrameResult:
 
 def yaw_from_quaternion(orientation_wxyz: np.ndarray) -> float:
     """
-    The heading the camera's forward axis has about the vertical, in radians. Positive is right.
+    The heading the camera's forward axis has about the vertical, in radians.
 
-    Vertical here is camera up before any rotation, so for a device that reports orientation
-    relative to gravity this is the compass-free yaw.
+    It is the angle of the rotated forward axis in the world's x-z plane, measured from +z toward
+    +x. Positive is toward the world's +x. Vertical here is camera up before any rotation, so for
+    a device that reports orientation relative to gravity this is the compass-free yaw.
+
+    In a y-down world, the camera's own frame, +x is right and so positive is a right turn. In a
+    y-up world, which ARCore and the mounted Neon both report, a right turn reads negative.
 
     :param orientation_wxyz: Unit quaternion, (w, x, y, z).
     :return: Yaw in radians, in (-pi, pi].
@@ -127,25 +134,63 @@ def run(config: RunConfig) -> int:
     planner = PlannerPipeline(config.planner, config.walker)
     meter = WorkMeter(config.usermodel)
     baseline = HeadingBaseline(HEADING_BASELINE_SECONDS)
+    timing_log = TimingLog(Path(config.tap.log_dir)) if config.tap.log_dir is not None else None
+    # Floor sources over the frames the worker took, None for a frame skipped with no usable floor.
+    # This is the live run's floor acceptance figure.
+    floor_counts: Counter[FloorSource | None] = Counter()
+
+    def record_timing(frame: DepthFrame, plan_done_seconds: float | None, floor_source: FloorSource | None) -> None:
+        floor_counts[floor_source] += 1
+        if timing_log is None:
+            return
+        timing = frame.timing
+        timing_log.append(
+            TimingRecord(
+                timestamp_seconds=frame.timestamp_seconds,
+                capture_seconds=None if timing is None else timing.capture_seconds,
+                arrival_seconds=None if timing is None else timing.arrival_seconds,
+                depth_ready_seconds=None if timing is None else timing.depth_ready_seconds,
+                plan_done_seconds=plan_done_seconds,
+                floor_source=floor_source,
+            )
+        )
 
     def process(frame: DepthFrame) -> FrameResult:
+        try:
+            result, plan_done_seconds = plan_frame(frame)
+        except ValueError:
+            # The worker skips the frame on this. It can come from the scene refusing the frame or
+            # from any later step, the planner included, so the floor is read off the scene rather
+            # than assumed missing. The scene clears its source at the start of every frame, so a
+            # refusal reads None here. The line is written anyway, or the floor acceptance read back
+            # from the log counts only planned frames and reads perfect however many were refused.
+            record_timing(frame, None, scene.last_floor_source)
+            raise
+        # Written here, after everything that can raise, so no frame ever gets a second line.
+        record_timing(frame, plan_done_seconds, scene.last_floor_source)
+        return result
+
+    def plan_frame(frame: DepthFrame) -> tuple[FrameResult, float]:
         started = time.perf_counter()
         obstacles = scene.process(frame)
         after_scene = time.perf_counter()
         gaze = gaze_on_the_ground(frame, scene)
         path = planner.plan(obstacles, 0.0, config.goal_mode, gaze)
         after_planner = time.perf_counter()
+        plan_done_seconds = laptop_time_seconds()
         observed = baseline.observed(yaw_from_quaternion(frame.pose.orientation), frame.timestamp_seconds)
         meter.observe(path, observed, frame.timestamp_seconds)
         finished = time.perf_counter()
         log.debug(
-            "frame %.3f: scene %.1f ms, planner %.1f ms, user model %.1f ms, %d groups, heading %.1f deg%s",
+            "frame %.3f: scene %.1f ms, planner %.1f ms, user model %.1f ms, %d groups, heading %.1f deg, observed %.1f deg%s%s",
             frame.timestamp_seconds,
             (after_scene - started) * 1000,
             (after_planner - after_scene) * 1000,
             (finished - after_planner) * 1000,
             obstacles.groups_in_view,
             np.degrees(path.first_heading_radians),
+            np.degrees(observed),
+            _latency_shares(frame, plan_done_seconds),
             " ALARM" if path.alarm else "",
         )
         field = planner.last_field
@@ -161,8 +206,10 @@ def run(config: RunConfig) -> int:
             floor=floor,
             floor_source=floor_source,
             walking_speed_mps=config.planner.walking_speed_mps,
+            body_half_width_meters=config.planner.body_half_width_meters,
         )
-        return FrameResult(path=path, field=field if field is not None else np.zeros((1, len(planner.grid))), grid=planner.grid, view=view)
+        result = FrameResult(path=path, field=field if field is not None else np.zeros((1, len(planner.grid))), grid=planner.grid, view=view)
+        return result, plan_done_seconds
 
     sink = build_sink(config)
     source = build_source(config)
@@ -215,7 +262,7 @@ def run(config: RunConfig) -> int:
         worker.stop()
         sink.close()
         source.close()
-        _report(worker, meter, frames_in, config)
+        _report(worker, meter, frames_in, config, floor_counts)
 
     return exit_code
 
@@ -240,11 +287,43 @@ class NewestResultPublisher:
             self._sink.publish(result.path)
 
 
-def _report(worker: NewestFrameWorker, meter: WorkMeter, frames_in: int, config: RunConfig) -> None:
+def _latency_shares(frame: DepthFrame, plan_done_seconds: float) -> str:
+    """The frame's trip so far, in milliseconds, for the --verbose line. Empty without timing."""
+    timing = frame.timing
+    if timing is None:
+        return ""
+    shares = []
+    if timing.capture_seconds is not None:
+        shares.append(f"capture to arrival {(timing.arrival_seconds - timing.capture_seconds) * 1000:.0f} ms")
+    if timing.depth_ready_seconds is not None:
+        shares.append(f"arrival to depth {(timing.depth_ready_seconds - timing.arrival_seconds) * 1000:.0f} ms")
+        shares.append(f"depth to plan {(plan_done_seconds - timing.depth_ready_seconds) * 1000:.0f} ms")
+    else:
+        shares.append(f"arrival to plan {(plan_done_seconds - timing.arrival_seconds) * 1000:.0f} ms")
+    return ", " + ", ".join(shares)
+
+
+def _report(
+    worker: NewestFrameWorker,
+    meter: WorkMeter,
+    frames_in: int,
+    config: RunConfig,
+    floor_counts: Counter[FloorSource | None],
+) -> None:
     log.info(
         "%d frames in, %d processed, %d dropped as stale, %d skipped as unusable",
         frames_in, worker.processed, worker.dropped, worker.skipped,
     )
+    taken = sum(floor_counts.values())
+    if taken:
+        log.info(
+            "floor over %d frames taken: %s",
+            taken,
+            ", ".join(
+                f"{source.value if source is not None else 'none, skipped'} {count} ({100.0 * count / taken:.0f}%)"
+                for source, count in sorted(floor_counts.items(), key=lambda item: -item[1])
+            ),
+        )
     episodes = meter.completed_episodes()
     for episode in episodes:
         log.info(

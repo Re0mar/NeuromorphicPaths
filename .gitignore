@@ -17,6 +17,8 @@ build/
 # Frame logs written by the recording tap at runtime. Recordings are large and
 # are shared as files, not through git.
 server/frame_logs/
+# Scene passes cached by python -m nav.evaluation --cached.
+server/.replay_cache/
 
 # Android Studio writes the SDK path here per machine.
 local.properties

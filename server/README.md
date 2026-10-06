@@ -16,7 +16,7 @@ py -3.12 -m venv .venv
 .venv/Scripts/python -m pytest
 ```
 
-That installs numpy, OpenCV, Open3D, aiohttp and pytest, and runs the whole test suite on CPU.
+That installs numpy, SciPy, OpenCV, Open3D, aiohttp and pytest, and runs the whole test suite on CPU.
 It deliberately does not install torch. The suite never needs it, and keeping it out is what
 proves the scene and planner layers import without it.
 
@@ -30,6 +30,27 @@ That adds torch, Depth Anything 3 and the Pupil Labs client. The torch that pip 
 build, which is fine for a recording and too slow for a live walk. For live use install the CUDA
 build that matches your driver from pytorch.org first, then run the line above. The first run
 downloads the metric depth checkpoint, 1.3 GB.
+
+### The CUDA build, as installed on the Quadro T2000 laptop
+
+On 2026-10-03, with NVIDIA driver 581.95 (which reports CUDA 13.0), the line that worked was:
+
+```
+.venv/Scripts/python -m pip install torch==2.14.1+cu126 --index-url https://download.pytorch.org/whl/cu126
+.venv/Scripts/python -m pip install -e ".[dev,glasses]"
+```
+
+The cu126 build was picked over cu130 because its kernel list includes the T2000's Turing GPU,
+sm_75. `torch.cuda.get_arch_list()` prints that list. Installing the glasses extra afterwards kept
+the CUDA build in place. Check it did, every
+time, because a package that depends on torch can pull the CPU build back in without saying so:
+
+```
+.venv/Scripts/python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+```
+
+The version must end in `+cu126` and the third value must be `True`. A `neon_live` run on a CPU
+estimator also says so in its log, and still runs.
 
 If pip stalls on a 401 from a private package index, your machine has a user-level `pip.ini`
 pointing somewhere that needs a token. Put this in `.venv/pip.ini` and it talks to PyPI only:
@@ -69,7 +90,7 @@ run ends when the phone disconnects. Launching the app by hand takes longer than
 | Sink | Where the path goes | Flags |
 |---|---|---|
 | `debug_window` | an OpenCV window with the arrow, the alarm, the surprise field and the depth view | |
-| `web` | a page in any browser on the network: the arrow, the alarm, and the depth view under them | `--web-port` (8765) |
+| `web` | a page in any browser on the network: the arrow, the alarm, the planner's view from above, and the depth view | `--web-port` (8765) |
 | `phone_app` | the Pixel app over TCP. The phone connects to the laptop, on this port | `--phone-port` (9100) |
 | `none` | nowhere. For recording and for tests | |
 
@@ -84,12 +105,40 @@ laptop is looking. Name both and both are served from the one run:
 Any combination works, all three included. Each display is named at most once, since two of the
 same means two servers on one port. One display named is exactly what it always was.
 
-The depth view is the depth image the planner saw, colored by distance, with each obstacle
-group's nearest point as a ring sized by its clearance, magenta for a wall, the chosen path laid
-on the floor as a white line, and one line of text: groups in view, the nearest clearance, where
-the floor came from (`supplied` by the source, `fitted` from the cloud, or the `previous`
-frame's), and `ALARM` when set. It is what a person tuning the planner looks at, and the window
+The depth view is the depth image the planner saw, in gray with near bright and far dark, and a dim
+brown where there is no reading. It is turned a quarter turn at a time so the floor is at the bottom,
+because the Pixel sends its depth image sideways to how the phone is held. On it are each obstacle group's nearest point as a ring sized by
+its clearance, amber for a group and magenta for a wall, the chosen path laid on the floor as a
+ribbon the body's width, and one line of text. The ribbon is colored and filled the way the band
+in the view from above is. Its fill also fades to nothing toward the end of the plan, and its
+borders do not, so its direction stays visible. The line of text gives the groups in view, the
+nearest clearance, where the floor came from (`supplied` by the source, `fitted` from the cloud,
+or the `previous` frame's), and `ALARM` when set. It is what a person tuning the planner looks at, and the window
 and the browser draw it from the same code. The phone never gets it.
+
+The browser also draws the planner's view from above, walking up the screen, about 5.3 m ahead and
+3 m to each side. Three layers, each with a checkbox that hides it in the browser alone:
+
+- **Field.** What every spot ahead costs to walk through, at the moment the walker would reach it.
+  Brighter costs more. It is clipped at the frame's 98th percentile, so one costly point does not
+  leave the rest dark.
+- **Path.** The planned path as a band the body's width, from a dot at the walker to an arrowhead
+  where the plan ends. Its color runs blue to red as something in the way gets closer, red from
+  one second to contact. Its fill is more solid the more the scene shaped the plan, and its borders
+  stay at one opacity so its direction always shows.
+- **Obstacles.** Each group's nearest point, amber dots for groups and magenta squares for walls,
+  the same colors the depth view uses.
+
+Under it are two numbers. *How much the scene shaped the plan* is how far what the camera saw moved
+the plan from what the planner would do with nothing in view, in bits, measured where the arrow
+reads the path. It is not a confidence: an empty corridor gives a plan the planner is sure of and
+0 bits. *How soon something is in the way* is the course's avoidance surprise for the nearest group
+in the walker's path, in bits, 0.72 at one second to contact. The laptop computes every color,
+opacity and number on the page. The page only draws them. To see it on a recorded walk:
+
+```
+.venv/Scripts/python -m nav --source logged --log-dir frame_logs/walk --sink web --realtime
+```
 
 A display that cannot start ends the run with its own message, because a display asked for and
 silently missing is worse than a run that says why it stopped. A display that fails once it is
@@ -110,10 +159,21 @@ down, a meter below the real floor, and nothing refused it.
 
 A phone held in the hand and pointed at the pavement still leans about 40 degrees from gravity,
 so the live runs set `--floor-max-tilt 50`. The metric model returns no camera intrinsics for a
-plain video, so the pipeline assumes `--fallback-fov` degrees of horizontal field of view, 100
-by default for the Neon. A phone is nearer 75, and the wrong value stretches the cloud sideways
-and overstates the camera's height. That one was found on the first outdoor recording, where the
-estimator read the camera 2.27 m above the floor at 100 degrees and 1.84 m at 75.
+plain video, so `video_file` assumes `--fallback-fov` degrees of horizontal field of view, 100 by
+default. A phone is nearer 75.
+
+The metric model answers as if every camera had a 300 pixel focal length, and the depth source
+converts its output to meters with the focal it was given. So the assumed field of view only
+changes distances along the direction the camera points. Too wide, and they come out short. Up and
+sideways don't move, because the focal cancels out of both. For a level camera that leaves the
+floor where it was. Tilted down, the floor tilts and moves too. On a camera pitched 40 degrees
+down with a real 75 degree view, assuming 100 reads a 1.5 m height as 1.19 m and leans the floor
+12.5 degrees. The first outdoor recording read the camera 2.27 m above the floor at 100 degrees
+and 1.84 m at 75, but that was before the conversion existed, so those two figures no longer apply.
+
+`neon_live` ignores the flag. It reads the glasses' own calibration when it connects, straightens
+every frame and the gaze point with it, and hands the straightened camera matrix on, so there is
+nothing to guess.
 
 Phone videos also carry a rotation tag. The video source applies it, so a portrait recording
 comes through upright.
@@ -190,8 +250,13 @@ that between subnets, in which case read the address off the Companion app's str
 ```
 
 `check_neon.py` connects, receives one frame and exits 0, or says which path it tried and exits
-1. The `neon_live` and `neon_plugin` commands above were not run while building this, because
-there were no glasses and no plugin recording on hand. The Pixel runs on 2026-10-02 used the
+1. On success it also prints the camera matrix after straightening, how many degrees of field of
+view the straightening crops off, and the measured offset between the laptop's clock and the
+glasses'. It exits 1 if the glasses do not hand over their calibration. `check_neon.py` and the
+`neon_live` command with `--neon-address` were run on 2026-10-05 with the glasses worn, on a school
+network where discovery was not tried. The figures from that day are under *Measured on the
+glasses* below. The `neon_plugin` command has not been run, because there was no plugin recording
+on hand. The Pixel runs on 2026-10-02 used the
 `web` sink over wifi and USB. The `phone_app` sink has been run against the suite's fake phone,
 through the same entry point, and not yet with the Pixel. Everything else was run as shown.
 
@@ -209,14 +274,96 @@ log directory, so the flags are there to read back.
 
 Completed avoidances are written to `episodes.jsonl` in the same directory, one JSON line each.
 
+### The timing log
+
+A run with `--record-to` also writes `timing.jsonl` into that directory, one line for every frame
+the planner took or tried to take. A run without `--record-to` writes none. Each line says when
+the frame was captured, when it reached the laptop, when its depth was ready, when its plan was
+done, and where its floor came from. A frame the scene refused for having no usable floor still
+gets a line, with no floor and no plan time, so the floor acceptance rate reads back the way it
+happened. A frame the planner refused after the floor was found keeps its floor and has no plan
+time.
+
+The times are on the laptop's clock. Capture is only there for a source that measured the offset
+between its clock and the laptop's, which today is the Neon. Summarize a run with:
+
+```
+.venv/Scripts/python examples/timing_report.py frame_logs/walk
+```
+
+It leaves out the first 10 seconds by default, while the network and the GPU warm up, and prints
+each share's median, 95th percentile and worst case, the planned frame rate, the longest gap
+between plans, and the floor sources. `--verbose` prints the same shares per frame while a run is
+going, along with the observed heading.
+
+Run it on a live run or a `--neon-replay` run, not on a `--source logged` replay. A logged replay
+carries the original run's capture, arrival and depth times beside its own plan times, so its
+shares mix two runs. The report says so when it sees one.
+
+### Recording what the glasses send
+
+A frame log starts after the depth model, so it can't test anything upstream of it. To replay the
+glasses from the network up, record their raw stream while they're worn:
+
+```
+.venv/Scripts/python examples/capture_neon_stream.py --neon-address 10.0.0.5 --seconds 240 frame_logs/captures/walk
+.venv/Scripts/python -m nav --source neon_live --neon-replay frame_logs/captures/walk --sink web --record-to frame_logs/walk_replay
+```
+
+The capture keeps the scene video as the compressed packets the glasses sent, with the gaze, the
+IMU, the calibration and the clock offset beside it. Nothing is decoded while recording, so the
+capture doesn't fall behind the way a decoder can. `meta.json` is written as soon as the
+stream description arrives with the first packets, so a capture stopped early can still be replayed. `--neon-replay` feeds the
+capture through the same decoder, depth model, scene and planner as a live run, at the pace it was
+recorded, with the timestamps moved to now. The run ends when the capture does. A 240 s capture is
+about 200 MB.
+
+The glasses' client runs in a process of its own, at above-normal priority, and hands frames over
+through shared memory. When it ran in the same process as everything else, frames reached the
+planner 4 to 12 s late. Three things stacked up. The depth model and the planner held Python's
+global lock while the client decoded on one thread. The client converted all 30 frames a second
+to color whether anyone wanted them or not. And the depth model leaked about 7 threads on every
+call. Frames go through shared memory rather than the pipe between the two processes, because a
+1600 by 1200 frame is 5.8 MB to copy.
+
+## Checking the planner on a recording
+
+`nav.evaluation.check_planner` replays a recording through the scene and planner and prints the
+figures the planner is judged by. Pass the same scene flags the recording needs, as for any replay.
+
+```
+.venv/Scripts/python -m nav.evaluation.check_planner numbers frame_logs/walk
+.venv/Scripts/python -m nav.evaluation.check_planner flips frame_logs/walk
+.venv/Scripts/python -m nav.evaluation.check_planner band frame_logs/walk
+```
+
+- `numbers`: how often the arrow sits at its sidestep limit, split by how far away the nearest thing
+  ahead is, how often it swings from one limit to the other, the alarm figures, and how much
+  consecutive plans disagree. Each target gets PASS or FAIL, or NOT JUDGED under 100 frames.
+- `flips`: the frame pairs whose plans disagree the most, sorted into side flips, new obstacles,
+  phone turns, shifts on the same side and tracker jumps, with the largest few to open in the recording.
+- `band`: with something 3 to 5.32 m ahead and the arrow at its limit, which cause would release it,
+  found by re-planning each frame without one suspected cause at a time.
+
+`--set <field>=<value>` changes a planner setting for the run, and the output marks it.
+`--cached` keeps the scene pass between runs. The measured results and the exact commands behind
+them are in `../docs/evaluation/arrow_flips_and_band.md`.
+
+`tests/test_planner_golden.py` pins the same figures on two committed slices of recorded walks. A
+planner change moves them on purpose: update the expected values in the same commit and say why.
+`tests/README.md` says how to cut a new slice.
+
 ## The layers
 
 **Sources** are device specific and yield `DepthFrame` objects. The two RGB sources share one
 depth estimator. **Scene** turns a depth image into obstacles on the ground: unproject, find the
 floor, keep what is between ankle and head height, group into cells, and measure how much each
 group's distance has been wobbling. That wobble is N and the distance is S. **Planner** builds a
-surprise field over future time and lateral position from S and N, and runs dynamic programming
-through it. **User model** watches the planner's output and the walker's heading and measures
+field over future time and lateral position from two surprises, the professor's, which grows
+with N over S, and the surprise of the body touching something, and runs dynamic programming
+through it. It also remembers the plan it made one frame earlier, relative to the walker, and
+charges any path for straying from it over the first second, so a near-tie doesn't flip sides
+every frame. **User model** watches the planner's output and the walker's heading and measures
 what each avoidance cost in bits. It never steers. **Sinks** are device specific and take a
 `PlannedPath`. The runtime runs scene and planner on the newest frame in a thread so the source
 is never blocked.
@@ -235,6 +382,19 @@ across the language boundary: `tests/fixtures/pixel_app_frame.bin`, written by t
 and decoded here, and `tests/fixtures/laptop_path.bin`, written by `encode_path` from stated
 values in `tests/test_laptop_path_fixture.py` and decoded by the app's test.
 
+## Driving haptics and headphones from the path
+
+Nothing in the pipeline vibrates or plays a sound yet. Which values in the path message are worth
+listening to, what they mean in numbers, and how they could drive a vibration motor, stereo
+balance, volume or a noise cancelling switch is in
+[`../docs/guides/drive_feedback_from_the_path.md`](../docs/guides/drive_feedback_from_the_path.md).
+
+## Measured on the glasses
+
+Latency, frame rate and floor figures from the first session with the Neon glasses, with the
+conditions they were taken under and the commands that rerun them, are in
+[`../docs/evaluation/neon_glasses_first_session.md`](../docs/evaluation/neon_glasses_first_session.md).
+
 ## Known limits
 
 - ARCore depth is computed from motion. It stops updating when the walker stands still, drops
@@ -245,3 +405,10 @@ values in `tests/test_laptop_path_fixture.py` and decoded by the app's test.
 - Motion prediction in the planner is off by default. The scene reports a group's velocity from
   its centroid in the world frame, which needs a source with a position.
 - The user model's time constant, b, is a placeholder until a walker is measured.
+- The planner's walker sway, how far a person drifts from the line the arrow asks for, is an
+  assumed 0.10 m. No recorded walk had anyone steering by the arrow, so it has not been measured.
+- The planner's memory of its previous plan was tuned and checked on replays only. It has not run
+  live on the phone or the glasses yet.
+- The depth conversion from the model's 300 pixel focal was checked on a replayed glasses capture,
+  not on a live walk. Every `video_file` figure taken before it was added used depth at the wrong
+  scale.
