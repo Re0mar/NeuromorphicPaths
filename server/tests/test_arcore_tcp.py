@@ -270,7 +270,7 @@ def test_synthetic_frames_carry_a_real_floor_plane() -> None:
     depth = frame.depth_meters[row, column]
     focal_y = frame.intrinsics[1, 1]
     principal_y = frame.intrinsics[1, 2]
-    # Unproject the bottom-centre pixel and check it satisfies normal . p + offset == 0.
+    # Unproject the bottom-center pixel and check it satisfies normal . p + offset == 0.
     point = np.array([0.0, (row - principal_y) * depth / focal_y, depth])
 
     assert frame.ground_plane is not None
