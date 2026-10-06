@@ -9,7 +9,9 @@ requires-python = ">=3.12"
 description = "Turns a depth stream from any sensor into a planned walking path for a display to show."
 dependencies = [
     "numpy",
-    "opencv-python",
+    # OpenCV 5 dropped cv2.undistortPointsIter, which nav/sources/camera_model.py calls to undistort
+    # the glasses' gaze and edge points. A fresh install picks up 5.0 otherwise, and 27 tests fail.
+    "opencv-python>=4.11,<5",
     "open3d>=0.19",
     # The planner's contact term needs the log of the normal cumulative distribution, accurate at
     # both tails. numpy has no erf, and scipy.special.log_ndtr is that function exactly.
