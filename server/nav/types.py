@@ -83,6 +83,10 @@ class FrameTiming:
     depth_ready_seconds: float | None
 
     def __post_init__(self) -> None:
+        # Every share in the timing log is measured from arrival, so a record without one has
+        # nothing to measure from. The type says float, and nothing else would stop a None.
+        if self.arrival_seconds is None:
+            raise ValueError("arrival_seconds is required, got None")
         for field_name in ("capture_seconds", "arrival_seconds", "depth_ready_seconds"):
             value = getattr(self, field_name)
             if value is not None and not np.isfinite(value):
@@ -113,6 +117,10 @@ class DepthFrame:
     def __post_init__(self) -> None:
         # Every source builds one of these, and a wrongly shaped array from any of them would
         # otherwise surface as a broadcasting error deep inside unprojection.
+        if not np.isfinite(self.timestamp_seconds):
+            # The clearance history, the planner's previous plan and the timing log all order
+            # frames by this. A NaN breaks all three without an error from any of them.
+            raise ValueError(f"timestamp_seconds must be finite, got {self.timestamp_seconds}")
         if self.depth_meters.ndim != 2:
             raise ValueError(f"depth_meters must be (height, width), got shape {self.depth_meters.shape}")
         if self.intrinsics.shape != (3, 3):

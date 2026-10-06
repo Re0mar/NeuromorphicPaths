@@ -12,8 +12,9 @@ the capture shares, and one that does not gets the laptop's shares only.
 
 # Standard library imports
 import json
+import logging
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
 # Third party imports
@@ -21,10 +22,17 @@ import numpy as np
 
 # Local package imports
 from nav.runtime.textio import append_text_lf
+from nav.types import FloorSource
+
+log = logging.getLogger(__name__)
 
 TIMING_FILENAME = "timing.jsonl"
 MILLISECONDS_PER_SECOND = 1000.0
-NO_FLOOR = "none"  # How a skipped frame's missing floor is counted in a summary.
+NO_FLOOR = "none"  # How a skipped frame's missing floor is printed in a summary.
+# A replayed frame log carries the walk's arrival beside the replay's own plan time, so the two
+# are hours or days apart. The longest live delay recorded so far was about 12 s. A minute is
+# well clear of both, so a gap past it means the line mixes two runs.
+MIXED_RUN_GAP_SECONDS = 60.0
 
 
 @dataclass(frozen=True)
@@ -36,7 +44,12 @@ class TimingRecord:
     arrival_seconds: float | None
     depth_ready_seconds: float | None
     plan_done_seconds: float | None
-    floor_source: str | None
+    floor_source: FloorSource | None
+
+
+# Every key a line must carry. Read once from the record so the reader cannot drift from the writer.
+_RECORD_KEYS = tuple(field.name for field in fields(TimingRecord))
+_OPTIONAL_TIME_KEYS = ("capture_seconds", "arrival_seconds", "depth_ready_seconds", "plan_done_seconds")
 
 
 @dataclass(frozen=True)
@@ -62,9 +75,11 @@ class TimingSummary:
     capture_to_plan_done: ShareStatistics | None
     planned_frames_per_second: float | None
     longest_gap_between_plans_seconds: float | None
-    floor_source_counts: dict[str, int]
+    floor_source_counts: dict[FloorSource | None, int]
     # A capture stamped after its own arrival means the clock offset is off by at least that much.
     capture_after_arrival_count: int
+    # Frames planned more than MIXED_RUN_GAP_SECONDS after they arrived. Any at all means a replay.
+    mixed_run_count: int
 
 
 class TimingLog:
@@ -74,17 +89,25 @@ class TimingLog:
         self._path = Path(log_dir) / TIMING_FILENAME
 
     def append(self, record: TimingRecord) -> None:
-        append_text_lf(self._path, json.dumps(asdict(record), allow_nan=False) + "\n")
+        line = asdict(record)
+        # The enum stops here. On disk it is the word the debug line prints, or null.
+        line["floor_source"] = None if record.floor_source is None else record.floor_source.value
+        append_text_lf(self._path, json.dumps(line, allow_nan=False) + "\n")
 
 
 def read_timing_log(path: Path) -> list[TimingRecord]:
     """
     Read a timing.jsonl back.
 
+    A key the reader does not know is ignored, so a field added later does not break this reader.
+    It is logged once per file.
+
     :param path: The file, or the record directory holding it.
     :return: One record per line, in file order.
     :rtype: list[TimingRecord]
     :raises FileNotFoundError: When there is no timing log there.
+    :raises ValueError: When a line is not JSON, misses a key, or holds a value no writer writes.
+        The message names the file and the line.
     """
     path = Path(path)
     if path.is_dir():
@@ -92,9 +115,28 @@ def read_timing_log(path: Path) -> list[TimingRecord]:
     if not path.is_file():
         raise FileNotFoundError(f"no timing log at {path}. Only a run with --record-to writes one")
     records = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            records.append(TimingRecord(**json.loads(line)))
+    unknown_keys: set[str] = set()
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        where = f"{path} line {line_number}"
+        try:
+            raw = json.loads(line)
+        except ValueError as json_error:
+            # A run killed mid-write leaves a truncated last line, and this is what it looks like.
+            # JSONDecodeError is a ValueError, and so is json's refusal of a 4300-digit integer.
+            raise ValueError(f"{where} is not valid JSON: {json_error}") from json_error
+        except RecursionError as nesting_error:
+            raise ValueError(f"{where} nests too deeply to be a timing line") from nesting_error
+        if not isinstance(raw, dict):
+            raise ValueError(f"{where} must be a JSON object, got {type(raw).__name__}")
+        missing = [key for key in _RECORD_KEYS if key not in raw]
+        if missing:
+            raise ValueError(f"{where} is missing {', '.join(missing)}")
+        unknown_keys.update(key for key in raw if key not in _RECORD_KEYS)
+        records.append(_record_from_line(raw, where))
+    if unknown_keys:
+        log.info("ignored keys this reader does not know in %s: %s", path, ", ".join(sorted(unknown_keys)))
     return records
 
 
@@ -126,7 +168,7 @@ def summarize(records: list[TimingRecord], exclude_first_seconds: float) -> Timi
         frames_per_second = (len(plan_times) - 1) / span if span > 0 else None
         longest_gap = float(np.max(np.diff(plan_times)))
 
-    floor_counts = Counter(record.floor_source if record.floor_source is not None else NO_FLOOR for record in measured)
+    floor_counts = Counter(record.floor_source for record in measured)
 
     return TimingSummary(
         frames_measured=len(measured),
@@ -145,6 +187,13 @@ def summarize(records: list[TimingRecord], exclude_first_seconds: float) -> Timi
             if record.capture_seconds is not None
             and record.arrival_seconds is not None
             and record.capture_seconds > record.arrival_seconds
+        ),
+        mixed_run_count=sum(
+            1
+            for record in measured
+            if record.arrival_seconds is not None
+            and record.plan_done_seconds is not None
+            and record.plan_done_seconds - record.arrival_seconds > MIXED_RUN_GAP_SECONDS
         ),
     )
 
@@ -173,14 +222,57 @@ def format_summary(summary: TimingSummary) -> str:
             )
     total = sum(summary.floor_source_counts.values())
     lines.append("floor source                count   share")
-    for source, count in sorted(summary.floor_source_counts.items()):
-        lines.append(f"  {source:<26}{count:6d}  {100.0 * count / total:5.1f}%")
+    floor_rows = sorted(
+        (NO_FLOOR if source is None else source.value, count) for source, count in summary.floor_source_counts.items()
+    )
+    for label, count in floor_rows:
+        lines.append(f"  {label:<26}{count:6d}  {100.0 * count / total:5.1f}%")
     if summary.capture_after_arrival_count:
         lines.append(
             f"WARNING {summary.capture_after_arrival_count} frames were captured after they arrived, "
             "so the clock offset is off and the capture shares are not to be trusted"
         )
+    if summary.mixed_run_count:
+        lines.append(
+            f"WARNING {summary.mixed_run_count} frames were planned more than {MIXED_RUN_GAP_SECONDS:.0f} s after "
+            "they arrived, so this log mixes two runs and the shares are not latencies. "
+            "A --source logged replay does this"
+        )
     return "\n".join(lines)
+
+
+def _record_from_line(raw: dict, where: str) -> TimingRecord:
+    # The one place the floor source is a string. A value no writer writes is refused here, not
+    # counted later as a floor source of its own.
+    raw_floor = raw["floor_source"]
+    if raw_floor is None:
+        floor_source = None
+    else:
+        try:
+            floor_source = FloorSource(raw_floor)
+        except ValueError as unknown_floor_error:
+            allowed = ", ".join(member.value for member in FloorSource)
+            raise ValueError(f"{where} has floor_source {raw_floor!r}, allowed values are {allowed} or null") from unknown_floor_error
+    times = {key: _optional_time(raw[key], key, where) for key in _OPTIONAL_TIME_KEYS}
+    timestamp_seconds = _optional_time(raw["timestamp_seconds"], "timestamp_seconds", where)
+    if timestamp_seconds is None:
+        raise ValueError(f"{where} has timestamp_seconds null, and every frame has one")
+    return TimingRecord(timestamp_seconds=timestamp_seconds, floor_source=floor_source, **times)
+
+
+def _optional_time(value: object, key: str, where: str) -> float | None:
+    if value is None:
+        return None
+    # bool is an int to Python, and a true here is a damaged line, not one second.
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{where} has {key} {value!r}, which is not a number or null")
+    try:
+        number = float(value)
+    except OverflowError as overflow_error:
+        raise ValueError(f"{where} has {key} as an integer too large for a float") from overflow_error
+    if not np.isfinite(number):
+        raise ValueError(f"{where} has {key} {value!r}, which is not finite")
+    return number
 
 
 def _share(records: list[TimingRecord], start_field: str, end_field: str) -> ShareStatistics | None:

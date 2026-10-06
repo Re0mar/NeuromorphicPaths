@@ -30,6 +30,7 @@ from nav.sinks.web import WebSink
 from nav.sources.arcore_tcp import ArCoreTcpSource
 from nav.sources.config import (
     ArCoreConfig,
+    DepthCheckpoint,
     EstimatorConfig,
     LoggedConfig,
     NeonConfig,
@@ -37,6 +38,7 @@ from nav.sources.config import (
     NeonPluginModel,
     TapConfig,
     VideoConfig,
+    depth_checkpoint_from_name,
 )
 from nav.sources.estimated_depth import EstimatedDepthSource
 from nav.sources.estimator import DepthEstimator, DepthEstimatorProtocol
@@ -49,6 +51,7 @@ from nav.usermodel.config import UserModelConfig
 from nav.walker import WalkerConfig
 
 log = logging.getLogger(__name__)
+
 
 class SourceKind(Enum):
     """Where frames come from. Values are the spellings the command line accepts."""
@@ -139,6 +142,15 @@ def _percentile(text: str) -> float:
     return value
 
 
+def _depth_checkpoint(text: str) -> DepthCheckpoint:
+    """A checkpoint name, refused at parse time with the accepted names when it is unknown or relative."""
+    try:
+        return depth_checkpoint_from_name(text)
+    except ValueError as refused:
+        # argparse prints an ArgumentTypeError's own message. A plain ValueError becomes "invalid value".
+        raise argparse.ArgumentTypeError(str(refused)) from refused
+
+
 def build_parser() -> argparse.ArgumentParser:
     """
     Build the argument parser, one group per layer.
@@ -199,7 +211,12 @@ def build_parser() -> argparse.ArgumentParser:
     estimator = parser.add_argument_group("depth estimator")
     # Every default below is read from its dataclass rather than restated, so each value has one
     # home and a test can check the parser against it.
-    estimator.add_argument("--model", default=EstimatorConfig.model_name, help="Depth Anything 3 checkpoint")
+    estimator.add_argument(
+        "--model",
+        type=_depth_checkpoint,
+        default=EstimatorConfig.model_name,
+        help="Depth Anything 3 checkpoint, by its hub name. Only the ones that give meters are accepted",
+    )
     estimator.add_argument("--process-resolution", type=_positive_int, default=EstimatorConfig.process_resolution)
     estimator.add_argument("--confidence-drop-percentile", type=_percentile, default=EstimatorConfig.confidence_drop_percentile)
     estimator.add_argument(
@@ -280,6 +297,10 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
         parser.error(f"--reconnect only applies to {SourceKind.ARCORE_TCP.value}, not {source_kind.value}")
     if arguments.realtime and source_kind is not SourceKind.LOGGED:
         parser.error(f"--realtime only applies to {SourceKind.LOGGED.value}, not {source_kind.value}")
+    if arguments.neon_replay is not None and source_kind is not SourceKind.NEON_LIVE:
+        parser.error(f"--neon-replay only applies to {SourceKind.NEON_LIVE.value}, not {source_kind.value}")
+    if arguments.neon_replay is not None and arguments.neon_address is not None:
+        parser.error("--neon-address and --neon-replay cannot be used together, a replay plays a capture in place of the glasses")
 
     video = None
     neon = None

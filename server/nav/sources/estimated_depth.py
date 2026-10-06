@@ -39,6 +39,7 @@ class EstimatedDepthSource:
         self._estimator = estimator
         self._config = config
         self._warned_about_fallback_intrinsics = False
+        self._told_confidence_filter_is_off = False
 
     def frames(self) -> Iterator[DepthFrame]:
         # Before the first real frame is even asked for, so the walker's first arrow and the first
@@ -47,6 +48,8 @@ class EstimatedDepthSource:
 
         for rgb_frame in self._rgb_source.frames():
             estimate = self._estimator.estimate(rgb_frame.image_rgb)
+            if estimate.confidence is None and self._config.confidence_drop_percentile > 0.0:
+                self._say_confidence_filter_is_off()
             depth = apply_confidence_filter(estimate, self._config.confidence_drop_percentile)
             intrinsics = self._intrinsics_for(rgb_frame, estimate, depth.shape)
             depth_meters = to_meters(depth, intrinsics, estimate.canonical_focal_pixels)
@@ -77,6 +80,18 @@ class EstimatedDepthSource:
 
     def close(self) -> None:
         self._rgb_source.close()
+
+    def _say_confidence_filter_is_off(self) -> None:
+        """Log once that the configured drop percentile is doing nothing."""
+        # The default checkpoint gives no confidence map, so the default 30 percent drops nothing.
+        # Without this line a run reads as filtered when it is not.
+        if self._told_confidence_filter_is_off:
+            return
+        log.info(
+            "the model gives no confidence map, so the %.0f percent confidence filter drops nothing",
+            self._config.confidence_drop_percentile,
+        )
+        self._told_confidence_filter_is_off = True
 
     def _intrinsics_for(self, rgb_frame: RgbFrame, estimate: DepthEstimate, depth_shape: tuple[int, int]) -> np.ndarray:
         """The camera's own calibration first, then the model's, then a guessed field of view."""

@@ -53,10 +53,14 @@ class FrameResult:
 
 def yaw_from_quaternion(orientation_wxyz: np.ndarray) -> float:
     """
-    The heading the camera's forward axis has about the vertical, in radians. Positive is right.
+    The heading the camera's forward axis has about the vertical, in radians.
 
-    Vertical here is camera up before any rotation, so for a device that reports orientation
-    relative to gravity this is the compass-free yaw.
+    It is the angle of the rotated forward axis in the world's x-z plane, measured from +z toward
+    +x. Positive is toward the world's +x. Vertical here is camera up before any rotation, so for
+    a device that reports orientation relative to gravity this is the compass-free yaw.
+
+    In a y-down world, the camera's own frame, +x is right and so positive is a right turn. In a
+    y-up world, which ARCore and the mounted Neon both report, a right turn reads negative.
 
     :param orientation_wxyz: Unit quaternion, (w, x, y, z).
     :return: Yaw in radians, in (-pi, pi].
@@ -147,21 +151,26 @@ def run(config: RunConfig) -> int:
                 arrival_seconds=None if timing is None else timing.arrival_seconds,
                 depth_ready_seconds=None if timing is None else timing.depth_ready_seconds,
                 plan_done_seconds=plan_done_seconds,
-                floor_source=None if floor_source is None else floor_source.value,
+                floor_source=floor_source,
             )
         )
 
     def process(frame: DepthFrame) -> FrameResult:
         try:
-            return plan_frame(frame)
+            result, plan_done_seconds = plan_frame(frame)
         except ValueError:
-            # The worker skips a frame by catching this, before the planner has run. The line is
-            # written anyway, or the floor acceptance read back from the log counts only frames
-            # that had a floor and reads perfect however many were refused.
-            record_timing(frame, plan_done_seconds=None, floor_source=None)
+            # The worker skips the frame on this. It can come from the scene refusing the frame or
+            # from any later step, the planner included, so the floor is read off the scene rather
+            # than assumed missing. The scene clears its source at the start of every frame, so a
+            # refusal reads None here. The line is written anyway, or the floor acceptance read back
+            # from the log counts only planned frames and reads perfect however many were refused.
+            record_timing(frame, None, scene.last_floor_source)
             raise
+        # Written here, after everything that can raise, so no frame ever gets a second line.
+        record_timing(frame, plan_done_seconds, scene.last_floor_source)
+        return result
 
-    def plan_frame(frame: DepthFrame) -> FrameResult:
+    def plan_frame(frame: DepthFrame) -> tuple[FrameResult, float]:
         started = time.perf_counter()
         obstacles = scene.process(frame)
         after_scene = time.perf_counter()
@@ -172,7 +181,6 @@ def run(config: RunConfig) -> int:
         observed = baseline.observed(yaw_from_quaternion(frame.pose.orientation), frame.timestamp_seconds)
         meter.observe(path, observed, frame.timestamp_seconds)
         finished = time.perf_counter()
-        record_timing(frame, plan_done_seconds, scene.last_floor_source)
         log.debug(
             "frame %.3f: scene %.1f ms, planner %.1f ms, user model %.1f ms, %d groups, heading %.1f deg, observed %.1f deg%s%s",
             frame.timestamp_seconds,
@@ -200,7 +208,8 @@ def run(config: RunConfig) -> int:
             walking_speed_mps=config.planner.walking_speed_mps,
             body_half_width_meters=config.planner.body_half_width_meters,
         )
-        return FrameResult(path=path, field=field if field is not None else np.zeros((1, len(planner.grid))), grid=planner.grid, view=view)
+        result = FrameResult(path=path, field=field if field is not None else np.zeros((1, len(planner.grid))), grid=planner.grid, view=view)
+        return result, plan_done_seconds
 
     sink = build_sink(config)
     source = build_source(config)
@@ -299,7 +308,7 @@ def _report(
     meter: WorkMeter,
     frames_in: int,
     config: RunConfig,
-    floor_counts: Counter,
+    floor_counts: Counter[FloorSource | None],
 ) -> None:
     log.info(
         "%d frames in, %d processed, %d dropped as stale, %d skipped as unusable",

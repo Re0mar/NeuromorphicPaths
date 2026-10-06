@@ -17,7 +17,7 @@ from typing import Protocol
 import numpy as np
 
 # Local package imports
-from nav.sources.config import EstimatorConfig
+from nav.sources.config import DepthCheckpoint, DepthScale, EstimatorConfig
 
 log = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ class DepthEstimate:
     canonical_focal_pixels: float | None = None
 
 
-def canonical_focal_for(model_name: str) -> float | None:
+def canonical_focal_for(checkpoint: DepthCheckpoint) -> float | None:
     """
     The focal length a checkpoint's depth assumes, or None when its depth is already meters.
 
@@ -48,8 +48,20 @@ def canonical_focal_for(model_name: str) -> float | None:
     it ran at. Meters are output times the real focal over 300. The library only converts inside
     its nested model, so a standalone metric checkpoint hands back the raw value.
     Measured on one glasses frame: 1.91, 2.91 and 3.55 m raw at 504, 336 and 280 px, 1.51 to 1.56 m converted.
+
+    :param checkpoint: The checkpoint the estimator runs.
+    :return: 300 for the standalone metric checkpoint, None for one that already gives meters.
+    :rtype: float | None
+    :raises ValueError: For a relative checkpoint, whose depth no focal turns into meters.
     """
-    return METRIC_MODEL_CANONICAL_FOCAL_PIXELS if "METRIC" in model_name.upper() else None
+    match checkpoint.depth_scale:
+        case DepthScale.METERS_AT_CANONICAL_FOCAL:
+            return METRIC_MODEL_CANONICAL_FOCAL_PIXELS
+        case DepthScale.METERS:
+            return None
+        case DepthScale.RELATIVE:
+            # EstimatorConfig already refuses these, so reaching here means a config was bypassed.
+            raise ValueError(f"{checkpoint.value} gives relative depth, and no focal turns that into meters")
 
 
 class DepthEstimatorProtocol(Protocol):
@@ -75,8 +87,10 @@ def fallback_intrinsics(height: int, width: int, half_field_of_view_degrees: flo
 
     Used only when the camera brings no calibration and the model returns no intrinsics.
     The metric model's depth is converted with this focal, which cancels it out of x and y.
-    So a wrong field of view scales distances along the view direction by assumed over real focal,
-    and leaves the camera height alone.
+    So a wrong field of view scales only the distance along the camera's axis, by assumed over real focal.
+    A level camera's height lies in y and comes out right. A camera pitched down mixes that axis
+    into its height, so the floor reads too low or too high and leans. At 40 degrees down, assuming
+    100 degrees for a real 75 reads a 1.5 m camera at 1.19 m, with the floor leaning 12.5 degrees.
 
     :param height: Depth image height in pixels.
     :param width: Depth image width in pixels.
@@ -101,9 +115,10 @@ def apply_confidence_filter(estimate: DepthEstimate, drop_percentile: float) -> 
     NaN is what the scene already treats as invalid, so dropping a pixel here needs no second
     channel travelling alongside the depth.
 
-    :param estimate: The estimate to filter. Unchanged, a copy is returned.
+    :param estimate: The estimate to filter. Never written to.
     :param drop_percentile: Percentage of least confident pixels to drop, 0 to below 100.
-    :return: A copy of the depth with dropped pixels set to NaN.
+    :return: A copy of the depth with dropped pixels set to NaN. When nothing is dropped, because
+        the percentile is 0 or the model gave no usable confidence, the estimate's own depth array.
     :rtype: np.ndarray
     """
     if estimate.confidence is None or drop_percentile <= 0.0:
@@ -143,10 +158,10 @@ class DepthEstimator:
         self._config = config
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        log.info("loading %s on %s", config.model_name, self.device)
-        self._model = DepthAnything3.from_pretrained(config.model_name).to(self.device)
+        log.info("loading %s on %s", config.model_name.value, self.device)
+        self._model = DepthAnything3.from_pretrained(config.model_name.value).to(self.device)
         self._preprocess_on_the_calling_thread()
-        log.info("loaded %s", config.model_name)
+        log.info("loaded %s", config.model_name.value)
 
     def _preprocess_on_the_calling_thread(self) -> None:
         """
@@ -168,13 +183,13 @@ class DepthEstimator:
         """
         Run one inference on a blank image before any real frame.
 
-        The first inference on CUDA pays for context creation and kernel selection. Without this,
-        that lands on the walker's first frame and on the first latency figure.
+        The first inference on CUDA also creates the context and selects kernels. Without this,
+        that start-up time lands on the walker's first frame and on the first latency figure.
         """
         side = self._config.process_resolution
         started = time.perf_counter()
         self.estimate(np.zeros((side, side, 3), dtype=np.uint8))
-        log.info("warmed up %s on %s in %.1f s", self._config.model_name, self.device, time.perf_counter() - started)
+        log.info("warmed up %s on %s in %.1f s", self._config.model_name.value, self.device, time.perf_counter() - started)
 
     def estimate(self, image_rgb: np.ndarray) -> DepthEstimate:
         """

@@ -16,8 +16,7 @@ instead puts obstacles at the edges of the image in the wrong place sideways.
 
 # Standard library imports
 import logging
-import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 
 # Third party imports
 import cv2
@@ -25,11 +24,17 @@ import numpy as np
 
 # Local package imports
 from nav.clock import laptop_time_seconds
-from nav.pose.imu_orientation import pose_from_imu
+from nav.pose.imu_orientation import is_usable_orientation, pose_from_imu
 from nav.pose.neon_mount import NEON_IMU_MOUNT
 from nav.sources.camera_model import CameraCalibration, CameraModelError, Undistorter, scale_intrinsics
 from nav.sources.config import NeonConfig
-from nav.sources.neon_device import NeonDeviceError, NeonDeviceProcess, NeonStreamEnded
+from nav.sources.neon_device import (
+    DeviceMatched,
+    NeonDeviceError,
+    NeonDeviceProcess,
+    NeonStreamEnded,
+    NeonUnexpectedFailure,
+)
 from nav.sources.rgb import RgbFrame
 from nav.types import FrameTiming
 
@@ -43,14 +48,15 @@ CLOSE_OFFSET_MEASUREMENTS = 20
 # Long enough that a dropped IMU packet does not stall the scene stream, short enough that the
 # orientation never lags a frame behind. The IMU runs far faster than the scene camera.
 IMU_POLL_TIMEOUT_SECONDS = 0.0
-# A real orientation is a unit quaternion. Anything this short is an empty reading, not a rotation.
-MINIMUM_QUATERNION_LENGTH = 0.5
 # How long one receive may block. Short, so Ctrl+C lands within a quarter of a second even when
 # the stream has stopped, which a receive with no timeout does not allow.
 RECEIVE_POLL_SECONDS = 0.25
 # The scene camera's native size, which the device's calibration describes. The calibration buffer
 # does not carry a size of its own.
 NEON_SCENE_SIZE = (1200, 1600)  # height, width
+# The failures a request to the device can end in. NeonDeviceError is a ConnectionError, named
+# anyway so the tuple says what it means.
+DEVICE_FAILURES: tuple[type[BaseException], ...] = (NeonDeviceError, OSError, ValueError)
 
 
 class NeonCalibrationError(ValueError):
@@ -62,7 +68,7 @@ class NeonLiveRgbSource:
 
     def __init__(self, config: NeonConfig) -> None:
         self._config = config
-        self._device = None
+        self._device: NeonDeviceProcess | None = None
         self._latest_orientation_wxyz: np.ndarray | None = None
         self._calibration_matrix: np.ndarray | None = None
         self._distortion_coefficients: np.ndarray | None = None
@@ -72,9 +78,6 @@ class NeonLiveRgbSource:
         self._clock_offset_seconds: float | None = None
         self._clock_offset_measured = False
         self._warned_about_empty_imu = False
-        # The failures a request to the device can end in. NeonDeviceError is a ConnectionError,
-        # named anyway so the tuple says what it means.
-        self._device_failures: tuple[type[BaseException], ...] = (NeonDeviceError, OSError, ValueError)
 
     @property
     def undistorter(self) -> Undistorter | None:
@@ -86,7 +89,7 @@ class NeonLiveRgbSource:
         """Laptop clock minus Neon clock as measured at connect, or None when it could not be."""
         return self._clock_offset_seconds
 
-    def _connect(self):
+    def _connect(self) -> NeonDeviceProcess:
         if self._device is not None:
             return self._device
 
@@ -100,13 +103,13 @@ class NeonLiveRgbSource:
         self._device = device
         return device
 
-    def _read_calibration(self, device) -> None:
+    def _read_calibration(self, device: NeonDeviceProcess) -> None:
         """Ask the device for its scene camera's matrix and distortion, once per connection."""
         try:
             calibration = device.get_calibration()
             camera_matrix = np.asarray(calibration.scene_camera_matrix, dtype=np.float64).reshape(3, 3)
             distortion = np.asarray(calibration.scene_distortion_coefficients, dtype=np.float64).reshape(-1)
-        except self._device_failures as failure:
+        except DEVICE_FAILURES as failure:
             # Without it every frame would fall back to a guessed field of view, which is the
             # silent error this source exists to avoid. The loop ends the run with this message.
             raise NeonCalibrationError(
@@ -144,35 +147,40 @@ class NeonLiveRgbSource:
         )
         return self._undistorter
 
-    def _measure_clock_offset(self, device, measurement_count: int) -> float | None:
+    def _measure_clock_offset(self, device: NeonDeviceProcess, measurement_count: int) -> float | None:
         """
         The laptop's clock minus the Neon's, by the client's Time Echo protocol, or None.
 
-        Bounded, because the client runs it in an asyncio.run of its own with no timeout we can
-        pass, and a phone that has gone away would otherwise hold the process until it gave up.
+        Bounded in the device process, which gives up after `time_echo_timeout_seconds` and answers
+        None. On a replay nothing is measured, and the answer is the offset stored with the capture.
         """
         try:
-            outcome = _call_with_timeout(
-                lambda: device.estimate_time_offset(number_of_measurements=measurement_count),
-                self._config.time_echo_timeout_seconds,
-            )
-        except self._device_failures as failure:
+            outcome = device.estimate_time_offset(number_of_measurements=measurement_count)
+        except DEVICE_FAILURES as failure:
             log.warning("the clock offset could not be measured (caught %s, expected): %s", type(failure).__name__, failure)
             return None
-        if outcome is _TIMED_OUT:
-            log.warning("the clock offset measurement did not return within %.0f s, abandoned", self._config.time_echo_timeout_seconds)
-            return None
+        replaying = self._config.replay_dir is not None
         if outcome is None:
-            # The client returns None when the Companion app predates Time Echo.
-            log.warning("the Companion app does not answer Time Echo, so latency is measured from arrival only")
+            if replaying:
+                log.warning("the capture was recorded without a clock offset, so latency is measured from arrival only")
+            else:
+                # The client returns None when the Companion app predates Time Echo, and the device
+                # process does when the phone did not answer in time.
+                log.warning("the Companion app did not answer Time Echo, so latency is measured from arrival only")
             return None
         offset_seconds = outcome.time_offset_ms.median / 1000.0
-        log.info(
-            "clock offset %.1f ms (laptop minus Neon), round trip %.1f ms, over %d measurements",
-            outcome.time_offset_ms.median,
-            outcome.roundtrip_duration_ms.median,
-            measurement_count,
-        )
+        if replaying:
+            log.info(
+                "clock offset %.1f ms (laptop minus Neon), the one recorded with the capture, not measured now",
+                outcome.time_offset_ms.median,
+            )
+        else:
+            log.info(
+                "clock offset %.1f ms (laptop minus Neon), round trip %.1f ms, over %d measurements",
+                outcome.time_offset_ms.median,
+                outcome.roundtrip_duration_ms.median,
+                measurement_count,
+            )
         return offset_seconds
 
     def frames(self) -> Iterator[RgbFrame]:
@@ -219,7 +227,7 @@ class NeonLiveRgbSource:
                 timing=FrameTiming(capture_seconds=capture_seconds, arrival_seconds=arrival_seconds, depth_ready_seconds=None),
             )
 
-    def _receive_matched(self, device):
+    def _receive_matched(self, device: NeonDeviceProcess) -> DeviceMatched:
         """
         The next scene frame with its gaze, waiting in short slices.
 
@@ -240,7 +248,7 @@ class NeonLiveRgbSource:
                 log.warning("no scene frame from the Neon for %.0f s, still waiting", silent_seconds)
                 next_warning_seconds += self._config.stall_warning_seconds
 
-    def _poll_imu(self, device) -> None:
+    def _poll_imu(self, device: NeonDeviceProcess) -> None:
         """Take the newest IMU reading if one is waiting, otherwise keep the previous one."""
         datum = device.receive_imu_datum(timeout_seconds=IMU_POLL_TIMEOUT_SECONDS)
         if datum is None or datum.quaternion is None:
@@ -251,8 +259,7 @@ class NeonLiveRgbSource:
         # the floor fit.
         quaternion = datum.quaternion
         orientation = np.array([quaternion.w, quaternion.x, quaternion.y, quaternion.z])
-        length = float(np.linalg.norm(orientation))
-        if not np.isfinite(length) or length < MINIMUM_QUATERNION_LENGTH:
+        if not is_usable_orientation(orientation):
             # The glasses sent nothing but zero quaternions for minutes at a time on 2026-10-05.
             # A zero is no orientation at all, so it is skipped like a reading without one, and the
             # last real orientation carries on. Letting it through ended the run on its first frame.
@@ -265,48 +272,30 @@ class NeonLiveRgbSource:
     def close(self) -> None:
         if self._device is None:
             return
-        if self._clock_offset_seconds is not None:
-            # The end-of-walk check. The offset was measured once at connect and every capture time
-            # leans on it, so how far it moved over the walk is how far those times can be off.
-            closing_offset = self._measure_clock_offset(self._device, CLOSE_OFFSET_MEASUREMENTS)
-            if closing_offset is not None:
-                log.info(
-                    "clock offset drifted %.1f ms over the run, %.1f ms at connect and %.1f ms at close",
-                    (closing_offset - self._clock_offset_seconds) * 1000.0,
-                    self._clock_offset_seconds * 1000.0,
-                    closing_offset * 1000.0,
-                )
-        self._device.close()
-        self._device = None
-
-
-# Returned by _call_with_timeout when the call did not finish, so a None result stays distinguishable.
-_TIMED_OUT = object()
-
-
-def _call_with_timeout(function: Callable[[], object], timeout_seconds: float) -> object:
-    """
-    Run a blocking call on a daemon thread and wait at most timeout_seconds for it.
-
-    A call still running at the deadline is abandoned, not cancelled. The thread is a daemon, so it
-    cannot keep the process alive after the run ends.
-
-    :return: The call's result, or _TIMED_OUT.
-    :raises: Whatever the call raised, re-raised here on the caller's thread.
-    """
-    outcome: dict[str, object] = {}
-
-    def run() -> None:
         try:
-            outcome["value"] = function()
-        except BaseException as raised:  # noqa: BLE001, handed to the caller's thread unchanged and re-raised there
-            outcome["error"] = raised
+            # A replay reads back the offset stored with the capture, so a drift would be that
+            # value compared with itself.
+            if self._clock_offset_seconds is not None and self._config.replay_dir is None:
+                self._log_clock_drift(self._device)
+        except NeonUnexpectedFailure:
+            # Logged and not raised. Close runs in the loop's finally, and raising there would skip
+            # the end-of-run report for a check that only informs.
+            log.error("UNEXPECTED failure measuring the clock offset at close, may need a handler", exc_info=True)
+        finally:
+            self._device.close()
+            self._device = None
 
-    worker = threading.Thread(target=run, name="neon-time-echo", daemon=True)
-    worker.start()
-    worker.join(timeout_seconds)
-    if worker.is_alive():
-        return _TIMED_OUT
-    if "error" in outcome:
-        raise outcome["error"]
-    return outcome.get("value")
+    def _log_clock_drift(self, device: NeonDeviceProcess) -> None:
+        """
+        The end-of-walk check. The offset was measured once at connect and every capture time leans
+        on it, so how far it moved over the walk is how far those times can be off.
+        """
+        closing_offset = self._measure_clock_offset(device, CLOSE_OFFSET_MEASUREMENTS)
+        if closing_offset is None:
+            return
+        log.info(
+            "clock offset drifted %.1f ms over the run, %.1f ms at connect and %.1f ms at close",
+            (closing_offset - self._clock_offset_seconds) * 1000.0,
+            self._clock_offset_seconds * 1000.0,
+            closing_offset * 1000.0,
+        )

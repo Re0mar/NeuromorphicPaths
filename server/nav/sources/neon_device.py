@@ -10,9 +10,11 @@ frame when it wants one.
 
 NeonDeviceProcess answers the same calls the client's simple Device does, with the same shapes,
 so NeonLiveRgbSource neither knows nor cares which one it holds. Requests and replies cross a pipe
-as plain tuples, because the client's own objects are not promised to pickle.
+as tuples of plain values and this file's enums, because the client's own objects are not promised
+to pickle.
 
-The only file besides neon_plugin.py allowed to import the Pupil Labs client. A guard test checks.
+This file does not import the Pupil Labs client. neon_stream.py does, inside the child, and
+test_import_boundaries.py keeps the import to that file and neon_plugin.py.
 """
 
 # Standard library imports
@@ -27,6 +29,7 @@ import threading
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 from multiprocessing import shared_memory
 from multiprocessing.connection import Connection
 
@@ -36,11 +39,13 @@ import numpy as np
 
 # Local package imports
 from nav.sources.config import NeonConfig
+from nav.sources.neon_stream import NeonStreamDevice, client_failure_types
 
 log = logging.getLogger(__name__)
 
 # How long past a request's own timeout the parent waits before deciding the child has stopped
-# answering. Covers pickling a 1600 by 1200 frame through the pipe with plenty to spare.
+# answering. A reply is a few small values, since the frame goes through shared memory, so this is
+# mostly room for a child the estimator has starved of CPU.
 RESPONSE_GRACE_SECONDS = 5.0
 # Starting the child means a fresh interpreter importing numpy, OpenCV and the client. A few
 # seconds on this laptop, so this is generous on purpose.
@@ -50,8 +55,41 @@ CLOSE_JOIN_SECONDS = 5.0
 ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000
 
 
+class DeviceRequest(Enum):
+    """What the parent asks the child for. Every request gets exactly one reply."""
+
+    CONNECT = "connect"
+    CALIBRATION = "calibration"
+    TIME_OFFSET = "time_offset"
+    MATCHED = "matched"
+    IMU = "imu"
+    CLOSE = "close"
+
+
+class ReplyStatus(Enum):
+    """Whether the child answered a request or failed it. A failure carries a FailureKind."""
+
+    OK = "ok"
+    ERROR = "error"
+
+
+class FailureKind(Enum):
+    """How a failure in the child crosses the pipe. The parent raises each one as its own type."""
+
+    DEVICE = "device"
+    OS = "os"
+    VALUE = "value"
+    # Not a failure. A played-back capture has reached its end.
+    ENDED = "ended"
+    UNEXPECTED = "unexpected"
+
+
 class NeonDeviceError(ConnectionError):
     """The device refused a request, or the process holding the connection stopped answering."""
+
+
+class NeonUnexpectedFailure(RuntimeError):
+    """The child failed in a way nobody named. Carries the child's traceback in its message."""
 
 
 class NeonStreamEnded(Exception):
@@ -165,15 +203,23 @@ class NeonDeviceProcess:
         self._process.start()
         child_end.close()
         self._connection = parent_end
-        self._request("connect", wait_seconds=self._config.discovery_timeout_seconds + START_GRACE_SECONDS)
+        self._request(DeviceRequest.CONNECT, wait_seconds=self._config.discovery_timeout_seconds + START_GRACE_SECONDS)
 
     def get_calibration(self) -> DeviceCalibration:
-        camera_matrix, distortion = self._request("calibration", wait_seconds=RESPONSE_GRACE_SECONDS)
+        camera_matrix, distortion = self._request(DeviceRequest.CALIBRATION, wait_seconds=RESPONSE_GRACE_SECONDS)
         return DeviceCalibration(scene_camera_matrix=camera_matrix, scene_distortion_coefficients=distortion)
 
     def estimate_time_offset(self, number_of_measurements: int = 100) -> DeviceTimeEcho | None:
+        """
+        Laptop clock minus Neon clock, measured in the child.
+
+        The child gives up after `time_echo_timeout_seconds` and answers None. This waits that long
+        plus the grace, so the child's bound is always the one that fires first.
+
+        :return: The medians, or None when the Companion app cannot answer or did not in time.
+        """
         answer = self._request(
-            "time_offset",
+            DeviceRequest.TIME_OFFSET,
             number_of_measurements,
             wait_seconds=self._config.time_echo_timeout_seconds + RESPONSE_GRACE_SECONDS,
         )
@@ -186,7 +232,7 @@ class NeonDeviceProcess:
         if timeout_seconds is None:
             raise ValueError("a timeout is required, because a request that never returns holds the pipe for good")
         with self._lock:
-            answer = self._request("matched", timeout_seconds, wait_seconds=timeout_seconds + RESPONSE_GRACE_SECONDS)
+            answer = self._request(DeviceRequest.MATCHED, timeout_seconds, wait_seconds=timeout_seconds + RESPONSE_GRACE_SECONDS)
             if answer is None:
                 return None
             block_name, shape, dtype, timestamp_unix_seconds, gaze = answer
@@ -201,7 +247,7 @@ class NeonDeviceProcess:
     def receive_imu_datum(self, timeout_seconds: float | None = None) -> DeviceImuDatum | None:
         if timeout_seconds is None:
             raise ValueError("a timeout is required, because a request that never returns holds the pipe for good")
-        answer = self._request("imu", timeout_seconds, wait_seconds=timeout_seconds + RESPONSE_GRACE_SECONDS)
+        answer = self._request(DeviceRequest.IMU, timeout_seconds, wait_seconds=timeout_seconds + RESPONSE_GRACE_SECONDS)
         if answer is None:
             return None
         return DeviceImuDatum(quaternion=None if answer == () else DeviceQuaternion(*answer))
@@ -211,7 +257,7 @@ class NeonDeviceProcess:
         if self._process is None:
             return
         try:
-            self._request("close", wait_seconds=CLOSE_JOIN_SECONDS)
+            self._request(DeviceRequest.CLOSE, wait_seconds=CLOSE_JOIN_SECONDS)
         except NeonDeviceError as unanswered:
             # Already gone or stuck. Either way the join and terminate below finish the job.
             log.warning("the Neon process did not close cleanly (caught %s, expected): %s", type(unanswered).__name__, unanswered)
@@ -238,7 +284,7 @@ class NeonDeviceProcess:
             self._frame_memory.close()
             self._frame_memory = None
 
-    def _request(self, name: str, *arguments: object, wait_seconds: float) -> object:
+    def _request(self, name: DeviceRequest, *arguments: object, wait_seconds: float) -> object:
         if self._connection is None:
             raise NeonDeviceError("the Neon process is not running")
         with self._lock:
@@ -247,7 +293,7 @@ class NeonDeviceProcess:
                 self._connection.send((request_id, name, arguments))
                 while True:
                     if not self._connection.poll(wait_seconds):
-                        raise NeonDeviceError(f"the Neon process did not answer {name!r} within {wait_seconds:.1f} s")
+                        raise NeonDeviceError(f"the Neon process did not answer {name.value!r} within {wait_seconds:.1f} s")
                     reply_id, status, payload = self._connection.recv()
                     # A reply to a request someone stopped waiting for. Its answer is no use now.
                     if reply_id == request_id:
@@ -255,21 +301,33 @@ class NeonDeviceProcess:
             except (EOFError, BrokenPipeError, ConnectionResetError) as gone:
                 raise NeonDeviceError(f"the Neon process has stopped (caught {type(gone).__name__})") from gone
 
-        if status == "ok":
+        if status is ReplyStatus.OK:
             return payload
         kind, message = payload
         match kind:
-            case "device":
+            case FailureKind.DEVICE:
                 raise NeonDeviceError(message)
-            case "os":
+            case FailureKind.OS:
                 raise ConnectionError(message)
-            case "value":
+            case FailureKind.VALUE:
                 raise ValueError(message)
-            case "ended":
+            case FailureKind.ENDED:
                 raise NeonStreamEnded(message)
-            case _:
+            case FailureKind.UNEXPECTED:
                 # Not one of the failures this file knows about, so not dressed up as one.
-                raise RuntimeError(f"UNEXPECTED failure in the Neon process: {message}")
+                raise NeonUnexpectedFailure(f"UNEXPECTED failure in the Neon process: {message}")
+            case _:
+                # Unreachable while every member above is handled. Here so a new member fails loudly.
+                raise ValueError(f"no handling for the failure kind {kind}")
+
+
+def known_child_failures() -> tuple[type[BaseException], ...]:
+    """
+    The failures the child reports as their own kinds. Anything else crosses as unexpected.
+
+    EOFError is not a failure. It is a played-back capture reaching its end.
+    """
+    return (*client_failure_types(), OSError, ValueError, EOFError)
 
 
 def run_device_process(
@@ -290,20 +348,19 @@ def run_device_process(
     logging.getLogger("nav").setLevel(log_level)
     _raise_own_priority()
 
-    # EOFError is not a failure. It is a played-back capture reaching its end.
-    known_failures = (*_client_failure_types(), OSError, ValueError, EOFError)
+    known_failures = known_child_failures()
     build = device_factory if device_factory is not None else _connect_client
     first_request_id, _, _ = connection.recv()
     try:
         device = build(config)
     except known_failures as failure:
-        connection.send((first_request_id, "error", _describe_failure(failure)))
+        connection.send((first_request_id, ReplyStatus.ERROR, _describe_failure(failure)))
         return
     except Exception as unexpected:  # noqa: BLE001, sent to the parent as unexpected, which raises it there
-        connection.send((first_request_id, "error", ("unexpected", traceback.format_exc())))
+        connection.send((first_request_id, ReplyStatus.ERROR, (FailureKind.UNEXPECTED, traceback.format_exc())))
         log.error("UNEXPECTED %s connecting to the Neon, may need a handler", type(unexpected).__name__, exc_info=True)
         return
-    connection.send((first_request_id, "ok", None))
+    connection.send((first_request_id, ReplyStatus.OK, None))
 
     try:
         serve(connection, device, known_failures)
@@ -374,41 +431,41 @@ def _serve_until_closed(
         except EOFError:
             log.info("the pipeline went away, closing the Neon")
             return
-        if name == "close":
-            connection.send((request_id, "ok", None))
+        if name is DeviceRequest.CLOSE:
+            connection.send((request_id, ReplyStatus.OK, None))
             return
         try:
             payload = answer(device, name, arguments, frames)
         except known_failures as failure:
-            connection.send((request_id, "error", _describe_failure(failure)))
+            connection.send((request_id, ReplyStatus.ERROR, _describe_failure(failure)))
             continue
         except Exception as unexpected:  # noqa: BLE001, sent to the parent as unexpected, which raises it there
-            log.error("UNEXPECTED %s answering %r, may need a handler", type(unexpected).__name__, name, exc_info=True)
-            connection.send((request_id, "error", ("unexpected", traceback.format_exc())))
+            log.error("UNEXPECTED %s answering %s, may need a handler", type(unexpected).__name__, name.value, exc_info=True)
+            connection.send((request_id, ReplyStatus.ERROR, (FailureKind.UNEXPECTED, traceback.format_exc())))
             continue
-        connection.send((request_id, "ok", payload))
+        connection.send((request_id, ReplyStatus.OK, payload))
 
 
-def answer(device: object, name: str, arguments: tuple, frames: SharedFrameBuffer) -> object:
+def answer(device: object, name: DeviceRequest, arguments: tuple, frames: SharedFrameBuffer) -> object:
     """
     One request, answered from the device, as plain values that cross a pipe.
 
-    :raises ValueError: For a request name this side does not know.
+    :raises ValueError: For a request this function does not answer, such as a close.
     """
     match name:
-        case "calibration":
+        case DeviceRequest.CALIBRATION:
             calibration = device.get_calibration()
             return (
                 np.asarray(calibration.scene_camera_matrix, dtype=np.float64),
                 np.asarray(calibration.scene_distortion_coefficients, dtype=np.float64),
             )
-        case "time_offset":
+        case DeviceRequest.TIME_OFFSET:
             (number_of_measurements,) = arguments
             estimates = device.estimate_time_offset(number_of_measurements=number_of_measurements)
             if estimates is None:
                 return None
             return (float(estimates.time_offset_ms.median), float(estimates.roundtrip_duration_ms.median))
-        case "matched":
+        case DeviceRequest.MATCHED:
             (timeout_seconds,) = arguments
             matched = device.receive_matched_scene_video_frame_and_gaze(timeout_seconds=timeout_seconds)
             if matched is None:
@@ -417,7 +474,7 @@ def answer(device: object, name: str, arguments: tuple, frames: SharedFrameBuffe
             # The pixels go into shared memory. Only where to find them crosses the pipe.
             block_name, shape, dtype = frames.put(matched.frame.bgr_pixels)
             return (block_name, shape, dtype, float(matched.frame.timestamp_unix_seconds), gaze)
-        case "imu":
+        case DeviceRequest.IMU:
             (timeout_seconds,) = arguments
             datum = device.receive_imu_datum(timeout_seconds=timeout_seconds)
             if datum is None:
@@ -429,7 +486,7 @@ def answer(device: object, name: str, arguments: tuple, frames: SharedFrameBuffe
                 return ()
             return (float(quaternion.w), float(quaternion.x), float(quaternion.y), float(quaternion.z))
         case _:
-            raise ValueError(f"the Neon process does not know the request {name!r}")
+            raise ValueError(f"the Neon process does not answer {name} here")
 
 
 def _raise_own_priority() -> bool:
@@ -458,24 +515,15 @@ def _raise_own_priority() -> bool:
     return True
 
 
-def _describe_failure(failure: BaseException) -> tuple[str, str]:
+def _describe_failure(failure: BaseException) -> tuple[FailureKind, str]:
     message = f"{type(failure).__name__}: {failure}"
     if isinstance(failure, EOFError):
-        return ("ended", message)
-    if isinstance(failure, _client_failure_types()):
-        return ("device", message)
+        return (FailureKind.ENDED, message)
+    if isinstance(failure, client_failure_types()):
+        return (FailureKind.DEVICE, message)
     if isinstance(failure, OSError):
-        return ("os", message)
-    return ("value", message)
-
-
-def _client_failure_types() -> tuple[type[BaseException], ...]:
-    try:
-        # Optional dependency. Absent in any environment installed without the glasses extra.
-        from pupil_labs.realtime_api.device import DeviceError
-    except ImportError:
-        return ()
-    return (DeviceError,)
+        return (FailureKind.OS, message)
+    return (FailureKind.VALUE, message)
 
 
 def _connect_client(config: NeonConfig) -> object:
@@ -485,10 +533,8 @@ def _connect_client(config: NeonConfig) -> object:
     Not the client's simple Device. That one converts all 30 frames a second on its decode thread,
     and fell seconds behind with the head moving while the pipeline ran.
     """
+    # Before the receiver starts, because that is where PyAV and the client are first imported.
     apply_opencv_pyav_import_workaround()
-
-    # Imported here, after the workaround, because it imports PyAV and the client.
-    from nav.sources.neon_stream import NeonStreamDevice
 
     if config.replay_dir is not None:
         log.info("playing back the capture in %s in place of the glasses", config.replay_dir)

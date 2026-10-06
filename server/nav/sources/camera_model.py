@@ -19,6 +19,10 @@ import numpy as np
 # The lengths OpenCV's distortion models accept. The Neon reports eight, the rational model.
 ACCEPTED_DISTORTION_LENGTHS = frozenset({4, 5, 8, 12, 14})
 
+# Plain undistortPoints stops after a fixed few iterations, which left the Neon's corners up to
+# 7.7 px off. Iterate until the point reprojects within a millionth of a pixel, or 50 rounds.
+UNDISTORT_POINT_CRITERIA = (cv2.TERM_CRITERIA_COUNT | cv2.TERM_CRITERIA_EPS, 50, 1e-6)
+
 
 class CameraModelError(ValueError):
     """A calibration that cannot describe a real camera, or an image it does not fit."""
@@ -138,14 +142,20 @@ class Undistorter:
 
     @property
     def field_of_view_before_degrees(self) -> float:
-        """The horizontal angle the delivered, distorted image covers, edge to edge through its centre row."""
+        """The horizontal angle the delivered, distorted image covers, edge to edge through its center row."""
         # Not the pinhole angle of the distorted matrix. A barrel lens puts more angle into its edge
         # pixels than the matrix alone says, so the true angle comes from undistorting those pixels.
         height, width = self._calibration.image_size
         principal_y = self._calibration.camera_matrix[1, 2]
         edges = np.array([[[0.0, principal_y]], [[float(width), principal_y]]])
-        normalized = cv2.undistortPoints(
-            edges, self._calibration.camera_matrix, self._calibration.distortion_coefficients
+        # No rectification and no new matrix, so the result is in normalized coordinates.
+        normalized = cv2.undistortPointsIter(
+            edges,
+            self._calibration.camera_matrix,
+            self._calibration.distortion_coefficients,
+            None,
+            None,
+            UNDISTORT_POINT_CRITERIA,
         ).reshape(2, 2)
         return float(np.degrees(np.arctan(-normalized[0, 0]) + np.arctan(normalized[1, 0])))
 
@@ -180,11 +190,13 @@ class Undistorter:
         :rtype: np.ndarray | None
         """
         points = np.asarray(pixel_xy, dtype=np.float64).reshape(1, 1, 2)
-        undistorted = cv2.undistortPoints(
+        undistorted = cv2.undistortPointsIter(
             points,
             self._calibration.camera_matrix,
             self._calibration.distortion_coefficients,
-            P=self._camera_matrix,
+            None,
+            self._camera_matrix,
+            UNDISTORT_POINT_CRITERIA,
         ).reshape(2)
         height, width = self._calibration.image_size
         if not (0.0 <= undistorted[0] < width and 0.0 <= undistorted[1] < height):

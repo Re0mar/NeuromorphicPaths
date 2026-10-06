@@ -27,12 +27,14 @@ from nav.config import build_run_config
 from nav.main import main
 from nav.runtime.loop import RUN_CONFIG_FILENAME, HeadingBaseline, gaze_on_the_ground, wrap_angle, yaw_from_quaternion
 from nav.runtime.loop import run
+from nav.runtime.tap import RecordingTap
 from nav.runtime.timing import TIMING_FILENAME, read_timing_log
 from nav.scene.pipeline import ScenePipeline
 from nav.sinks.web_messages import WebMessageKind
 from nav.sources.framecodec import INDEX_FILENAME, decode_path, read_message
 from nav.sources.logged import LoggedDepthFrameSource
-from nav.types import DepthFrame, Plane, Pose
+from nav.types import DepthFrame, FloorSource, Plane, PlannedPath, Pose
+from fake_arcore_sender import synthetic_frames
 from stubs import StubDepthEstimator
 
 FRAME_COUNT = 30
@@ -272,7 +274,8 @@ def test_reconnect_is_refused_for_a_source_that_is_not_the_phone(capsys: pytest.
 
 def test_yaw_is_zero_for_identity_and_a_quarter_turn_about_the_vertical() -> None:
     assert yaw_from_quaternion(np.array([1.0, 0.0, 0.0, 0.0])) == pytest.approx(0.0)
-    # 90 degrees about camera y, which is the vertical. Forward goes to +x, which is right.
+    # 90 degrees about camera y, which is the vertical. Forward goes to +x, which is right in the
+    # camera's own y-down frame. In a y-up world the same sign is a left turn.
     half = np.pi / 4
     assert yaw_from_quaternion(np.array([np.cos(half), 0.0, np.sin(half), 0.0])) == pytest.approx(np.pi / 2)
 
@@ -328,17 +331,207 @@ class FloorlessDepthEstimator(StubDepthEstimator):
         return dataclasses.replace(estimate, depth=np.full_like(estimate.depth, np.nan))
 
 
-def _processed_count(caplog: pytest.LogCaptureFixture) -> int:
+def _report_counts(caplog: pytest.LogCaptureFixture) -> tuple[int, int]:
+    """Processed and skipped, from the end-of-run line. A skipped frame was taken and not planned."""
     report = next(record.message for record in caplog.records if " processed, " in record.message)
-    return int(report.split(" processed")[0].split(", ")[-1])
+    processed = int(report.split(" processed")[0].split(", ")[-1])
+    skipped = int(report.split(" dropped as stale, ")[1].split(" skipped")[0])
+    return processed, skipped
+
+
+def _processed_count(caplog: pytest.LogCaptureFixture) -> int:
+    return _report_counts(caplog)[0]
+
+
+def _floor_report(caplog: pytest.LogCaptureFixture) -> str:
+    lines = [record.message for record in caplog.records if record.message.startswith("floor over")]
+    assert len(lines) == 1, "the end-of-run report has no floor-source line, or more than one"
+    return lines[0]
+
+
+def _video_run(tmp_path: Path, estimator: StubDepthEstimator, frame_count: int, record: bool = True):
+    """A video run through run(), with its timing log in tmp_path/log when recorded."""
+    video = _write_video(tmp_path / "walk.avi", frame_count=frame_count)
+    log_dir = tmp_path / "log"
+    arguments = ["--source", "video_file", "--path", str(video), "--sink", "none"]
+    if record:
+        arguments += ["--record-to", str(log_dir)]
+    config = dataclasses.replace(build_run_config(arguments), estimator_factory=lambda estimator_config: estimator)
+    return config, log_dir
+
+
+def test_a_skipped_frame_still_writes_a_timing_line_with_no_floor(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """
+    A frame the scene refuses for want of a floor counts against the floor acceptance.
+
+    One line per skip, no more and no fewer, or the rate read back from the log is wrong.
+    """
+    config, log_dir = _video_run(tmp_path, FloorlessDepthEstimator(), frame_count=5)
+
+    with caplog.at_level(logging.INFO):
+        assert run(config) == 0
+
+    lines = read_timing_log(log_dir)
+    processed, skipped = _report_counts(caplog)
+    assert skipped > 0, "the floorless estimator was meant to make the worker skip"
+    assert processed == 0
+    assert len(lines) == skipped, "frames the worker skipped wrote nothing, so the floor rate would read perfect"
+    assert all(line.floor_source is None and line.plan_done_seconds is None for line in lines)
+
+
+def test_a_run_with_no_floor_reports_its_skips_without_record_to(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """The live floor figure is printed with or without a recording, and skips belong in it."""
+    config, log_dir = _video_run(tmp_path, FloorlessDepthEstimator(), frame_count=5, record=False)
+
+    with caplog.at_level(logging.INFO):
+        assert run(config) == 0
+
+    _, skipped = _report_counts(caplog)
+    assert skipped > 0
+    assert _floor_report(caplog) == f"floor over {skipped} frames taken: none, skipped {skipped} (100%)"
+    assert not log_dir.exists()
+
+
+def test_a_planner_refusal_keeps_the_floor_the_scene_found(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    The planner refusing a frame says nothing about the floor, which the scene had already fitted.
+
+    Counting it as no floor would put planner failures into the floor acceptance figure.
+    """
+    import nav.runtime.loop as loop_module
+
+    calls = {"plan": 0}
+
+    class EveryOtherFrameRefusingPlanner(loop_module.PlannerPipeline):
+        def plan(self, *args, **kwargs) -> PlannedPath:
+            calls["plan"] += 1
+            if calls["plan"] % 2 == 0:
+                raise ValueError("no cell is reachable, so the costs give no distribution")
+            return super().plan(*args, **kwargs)
+
+    monkeypatch.setattr(loop_module, "PlannerPipeline", EveryOtherFrameRefusingPlanner)
+    config, log_dir = _video_run(tmp_path, StubDepthEstimator(), frame_count=10)
+
+    with caplog.at_level(logging.INFO):
+        assert run(config) == 0
+
+    lines = read_timing_log(log_dir)
+    processed, skipped = _report_counts(caplog)
+    assert processed > 0 and skipped > 0, "the run needs both planned and refused frames to mean anything"
+    assert len(lines) == processed + skipped
+    assert all(line.floor_source is FloorSource.FITTED for line in lines)
+    assert sum(line.plan_done_seconds is None for line in lines) == skipped
+    assert _floor_report(caplog) == f"floor over {processed + skipped} frames taken: fitted {processed + skipped} (100%)"
+
+
+def test_a_planner_refusal_on_a_second_fallback_still_records_the_previous_floor(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A floor kept from an earlier frame is still that frame's floor, however many frames in a row keep it.
+
+    Every frame after the first falls back to the first frame's plane and has its plan refused.
+    The second fallback in a row leaves the scene's plane and source exactly as the first left them,
+    so a check that looked for a change would read it as no floor.
+    """
+    import nav.runtime.loop as loop_module
+    import nav.scene.pipeline as scene_module
+
+    real_fit_floor = scene_module.fit_floor
+
+    def fit_once_then_keep_the_previous(points, previous, config, up_camera):
+        return previous if previous is not None else real_fit_floor(points, previous, config, up_camera)
+
+    calls = {"plan": 0}
+
+    class RefusingAfterTheFirstPlanner(loop_module.PlannerPipeline):
+        def plan(self, *args, **kwargs) -> PlannedPath:
+            calls["plan"] += 1
+            if calls["plan"] > 1:
+                raise ValueError("no cell is reachable, so the costs give no distribution")
+            return super().plan(*args, **kwargs)
+
+    monkeypatch.setattr(scene_module, "fit_floor", fit_once_then_keep_the_previous)
+    monkeypatch.setattr(loop_module, "PlannerPipeline", RefusingAfterTheFirstPlanner)
+    config, log_dir = _video_run(tmp_path, StubDepthEstimator(), frame_count=10)
+
+    with caplog.at_level(logging.INFO):
+        assert run(config) == 0
+
+    lines = read_timing_log(log_dir)
+    processed, skipped = _report_counts(caplog)
+    assert skipped >= 2, "the run needs two fallbacks in a row to mean anything"
+    assert [line.floor_source for line in lines] == [FloorSource.FITTED] + [FloorSource.PREVIOUS] * skipped
+    # The report lists the commoner source first, and with two or more fallbacks that is previous.
+    assert _floor_report(caplog) == f"floor over {processed + skipped} frames taken: previous {skipped} ({100 * skipped / (1 + skipped):.0f}%), fitted 1 ({100 / (1 + skipped):.0f}%)"
+
+
+def test_a_grouping_refusal_after_the_floor_keeps_that_floor(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    The scene can fail after it has chosen this frame's floor, as grouping does past its grid.
+
+    The floor it chose is the frame's, even though the scene never returned.
+    """
+    import nav.scene.pipeline as scene_module
+
+    def refusing_grouping(*args, **kwargs):
+        raise ValueError("a point is further from the world origin than the world grid can index")
+
+    monkeypatch.setattr(scene_module, "summarize_groups", refusing_grouping)
+    config, log_dir = _video_run(tmp_path, StubDepthEstimator(), frame_count=5)
+
+    with caplog.at_level(logging.INFO):
+        assert run(config) == 0
+
+    lines = read_timing_log(log_dir)
+    _, skipped = _report_counts(caplog)
+    assert skipped > 0
+    assert len(lines) == skipped
+    assert all(line.floor_source is FloorSource.FITTED and line.plan_done_seconds is None for line in lines)
+
+
+def test_a_frame_that_fails_after_its_plan_is_written_once(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A refusal while the debug view is built comes after the plan, and once wrote a second line.
+
+    Two lines for one frame count it twice in the floor figure and in every share.
+    """
+    import nav.runtime.loop as loop_module
+
+    def refusing_view(*args, **kwargs):
+        raise ValueError("a view refusal")
+
+    monkeypatch.setattr(loop_module, "DebugView", refusing_view)
+    config, log_dir = _video_run(tmp_path, StubDepthEstimator(), frame_count=5)
+
+    with caplog.at_level(logging.INFO):
+        assert run(config) == 0
+
+    lines = read_timing_log(log_dir)
+    _, skipped = _report_counts(caplog)
+    assert skipped > 0
+    assert len(lines) == skipped
+    assert all(line.floor_source is FloorSource.FITTED for line in lines)
+    assert _floor_report(caplog) == f"floor over {skipped} frames taken: fitted {skipped} (100%)"
 
 
 def test_a_recorded_run_writes_one_timing_line_per_frame_it_took(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    # Through run(), the production entry point, from a video to the timing log beside the frames.
-    video = _write_video(tmp_path / "walk.avi")
-    log_dir = tmp_path / "log"
-    config = build_run_config(["--source", "video_file", "--path", str(video), "--sink", "none", "--record-to", str(log_dir)])
-    config = dataclasses.replace(config, estimator_factory=lambda estimator_config: StubDepthEstimator())
+    """Through run(), the production entry point, from a video to the timing log beside the frames."""
+    config, log_dir = _video_run(tmp_path, StubDepthEstimator(), frame_count=FRAME_COUNT)
 
     with caplog.at_level(logging.INFO):
         assert run(config) == 0
@@ -348,35 +541,82 @@ def test_a_recorded_run_writes_one_timing_line_per_frame_it_took(tmp_path: Path,
     assert all(line.plan_done_seconds is not None for line in lines)
     assert all(line.arrival_seconds <= line.depth_ready_seconds <= line.plan_done_seconds for line in lines)
     assert all(line.capture_seconds is None for line in lines), "a file's timestamps are not on any clock"
+    # The walk's floor acceptance is read back from this field, and the stub's floor is fitted.
+    assert all(line.floor_source is FloorSource.FITTED for line in lines)
     assert b"\r" not in (log_dir / TIMING_FILENAME).read_bytes()
 
 
-def test_a_skipped_frame_still_writes_a_timing_line_with_no_floor(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    video = _write_video(tmp_path / "walk.avi", frame_count=5)
-    log_dir = tmp_path / "log"
-    config = build_run_config(["--source", "video_file", "--path", str(video), "--sink", "none", "--record-to", str(log_dir)])
-    config = dataclasses.replace(config, estimator_factory=lambda estimator_config: FloorlessDepthEstimator())
+def test_plan_done_is_stamped_after_the_planner_has_run(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stamp taken before the planner would fold the planner's time into the estimator's share."""
+    import nav.runtime.loop as loop_module
+
+    planner_seconds = 0.05
+
+    class SlowPlanner(loop_module.PlannerPipeline):
+        def plan(self, *args, **kwargs) -> PlannedPath:
+            time.sleep(planner_seconds)
+            return super().plan(*args, **kwargs)
+
+    monkeypatch.setattr(loop_module, "PlannerPipeline", SlowPlanner)
+    config, log_dir = _video_run(tmp_path, StubDepthEstimator(), frame_count=5)
 
     with caplog.at_level(logging.INFO):
         assert run(config) == 0
 
-    lines = read_timing_log(log_dir)
-    assert lines, "frames the worker skipped wrote nothing, so the floor rate would read perfect"
-    assert all(line.floor_source is None and line.plan_done_seconds is None for line in lines)
+    planned = [line for line in read_timing_log(log_dir) if line.plan_done_seconds is not None]
+    assert planned
+    assert all(line.plan_done_seconds - line.depth_ready_seconds >= planner_seconds for line in planned)
+
+
+def test_a_recorded_replay_of_frames_without_timing_writes_lines_with_no_times(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """
+    A frame log older than the timing key replays with no timing on any frame.
+
+    Recording that replay must still write its lines, with the times it has, and finish.
+    """
+    source_log = tmp_path / "old_walk"
+    list(RecordingTap(_FrameList(list(synthetic_frames(6))), source_log).frames())
+    replay_log = tmp_path / "replay"
+    config = build_run_config(["--source", "logged", "--log-dir", str(source_log), "--sink", "none", "--record-to", str(replay_log)])
+
+    with caplog.at_level(logging.INFO):
+        assert run(config) == 0
+
+    lines = read_timing_log(replay_log)
+    processed, skipped = _report_counts(caplog)
+    assert processed > 0
+    assert len(lines) == processed + skipped
+    assert all(line.capture_seconds is None and line.arrival_seconds is None and line.depth_ready_seconds is None for line in lines)
+    assert sum(line.plan_done_seconds is not None for line in lines) == processed
+
+
+class _FrameList:
+    """A source over frames already in memory, so a frame log can be written without a run."""
+
+    def __init__(self, frames: list[DepthFrame]) -> None:
+        self._frames = frames
+
+    def frames(self):
+        yield from self._frames
+
+    def close(self) -> None:
+        pass
 
 
 def test_the_end_of_run_report_counts_floor_sources(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    video = _write_video(tmp_path / "walk.avi")
-    config = build_run_config(["--source", "video_file", "--path", str(video), "--sink", "none"])
-    config = dataclasses.replace(config, estimator_factory=lambda estimator_config: StubDepthEstimator())
+    """Every frame taken is in the floor line, recorded or not."""
+    config, _ = _video_run(tmp_path, StubDepthEstimator(), frame_count=FRAME_COUNT, record=False)
 
     with caplog.at_level(logging.INFO):
         assert run(config) == 0
 
-    report = [record.message for record in caplog.records if record.message.startswith("floor over")]
-    assert report, "no floor-source line in the end-of-run report"
-    assert f"floor over {_processed_count(caplog)} frames taken" in report[0]
-    assert "fitted" in report[0]
+    report = _floor_report(caplog)
+    assert f"floor over {_processed_count(caplog)} frames taken" in report
+    assert "fitted" in report
 
 
 def test_no_timing_log_is_written_without_record_to(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

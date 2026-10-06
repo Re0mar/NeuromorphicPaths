@@ -17,14 +17,17 @@ glasses, no phone, and no display. It takes about two and a half minutes on this
 minute of that is `test_evaluation_replay.py`, which writes synthetic recordings through the real
 recording tap and replays them through the real scene, and about 30 seconds is the golden test
 below. `pytest -rs` is already in
-`pyproject.toml`, so a skipped test prints its reason in the summary. Today nothing skips.
+`pyproject.toml`, so a skipped test prints its reason in the summary. With only the `dev` extra,
+the Neon tests that need PyAV or the Pupil Labs client skip, because those come with the
+`glasses` extra. With both extras installed, nothing skips: 1257 passed on 2026-10-05.
 
 ## Adding a test
 
 One file per module under test, `tests/test_<module>.py`, importing from `nav` the way anything
 else does. There is no `sys.path` trick and no package marker in `tests/`, so a test file is a
 script that `pytest` collects, and the helpers beside them (`stubs.py`, `synthetic_depth.py`,
-`fake_arcore_sender.py`) are imported by bare name.
+`fake_arcore_sender.py`, `neon_captures.py` for writing Neon captures with real H.264, and
+`fake_neon_client.py` for standing in for the Pupil Labs client) are imported by bare name.
 
 A new test is obliged to assert:
 

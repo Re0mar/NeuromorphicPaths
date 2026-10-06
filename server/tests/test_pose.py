@@ -11,7 +11,7 @@ import pytest
 
 # Local package imports
 from nav.pose.device import pose_from_device
-from nav.pose.imu_orientation import ImuMount, identity_pose, pose_from_imu
+from nav.pose.imu_orientation import ImuMount, identity_pose, is_usable_orientation, multiply_wxyz, pose_from_imu
 from nav.pose.neon_mount import rotation_about_x_wxyz
 from nav.scene.transform import rotation_matrix_from_quaternion_wxyz
 
@@ -29,10 +29,13 @@ def test_imu_pose_normalizes_the_quaternion() -> None:
 
 
 def test_imu_pose_leaves_a_unit_quaternion_alone() -> None:
-    orientation = np.array([1.0, 0.0, 0.0, 0.0])
+    """With no mount, the IMU's reading is the pose. Inverting it would turn every head turn backwards."""
+    # All four parts non-zero, so a conjugate, a reordering or a renormalization that moves it shows.
+    orientation = np.array([0.5, 0.5, -0.5, 0.5])
+
     pose = pose_from_imu(orientation, NO_MOUNT)
 
-    assert pose.orientation == pytest.approx(orientation)
+    assert pose.orientation == pytest.approx(orientation, abs=1e-12)
 
 
 def test_imu_pose_composes_the_mount_in_world_imu_camera_order() -> None:
@@ -49,14 +52,58 @@ def test_imu_pose_composes_the_mount_in_world_imu_camera_order() -> None:
 
 
 def test_imu_pose_applies_the_world_part_last() -> None:
-    # The IMU quaternion is identity, so the world part alone moves camera forward. A quarter
-    # turn about x takes (0, 0, 1) to (0, -1, 0).
+    """The IMU's world only means something after the IMU has turned, so its fix-up comes last."""
+    # World part a quarter turn about x, IMU a quarter turn about z, camera to body nothing. The two
+    # do not commute. Right order: z leaves forward (0, 0, 1) alone, then x takes it to (0, -1, 0).
+    # World part first instead: x gives (0, -1, 0), then z takes that to (1, 0, 0).
     mount = ImuMount(camera_to_body_wxyz=IDENTITY_WXYZ, imu_world_to_world_wxyz=rotation_about_x_wxyz(90.0))
+    quarter_turn_about_z = np.array([np.cos(np.pi / 4), 0.0, 0.0, np.sin(np.pi / 4)])
 
-    pose = pose_from_imu(IDENTITY_WXYZ, mount)
+    pose = pose_from_imu(quarter_turn_about_z, mount)
 
     forward = rotation_matrix_from_quaternion_wxyz(pose.orientation) @ np.array([0.0, 0.0, 1.0])
     assert forward == pytest.approx([0.0, -1.0, 0.0], abs=1e-9)
+
+
+def test_the_quaternion_product_is_the_product_of_the_two_rotations() -> None:
+    """multiply_wxyz is what every mounted pose is built from, so it has to compose real rotations."""
+    # Seeded, with every component non-zero. The Neon cases are all rotations about x, which leave
+    # most of the product's terms multiplied by zero, so a sign slip in those terms passes them.
+    rng = np.random.default_rng(7)
+    for _ in range(5):
+        left = rng.normal(size=4)
+        right = rng.normal(size=4)
+        left /= np.linalg.norm(left)
+        right /= np.linalg.norm(right)
+
+        product = multiply_wxyz(left, right)
+
+        expected = rotation_matrix_from_quaternion_wxyz(left) @ rotation_matrix_from_quaternion_wxyz(right)
+        assert rotation_matrix_from_quaternion_wxyz(product) == pytest.approx(expected, abs=1e-12)
+        assert np.linalg.norm(product) == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize(
+    "orientation",
+    [
+        np.zeros(4),
+        np.array([0.3, 0.2, 0.0, 0.0]),
+        np.array([np.nan, 0.0, 0.0, 0.0]),
+        np.array([np.inf, 0.0, 0.0, 0.0]),
+    ],
+)
+def test_an_empty_imu_reading_is_not_a_usable_orientation(orientation: np.ndarray) -> None:
+    """A zero or NaN reading is a missing sample. Taking it as a rotation ends the run in pose_from_imu."""
+    assert is_usable_orientation(orientation) is False
+
+
+@pytest.mark.parametrize(
+    "orientation",
+    [np.array([1.0, 0.0, 0.0, 0.0]), np.array([2.0, 0.2, 0.0, 0.0]), np.array([0.5, 0.0, 0.0, 0.0])],
+)
+def test_a_real_imu_reading_is_a_usable_orientation(orientation: np.ndarray) -> None:
+    """Unit, unnormalized and borderline readings are rotations, and pose_from_imu normalizes them."""
+    assert is_usable_orientation(orientation) is True
 
 
 @pytest.mark.parametrize(

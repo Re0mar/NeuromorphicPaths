@@ -7,7 +7,8 @@ Run it on the directory a live run was recorded to with --record-to:
     python examples/timing_report.py frame_logs/neon_walk_1 --exclude-first-seconds 30
 
 Only the live run's log means anything here. A replay re-records the walk's capture, arrival and
-depth times beside its own plan times, so its shares would mix two runs.
+depth times beside its own plan times, so its shares would mix two runs. The summary ends with a
+warning when it sees that.
 """
 
 # Standard library imports
@@ -37,6 +38,10 @@ def main(argv: list[str] | None = None) -> int:
         records = read_timing_log(Path(arguments.record_dir))
     except FileNotFoundError as missing:
         print(missing)
+        return 1
+    except ValueError as damaged:
+        # A truncated or hand-edited line. The message names the file and the line to look at.
+        print(damaged)
         return 1
 
     print(format_summary(summarize(records, arguments.exclude_first_seconds)))

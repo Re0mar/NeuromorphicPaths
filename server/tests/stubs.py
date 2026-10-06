@@ -24,10 +24,17 @@ class StubDepthEstimator:
     recovers a real plane from it and the height band means what it says. A stub that returned an
     arbitrary ramp would let a broken floor fit pass.
 
-    One deviation from the real estimator, named here because it is where it is configured: this
-    stub returns intrinsics by default. The metric model returns none for a plain video. Set
+    Two deviations from the real estimator, named here because this is where they are configured.
+
+    It returns intrinsics by default. The metric model returns none for a plain video. Set
     returns_intrinsics False to behave like it, which is how the composed source's fallback path is
     tested.
+
+    It returns meters with canonical_focal_pixels None, as the nested checkpoint does. The default
+    metric checkpoint returns raw depth for a 300 px focal, which the composed source converts. So a
+    test built on this stub runs no conversion, and cannot fail if the conversion breaks. The
+    conversion is covered by CanonicalDepthEstimator in test_estimated_depth_source.py and by the
+    estimator in test_neon_chain.py.
     """
 
     height: int = 48

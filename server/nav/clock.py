@@ -6,9 +6,9 @@ start-up, which is the base the Neon's Time Echo offset is measured against, so 
 plus that offset lands on this clock. And when Windows corrects the wall clock in the middle of a
 walk, this one does not jump, so a duration measured between two stamps cannot come out negative.
 
-Not time.monotonic(). On Windows that is GetTickCount64 and moves in 15.6 ms steps, about the size
-of the latency shares being measured. The performance counter is monotonic too and resolves to well
-under a microsecond.
+Not time.monotonic(). Measured on Python 3.12 on Windows, it moves in 15.6 ms steps, about the
+size of the latency shares being measured. The performance counter is monotonic too and resolved
+to well under a microsecond on the same machine.
 
 Sources and the runtime both stamp with it, so it lives at the package root rather than in either.
 """
@@ -16,8 +16,8 @@ Sources and the runtime both stamp with it, so it lives at the package root rath
 # Standard library imports
 import time
 
-# How long to wait for the wall clock to tick at start-up. It ticks every 15.6 ms on Windows, so
-# this always catches one, and it bounds the wait on a platform where it never moves.
+# How long to wait for the wall clock to tick at start-up. Measured on Python 3.12 on Windows it
+# ticks every 15.6 ms, so this catches one there, and it bounds the wait where it never moves.
 ANCHOR_WAIT_SECONDS = 0.05
 
 

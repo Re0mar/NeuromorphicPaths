@@ -14,7 +14,6 @@ import pytest
 
 # Local package imports
 from conftest import SYNTHETIC_VIDEO_FRAME_COUNT
-from nav.clock import laptop_time_seconds
 from nav.pose.imu_orientation import pose_from_imu
 from nav.pose.neon_mount import NEON_IMU_MOUNT
 from nav.sources.config import EstimatorConfig
@@ -23,7 +22,6 @@ from nav.sources.estimator import (
     METRIC_MODEL_CANONICAL_FOCAL_PIXELS,
     DepthEstimate,
     apply_confidence_filter,
-    canonical_focal_for,
     fallback_intrinsics,
 )
 from nav.sources.rgb import RgbFrame
@@ -118,12 +116,18 @@ def test_a_camera_matrix_from_the_source_overrides_the_estimators_and_is_scaled_
 
 
 def test_without_a_source_matrix_the_estimators_intrinsics_are_used() -> None:
+    """A model that measured the camera knows it better than a guessed field of view does."""
     stub = StubDepthEstimator(height=24, width=32)
-    source = EstimatedDepthSource(ListRgbSource([_rgb_frame()]), stub, EstimatorConfig())
+    # The stub's own matrix comes from a 50 degree half view. A 30 degree fallback differs from it,
+    # so the fallback path cannot pass for the model's.
+    config = EstimatorConfig(fallback_half_field_of_view_degrees=30.0)
+    source = EstimatedDepthSource(ListRgbSource([_rgb_frame()]), stub, config)
+    model_intrinsics = stub.estimate(np.zeros((1, 1, 3))).intrinsics
 
     frame = next(iter(source.frames()))
 
-    assert frame.intrinsics == pytest.approx(stub.estimate(np.zeros((1, 1, 3))).intrinsics)
+    assert not np.allclose(model_intrinsics, fallback_intrinsics(24, 32, 30.0))
+    assert frame.intrinsics == pytest.approx(model_intrinsics)
 
 
 def test_only_the_fallback_path_warns_that_the_field_of_view_was_assumed(caplog: pytest.LogCaptureFixture) -> None:
@@ -161,7 +165,7 @@ def test_gaze_is_rescaled_from_scene_pixels_to_depth_pixels() -> None:
 
     frame = next(iter(source.frames()))
 
-    # Scene is 64 by 48, depth is 32 by 24, so the centre of one is the centre of the other.
+    # Scene is 64 by 48, depth is 32 by 24, so the center of one is the center of the other.
     assert frame.gaze_pixel == pytest.approx(np.array([16.0, 12.0]))
 
 
@@ -191,7 +195,7 @@ def test_an_estimator_returning_the_wrong_shape_is_refused() -> None:
         next(iter(source.frames()))
 
 
-def test_fallback_intrinsics_put_the_principal_point_at_the_centre_with_the_focal_from_the_field_of_view() -> None:
+def test_fallback_intrinsics_put_the_principal_point_at_the_center_with_the_focal_from_the_field_of_view() -> None:
     # Ninety degrees of horizontal field of view means the image edge is at 45 degrees, so the
     # focal length in pixels equals half the width. This is the camera every stub frame and every
     # estimator frame without model intrinsics is unprojected through.
@@ -254,14 +258,86 @@ def test_confidence_filter_survives_a_map_with_no_finite_values() -> None:
     assert not np.any(np.isnan(apply_confidence_filter(estimate, drop_percentile=30.0)))
 
 
-def test_depth_ready_is_stamped_after_estimation_and_after_arrival() -> None:
-    arrived = FrameTiming(capture_seconds=None, arrival_seconds=laptop_time_seconds(), depth_ready_seconds=None)
-    source = EstimatedDepthSource(ListRgbSource([_rgb_frame(timing=arrived)]), StubDepthEstimator(), EstimatorConfig())
+class SteppingClock:
+    """A laptop clock that moves only when a test moves it."""
+
+    def __init__(self, start_seconds: float) -> None:
+        self.now_seconds = start_seconds
+
+    def __call__(self) -> float:
+        return self.now_seconds
+
+
+class SlowEstimator:
+    """The stub estimator, plus a quarter second on the laptop clock for every estimate."""
+
+    device = "cuda"
+
+    def __init__(self, clock: SteppingClock) -> None:
+        self._clock = clock
+        self._stub = StubDepthEstimator()
+
+    def warm_up(self) -> None:
+        """Nothing to warm."""
+
+    def estimate(self, image_rgb: np.ndarray) -> DepthEstimate:
+        self._clock.now_seconds += 0.25
+        return self._stub.estimate(image_rgb)
+
+
+def test_depth_ready_is_the_laptop_time_once_the_estimate_is_done(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The latency report splits each frame at depth_ready, so it must fall after the model ran."""
+    clock = SteppingClock(start_seconds=100.0)
+    monkeypatch.setattr("nav.sources.estimated_depth.laptop_time_seconds", clock)
+    arrived = FrameTiming(capture_seconds=99.5, arrival_seconds=100.0, depth_ready_seconds=None)
+    source = EstimatedDepthSource(ListRgbSource([_rgb_frame(timing=arrived)]), SlowEstimator(clock), EstimatorConfig())
 
     frame = next(iter(source.frames()))
 
-    assert frame.timing.arrival_seconds == arrived.arrival_seconds
-    assert frame.timing.depth_ready_seconds >= arrived.arrival_seconds
+    # Stamped before the estimate, or copied from arrival, this would read 100.0.
+    assert frame.timing.depth_ready_seconds == pytest.approx(100.25)
+    assert frame.timing.arrival_seconds == pytest.approx(100.0)
+    assert frame.timing.capture_seconds == pytest.approx(99.5)
+
+
+@pytest.mark.parametrize(
+    ("confidence_value", "drop_percentile"),
+    [(1.0, 30.0), (None, 0.0)],
+    ids=["model gives confidence", "filter not asked for"],
+)
+def test_nothing_is_said_about_the_confidence_filter_when_it_runs_or_was_not_asked_for(
+    caplog: pytest.LogCaptureFixture,
+    confidence_value: float | None,
+    drop_percentile: float,
+) -> None:
+    """The note is only for a filter that was asked for and cannot run."""
+    source = EstimatedDepthSource(
+        ListRgbSource([_rgb_frame()]),
+        StubDepthEstimator(confidence_value=confidence_value),
+        EstimatorConfig(confidence_drop_percentile=drop_percentile),
+    )
+
+    with caplog.at_level("INFO", logger="nav.sources.estimated_depth"):
+        list(source.frames())
+
+    assert not [record for record in caplog.records if "confidence" in record.message]
+
+
+def test_a_drop_percentile_the_model_cannot_apply_is_logged_once(caplog: pytest.LogCaptureFixture) -> None:
+    """The default model gives no confidence, so the default filter does nothing, and the log says so."""
+    source = EstimatedDepthSource(
+        ListRgbSource([_rgb_frame(), _rgb_frame(), _rgb_frame()]),
+        StubDepthEstimator(confidence_value=None),
+        EstimatorConfig(confidence_drop_percentile=30.0),
+    )
+
+    with caplog.at_level("INFO", logger="nav.sources.estimated_depth"):
+        frames = list(source.frames())
+
+    told = [record for record in caplog.records if "no confidence map" in record.message]
+    assert len(told) == 1, "once per source, not once per frame"
+    assert "30 percent" in told[0].message
+    assert not np.any(np.isnan(frames[0].depth_meters[-1]))
 
 
 def test_a_frame_without_timing_stays_without_timing() -> None:
@@ -334,16 +410,3 @@ def test_conversion_averages_the_two_focal_lengths_and_keeps_dropped_pixels_drop
     assert converted[0, 0] == pytest.approx(2.0)
     assert np.isnan(converted[0, 1])
     assert converted.dtype == np.float32
-
-
-@pytest.mark.parametrize(
-    ("model_name", "expected"),
-    [
-        ("depth-anything/DA3METRIC-LARGE", METRIC_MODEL_CANONICAL_FOCAL_PIXELS),
-        # The nested model converts inside the library, and the relative ones are not meters at all.
-        ("depth-anything/DA3NESTED-GIANT-LARGE", None),
-        ("depth-anything/DA3-LARGE", None),
-    ],
-)
-def test_only_the_standalone_metric_checkpoint_needs_converting(model_name: str, expected: float | None) -> None:
-    assert canonical_focal_for(model_name) == expected

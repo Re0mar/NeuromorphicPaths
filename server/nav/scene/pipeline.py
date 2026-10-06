@@ -60,7 +60,7 @@ class ScenePipeline:
 
     @property
     def last_floor_source(self) -> FloorSource | None:
-        """Where the last frame's floor came from. None before the first frame."""
+        """Where this frame's floor came from. None before the first frame, and after a frame the scene refused."""
         return self._last_floor_source
 
     def process(self, frame: DepthFrame) -> ObstacleSet:
@@ -72,6 +72,9 @@ class ScenePipeline:
         """
         config = self._config
         started = time.perf_counter()
+        # Cleared first, so a frame refused below reads as no floor rather than the last frame's.
+        # The runtime's timing log reads this after a failed frame to say whether it had a floor.
+        self._last_floor_source = None
 
         points = unproject_depth(frame.depth_meters, frame.intrinsics, config.depth_stride, config)
         points = downsample(points, config.voxel_size_meters)

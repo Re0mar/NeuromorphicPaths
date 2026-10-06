@@ -38,11 +38,6 @@ def _forward_in_world(orientation_wxyz: np.ndarray) -> np.ndarray:
     return rotation_matrix_from_quaternion_wxyz(orientation_wxyz) @ CAMERA_FORWARD
 
 
-def test_the_neon_mount_is_two_unit_quaternions() -> None:
-    assert np.linalg.norm(NEON_IMU_MOUNT.camera_to_body_wxyz) == pytest.approx(1.0)
-    assert np.linalg.norm(NEON_IMU_MOUNT.imu_world_to_world_wxyz) == pytest.approx(1.0)
-
-
 def test_level_glasses_put_camera_forward_twelve_degrees_below_the_horizon() -> None:
     pose = pose_from_imu(LEVEL_FACING_NORTH_WXYZ, NEON_IMU_MOUNT)
 
@@ -66,6 +61,18 @@ def test_level_glasses_give_world_up_in_the_camera_frame() -> None:
     up_camera = ScenePipeline._up_in_camera_frame(frame)
 
     assert up_camera == pytest.approx([0.0, -COS_12, -SIN_12], abs=1e-9)
+
+
+def test_turning_the_glasses_right_a_quarter_puts_forward_east_and_still_twelve_below_the_horizon() -> None:
+    """A turn about the IMU's up axis has to move only the heading. The camera's tilt stays put."""
+    # Right is a negative turn about the IMU world's Z. North is +Y there, so a quarter turn right
+    # faces +X, east, and the quarter turn about x into our world leaves X alone. Forward is east and
+    # still 12 degrees down. Every other Neon case turns about x only, and rotations about one axis
+    # commute, so those cases cannot tell the two mount rotations apart. With the two swapped this
+    # comes out (1, 0, 0), level.
+    pose = pose_from_imu(_rotation_about_z_wxyz(-90.0), NEON_IMU_MOUNT)
+
+    assert _forward_in_world(pose.orientation) == pytest.approx([COS_12, -SIN_12, 0.0], abs=1e-9)
 
 
 def test_pitching_the_glasses_down_thirty_degrees_puts_forward_forty_two_below_the_horizon() -> None:

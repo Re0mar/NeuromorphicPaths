@@ -7,6 +7,7 @@ ones proving a frame without it still decodes as it always did.
 """
 
 # Standard library imports
+import dataclasses
 import json
 from pathlib import Path
 
@@ -77,14 +78,40 @@ def test_a_header_without_timing_decodes_with_timing_none() -> None:
     assert synthetic.timing is None
 
 
+def test_frame_timing_refuses_a_missing_arrival() -> None:
+    """
+    Every share is measured from arrival, so a record without one has nothing to measure from.
+
+    Left through, it crashed the verbose line on the worker with a TypeError, ending the run.
+    """
+    with pytest.raises(ValueError, match="arrival_seconds is required"):
+        FrameTiming(capture_seconds=None, arrival_seconds=None, depth_ready_seconds=None)
+
+
 @pytest.mark.parametrize("field_name", ["capture_seconds", "arrival_seconds", "depth_ready_seconds"])
 @pytest.mark.parametrize("bad_value", [float("nan"), float("inf")])
 def test_frame_timing_refuses_a_non_finite_value(field_name: str, bad_value: float) -> None:
+    """A non-finite stamp turns every share it touches into nan or inf, and the log refuses to write it."""
     values = {"capture_seconds": 1.0, "arrival_seconds": 2.0, "depth_ready_seconds": 3.0}
     values[field_name] = bad_value
 
-    with pytest.raises(ValueError, match=field_name):
+    # The finiteness message, not the field name alone. An infinite arrival also trips the order
+    # check, whose message names the same field.
+    with pytest.raises(ValueError, match=f"{field_name} must be finite"):
         FrameTiming(**values)
+
+
+def test_a_literal_timing_block_decodes_to_its_three_values() -> None:
+    """
+    The key names are what frame logs already on disk were written with.
+
+    A rename on both sides passes the round trip and decodes every old log with its capture lost.
+    """
+    payload = _header_with_timing({"capture_seconds": 1.0, "arrival_seconds": 2.0, "depth_ready_seconds": 3.0})
+
+    timing = decode_frame(payload).timing
+
+    assert timing == FrameTiming(capture_seconds=1.0, arrival_seconds=2.0, depth_ready_seconds=3.0)
 
 
 def test_frame_timing_refuses_depth_ready_before_arrival() -> None:
@@ -116,3 +143,14 @@ def test_a_malformed_timing_block_is_a_decode_error(block: object, message: str)
     # decoder would be logged as a defect in the laptop.
     with pytest.raises(FrameDecodeError, match=message):
         decode_frame(_header_with_timing(block))
+
+
+@pytest.mark.parametrize("timestamp", [float("nan"), float("inf")])
+def test_a_depth_frame_refuses_a_timestamp_that_is_not_finite(timestamp: float) -> None:
+    """
+    Every later stage orders frames by their stamp, and the timing log cannot write a NaN.
+
+    Refused where the frame is built, so it names the field rather than failing three stages later.
+    """
+    with pytest.raises(ValueError, match="timestamp_seconds must be finite"):
+        dataclasses.replace(_frame_with(None), timestamp_seconds=timestamp)

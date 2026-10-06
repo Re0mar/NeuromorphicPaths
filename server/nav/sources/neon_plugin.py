@@ -22,7 +22,7 @@ from typing import Protocol
 import numpy as np
 
 # Local package imports
-from nav.pose.imu_orientation import identity_pose, pose_from_imu
+from nav.pose.imu_orientation import identity_pose, is_usable_orientation, pose_from_imu
 from nav.pose.neon_mount import NEON_IMU_MOUNT
 from nav.sources.camera_model import scale_intrinsics
 from nav.sources.config import NeonPluginConfig, NeonPluginModel
@@ -134,11 +134,23 @@ class NeonPluginDepthFrameSource:
 
         log.info("replaying %d plugin depth maps of %dx%d from %s", usable, depth_width, depth_height, self._recording_dir.name)
 
+        latest_orientation_wxyz: np.ndarray | None = None
+        warned_about_empty_imu = False
         for index in range(usable):
-            if orientations is not None and np.all(np.isfinite(orientations[index])):
+            if orientations is not None:
+                orientation = np.asarray(orientations[index], dtype=np.float64)
+                if is_usable_orientation(orientation):
+                    latest_orientation_wxyz = orientation
+                elif not warned_about_empty_imu:
+                    # Same rule as the live stream. An empty reading is skipped and the last real
+                    # orientation carries on, because letting a zero through ends the replay.
+                    log.warning("%s has empty IMU orientations, frames carry the last real one or none", self._recording_dir.name)
+                    warned_about_empty_imu = True
+
+            if latest_orientation_wxyz is not None:
                 # The same IMU as the live stream, so the same mount. The xyzw reorder above is the
                 # recording's own column order and has already happened.
-                pose = pose_from_imu(np.asarray(orientations[index], dtype=np.float64), NEON_IMU_MOUNT)
+                pose = pose_from_imu(latest_orientation_wxyz, NEON_IMU_MOUNT)
             else:
                 pose = identity_pose()
 

@@ -18,6 +18,9 @@ What the directory holds:
 
 All stamps are the Neon's own clock. meta.json carries the Time Echo offset measured at the start,
 laptop minus Neon, the same one the live source adds.
+
+meta.json is written as soon as the stream description arrives and again at the end with the final
+counts, so a capture stopped with Ctrl+C can still be played back.
 """
 
 # Standard library imports
@@ -27,6 +30,7 @@ import base64
 import json
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 # Third party imports
@@ -44,11 +48,19 @@ from nav.sources.neon_stream import (
     SCENE_PACKETS_FILENAME,
 )
 
+PROGRESS_INTERVAL_SECONDS = 10.0
+
 
 async def capture(address: str, port: int, seconds: float, out_dir: Path) -> None:
-    # Optional dependency. Only present with the glasses extra.
+    """
+    Record the scene packets, gaze and IMU for `seconds`, then stop every stream.
+
+    A stream that goes quiet is stopped at the deadline too, rather than holding the capture open.
+    """
+    # Imported here rather than at the top, because the client imports PyAV and main applies the
+    # OpenCV and PyAV workaround first.
     from pupil_labs.realtime_api import Device
-    from pupil_labs.realtime_api.streaming.base import RTSPRawStreamer
+    from pupil_labs.realtime_api.streaming.base import RTSPRawStreamer, SDPDataNotAvailableError
     from pupil_labs.realtime_api.streaming.gaze import RTSPGazeStreamer
     from pupil_labs.realtime_api.streaming.imu import RTSPImuStreamer
     from pupil_labs.realtime_api.streaming.video import RTSPVideoFrameStreamer
@@ -69,58 +81,6 @@ async def capture(address: str, port: int, seconds: float, out_dir: Path) -> Non
     out_dir.mkdir(parents=True, exist_ok=False)
     deadline = time.monotonic() + seconds
     counts = {"scene": 0, "gaze": 0, "imu": 0}
-    scene_meta: dict = {}
-
-    async def record_scene() -> None:
-        async with RTSPVideoFrameStreamer(world.url) as streamer:
-            with (out_dir / SCENE_PACKETS_FILENAME).open("wb") as packets:
-                # The raw packets, not decoded frames. RTSPRawStreamer.receive is the undecoded stream.
-                async for data in RTSPRawStreamer.receive(streamer):
-                    if not scene_meta:
-                        try:
-                            scene_meta["encoding"] = streamer.encoding
-                            scene_meta["sprop"] = [base64.b64encode(bytes(param)).decode("ascii") for param in streamer.sprop_parameter_set_payloads]
-                        except Exception as not_yet:  # noqa: BLE001, the SDP arrives with the first packets, retried next packet
-                            scene_meta.clear()
-                            print(f"waiting for the stream description ({type(not_yet).__name__})", flush=True)
-                    raw = bytes(data.raw)
-                    packets.write(PACKET_HEADER.pack(data.timestamp_unix_seconds, len(raw)))
-                    packets.write(raw)
-                    counts["scene"] += 1
-                    if time.monotonic() >= deadline:
-                        return
-
-    async def record_lines(sensor, streamer_class, filename: str, key: str, to_record) -> None:
-        if sensor is None:
-            return
-        async with streamer_class(sensor.url) as streamer:
-            with (out_dir / filename).open("w", encoding="utf-8", newline="\n") as lines:
-                async for datum in streamer.receive():
-                    lines.write(json.dumps(to_record(datum)) + "\n")
-                    counts[key] += 1
-                    if time.monotonic() >= deadline:
-                        return
-
-    def gaze_record(datum) -> dict:
-        return {"t": datum.timestamp_unix_seconds, "x": float(datum.x), "y": float(datum.y)}
-
-    def imu_record(datum) -> dict:
-        quaternion = datum.quaternion
-        return {"t": datum.timestamp_unix_seconds, "w": quaternion.w, "x": quaternion.x, "y": quaternion.y, "z": quaternion.z}
-
-    async def progress() -> None:
-        while time.monotonic() < deadline:
-            await asyncio.sleep(10.0)
-            print(f"{deadline - time.monotonic():5.0f} s left: {counts}", flush=True)
-
-    print(f"recording {seconds:.0f} s to {out_dir}", flush=True)
-    await asyncio.gather(
-        record_scene(),
-        record_lines(gaze, RTSPGazeStreamer, GAZE_FILENAME, "gaze", gaze_record),
-        record_lines(imu, RTSPImuStreamer, IMU_FILENAME, "imu", imu_record),
-        progress(),
-    )
-
     meta = {
         "address": address,
         "seconds": seconds,
@@ -128,10 +88,82 @@ async def capture(address: str, port: int, seconds: float, out_dir: Path) -> Non
         "time_offset": offset,
         "scene_camera_matrix": np.asarray(calibration.scene_camera_matrix).tolist(),
         "scene_distortion_coefficients": np.asarray(calibration.scene_distortion_coefficients).tolist(),
-        **scene_meta,
     }
-    (out_dir / META_FILENAME).write_bytes(json.dumps(meta, indent=2).encode("utf-8"))
+
+    def write_meta() -> None:
+        (out_dir / META_FILENAME).write_bytes(json.dumps(meta, indent=2).encode("utf-8"))
+
+    async def record_scene() -> None:
+        async with RTSPVideoFrameStreamer(world.url) as streamer:
+            with (out_dir / SCENE_PACKETS_FILENAME).open("wb") as packets:
+                # The raw packets, not decoded frames. RTSPRawStreamer.receive is the undecoded stream.
+                async for data in RTSPRawStreamer.receive(streamer):
+                    if "sprop" not in meta:
+                        try:
+                            meta["encoding"] = streamer.encoding
+                            meta["sprop"] = [base64.b64encode(bytes(param)).decode("ascii") for param in streamer.sprop_parameter_set_payloads]
+                        except SDPDataNotAvailableError as not_yet:
+                            # The stream description arrives with the first packets. Retried on the next.
+                            meta.pop("encoding", None)
+                            print(f"waiting for the stream description ({not_yet})", flush=True)
+                        else:
+                            # Everything a replay needs is known now. Written at once, so a capture
+                            # stopped before the deadline can still be played back.
+                            write_meta()
+                    raw = bytes(data.raw)
+                    # One write per packet, so an interrupt cannot leave a header without its bytes.
+                    packets.write(PACKET_HEADER.pack(data.timestamp_unix_seconds, len(raw)) + raw)
+                    counts["scene"] += 1
+
+    async def record_lines(
+        sensor: object | None,
+        streamer_class: type,
+        filename: str,
+        key: str,
+        to_record: Callable[[object], dict],
+    ) -> None:
+        if sensor is None:
+            return
+        async with streamer_class(sensor.url) as streamer:
+            with (out_dir / filename).open("w", encoding="utf-8", newline="\n") as lines:
+                async for datum in streamer.receive():
+                    lines.write(json.dumps(to_record(datum)) + "\n")
+                    counts[key] += 1
+
+    def gaze_record(datum: object) -> dict:
+        return {"t": datum.timestamp_unix_seconds, "x": float(datum.x), "y": float(datum.y)}
+
+    def imu_record(datum: object) -> dict:
+        quaternion = datum.quaternion
+        return {"t": datum.timestamp_unix_seconds, "w": quaternion.w, "x": quaternion.x, "y": quaternion.y, "z": quaternion.z}
+
+    async def progress() -> None:
+        while time.monotonic() < deadline:
+            await asyncio.sleep(PROGRESS_INTERVAL_SECONDS)
+            print(f"{deadline - time.monotonic():5.0f} s left: {counts}", flush=True)
+
+    print(f"recording {seconds:.0f} s to {out_dir}", flush=True)
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(
+                record_scene(),
+                record_lines(gaze, RTSPGazeStreamer, GAZE_FILENAME, "gaze", gaze_record),
+                record_lines(imu, RTSPImuStreamer, IMU_FILENAME, "imu", imu_record),
+                progress(),
+            ),
+            timeout=seconds,
+        )
+    except TimeoutError:
+        # The normal end. Each stream is cancelled where it waits for its next sample, so no record
+        # is cut in half.
+        pass
+    finally:
+        # Again with the final counts, also after Ctrl+C. Without a stream description there is
+        # nothing a replay could decode, so no meta.json either.
+        if "sprop" in meta:
+            write_meta()
     print(f"done: {counts}", flush=True)
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Record a Neon's raw stream for playback.")
@@ -144,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
     apply_opencv_pyav_import_workaround()
     asyncio.run(capture(arguments.neon_address, arguments.neon_port, arguments.seconds, Path(arguments.out_dir)))
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

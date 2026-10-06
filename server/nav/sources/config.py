@@ -7,7 +7,7 @@ a layer reading one it did not expect is reading a mistake rather than a stale d
 
 # Standard library imports
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, auto
 
 
 @dataclass(frozen=True)
@@ -32,8 +32,9 @@ class NeonConfig:
     # How long without a scene frame before the log says so. It warns and keeps waiting, because a
     # wifi drop in the middle of a walk should not end the walk.
     stall_warning_seconds: float = 5.0
-    # How long a Time Echo clock measurement may take before it is abandoned. A hundred round trips
-    # on a phone hotspot take about a second, so this only fires when the phone has gone.
+    # How long a Time Echo clock measurement may take before the device process gives up on it. A
+    # hundred round trips on a phone hotspot take about a second, so this only fires when the phone
+    # has gone.
     time_echo_timeout_seconds: float = 5.0
     # A capture folder from examples/capture_neon_stream.py, played back in place of the glasses at
     # the pace it was recorded. None means the glasses themselves.
@@ -83,20 +84,126 @@ class LoggedConfig:
     log_dir: str
 
 
+class DepthScale(Enum):
+    """How a checkpoint's depth relates to meters."""
+
+    # Meters for a camera with a 300 px focal at the resolution the model ran at. The composed
+    # source rescales it with the real camera's focal.
+    METERS_AT_CANONICAL_FOCAL = auto()
+    # Meters already. The nested model scales its depth to its own metric branch inside the library.
+    METERS = auto()
+    # Right only up to an unknown scale, so not meters at all.
+    RELATIVE = auto()
+
+
+class DepthCheckpoint(Enum):
+    """The Depth Anything 3 checkpoints the pipeline knows, spelled as the Hugging Face hub spells them.
+
+    The value is what DepthAnything3.from_pretrained takes. The set is the library's own registry of
+    seven model configs, plus the 1.1 nested release that the library names as its default.
+    """
+
+    METRIC_LARGE = "depth-anything/DA3METRIC-LARGE"
+    NESTED_GIANT_LARGE = "depth-anything/DA3NESTED-GIANT-LARGE"
+    NESTED_GIANT_LARGE_1_1 = "depth-anything/DA3NESTED-GIANT-LARGE-1.1"
+    SMALL = "depth-anything/DA3-SMALL"
+    BASE = "depth-anything/DA3-BASE"
+    LARGE = "depth-anything/DA3-LARGE"
+    GIANT = "depth-anything/DA3-GIANT"
+    MONO_LARGE = "depth-anything/DA3MONO-LARGE"
+
+    @property
+    def depth_scale(self) -> DepthScale:
+        match self:
+            case DepthCheckpoint.METRIC_LARGE:
+                return DepthScale.METERS_AT_CANONICAL_FOCAL
+            case DepthCheckpoint.NESTED_GIANT_LARGE | DepthCheckpoint.NESTED_GIANT_LARGE_1_1:
+                return DepthScale.METERS
+            case (
+                DepthCheckpoint.SMALL
+                | DepthCheckpoint.BASE
+                | DepthCheckpoint.LARGE
+                | DepthCheckpoint.GIANT
+                | DepthCheckpoint.MONO_LARGE
+            ):
+                return DepthScale.RELATIVE
+            case _:
+                # Unreachable while every member above is handled. Here so a new member that was
+                # never given a scale fails loudly instead of being read as meters.
+                raise ValueError(f"no depth scale recorded for {self.value}")
+
+
+def _metric_checkpoint_names() -> str:
+    return ", ".join(checkpoint.value for checkpoint in DepthCheckpoint if checkpoint.depth_scale is not DepthScale.RELATIVE)
+
+
+def require_metric(checkpoint: DepthCheckpoint) -> DepthCheckpoint:
+    """
+    Refuse a checkpoint whose depth is not meters.
+
+    The planner's clearance is meters. Relative depth would put every surprise value off by an
+    unknown scale, which is the same reason the plugin route refuses its relative models.
+
+    :param checkpoint: The checkpoint asked for.
+    :return: The same checkpoint, when its depth is meters or converts to them.
+    :rtype: DepthCheckpoint
+    :raises ValueError: When the checkpoint gives relative depth.
+    """
+    if checkpoint.depth_scale is DepthScale.RELATIVE:
+        raise ValueError(
+            f"{checkpoint.value} gives relative depth, and the planner's clearance needs meters. "
+            f"Use one of {_metric_checkpoint_names()}"
+        )
+    return checkpoint
+
+
+def depth_checkpoint_from_name(name: str) -> DepthCheckpoint:
+    """
+    Turn a checkpoint name from the command line into a checkpoint the pipeline can run.
+
+    :param name: The hub name, such as "depth-anything/DA3METRIC-LARGE".
+    :return: The matching checkpoint.
+    :rtype: DepthCheckpoint
+    :raises ValueError: When the name is not a known checkpoint, naming the accepted ones, or when
+        it is a known one that gives relative depth.
+    """
+    try:
+        checkpoint = DepthCheckpoint(name)
+    except ValueError:
+        # The enum's own message names only the bad value. The accepted ones are the useful part.
+        raise ValueError(f"unknown Depth Anything 3 checkpoint {name!r}. Accepted: {_metric_checkpoint_names()}") from None
+    return require_metric(checkpoint)
+
+
 @dataclass(frozen=True)
 class EstimatorConfig:
     """The depth estimator."""
 
     # Metric depth, so clearance comes out in meters and the old file's cam_height rescale is not
     # needed. 1.3 GB of weights against 6.8 GB for the DA3NESTED-GIANT-LARGE the old script
-    # defaulted to, which returns relative depth and does not fit the 4 GB card on this laptop.
-    model_name: str = "depth-anything/DA3METRIC-LARGE"
+    # defaulted to. That one gives meters too, but it does not fit the 4 GB card on this laptop.
+    model_name: DepthCheckpoint = DepthCheckpoint.METRIC_LARGE
     process_resolution: int = 504  # The old file's --res default. Lower is faster.
-    confidence_drop_percentile: float = 30.0  # The old file's conf_pct. Drops the least certain pixels.
-    # Used only when the model returns no intrinsics, which the metric model does for a plain video.
-    # The old file assumed about 100 degrees horizontal. A phone camera is nearer 75, so a run on
-    # phone footage should set this to match, or distances straight ahead come out short.
+    # The old file's conf_pct. Drops the least certain pixels, but only for a checkpoint that gives a
+    # confidence map. The metric model gives none, so with the default model this drops nothing,
+    # and the composed source logs that once.
+    confidence_drop_percentile: float = 30.0
+    # Used only when the camera brings no calibration and the model returns no intrinsics, which
+    # the metric model does for a plain video. The old file assumed about 100 degrees horizontal.
+    # A phone camera is nearer 75, so a run on phone footage should set this to match. A wrong value
+    # scales distances straight ahead, and on a camera pitched down it also misreads the camera's
+    # height and tilts the floor.
     fallback_half_field_of_view_degrees: float = 50.0
+
+    def __post_init__(self) -> None:
+        # A name from the command line is converted once at the parser, so a string here is a
+        # caller that skipped that step.
+        if not isinstance(self.model_name, DepthCheckpoint):
+            raise TypeError(
+                f"model_name must be a DepthCheckpoint, got {self.model_name!r}. "
+                f"Convert a name with depth_checkpoint_from_name"
+            )
+        require_metric(self.model_name)
 
 
 @dataclass(frozen=True)

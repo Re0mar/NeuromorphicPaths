@@ -26,6 +26,8 @@ from nav.config import (
 )
 from nav.sources.config import (
     ArCoreConfig,
+    DepthCheckpoint,
+    DepthScale,
     EstimatorConfig,
     LoggedConfig,
     NeonConfig,
@@ -333,7 +335,34 @@ def test_default_checkpoint_is_a_metric_one() -> None:
     # clearance in meters was wrong by an unknown scale and the file carried a cam_height rescale
     # to paper over it. Asserts the property rather than the exact name, so a version bump passes
     # and a swap back to a relative checkpoint does not.
-    assert "METRIC" in EstimatorConfig.model_name.upper()
+    assert EstimatorConfig.model_name.depth_scale is not DepthScale.RELATIVE
+
+
+def test_a_model_named_on_the_command_line_reaches_the_estimator_as_a_checkpoint() -> None:
+    """The estimator config refuses a bare string, so the parser is where a name becomes a checkpoint."""
+    config = build_run_config([*MINIMAL_VIDEO_ARGV, "--model", DepthCheckpoint.NESTED_GIANT_LARGE.value])
+
+    assert config.estimator.model_name is DepthCheckpoint.NESTED_GIANT_LARGE
+
+
+@pytest.mark.parametrize(
+    ("name", "expected_in_message"),
+    [
+        ("depth-anything/DA3-NOT-A-MODEL", "unknown Depth Anything 3 checkpoint"),
+        (DepthCheckpoint.SMALL.value, "gives relative depth"),
+    ],
+)
+def test_a_model_that_is_unknown_or_relative_is_refused_at_parse_time(
+    name: str, expected_in_message: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as exited:
+        build_run_config([*MINIMAL_VIDEO_ARGV, "--model", name])
+
+    assert exited.value.code == 2
+    error = capsys.readouterr().err
+    assert expected_in_message in error
+    assert DepthCheckpoint.METRIC_LARGE.value in error, "the refusal names a checkpoint that would work"
+
 
 def test_the_floor_tilt_and_fallback_fov_flags_reach_their_layers() -> None:
     # The first real recording was refused frame after frame by the floor gate the glasses
@@ -422,6 +451,65 @@ def test_neon_address_is_carried_through_when_given() -> None:
 
     assert config.neon is not None
     assert config.neon.address == "10.0.0.5"
+
+
+def _capture_folder(tmp_path, with_meta: bool):
+    folder = tmp_path / "walk_1"
+    folder.mkdir()
+    if with_meta:
+        (folder / "meta.json").write_text("{}", encoding="utf-8")
+    return folder
+
+
+def test_a_neon_replay_folder_with_meta_reaches_the_neon_config(tmp_path) -> None:
+    capture = _capture_folder(tmp_path, with_meta=True)
+
+    config = build_run_config(["--source", "neon_live", "--sink", "none", "--neon-replay", str(capture)])
+
+    assert config.neon is not None
+    assert config.neon.replay_dir == str(capture)
+    assert config.neon.address is None
+
+
+def test_a_neon_replay_folder_without_meta_is_refused_naming_it(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    """An interrupted capture once had packets and no meta.json. Refused before the estimator loads its model."""
+    folder = _capture_folder(tmp_path, with_meta=False)
+
+    with pytest.raises(SystemExit) as exited:
+        build_run_config(["--source", "neon_live", "--sink", "none", "--neon-replay", str(folder)])
+
+    assert exited.value.code == 2
+    assert f"--neon-replay {folder} is not a capture folder, it has no meta.json" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("source", "source_argv"),
+    [
+        ("video_file", ["--path", STREAM_URL]),
+        ("arcore_tcp", []),
+    ],
+)
+def test_neon_replay_is_refused_for_a_source_that_is_not_neon_live(
+    source: str, source_argv: list[str], tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The same rule --realtime and --reconnect follow. A flag the chosen source silently ignores
+    # is a run that does something other than what was typed.
+    capture = _capture_folder(tmp_path, with_meta=True)
+
+    with pytest.raises(SystemExit):
+        build_run_config(["--source", source, *source_argv, "--sink", "none", "--neon-replay", str(capture)])
+
+    assert f"--neon-replay only applies to neon_live, not {source}" in capsys.readouterr().err
+
+
+def test_neon_address_and_neon_replay_together_are_refused(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    """A replay plays a capture in place of the glasses, so the address would be ignored without a word."""
+    capture = _capture_folder(tmp_path, with_meta=True)
+
+    with pytest.raises(SystemExit):
+        build_run_config(["--source", "neon_live", "--sink", "none", "--neon-address", "10.0.0.5", "--neon-replay", str(capture)])
+
+    assert "--neon-address and --neon-replay cannot be used together" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

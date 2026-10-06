@@ -25,9 +25,21 @@ import numpy as np
 import pytest
 
 # Local package imports
+from fake_neon_client import FakeNeonScript, install
 from nav.sources import neon_device
 from nav.sources.config import NeonConfig
-from nav.sources.neon_device import NeonDeviceError, NeonDeviceProcess, NeonStreamEnded, SharedFrameBuffer, answer, serve
+from nav.sources.neon_device import (
+    DeviceRequest,
+    NeonDeviceError,
+    NeonDeviceProcess,
+    NeonStreamEnded,
+    NeonUnexpectedFailure,
+    SharedFrameBuffer,
+    answer,
+    known_child_failures,
+    serve,
+)
+from nav.sources.neon_stream import NeonStreamDevice
 
 FRAME_SHAPE = (12, 16, 3)
 
@@ -134,6 +146,28 @@ def make_unreachable_device(config: NeonConfig) -> ChildFakeDevice:
     raise ConnectionError("no Neon found within 10 s")
 
 
+def make_surprising_device(config: NeonConfig) -> ChildFakeDevice:
+    raise KeyError("a connect failure nobody named")
+
+
+def make_live_device_whose_time_echo_never_answers(config: NeonConfig) -> NeonStreamDevice:
+    # The real receiver, with the client's classes swapped for fakes in this child only. Not
+    # started, because a Time Echo measurement needs nothing but the address.
+    install(FakeNeonScript(time_echo_never_answers=True), setattr)
+    return NeonStreamDevice(config)
+
+
+class ClientFailingDevice(ChildFakeDevice):
+    """Fails its calibration the way the Pupil Labs client does when the glasses or the network go."""
+
+    def __init__(self, failure: BaseException) -> None:
+        super().__init__()
+        self._failure = failure
+
+    def get_calibration(self):
+        raise self._failure
+
+
 @pytest.fixture
 def served() -> NeonDeviceProcess:
     """A proxy wired to the child's request loop running on a thread, over a real pipe."""
@@ -141,8 +175,9 @@ def served() -> NeonDeviceProcess:
 
 
 def _serve_on_thread(device: ChildFakeDevice) -> NeonDeviceProcess:
+    # The child's own list of known failures, so trimming it fails the tests that rely on a member.
     parent_end, child_end = multiprocessing.Pipe()
-    thread = threading.Thread(target=serve, args=(child_end, device, (OSError, ValueError)), daemon=True)
+    thread = threading.Thread(target=serve, args=(child_end, device, known_child_failures()), daemon=True)
     thread.start()
     proxy = NeonDeviceProcess(NeonConfig(time_echo_timeout_seconds=0.2))
     proxy._connection = parent_end
@@ -204,10 +239,28 @@ def test_known_failures_cross_as_their_own_kinds() -> None:
 def test_an_unknown_failure_is_raised_as_unexpected_and_not_as_a_known_kind() -> None:
     proxy = _serve_on_thread(RefusingDevice())
 
-    with pytest.raises(RuntimeError, match="UNEXPECTED") as raised:
+    with pytest.raises(NeonUnexpectedFailure, match="UNEXPECTED") as raised:
         proxy.receive_imu_datum(timeout_seconds=0.0)
     assert "KeyError" in str(raised.value)
     assert not isinstance(raised.value, (OSError, ValueError))
+
+
+@pytest.mark.parametrize("client_failure", ["device_error", "server_disconnected"])
+def test_the_clients_own_failures_cross_as_device_failures(client_failure: str) -> None:
+    """A dropped HTTP connection is not an OSError, and used to reach the source as unexpected."""
+    pytest.importorskip("pupil_labs.realtime_api", reason="the client comes with the glasses extra")
+    if client_failure == "device_error":
+        from pupil_labs.realtime_api.device import DeviceError
+
+        failure, message = DeviceError(500, "Failed to fetch calibration"), "Failed to fetch calibration"
+    else:
+        aiohttp = pytest.importorskip("aiohttp", reason="the client's HTTP library comes with the glasses extra")
+        failure, message = aiohttp.ServerDisconnectedError("Server disconnected"), "Server disconnected"
+    proxy = _serve_on_thread(ClientFailingDevice(failure))
+
+    with pytest.raises(NeonDeviceError, match=message) as raised:
+        proxy.get_calibration()
+    assert type(failure).__name__ in str(raised.value)
 
 
 def test_a_request_without_a_timeout_is_refused_before_it_can_hold_the_pipe(served: NeonDeviceProcess) -> None:
@@ -223,12 +276,38 @@ def test_a_reply_that_arrives_after_its_request_gave_up_is_not_read_as_the_next_
     monkeypatch.setattr(neon_device, "RESPONSE_GRACE_SECONDS", 0.0)
     proxy = _serve_on_thread(ChildFakeDevice(offset_delay_seconds=0.6))
 
-    with pytest.raises(NeonDeviceError, match="did not answer"):
+    with pytest.raises(NeonDeviceError, match="did not answer 'time_offset'"):
         proxy.estimate_time_offset()
     time.sleep(0.6)
     matched = proxy.receive_matched_scene_video_frame_and_gaze(timeout_seconds=0.25)
 
     assert matched.frame.timestamp_unix_seconds == pytest.approx(101.0)
+
+
+def test_requests_from_other_threads_wait_for_the_one_holding_the_pipe_and_get_their_own_replies() -> None:
+    """The source polls frames while a clock measurement may still be out. Each reply must reach its own request."""
+    proxy = _serve_on_thread(ChildFakeDevice(offset_delay_seconds=0.6))
+    results: dict[str, object] = {}
+
+    def measure() -> None:
+        results["offset"] = proxy.estimate_time_offset(number_of_measurements=20)
+
+    def receive(name: str) -> None:
+        results[name] = proxy.receive_matched_scene_video_frame_and_gaze(timeout_seconds=0.25)
+
+    # Daemons, so two threads stuck reading one pipe fail this test rather than hang the suite.
+    measuring = threading.Thread(target=measure, daemon=True)
+    measuring.start()
+    time.sleep(0.1)
+    receivers = [threading.Thread(target=receive, args=(f"frame {index}",), daemon=True) for index in range(3)]
+    for receiver in receivers:
+        receiver.start()
+    for thread in (measuring, *receivers):
+        thread.join(15.0)
+
+    assert results["offset"].time_offset_ms.median == pytest.approx(1346.0)
+    stamps = sorted(results[f"frame {index}"].frame.timestamp_unix_seconds for index in range(3))
+    assert stamps == pytest.approx([101.0, 102.0, 103.0])
 
 
 def test_a_child_that_has_stopped_is_reported_as_stopped() -> None:
@@ -266,6 +345,51 @@ def test_a_child_that_cannot_reach_the_device_fails_start_with_its_reason_and_ex
     proxy.close()
 
     assert not process.is_alive()
+
+
+def test_a_child_that_fails_to_connect_in_an_unnamed_way_raises_it_as_unexpected_with_its_traceback() -> None:
+    proxy = NeonDeviceProcess(NeonConfig(), device_factory=make_surprising_device)
+
+    with pytest.raises(NeonUnexpectedFailure, match="UNEXPECTED failure in the Neon process") as raised:
+        proxy.start()
+    process = proxy._process
+    proxy.close()
+
+    message = str(raised.value)
+    assert "Traceback" in message
+    assert "KeyError: 'a connect failure nobody named'" in message
+    assert not isinstance(raised.value, (OSError, ValueError))
+    assert not process.is_alive()
+
+
+def test_a_time_echo_that_never_answers_comes_back_from_the_child_as_none_within_its_timeout() -> None:
+    """
+    The real receiver's measurement in a real child, with a phone that never answers.
+
+    Unbounded in the child, the parent waited out its own 5.5 s and blamed the next request, and
+    the child was ended by force at close.
+    """
+    pytest.importorskip("pupil_labs.realtime_api", reason="the client comes with the glasses extra")
+    proxy = NeonDeviceProcess(
+        NeonConfig(address="192.0.2.7", time_echo_timeout_seconds=0.5),
+        device_factory=make_live_device_whose_time_echo_never_answers,
+    )
+    proxy.start()
+    process = proxy._process
+    try:
+        started = time.monotonic()
+        offset = proxy.estimate_time_offset(number_of_measurements=20)
+        measuring_seconds = time.monotonic() - started
+    finally:
+        closing_started = time.monotonic()
+        proxy.close()
+        closing_seconds = time.monotonic() - closing_started
+
+    assert offset is None
+    # The parent's own wait is the timeout plus 5 s. This has to come in well inside it.
+    assert measuring_seconds < 2.5
+    assert closing_seconds < 3.0
+    assert process.exitcode == 0, "the child was ended by force rather than closed"
 
 
 def test_a_child_that_dies_is_reported_on_the_next_request() -> None:
@@ -309,7 +433,7 @@ def test_a_frame_reply_carries_where_the_pixels_are_and_not_the_pixels() -> None
     # while the planner held it. Only the block's name and the frame's shape may cross now.
     frames = SharedFrameBuffer()
     try:
-        payload = answer(ChildFakeDevice(), "matched", (0.25,), frames)
+        payload = answer(ChildFakeDevice(), DeviceRequest.MATCHED, (0.25,), frames)
     finally:
         frames.close()
 
@@ -354,11 +478,7 @@ class EndedDevice(ChildFakeDevice):
 
 
 def test_the_end_of_a_capture_crosses_as_its_own_kind_and_not_as_a_failure() -> None:
-    parent_end, child_end = multiprocessing.Pipe()
-    thread = threading.Thread(target=serve, args=(child_end, EndedDevice(), (OSError, ValueError, EOFError)), daemon=True)
-    thread.start()
-    proxy = NeonDeviceProcess(NeonConfig())
-    proxy._connection = parent_end
+    proxy = _serve_on_thread(EndedDevice())
 
     with pytest.raises(NeonStreamEnded) as ended:
         proxy.receive_matched_scene_video_frame_and_gaze(timeout_seconds=0.25)

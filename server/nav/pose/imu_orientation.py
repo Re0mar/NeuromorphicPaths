@@ -1,7 +1,7 @@
 """
 Poses that carry orientation and no position.
 
-Both functions here return has_position False, which is what the scene reads to decide it must
+Both pose functions here return has_position False, which is what the scene reads to decide it must
 rebuild the cloud in the body frame every frame instead of accumulating one in the world. They
 live together for that reason rather than because both involve an IMU.
 
@@ -25,6 +25,25 @@ IDENTITY_ORIENTATION_WXYZ = np.array([1.0, 0.0, 0.0, 0.0])
 # How far from unit length a mount quaternion may be. Mounts are written down by hand from a
 # datasheet, so anything further off is a typo rather than rounding.
 MOUNT_UNIT_TOLERANCE = 1e-6
+
+# A real orientation is a unit quaternion. Anything this short is an empty reading, not a rotation.
+MINIMUM_QUATERNION_LENGTH = 0.5
+
+
+def is_usable_orientation(orientation_wxyz: np.ndarray) -> bool:
+    """
+    Whether an IMU reading is an orientation at all, rather than an empty one.
+
+    The Neon sent nothing but zero quaternions for minutes at a time on 2026-10-05, and a recording
+    can hold NaN where no sample sat near a frame. Both are skipped the same way on every route,
+    so this is the one place that decides what counts as empty.
+
+    :param orientation_wxyz: (4,) quaternion as the device reported it, not yet normalized.
+    :return: True when it is finite and long enough to be a rotation.
+    :rtype: bool
+    """
+    length = float(np.linalg.norm(orientation_wxyz))
+    return bool(np.isfinite(length)) and length >= MINIMUM_QUATERNION_LENGTH
 
 
 @dataclass(frozen=True)

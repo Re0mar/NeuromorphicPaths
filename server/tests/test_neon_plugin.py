@@ -146,6 +146,7 @@ def test_a_recording_with_no_imu_gets_identity_poses(tmp_path: Path, caplog: pyt
         frames = list(_source(recording, FakeReader(quaternions_wxyz=None)).frames())
 
     assert all(frame.pose.orientation == pytest.approx([1.0, 0.0, 0.0, 0.0]) for frame in frames)
+    assert all(frame.pose.orientation_is_gravity_aligned is False for frame in frames)
     assert any("no IMU data" in record.message for record in caplog.records)
 
 
@@ -158,17 +159,45 @@ def test_a_recording_with_no_gaze_yields_no_gaze(tmp_path: Path) -> None:
     assert all(frame.gaze_pixel is None for frame in frames)
 
 
-def test_a_non_finite_imu_sample_falls_back_to_identity_for_that_frame(tmp_path: Path) -> None:
+@pytest.mark.parametrize("empty_sample", [np.zeros(4), np.full(4, np.nan)], ids=["zero", "nan"])
+def test_an_empty_imu_sample_mid_recording_carries_the_last_real_orientation(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    empty_sample: np.ndarray,
+) -> None:
+    """An empty reading is a missing sample, so the replay goes on with the last real one, as live does."""
+    # Each frame a different pitch, so carrying the wrong frame's orientation shows.
     recording = tmp_path / "rec"
     _write_cache(recording)
-    quaternions = np.tile(np.array([1.0, 0.0, 0.0, 0.0]), (FRAME_COUNT, 1))
-    quaternions[2] = np.nan
+    quaternions = np.array([[1.0, 0.05 * index, 0.0, 0.0] for index in range(FRAME_COUNT)])
+    quaternions[2] = empty_sample
+    quaternions[4] = empty_sample
+
+    with caplog.at_level("WARNING"):
+        frames = list(_source(recording, FakeReader(quaternions_wxyz=quaternions)).frames())
+
+    assert len(frames) == FRAME_COUNT
+    assert frames[2].pose.orientation == pytest.approx(pose_from_imu(quaternions[1], NEON_IMU_MOUNT).orientation)
+    assert frames[2].pose.orientation_is_gravity_aligned is True
+    assert frames[3].pose.orientation == pytest.approx(pose_from_imu(quaternions[3], NEON_IMU_MOUNT).orientation)
+    assert frames[4].pose.orientation == pytest.approx(pose_from_imu(quaternions[3], NEON_IMU_MOUNT).orientation)
+    empty_warnings = [record for record in caplog.records if "empty IMU orientations" in record.message]
+    assert len(empty_warnings) == 1, "warned once per replay, not once per empty sample"
+
+
+def test_empty_imu_samples_before_any_real_one_give_identity_without_gravity(tmp_path: Path) -> None:
+    """With no real reading yet, nothing knows where up is, so the scene must not be told it does."""
+    recording = tmp_path / "rec"
+    _write_cache(recording)
+    quaternions = np.tile(np.array([1.0, 0.1, 0.0, 0.0]), (FRAME_COUNT, 1))
+    quaternions[:2] = 0.0
 
     frames = list(_source(recording, FakeReader(quaternions_wxyz=quaternions)).frames())
 
-    assert frames[2].pose.orientation == pytest.approx([1.0, 0.0, 0.0, 0.0])
-    assert frames[2].pose.orientation_is_gravity_aligned is False
-    assert len(frames) == FRAME_COUNT
+    for frame in frames[:2]:
+        assert frame.pose.orientation == pytest.approx([1.0, 0.0, 0.0, 0.0])
+        assert frame.pose.orientation_is_gravity_aligned is False
+    assert frames[2].pose.orientation_is_gravity_aligned is True
 
 
 def test_the_sample_tolerance_reaches_the_reader(tmp_path: Path) -> None:
