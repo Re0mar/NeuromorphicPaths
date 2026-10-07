@@ -23,7 +23,7 @@ import pytest
 # Local package imports
 from nav.config import GoalMode, RunConfig, SinkKind, SourceKind, build_run_config
 from nav.main import main
-from nav.runtime.loop import EPISODES_FILENAME, RUN_CONFIG_FILENAME, FrameResult, NewestResultPublisher, _latency_shares, _report, run
+from nav.runtime.loop import EPISODES_FILENAME, RUN_CONFIG_FILENAME, FrameResult, PublisherThread, _latency_shares, _report, run
 from nav.runtime.tap import RecordingTap
 from nav.runtime.worker import NewestFrameWorker
 from nav.sources.config import ArCoreConfig, LoggedConfig, TapConfig
@@ -223,7 +223,7 @@ def test_one_planner_serves_every_frame_of_a_run(tmp_path: Path, monkeypatch: py
     assert counts["built"] == 1
 
 
-def test_a_result_is_published_once_however_many_frames_arrive_while_it_is_the_newest() -> None:
+def test_a_result_is_published_once_however_long_it_stays_the_newest() -> None:
     published: list[PlannedPath] = []
 
     class CountingSink:
@@ -245,15 +245,26 @@ def test_a_result_is_published_once_however_many_frames_arrive_while_it_is_the_n
         def latest_result(self):
             return self.result
 
-    worker = StuckWorker()
-    publisher = NewestResultPublisher(CountingSink())
-    for _ in range(6):
-        publisher.publish(worker)
-    assert len(published) == 1, "six source frames with one result is one publish"
+        def wait_for_result(self, newer_than, timeout_seconds):
+            if self.result is not newer_than:
+                return self.result
+            time.sleep(timeout_seconds)
+            return None
 
-    worker.result = FrameResult(_path(0.2), np.zeros((1, 3)), np.array([-1.0, 0.0, 1.0]), _view())
-    publisher.publish(worker)
-    publisher.publish(worker)
+    worker = StuckWorker()
+    publisher = PublisherThread(CountingSink(), worker)
+    publisher.start()
+    try:
+        assert publisher.flush(5.0)
+        # Several polls with the same result in place. Each one is a chance to publish it again.
+        time.sleep(0.35)
+        assert len(published) == 1, "one result is one publish, however many polls see it"
+
+        worker.result = FrameResult(_path(0.2), np.zeros((1, 3)), np.array([-1.0, 0.0, 1.0]), _view())
+        assert publisher.flush(5.0)
+        time.sleep(0.25)
+    finally:
+        publisher.stop()
     assert [path.first_heading_radians for path in published] == pytest.approx([0.1, 0.2])
 
 

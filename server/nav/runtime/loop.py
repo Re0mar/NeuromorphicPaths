@@ -9,6 +9,7 @@ when the source ends or the user interrupts.
 # Standard library imports
 import json
 import logging
+import threading
 import time
 from collections import Counter
 from collections.abc import Callable
@@ -40,6 +41,9 @@ RUN_CONFIG_FILENAME = "run_config.json"
 # path does not read as one permanent turn. Five seconds is a few strides.
 HEADING_BASELINE_SECONDS = 5.0
 CAMERA_FORWARD = np.array([0.0, 0.0, 1.0])
+# How long the publisher waits for a result before checking whether it was asked to stop. Short,
+# so stopping takes a tenth of a second at most. A new result wakes it at once regardless.
+PUBLISHER_POLL_SECONDS = 0.1
 
 
 @dataclass(frozen=True)
@@ -208,7 +212,13 @@ def run(config: RunConfig) -> int:
     source = build_source(config)
     worker: NewestFrameWorker[FrameResult] = NewestFrameWorker(process, on_dropped=timing.frame_dropped)
     worker.start()
-    publisher = NewestResultPublisher(sink, on_published=timing.path_published)
+    publisher = PublisherThread(sink, worker, on_published=timing.path_published)
+
+    def raise_any_failure() -> None:
+        # Nothing else would end the run on a dead worker or publisher. The main thread would keep
+        # feeding frames to a worker nobody reads.
+        worker.raise_failure()
+        publisher.raise_failure()
 
     exit_code = 0
     frames_in = 0
@@ -217,12 +227,13 @@ def run(config: RunConfig) -> int:
         # connection finds something to connect to from the start. A port it cannot bind is a
         # ConnectionError, caught below as the OSError it is, and the run ends with the reason.
         sink.start()
+        publisher.start()
         while True:
             try:
                 for frame in source.frames():
                     frames_in += 1
                     worker.submit(frame)
-                    publisher.publish(worker)
+                    raise_any_failure()
             except ConnectionError as nobody_came_back:
                 if not (config.reconnect and frames_in > 0):
                     raise
@@ -230,9 +241,12 @@ def run(config: RunConfig) -> int:
                 # Waiting was what --reconnect asked for, so this is the walk ending, not a fault.
                 log.info("no further connection, ending the run: %s", nobody_came_back)
                 break
-            # The source ended. Let the worker finish the frame it holds, then publish it.
+            # The source ended. Let the worker finish the frame it holds and the publisher send it.
+            # A failure on that last frame is only seen here, since no further submit comes.
             worker.wait_until_idle()
-            publisher.publish(worker)
+            raise_any_failure()
+            publisher.flush()
+            raise_any_failure()
 
             if not config.reconnect:
                 break
@@ -247,13 +261,15 @@ def run(config: RunConfig) -> int:
         log.error("%s: %s", type(refused).__name__, refused)
         exit_code = 1
     except Exception as unexpected_error:
-        # The worker's stored failure, re-raised by latest_result, or anything else nobody
-        # predicted. Logged as such, and the exit code says the run did not finish on its own terms.
+        # The worker's or the publisher's stored failure, or anything else nobody predicted.
+        # Logged as such, and the exit code says the run did not finish on its own terms.
         log.error("UNEXPECTED %s in the loop, may need a handler", type(unexpected_error).__name__, exc_info=True)
         exit_code = 1
     finally:
-        # The timing log closes last, so every frame's last stamp from the worker, the sinks and
-        # the source is queued before its writer stops.
+        # The publisher stops first, so nothing is handed to a sink after it closes. The timing
+        # log closes last, so every frame's last stamp from the worker, the sinks and the source
+        # is queued before its writer stops.
+        publisher.stop()
         worker.stop()
         sink.close()
         source.close()
@@ -263,31 +279,82 @@ def run(config: RunConfig) -> int:
     return exit_code
 
 
-class NewestResultPublisher:
-    """Hands each new result to the sink once, however many source frames arrive while it is new."""
+class PublisherThread(threading.Thread):
+    """
+    Hands each new result to the sink once, the moment the worker has it.
 
-    def __init__(self, sink, on_published: Callable[[float], None] | None = None) -> None:
+    Publishing used to happen on the main thread after the next frame arrived, so a finished path
+    sat waiting for a frame that had nothing to do with it. On its own thread it goes out at once.
+    A slow sink now delays only the next publish, never reading frames or planning them.
+    """
+
+    def __init__(self, sink, worker: NewestFrameWorker, on_published: Callable[[float], None] | None = None) -> None:
         """
-        :param sink: Every display, behind one sink.
+        :param sink: Every display, behind one sink. Already started, on the main thread.
+        :param worker: Where the results come from.
         :param on_published: Called with the path's `timestamp_seconds` after every display has been handed it.
         """
+        super().__init__(name="path-publisher", daemon=True)
         self._sink = sink
+        self._worker = worker
         self._on_published = on_published
         self._last: FrameResult | None = None
+        self._failure: BaseException | None = None
+        self._stopping = threading.Event()
+        self._published = threading.Condition()
 
-    def publish(self, worker: NewestFrameWorker) -> None:
-        result = worker.latest_result()
-        # Identity, not equality. The worker hands out the same object until it has a new one,
-        # and a web or phone sink sent the same path six times over per planned frame without this.
-        if result is None or result is self._last:
-            return
-        self._last = result
+    def run(self) -> None:
+        try:
+            while not self._stopping.is_set():
+                result = self._worker.wait_for_result(self._last, PUBLISHER_POLL_SECONDS)
+                if result is not None:
+                    self._publish(result)
+        except Exception as unexpected_error:
+            # The worker's own failure re-raised, or a sink failing in a way no sink handles. The
+            # main loop re-raises it and logs it with its traceback. This line says when it
+            # happened, since a live source can hold the main loop until the next frame.
+            log.error("publisher stopped on UNEXPECTED %s, the run ends at the next frame", type(unexpected_error).__name__)
+            self._failure = unexpected_error
+        finally:
+            # Wakes a flush that would otherwise wait out its timeout on a thread that has ended.
+            with self._published:
+                self._published.notify_all()
+
+    def raise_failure(self) -> None:
+        """:raises: Whatever ended this thread. Returns quietly while it is publishing."""
+        if self._failure is not None:
+            raise self._failure
+
+    def flush(self, timeout_seconds: float = 5.0) -> bool:
+        """
+        Block until the worker's newest result has been published, or the timeout passes.
+
+        :param timeout_seconds: How long to wait at most.
+        :return: True once published, or once this thread has ended. False when the timeout passed first.
+        :rtype: bool
+        :raises: The worker's stored failure.
+        """
+        target = self._worker.latest_result()
+        if target is None:
+            return True
+        with self._published:
+            return self._published.wait_for(lambda: self._last is target or not self.is_alive(), timeout_seconds)
+
+    def stop(self, timeout_seconds: float = 5.0) -> None:
+        self._stopping.set()
+        if self.is_alive():
+            self.join(timeout_seconds)
+
+    def _publish(self, result: FrameResult) -> None:
         if isinstance(self._sink, DebugSink):
             self._sink.publish_debug(result.path, result.field, result.grid, result.view)
         else:
             self._sink.publish(result.path)
         if self._on_published is not None:
             self._on_published(result.path.timestamp_seconds)
+        with self._published:
+            self._last = result
+            self._published.notify_all()
 
 
 def _timing_log(config: RunConfig) -> TimingLog | None:

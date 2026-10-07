@@ -94,6 +94,15 @@ run ends when the phone disconnects. Launching the app by hand takes longer than
 | `phone_app` | the Pixel app over TCP. The phone connects to the laptop, on this port | `--phone-port` (9100) |
 | `none` | nowhere. For recording and for tests | |
 
+Every sink starts on the main thread before the first frame, so its port is open from the start.
+After that, paths reach the sinks from a publisher thread, the moment each one is planned. That
+includes the debug window, which OpenCV draws fine from that thread on Windows and Linux. macOS
+only allows windows on the main thread, so `debug_window` isn't supported there. Use `web`.
+
+The web page gets every path's arrow, but its plan view and depth picture are drawn on a thread of
+their own, at most 10 times a second, from the newest frame. Drawing one takes about 50 ms. Done on
+the publisher thread, it held up the phone's next path and slowed the planner.
+
 **`--sink` can be repeated, and a walk usually repeats it.** The arrow belongs on the phone, where
 the walker is looking, and the depth view belongs in a browser, where whoever is watching the
 laptop is looking. Name both and both are served from the one run:
@@ -239,6 +248,20 @@ netsh int ipv4 add excludedportrange protocol=tcp startport=8765 numberofports=1
 `netsh int ipv4 show excludedportrange protocol=tcp` lists them afterwards. A port already held
 by a running process has to be given up first, and `Get-NetTCPConnection -LocalPort 9100` names
 the process holding it.
+
+A run that ends with `[winerror 10013] an attempt was made to access a socket in a way forbidden by
+its access permissions` is different: nobody holds the port, but Windows reserved a block around it
+when it started. That list shows the block without a `*` beside it. On 2026-10-07 it was 8725 to
+8824, which swallows 8765. The service that reserves these blocks has to be stopped for the
+reservation above to go through, so in an elevated PowerShell:
+
+```powershell
+net stop winnat
+netsh int ipv4 add excludedportrange protocol=tcp startport=8765 numberofports=1 store=persistent
+net start winnat
+```
+
+Or, for one run, give the page another port with `--web-port`, outside every block in the list.
 
 The live glasses. Discovery finds the Neon on the local network. University wifi usually blocks
 that between subnets, in which case read the address off the Companion app's streaming screen:
