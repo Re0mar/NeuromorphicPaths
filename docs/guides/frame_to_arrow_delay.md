@@ -43,13 +43,17 @@ cd server && .venv/Scripts/python -m nav --source arcore_tcp --arcore-accept-tim
 - on the phone: open the app, allow the camera and local network access (Android 17 asks), type the
   laptop's address, tap Connect
 
+hold the phone the way you'll walk with it. nothing arrives at the laptop until ARCore sees the room
+and starts tracking, and nothing at all while the app is off screen. keep it in front, screen on.
+
 **warm up first.** leave it connected and planning for 2 min before you start walking. the phone
 throttles under ARCore after a bit, and a cold start makes the first minute look faster than the
 rest. then walk ~3 min. Ctrl-C the laptop when done.
 
 ## pull the phone's log
 
-phone on USB. Git Bash rewrites the device path unless you stop it:
+phone on USB. plugging it back in after the walk asks "Allow USB debugging?" on the phone again,
+and adb says `unauthorized` until you accept. Git Bash rewrites the device path unless you stop it:
 
 ```bash
 cd server && MSYS_NO_PATHCONV=1 adb pull /sdcard/Android/data/com.neuromorphicpaths.pixel/files/timing/ frame_logs/<new walk>/phone/
@@ -68,17 +72,45 @@ cd server && .venv/Scripts/python examples/timing_report.py frame_logs/<new walk
 
 ## what it looks like when it worked
 
-<!-- TODO STEP_07: paste the real report output from the after walk here, and drop this comment -->
+a real one, a 2 min walk on 5 GHz on 2026-10-07 (the counts after this are trimmed):
 
-a table of the shares (median, 95th percentile, worst, frame count), a line on the phone's clocks,
-then the counts. check:
+```
+joined paths               1525  (581 frames left out as the cold start)
+frame to arrow, ms           median     p95   worst   frames   (percentiles linear between ranks)
+  total, handled to drawn      128.6   217.2   332.4     1525
+  phone, handled to sent        10.0    20.4    32.0     1525
+  network, both hops            11.5    23.0    79.0     1524
+  laptop, arrival to sent       90.2   185.2   305.2     1525
+    queue wait                  25.1    52.0    81.9     1525
+    processing                  60.6   149.6   263.2     1525
+    publish wait                 1.1     2.3    12.8     1525
+  display, received to drawn    11.4    18.6    23.1     1525
+  sensor to handled            138.3   150.7   162.9     1525
+  total, sensor to drawn       263.5   357.9   465.0     1525
+phone clocks               same base: handled minus sensor 106.2 to 200.7 ms over 5256 frames
+WARNING network, both hops came out negative, left out: -0.7 ms
+network median per 10 s of the walk, ms (paths)
+  0 s: 12 (123), 10 s: 12 (101), 20 s: 12 (184), 30 s: 12 (160), 40 s: 11 (157), 50 s: 12 (103), 60 s: 11 (141), 70 s: 11 (154), 80 s: 12 (111), 90 s: 11 (110), 100 s: 11 (180)
+counts
+  ...
+```
+
+the one negative network value is a frame where the round trip and the laptop's time came out
+within a millisecond of each other. one or two of those is stamp jitter. lots would be a bug.
+
+that's a table of the shares (median, 95th percentile, worst, frame count), a line on the phone's clocks,
+the network median for every 10 s of the walk, then the counts. check:
 
 - `joined paths` is 100 or more. fewer and there's a warning on top. walk again, longer
 - `paths drawn` is close to `paths received`. a big gap means the drawn stamp isn't firing
 - `phone clocks`: `same base` adds a sensor-to-arrow total. `different base` or `not enough frames`
   just means the total starts when the phone handled the frame. still fine
 - `not joined` counts are small. lots of `phone sent, no laptop line` means the two logs aren't
-  from the same walk
+  from the same walk. `phone handled, never sent or dropped` counts every frame the phone saw with
+  no laptop connected, before you tapped Connect and after the run ended, so a few hundred is normal
+- the network line jumping between tens of ms and seconds means a queue is filling and draining
+  somewhere between the two. one median over the walk hides that. the one time we've seen it, it
+  was the laptop reading frames too slowly, not the Wi-Fi (results doc, walks 2 and 3)
 
 ## comparing laptop changes without walking
 
@@ -145,3 +177,12 @@ a number without those can't be compared with the next one.
 - **`different base`**: fine. the total just starts when the phone handled the frame, not when the
   camera took it. the results doc says which
 - **report says the log mixes two runs**: that's a `--source logged` replay. use the sender above
+- **the laptop doesn't stop after you close the app**: the laptop never heard the connection close,
+  and it waits on that read with no time limit. Ctrl-C waits for the read too. close the terminal,
+  or `taskkill //F` the two python processes. the timing log is already written except the last
+  frame or two
+- **`adb devices` lists nothing and the "Allow USB debugging?" prompt never shows**: the laptop
+  can't see the phone on USB at all. a charge-only cable, or the phone set to charging. tap the
+  USB notification on the phone and pick File transfer, or swap the cable
+- **`[winerror 10013]` starting the web page**: Windows reserved its port. see `server/README.md`,
+  or add `--web-port 8700` for this run. nothing measured changes
