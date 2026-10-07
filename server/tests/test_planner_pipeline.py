@@ -16,6 +16,7 @@ from nav.planner.goal import goal_position, goal_term
 from nav.planner.heading import lookahead_step_index
 from nav.planner.pipeline import PlannerPipeline, planner_terms
 from nav.planner.surprise import CollisionSurprise, surprise_field
+from nav.planner.units import NATS_PER_BIT
 from nav.sources.framecodec import decode_path, encode_path
 from nav.types import ObstaclePoint, ObstacleSet, PlannedPath
 from nav.walker import WalkerConfig
@@ -50,7 +51,7 @@ def test_an_empty_scene_plans_straight_ahead_with_no_alarm() -> None:
 
     assert isinstance(path, PlannedPath)
     assert path.lateral_offsets_meters == pytest.approx(np.zeros_like(path.lateral_offsets_meters))
-    assert path.first_heading_radians == pytest.approx(0.0)
+    assert path.lookahead_heading_radians == pytest.approx(0.0)
     assert path.alarm is False
     assert len(path.times_seconds) == len(path.lateral_offsets_meters)
 
@@ -93,7 +94,7 @@ def test_a_wall_dead_ahead_with_equal_gaps_makes_the_path_leave_centre() -> None
     path = PlannerPipeline(CONFIG, WALKER).plan(symmetric)
 
     assert np.max(np.abs(path.lateral_offsets_meters)) > 0.5
-    assert path.first_heading_radians != pytest.approx(0.0)
+    assert path.lookahead_heading_radians != pytest.approx(0.0)
 
 
 def test_the_path_goes_through_the_gap_and_not_the_wall() -> None:
@@ -166,8 +167,8 @@ def test_the_path_heading_reads_the_path_at_the_lookahead() -> None:
     expected = np.arctan2(offsets[10] - offsets[0], 10 * 0.1 * 1.4)
     assert index == 10
     assert abs(first_step - expected) > np.radians(5.0), "the scene no longer separates the two readings"
-    assert path.first_heading_radians == pytest.approx(expected)
-    assert path.first_heading_radians > 0.0, "the gap is on the right"
+    assert path.lookahead_heading_radians == pytest.approx(expected)
+    assert path.lookahead_heading_radians > 0.0, "the gap is on the right"
 
 
 def test_the_heading_takes_more_than_three_values_across_scenes() -> None:
@@ -177,7 +178,7 @@ def test_the_heading_takes_more_than_three_values_across_scenes() -> None:
     headings = set()
     for gap_start in np.arange(-2.0, 1.01, 0.25):
         path = pipeline.plan(_wall_across(2.5, gap=(float(gap_start), float(gap_start) + 1.0)))
-        headings.add(round(float(np.degrees(path.first_heading_radians)), 2))
+        headings.add(round(float(np.degrees(path.lookahead_heading_radians)), 2))
 
     assert len(headings) > 3, headings
 
@@ -188,7 +189,7 @@ def test_no_planned_heading_exceeds_the_sidestep_limit() -> None:
     limit = np.arctan2(CONFIG.max_lateral_speed_mps, CONFIG.walking_speed_mps)
     pipeline = PlannerPipeline(CONFIG, WALKER)
     headings = [
-        pipeline.plan(_wall_across(forward, gap=(float(gap_start), float(gap_start) + 1.0))).first_heading_radians
+        pipeline.plan(_wall_across(forward, gap=(float(gap_start), float(gap_start) + 1.0))).lookahead_heading_radians
         for forward in (1.5, 2.5)
         for gap_start in np.arange(-2.0, 1.01, 0.5)
     ]
@@ -251,7 +252,8 @@ def test_with_contact_off_the_plan_is_what_his_field_alone_gives(scene: Obstacle
     path = pipeline.plan(scene)
 
     np.testing.assert_array_equal(path.lateral_offsets_meters, expected_offsets)
-    assert path.cumulative_cost_bits == expected_cost
+    # The dynamic program sums natural logs. The path carries the same cost in bits.
+    assert path.cumulative_cost_bits == pytest.approx(expected_cost / NATS_PER_BIT)
 
 
 def test_last_field_includes_the_contact_term() -> None:
@@ -406,7 +408,7 @@ def _seconds_until_straight_after_the_post_is_gone(config: PlannerConfig) -> flo
     cleared_at = time
     while time < cleared_at + 5.0:
         path = pipeline.plan(ObstacleSet(time, (), 0))
-        if abs(np.degrees(path.first_heading_radians)) < STRAIGHT_DEGREES:
+        if abs(np.degrees(path.lookahead_heading_radians)) < STRAIGHT_DEGREES:
             return time - cleared_at
         time += FRAME_SECONDS
     return float("inf")

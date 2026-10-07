@@ -28,7 +28,7 @@ object PathDecoder {
         "timestamp_seconds",
         "times_seconds",
         "lateral_offsets_meters",
-        "first_heading_radians",
+        "lookahead_heading_radians",
         "alarm",
         "cumulative_cost_bits",
     )
@@ -73,7 +73,7 @@ object PathDecoder {
                 timestampSeconds = number(json.get("timestamp_seconds"), "timestamp_seconds"),
                 timesSeconds = numbers(json.get("times_seconds"), "times_seconds"),
                 lateralOffsetsMeters = numbers(json.get("lateral_offsets_meters"), "lateral_offsets_meters"),
-                firstHeadingRadians = number(json.get("first_heading_radians"), "first_heading_radians"),
+                lookaheadHeadingRadians = number(json.get("lookahead_heading_radians"), "lookahead_heading_radians"),
                 alarm = boolean(json.get("alarm"), "alarm"),
                 cumulativeCostBits = number(json.get("cumulative_cost_bits"), "cumulative_cost_bits"),
             )

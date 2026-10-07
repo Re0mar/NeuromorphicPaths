@@ -410,7 +410,7 @@ def planner_pass(scene: ScenePass, planner_config: PlannerConfig, walker: Walker
         frames.append(
             PlannedFrame(
                 timestamp_seconds=row.timestamp_seconds,
-                arrow_radians=float(path.first_heading_radians),
+                arrow_radians=float(path.lookahead_heading_radians),
                 forward_axis_world=row.forward_axis,
                 camera_position_world=row.camera_position_world,
                 camera_rotation_world=row.camera_rotation_world,

@@ -20,7 +20,7 @@ class PlannedFrame:
     """One frame the planner planned. Fields are None where the frame had no world pose."""
 
     timestamp_seconds: float
-    # PlannedPath.first_heading_radians, exactly as the server returned it.
+    # PlannedPath.lookahead_heading_radians, exactly as the server returned it.
     arrow_radians: float
     # The phone's forward on the floor, in the world. The arrow is measured from it.
     forward_axis_world: np.ndarray | None

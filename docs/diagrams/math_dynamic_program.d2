@@ -1,0 +1,46 @@
+# The forward and backward passes of the planner meeting at one cell. Drawn because the two
+# passes split a cell's own cost between them, and counting it twice or not at all is the easy
+# mistake. The forward pass pays it.
+
+direction: down
+
+start: "slice 0, start cell\nJ_0 = F_0 dt" {
+  shape: oval
+}
+
+before: "slice k-1, cell j - delta\nJ_(k-1): cheapest way here from the start"
+
+cell: "slice k, cell j\nJ_k(j) includes this cell's F_k(j) dt\nB_k(j) leaves it out" {
+  style.stroke-width: 4
+  style.fill: "#e8f0fe"
+}
+
+after: "slice k+1, cell j + delta\nB_(k+1): cheapest way from here to the end"
+
+end: "slice 38, last row\nB = 0, goal term is in F here" {
+  shape: oval
+}
+
+start -> before: "forward pass\nruns forward in time"
+before -> cell: "+ (F_k(j) + 1/2 w v^2) dt\nthe forward pass pays this cell"
+
+end -> after: "backward pass\nruns backward in time" {
+  style.stroke-dash: 3
+}
+after -> cell: "+ F_(k+1)(j + delta) dt + 1/2 w v^2 dt\nthe backward pass pays the next cell, not this one" {
+  style.stroke-dash: 3
+}
+
+meet: "J_k(j) + B_k(j) = cheapest whole path through (k, j), this cell counted once.\nThe smallest of these over all cells j equals the plan's cost, at every k." {
+  shape: text
+}
+
+cell -> meet: "add"
+
+legend: "Legend" {
+  near: bottom-center
+  solid: "solid arrow: forward pass"
+  dashed: "dashed arrow: backward pass" {
+    style.stroke-dash: 3
+  }
+}

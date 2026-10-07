@@ -50,6 +50,7 @@ from nav.planner.field import cost_field, lateral_grid
 from nav.planner.goal import goal_position, goal_term
 from nav.planner.heading import lookahead_heading, lookahead_step_index
 from nav.planner.surprise import CollisionSurprise
+from nav.planner.units import bits_from_nats
 from nav.types import ObstaclePoint, ObstacleSet
 from nav.walker import WalkerConfig
 
@@ -89,7 +90,7 @@ class FrameAttribution:
     timestamp_seconds: float
     nearest_meters: float
     heading_degrees: float
-    # Each term's cost along the chosen path minus along the straight path, in the dynamic program's units.
+    # Each term's cost along the chosen path minus along the straight path, in bits like the path's own cost.
     term_difference: dict[str, float]
     explained: frozenset[PinCandidate]
     # Causes that couldn't be tested on this frame, such as the phone offset while standing.
@@ -160,15 +161,20 @@ def term_fields(
 
 
 def path_term_costs(fields: dict[str, np.ndarray], offsets: np.ndarray, planner_config: PlannerConfig) -> dict[str, float]:
-    """What each term costs along a path, added up the way the dynamic program adds it, times the time step."""
+    """
+    What each term costs along a path, in bits, so the terms add up to the path's `cumulative_cost_bits`.
+
+    Added up the way the dynamic program adds them, times the time step, in its natural-log units,
+    then converted once at the end the way the planner converts its total.
+    """
     grid = lateral_grid(planner_config)
     cells = np.argmin(np.abs(grid[None, :] - np.asarray(offsets)[:, None]), axis=1)
     rows = np.arange(len(offsets))
     dt = planner_config.time_step_seconds
-    costs = {name: float(np.sum(field[rows, cells]) * dt) for name, field in fields.items()}
+    nats = {name: float(np.sum(field[rows, cells]) * dt) for name, field in fields.items()}
     lateral_speed = np.diff(np.asarray(offsets)) / dt
-    costs["kinetic"] = float(np.sum(0.5 * planner_config.lateral_kinetic_weight * lateral_speed**2) * dt)
-    return costs
+    nats["kinetic"] = float(np.sum(0.5 * planner_config.lateral_kinetic_weight * lateral_speed**2) * dt)
+    return {name: float(bits_from_nats(value)) for name, value in nats.items()}
 
 
 def replan_pinned(fields: dict[str, np.ndarray], planner_config: PlannerConfig, config: PlannerNumbersConfig) -> bool:
@@ -295,7 +301,7 @@ def band_attribution(
         walls[0] += int(wall_points > 0)
         walls[1] += wall_points
         walls[2] += len(obstacles.points)
-        heading = float(np.degrees(frame.path.first_heading_radians))
+        heading = float(np.degrees(frame.path.lookahead_heading_radians))
         if not is_pinned(heading, limit, config):
             continue
         fields = term_fields(frame, obstacles, planner_config, walker, goal_mode)

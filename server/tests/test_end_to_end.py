@@ -130,7 +130,7 @@ def test_a_logged_replay_reaches_a_phone_through_main(tmp_path: Path) -> None:
     knocking.join(5.0)
 
     assert received, "the phone never read a path from the run"
-    assert np.isfinite(received[0].first_heading_radians)
+    assert np.isfinite(received[0].lookahead_heading_radians)
     # decode_path requires scene_information_bits and avoidance_surprise_bits, so a decoded path
     # carried both. Their values are tested through PlannerPipeline in test_planner_pipeline.py.
 
@@ -203,7 +203,7 @@ def test_a_logged_replay_serves_a_phone_and_a_browser_in_the_same_run(tmp_path: 
         watcher.join(5.0)
 
     assert paths, "the phone never read a path from the run"
-    assert np.isfinite(paths[0].first_heading_radians)
+    assert np.isfinite(paths[0].lookahead_heading_radians)
     assert pages and "<canvas" in pages[0], "the browser never got the page from the same run"
     assert plan_views, "the browser never got a plan view from the same run"
     field = np.array(plan_views[0]["field"])

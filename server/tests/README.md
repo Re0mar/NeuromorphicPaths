@@ -19,7 +19,7 @@ recording tap and replays them through the real scene, and about 30 seconds is t
 below. `pytest -rs` is already in
 `pyproject.toml`, so a skipped test prints its reason in the summary. With only the `dev` extra,
 the Neon tests that need PyAV or the Pupil Labs client skip, because those come with the
-`glasses` extra. With both extras installed, nothing skips: 1402 passed on 2026-10-07. With only
+`glasses` extra. With both extras installed, nothing skips: 1438 passed on 2026-10-08. With only
 the `dev` extra, those 15 Neon tests skip.
 
 ## Adding a test
@@ -56,7 +56,7 @@ guards and watching it go red. Do the same for a new one.
 |---|---|---|---|---|
 | Gate | line endings, the import boundaries, the kind enums staying in `config.py`, the no-environment rule, the wire format document matching the encoder, every relative link in the repository's Markdown resolving (`test_docs_links.py`) | every pull request | seconds | ❌ not in place. These tests exist and run locally; no pipeline runs them |
 | Verify | the rest of the suite: codec, scene, planner, user model, sinks, runtime, end to end on a synthetic video, and the planner's golden numbers on two committed slices of recorded walks | on request, or when a pull request leaves draft | about two and a half minutes | ❌ not in place. Run by hand before every commit |
-| Perf | `test_the_default_grid_plans_in_under_ten_milliseconds` and `test_the_default_grid_plans_and_measures_information_in_under_ten_milliseconds` are two of the three timing assertions, and they live in Verify because they take milliseconds. The third is `test_publish_wait_after_the_fix_is_small`, which replays a recorded walk through `run()` over TCP and asserts the median wait from a path's plan to its send is under 20 ms. The depth view's drawing time is measured by hand, not asserted | | | ❌ not in place, and not expected: the pipeline's budget is a frame rate on one laptop, measured by `--verbose` on a real recording |
+| Perf | `test_the_default_grid_plans_in_under_ten_milliseconds` and `test_the_default_grid_plans_and_measures_information_in_under_twenty_milliseconds` are two of the three timing assertions, and they live in Verify because they take milliseconds. Each keeps the fastest of five batches, so a short burst of other work on the laptop doesn't fail them. Every core kept busy for the whole test still can. The third is `test_publish_wait_after_the_fix_is_small`, which replays a recorded walk through `run()` over TCP and asserts the median wait from a path's plan to its send is under 20 ms. The depth view's drawing time is measured by hand, not asserted | | | ❌ not in place, and not expected: the pipeline's budget is a frame rate on one laptop, measured by `--verbose` on a real recording |
 | Stress | | | | ❌ not in place, and not expected: one sender, one browser, one phone |
 | Nightly | a run of the real estimator on the committed outdoor recording, checking the floor height it reports against the measured 1.84 m | | | ❌ not in place. This is the gap a pull-request check cannot see: the model, the weights and the recording are all outside the repository |
 | Weekly | | | | ❌ not in place, and not expected |

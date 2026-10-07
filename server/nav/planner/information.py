@@ -2,9 +2,11 @@
 How much the scene shaped the plan, in bits: the professor's Bayesian surprise of the plan.
 
 At one step of the horizon, every reachable cell has a cheapest whole path through it. Read as a
-distribution, p proportional to 2^(-cost), that is the planner's posterior over where the walker
-will be then. The prior is the same thing for a planner that sees nothing, with only the cost of
-moving sideways and the goal. The KL divergence of the posterior from the prior says how far what
+distribution, p proportional to e^(-cost), that is the planner's posterior over where the walker
+will be then. The base is e because the costs are natural logs, so e^(-cost) undoes the log. The
+prior is the same thing for a planner that sees nothing: the cost of moving sideways, the goal, and
+the pull toward the previous plan when that is on, because that is the walker's memory and not
+something seen this frame. The KL divergence of the posterior from the prior says how far what
 the camera saw moved the plan.
 
 It is not certainty. An empty corridor gives a straight plan the planner is completely sure of, and
@@ -38,8 +40,8 @@ def path_cost_through_cells(
     :param grid: The lateral candidates.
     :param config: Time step, kinetic weight, lateral speed limit.
     :param step_index: The step to read, 0 to steps - 1.
-    :return: (cells,) cost, in the units the dynamic program accumulates. inf where the start cannot
-        reach the cell by then.
+    :return: (cells,) cost, in the natural-log units the dynamic program accumulates. inf where the
+        start cannot reach the cell by then.
     :rtype: np.ndarray
     :raises ValueError: When the step is not one of the field's.
     """
@@ -55,9 +57,10 @@ def path_cost_through_cells(
 
 def softmin_distribution(costs: np.ndarray) -> np.ndarray:
     """
-    p proportional to 2^(-cost) over the finite costs, zero where the cost is inf.
+    p proportional to e^(-cost) over the finite costs, zero where the cost is inf.
 
-    The smallest cost is subtracted first, so large costs cannot underflow every weight to zero.
+    The costs are natural logs, so base e turns them back into relative chances. The smallest cost
+    is subtracted first, so large costs cannot underflow every weight to zero.
 
     :param costs: (cells,).
     :return: (cells,), summing to 1.
@@ -68,7 +71,7 @@ def softmin_distribution(costs: np.ndarray) -> np.ndarray:
     if not finite.any():
         raise ValueError("no cell is reachable, so the costs give no distribution")
     weights = np.zeros_like(costs, dtype=np.float64)
-    weights[finite] = np.exp2(-(costs[finite] - costs[finite].min()))
+    weights[finite] = np.exp(-(costs[finite] - costs[finite].min()))
     return weights / weights.sum()
 
 
@@ -82,6 +85,9 @@ def scene_information_bits(
 ) -> float:
     """
     KL divergence of the plan's posterior from its prior at one step, in bits.
+
+    Both distributions come from natural-log costs through softmin_distribution. The divergence
+    between them is taken in base 2, so it comes out in bits with no conversion.
 
     :param posterior_field: The field the planner planned through, goal term included.
     :param prior_field: The same with no obstacle terms: the goal term, and the previous-plan prior when it is on.

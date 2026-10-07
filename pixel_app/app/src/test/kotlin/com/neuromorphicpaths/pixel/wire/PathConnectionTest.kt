@@ -23,7 +23,7 @@ import kotlin.test.assertTrue
 class PathConnectionTest {
     private val loopback: InetAddress = InetAddress.getByName("127.0.0.1")
 
-    private val good = """{"timestamp_seconds": 1.0, "times_seconds": [0.0, 0.1], "lateral_offsets_meters": [0.0, 0.05], "first_heading_radians": 0.25, "alarm": false, "cumulative_cost_bits": 2.5}"""
+    private val good = """{"timestamp_seconds": 1.0, "times_seconds": [0.0, 0.1], "lateral_offsets_meters": [0.0, 0.05], "lookahead_heading_radians": 0.25, "alarm": false, "cumulative_cost_bits": 2.5}"""
 
     private fun framed(payload: ByteArray, declaredLength: Int = payload.size): ByteArray {
         val out = ByteArrayOutputStream()
@@ -73,7 +73,7 @@ class PathConnectionTest {
             server.close()
         }
 
-        assertEquals(0.25, harness.paths[0].message.firstHeadingRadians)
+        assertEquals(0.25, harness.paths[0].message.lookaheadHeadingRadians)
         assertEquals(1, connection.pathsReceived)
         assertEquals(0, connection.pathsRefused)
         val last = harness.statuses.last { it is PathConnectionStatus.Connected } as PathConnectionStatus.Connected

@@ -1,8 +1,9 @@
 """
 Moving points and planes between the camera frame and the world frame.
 
-Used only when a frame's pose has a position. Without one the scene stays in the camera frame and
-nothing here is called.
+Points and planes move into the world only when a frame's pose has a position. Without one the scene
+stays in the camera frame. The rotation is still read whenever the pose is gravity aligned, with or
+without a position, because that's how the scene finds which way is up.
 
 Convention, stated once: a Pose's orientation rotates camera-frame vectors into the world frame.
 world = R camera + position. A source that gets a world-to-camera rotation from its device, which

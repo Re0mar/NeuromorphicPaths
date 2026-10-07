@@ -23,6 +23,7 @@ import numpy as np
 # Local package imports
 from nav.clock import laptop_time_seconds
 from nav.config import RunConfig, build_sink, build_source
+from nav.planner.alarm import path_red_from_bits
 from nav.planner.pipeline import PlannerPipeline
 from nav.runtime.textio import append_text_lf, write_text_lf
 from nav.runtime.timing import StageDurations, TimingLog, TimingRecorder
@@ -182,7 +183,7 @@ def run(config: RunConfig) -> int:
             (after_planner - after_scene) * 1000,
             (finished - after_planner) * 1000,
             obstacles.groups_in_view,
-            np.degrees(path.first_heading_radians),
+            np.degrees(path.lookahead_heading_radians),
             np.degrees(observed),
             _latency_shares(frame, plan_done_seconds),
             " ALARM" if path.alarm else "",
@@ -201,6 +202,7 @@ def run(config: RunConfig) -> int:
             floor_source=floor_source,
             walking_speed_mps=config.planner.walking_speed_mps,
             body_half_width_meters=config.planner.body_half_width_meters,
+            path_red_from_bits=path_red_from_bits(config.planner),
         )
         result = FrameResult(path=path, field=field if field is not None else np.zeros((1, len(planner.grid))), grid=planner.grid, view=view)
         stages = StageDurations(

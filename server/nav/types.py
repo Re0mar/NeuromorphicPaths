@@ -45,9 +45,11 @@ WORLD_UP = np.array([0.0, 1.0, 0.0])
 class Pose:
     """Where the camera is pointing, and where it is when anything knows that.
 
-    The orientation rotates camera-frame vectors into the world. When has_position is true that
-    world is one with WORLD_UP up, which is how the scene knows which way gravity points on a
-    phone held sideways.
+    The orientation rotates camera-frame vectors into the world. When orientation_is_gravity_aligned
+    is true that world has WORLD_UP up, which is how the scene knows which way gravity points on a
+    phone held sideways. That needs no position: the Neon's IMU gives gravity and no position at all.
+    has_position decides something else, whether points are placed in the world or stay in the
+    camera frame.
     """
 
     orientation: np.ndarray
@@ -166,10 +168,11 @@ class DebugView:
     What a person tuning the planner needs to see beside the path: the planner's input.
 
     The frame the path was planned for, the obstacles the scene found in it, the floor the scene
-    used and where it came from, the walking speed the planner assumed, and the body's half-width.
-    The floor is here because a renderer lays the path on it, the speed because a path is offsets
-    against time and the floor is meters, and the half-width because the path is drawn as wide as
-    the body that walks it.
+    used and where it came from, the walking speed the planner assumed, the body's half-width, and
+    the avoidance surprise at which the path turns fully red. The floor is here because a renderer
+    lays the path on it, the speed because a path is offsets against time and the floor is meters,
+    the half-width because the path is drawn as wide as the body that walks it, and the red point
+    because it is the alarm's threshold in bits, which only the planner's config knows.
     """
 
     frame: DepthFrame
@@ -178,6 +181,7 @@ class DebugView:
     floor_source: FloorSource
     walking_speed_mps: float
     body_half_width_meters: float
+    path_red_from_bits: float
 
 
 @dataclass(frozen=True)
@@ -187,8 +191,12 @@ class PlannedPath:
     timestamp_seconds: float
     times_seconds: np.ndarray
     lateral_offsets_meters: np.ndarray
-    first_heading_radians: float
+    # The heading from the walker to where the path is heading_lookahead_seconds ahead, positive right.
+    # Not the path's first step, which moves too little to point anywhere useful.
+    lookahead_heading_radians: float
     alarm: bool
+    # The chosen path's summed cost, in bits. The planner sums natural logs and converts once, so this
+    # is never a natural-log value.
     cumulative_cost_bits: float
     # How far what the camera saw moved the plan from what it would do with nothing in view, at the
     # arrow's lookahead. Not a confidence: an empty corridor gives a sure plan and 0 bits.
@@ -209,8 +217,8 @@ class PlannedPath:
             raise ValueError("times_seconds contains a non-finite value")
         if not np.all(np.isfinite(self.lateral_offsets_meters)):
             raise ValueError("lateral_offsets_meters contains a non-finite value")
-        if not np.isfinite(self.first_heading_radians):
-            raise ValueError(f"first_heading_radians must be finite, got {self.first_heading_radians}")
+        if not np.isfinite(self.lookahead_heading_radians):
+            raise ValueError(f"lookahead_heading_radians must be finite, got {self.lookahead_heading_radians}")
         if not np.isfinite(self.cumulative_cost_bits):
             raise ValueError(f"cumulative_cost_bits must be finite, got {self.cumulative_cost_bits}")
         for field_name in ("scene_information_bits", "avoidance_surprise_bits"):

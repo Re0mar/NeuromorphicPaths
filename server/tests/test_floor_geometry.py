@@ -94,7 +94,7 @@ GRID = np.linspace(-3.0, 3.0, 61)
 def _view(intrinsics: np.ndarray = INTRINSICS, floor: Plane = LEVEL_FLOOR) -> DebugView:
     """A 128 by 96 frame, no obstacles. Only the intrinsics, the image size and the floor matter to the mask."""
     frame = DepthFrame(0.0, np.full((96, 128), 2.0, dtype=np.float32), intrinsics, Pose(np.array([1.0, 0.0, 0.0, 0.0]), None, False), None, None)
-    return DebugView(frame, ObstacleSet(0.0, (), 0), floor, FloorSource.FITTED, 1.4, 0.3)
+    return DebugView(frame, ObstacleSet(0.0, (), 0), floor, FloorSource.FITTED, 1.4, 0.3, 1.47)
 
 
 def test_a_cell_straight_ahead_in_view_is_seen_and_one_far_to_the_side_is_not() -> None:

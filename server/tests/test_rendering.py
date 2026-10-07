@@ -5,6 +5,9 @@ The render functions are pure and are what can go wrong. Showing the result is O
 browser's job, checked by eye in a run.
 """
 
+# Standard library imports
+import dataclasses
+
 # Third party imports
 import cv2
 import numpy as np
@@ -39,6 +42,8 @@ CONFIG = SceneConfig()
 WALKER = WalkerConfig()
 WALKING_SPEED = 1.4
 BODY_HALF_WIDTH = 0.30
+# The planner's red point at its shipped 0.7 s alarm threshold.
+PATH_RED_FROM_BITS = 1.47
 
 
 def _path(offsets: np.ndarray, alarm: bool = False) -> PlannedPath:
@@ -59,7 +64,7 @@ def _scene_view(obstacles: ObstacleSet | None = None) -> DebugView:
     scene = clean_scene(box_lateral_meters=0.5, box_forward_meters=3.0, box_height_meters=1.0, box_half_width_meters=0.1)
     frame = _frame(scene.depth_meters, scene.intrinsics)
     found = obstacles if obstacles is not None else ScenePipeline(CONFIG, WALKER).process(frame)
-    return DebugView(frame, found, scene.floor_plane_camera, FloorSource.FITTED, WALKING_SPEED, BODY_HALF_WIDTH)
+    return DebugView(frame, found, scene.floor_plane_camera, FloorSource.FITTED, WALKING_SPEED, BODY_HALF_WIDTH, PATH_RED_FROM_BITS)
 
 
 def _obstacle(camera_point: np.ndarray, clearance: float = 1.0, is_wall: bool = False) -> ObstaclePoint:
@@ -172,7 +177,7 @@ def test_invalid_depth_pixels_are_drawn_in_their_own_color() -> None:
     depth = scene.depth_meters.copy()
     depth[40:50, 0:10] = np.nan
     depth[40:50, 118:128] = 0.0
-    view = DebugView(_frame(depth, scene.intrinsics), ObstacleSet(0.0, (), 0), scene.floor_plane_camera, FloorSource.FITTED, WALKING_SPEED, BODY_HALF_WIDTH)
+    view = DebugView(_frame(depth, scene.intrinsics), ObstacleSet(0.0, (), 0), scene.floor_plane_camera, FloorSource.FITTED, WALKING_SPEED, BODY_HALF_WIDTH, PATH_RED_FROM_BITS)
 
     image = render_depth_view(view, _one_step_path())
 
@@ -218,7 +223,7 @@ def _floor_view(focal_pixels: float = 30.0) -> DebugView:
     intrinsics = np.array([[focal_pixels, 0.0, WIDTH / 2.0], [0.0, focal_pixels, HEIGHT / 2.0], [0.0, 0.0, 1.0]])
     frame = _frame(np.full((HEIGHT, WIDTH), np.nan, dtype=np.float32), intrinsics)
     level_floor = Plane(np.array([0.0, -1.0, 0.0]), 1.6)
-    return DebugView(frame, ObstacleSet(0.0, (), 0), level_floor, FloorSource.FITTED, WALKING_SPEED, BODY_HALF_WIDTH)
+    return DebugView(frame, ObstacleSet(0.0, (), 0), level_floor, FloorSource.FITTED, WALKING_SPEED, BODY_HALF_WIDTH, PATH_RED_FROM_BITS)
 
 
 def _styled_path(offsets: np.ndarray, information: float = 0.0, avoidance: float = 0.0) -> PlannedPath:
@@ -273,6 +278,25 @@ def test_the_ribbons_color_follows_the_avoidance_surprise() -> None:
     assert urgent[2] > calm[2]
 
 
+def test_the_ribbon_turns_fully_red_at_the_views_red_point() -> None:
+    # The depth view must color with the red point its view carries, the alarm's threshold in bits.
+    # Two views that differ only there, at the same surprise: under a red point of 1.0, a surprise of
+    # 1.0 is already as red as it gets, and under 4.0 it's a quarter of the way.
+    low_red = dataclasses.replace(_floor_view(), path_red_from_bits=1.0)
+    high_red = dataclasses.replace(_floor_view(), path_red_from_bits=4.0)
+    row, column = _pixel_on_floor(1.4, 0.0)
+    path = _styled_path(np.zeros(STEPS), avoidance=1.0)
+
+    saturated = render_depth_view(low_red, _styled_path(np.zeros(STEPS), avoidance=10.0))[row, column].astype(int)
+    at_low_red = render_depth_view(low_red, path)[row, column].astype(int)
+    at_high_red = render_depth_view(high_red, path)[row, column].astype(int)
+
+    assert np.array_equal(at_low_red, saturated)
+    # BGR. Further from full red under the higher red point: less red, more blue.
+    assert at_high_red[2] < at_low_red[2]
+    assert at_high_red[0] > at_low_red[0]
+
+
 def test_the_fill_is_more_opaque_with_more_scene_information() -> None:
     view = _floor_view()
     blank = render_depth_view(view, _one_step_path()).astype(int)
@@ -315,7 +339,7 @@ def test_the_floor_source_and_the_alarm_are_written_on_the_view() -> None:
     # The text is drawn, not asserted by OCR. What can be asserted is that the two words change
     # the picture, which is what a line that is never drawn would fail.
     view = _scene_view(ObstacleSet(0.0, (), 0))
-    supplied = DebugView(view.frame, view.obstacles, view.floor, FloorSource.SUPPLIED, WALKING_SPEED, BODY_HALF_WIDTH)
+    supplied = DebugView(view.frame, view.obstacles, view.floor, FloorSource.SUPPLIED, WALKING_SPEED, BODY_HALF_WIDTH, PATH_RED_FROM_BITS)
 
     assert np.any(render_depth_view(view, _one_step_path()) != render_depth_view(supplied, _one_step_path()))
     assert np.any(render_depth_view(view, _one_step_path()) != render_depth_view(view, PlannedPath(0.0, np.array([0.0]), np.array([0.0]), 0.0, True, 0.0, scene_information_bits=0.0, avoidance_surprise_bits=0.0)))
@@ -367,7 +391,7 @@ def test_a_camera_facing_the_floor_is_not_turned() -> None:
 
 def test_an_upright_frame_keeps_its_size_and_a_sideways_one_swaps_it() -> None:
     view = _floor_view()
-    sideways = DebugView(view.frame, view.obstacles, Plane(np.array([-1.0, 0.0, 0.0]), 1.6), FloorSource.FITTED, WALKING_SPEED, BODY_HALF_WIDTH)
+    sideways = DebugView(view.frame, view.obstacles, Plane(np.array([-1.0, 0.0, 0.0]), 1.6), FloorSource.FITTED, WALKING_SPEED, BODY_HALF_WIDTH, PATH_RED_FROM_BITS)
     scale = DEPTH_VIEW_TARGET_WIDTH // WIDTH
 
     assert render_depth_view(view, _one_step_path()).shape == (HEIGHT * scale, WIDTH * scale, 3)
@@ -378,7 +402,7 @@ def test_the_text_line_is_drawn_after_the_turn() -> None:
     # On a turned view the text still sits along the top rows. Drawn before the turn, it would have
     # ended up along a side edge instead.
     view = _floor_view()
-    sideways = DebugView(view.frame, view.obstacles, Plane(np.array([-1.0, 0.0, 0.0]), 1.6), FloorSource.FITTED, WALKING_SPEED, BODY_HALF_WIDTH)
+    sideways = DebugView(view.frame, view.obstacles, Plane(np.array([-1.0, 0.0, 0.0]), 1.6), FloorSource.FITTED, WALKING_SPEED, BODY_HALF_WIDTH, PATH_RED_FROM_BITS)
     image = render_depth_view(sideways, _one_step_path())
 
     text_rows = image[:TEXT_BAND_ROWS]
@@ -392,7 +416,7 @@ def test_a_ribbon_piece_crossing_the_near_plane_still_draws_its_visible_part() -
     # visible part lands at rows 30 * 0.05 / z + 48, 59 to 78, straight down the middle, and no other
     # piece reaches row 70. Dropped instead of cut, it would leave that row untouched.
     view = _floor_view()
-    low_camera = DebugView(view.frame, view.obstacles, Plane(np.array([0.0, -1.0, 0.0]), 0.05), FloorSource.FITTED, WALKING_SPEED, BODY_HALF_WIDTH)
+    low_camera = DebugView(view.frame, view.obstacles, Plane(np.array([0.0, -1.0, 0.0]), 0.05), FloorSource.FITTED, WALKING_SPEED, BODY_HALF_WIDTH, PATH_RED_FROM_BITS)
     scale = DEPTH_VIEW_TARGET_WIDTH // WIDTH
     row, column = 70 * scale, int(WIDTH / 2.0 * scale)
 

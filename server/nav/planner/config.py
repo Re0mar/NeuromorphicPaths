@@ -1,9 +1,10 @@
 """
 What the planner needs to build its surprise field and run the dynamic program over it.
 
-Six of these are the professor's values from the lecture and the paper, and are marked as his.
-The rest are walking values we chose. The ones measured against recorded walks carry the numbers in
-their comments.
+Five of these are the professor's values from the lecture and the paper, and are marked as his.
+The sixth of his values, the 1 s reference in the avoidance surprise, lives in alarm.py beside
+the formula that uses it. The rest are walking values we chose. The ones measured against
+recorded walks carry the numbers in their comments.
 """
 
 # Standard library imports
@@ -25,7 +26,9 @@ class PlannerConfig:
     time_step_seconds: float = 0.1  # His dt.
     horizon_seconds: float = 3.8  # His horizon.
     clearance_epsilon_meters: float = 0.06  # His epsilon, the floor under S.
-    noise_epsilon_meters: float = 1.0e-6  # His numeric floor under N, so a zero N is a zero surprise, not a NaN.
+    # His numeric floor under N. N is the numerator, so a zero N is already a zero surprise. The floor
+    # keeps a group that has never moved from reading as exactly zero.
+    noise_epsilon_meters: float = 1.0e-6
     # Ours, raised from his 0.055 so the plan stops sidestepping at full speed whenever anything is
     # ahead. His surprise alone can't afford it: a steadily measured post costs less to hit than to
     # dodge from 0.35. With the contact term the post safety test's posts are cleared through 7 and
@@ -58,11 +61,12 @@ class PlannerConfig:
     # against the planner without it.
     contact_term_enabled: bool = True
     # Ours, and an assumption rather than a measurement. How far a walker drifts sideways from the
-    # line the arrow asks for, one standard deviation. No recorded walk had anyone steering by the
-    # arrow, so it cannot be measured from them yet.
+    # line the arrow asks for, one standard deviation. wifi_run_2 is the one recorded walk with the
+    # arrow shown, six scorable turns, and the sway hasn't been measured from it.
     walker_sway_meters: float = 0.10
     # Ours. The most one point's contact surprise may reach. With the 0.30 m half-width it binds only
-    # for a sway under about 0.031 m. At 0.10 m no point can cost more than 6.61.
+    # for a sway under about 0.031 m. At 0.10 m no single contact can cost more than 6.61, which over
+    # the 0.43 s it takes to walk past is a rate of up to 15.4 per second.
     contact_surprise_cap: float = 50.0
     # Ours. How long a raised alarm stays up before it may clear. Takes the classroom walk from 108
     # state changes to 66, and the last segment of pixel_walk_3 from 55 to 35.

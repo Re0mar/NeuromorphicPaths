@@ -10,7 +10,9 @@ says what each point costs per second.
 
 A term's points are combined the way the professor combines his: the most costly point within a
 group, then the sum across groups. That happens per term, because one term's worst point need not
-be another's, and each term is separate evidence about the same scene.
+be another's, and each term is separate evidence about the same scene. Today the scene hands over
+one point per group, its nearest, so the maximum within a group is that one point. It's written as a
+maximum so a scene that sends several points per group needs no change here.
 """
 
 # Standard library imports

@@ -132,8 +132,8 @@ The browser also draws the planner's view from above, walking up the screen, abo
   Brighter costs more. It is clipped at the frame's 98th percentile, so one costly point does not
   leave the rest dark.
 - **Path.** The planned path as a band the body's width, from a dot at the walker to an arrowhead
-  where the plan ends. Its color runs blue to red as something in the way gets closer, red from
-  one second to contact. Its fill is more solid the more the scene shaped the plan, and its borders
+  where the plan ends. Its color runs blue to red as something in the way gets closer, fully red
+  from the moment the alarm raises, 0.7 s to contact by default. Its fill is more solid the more the scene shaped the plan, and its borders
   stay at one opacity so its direction always shows.
 - **Obstacles.** Each group's nearest point, amber dots for groups and magenta squares for walls,
   the same colors the depth view uses.
@@ -159,11 +159,11 @@ looking at one of them.
 The floor gate refuses a plane, fitted or supplied by the source, that leans more than
 `--floor-max-tilt` degrees from up (35 by default), that puts the camera under 0.3 m above it, or
 that puts the camera more than `--floor-max-height` meters above it (2.2 by default). Up is
-gravity, read from the pose, whenever the source places the camera in a world, which the Pixel
-does. It has to be: the Pixel's depth image arrives in the sensor's landscape orientation
-however the phone is held, so with the phone in portrait the image's own up points sideways, and
-measured against it every floor leans 90 degrees. Sources with no position, a plain video, get the
-image's up. The ceiling came from the first Pixel walk, where ARCore handed over a plane 2.3 m
+gravity, read from the pose, whenever the source says its orientation is gravity aligned. The
+Pixel does, and so does the Neon, which has an IMU and no position at all. It has to be: the
+Pixel's depth image arrives in the sensor's landscape orientation however the phone is held, so
+with the phone in portrait the image's own up points sideways, and measured against it every floor
+leans 90 degrees. A source that doesn't say, a plain video, gets the image's up. The ceiling came from the first Pixel walk, where ARCore handed over a plane 2.3 m
 down, a meter below the real floor, and nothing refused it.
 
 A phone held in the hand and pointed at the pavement still leans about 40 degrees from gravity,
@@ -484,7 +484,8 @@ conditions they were taken under and the commands that rerun them, are in
   its centroid in the world frame, which needs a source with a position.
 - The user model's time constant, b, is a placeholder until a walker is measured.
 - The planner's walker sway, how far a person drifts from the line the arrow asks for, is an
-  assumed 0.10 m. No recorded walk had anyone steering by the arrow, so it has not been measured.
+  assumed 0.10 m. `wifi_run_2` is the one recorded walk with the arrow shown, six scorable turns,
+  and the sway has not been measured from it.
 - The planner's memory of its previous plan was tuned and checked on replays only. It has not run
   live on the phone or the glasses yet.
 - The depth conversion from the model's 300 pixel focal was checked on a replayed glasses capture,

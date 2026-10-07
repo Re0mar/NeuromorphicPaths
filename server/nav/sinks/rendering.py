@@ -256,7 +256,7 @@ def _draw_path_ribbon(image: np.ndarray, view: DebugView, path: PlannedPath, sca
     left = floor_point(view.floor, forward, path.lateral_offsets_meters - view.body_half_width_meters)
     right = floor_point(view.floor, forward, path.lateral_offsets_meters + view.body_half_width_meters)
     intrinsics = view.frame.intrinsics
-    color = np.array(path_color_rgb(path.avoidance_surprise_bits)[::-1], dtype=np.float32)  # BGR from here on.
+    color = np.array(path_color_rgb(path.avoidance_surprise_bits, view.path_red_from_bits)[::-1], dtype=np.float32)  # BGR from here on.
     fill_opacity = path_fill_opacity(path.scene_information_bits)
     end_time = float(times[-1])
 

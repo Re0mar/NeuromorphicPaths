@@ -24,7 +24,7 @@ class PathMessageTest {
 
     @Test
     fun aWellFormedMessageIsAccepted() {
-        assertEquals(0.1, valid().firstHeadingRadians)
+        assertEquals(0.1, valid().lookaheadHeadingRadians)
     }
 
     @Test
@@ -42,7 +42,7 @@ class PathMessageTest {
     @Test
     fun aNonFiniteScalarIsRefusedByName() {
         assertTrue(assertFailsWith<IllegalArgumentException> { valid(timestamp = Double.NaN) }.message!!.contains("timestamp_seconds"))
-        assertTrue(assertFailsWith<IllegalArgumentException> { valid(heading = Double.POSITIVE_INFINITY) }.message!!.contains("first_heading_radians"))
+        assertTrue(assertFailsWith<IllegalArgumentException> { valid(heading = Double.POSITIVE_INFINITY) }.message!!.contains("lookahead_heading_radians"))
         assertTrue(assertFailsWith<IllegalArgumentException> { valid(cost = Double.NEGATIVE_INFINITY) }.message!!.contains("cumulative_cost_bits"))
     }
 

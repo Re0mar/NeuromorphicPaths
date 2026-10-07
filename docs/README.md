@@ -13,6 +13,7 @@ docs/
   diagrams/           one .d2 per diagram, its .svg committed beside it
   evaluation/         measured results the report draws on, each with the commands that reproduce it
   guides/             short how-tos for running things, written for teammates
+  math/               how the math works, from the camera to the arrow
   proposal/           the requirements and anything else sent to the professor
 ```
 

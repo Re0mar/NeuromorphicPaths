@@ -30,7 +30,7 @@ def _view() -> DebugView:
         ground_plane=None,
         gaze_pixel=None,
     )
-    return DebugView(frame, ObstacleSet(1.0, (), 0), Plane(np.array([0.0, -1.0, 0.0]), 1.6), FloorSource.FITTED, 1.4, 0.30)
+    return DebugView(frame, ObstacleSet(1.0, (), 0), Plane(np.array([0.0, -1.0, 0.0]), 1.6), FloorSource.FITTED, 1.4, 0.30, 1.47)
 
 
 class PlainSink:
@@ -44,7 +44,7 @@ class PlainSink:
         self.events.append("started")
 
     def publish(self, path: PlannedPath) -> None:
-        self.events.append(f"published {path.first_heading_radians}")
+        self.events.append(f"published {path.lookahead_heading_radians}")
 
     def close(self) -> None:
         self.events.append("closed")
@@ -54,7 +54,7 @@ class DrawingSink(PlainSink):
     """A display that can also draw the field and the view, the way the window and the browser do."""
 
     def publish_debug(self, path: PlannedPath, field: np.ndarray, grid: np.ndarray, view: DebugView) -> None:
-        self.events.append(f"drew {path.first_heading_radians}")
+        self.events.append(f"drew {path.lookahead_heading_radians}")
 
 
 def test_a_drawing_sink_is_recognised_as_one_and_a_plain_sink_is_not() -> None:

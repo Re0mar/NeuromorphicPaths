@@ -231,7 +231,7 @@ def whole_walk_numbers(frames: Sequence[ReplayedFrame], planner_config: PlannerC
     limit = sidestep_limit_degrees(planner_config)
     forward_distances = plan_forward_distances(planner_config)
 
-    headings = np.array([float(np.degrees(frame.path.first_heading_radians)) for frame in frames])
+    headings = np.array([float(np.degrees(frame.path.lookahead_heading_radians)) for frame in frames])
     pinned = np.array([is_pinned(heading, limit, config) for heading in headings])
     bands = [clearance_band(nearest_heading_clearance(frame.input.obstacles, config), planner_config, config) for frame in frames]
     pinned_by_band = {band: 0 for band in ClearanceBand}
@@ -491,8 +491,8 @@ def disagreement_pairs(
                 disagreement_meters=gap,
                 cause=cause,
                 deciding_point=deciding,
-                earlier_heading_degrees=float(np.degrees(earlier.path.first_heading_radians)),
-                later_heading_degrees=float(np.degrees(later.path.first_heading_radians)),
+                earlier_heading_degrees=float(np.degrees(earlier.path.lookahead_heading_radians)),
+                later_heading_degrees=float(np.degrees(later.path.lookahead_heading_radians)),
                 axis_turn_degrees=_axis_turn_degrees(earlier, later),
             )
         )

@@ -6,6 +6,18 @@ the format `server/docs/arcore_wire_format.md` describes. The laptop plans a pat
 back over a second connection, and the app draws the camera picture with an arrow over it
 pointing where the path says. The walker looks at the phone and nothing else.
 
+## Phones
+
+Nothing in the app is tied to a Pixel. It has run on a Pixel 8 so far, and any phone that meets
+these three requirements should work:
+
+- **Android 14 or newer.** That's `minSdk 34`, so an older phone can't install the app at all.
+- **ARCore.** The manifest marks it as required, so the Play Store asks to install Google Play
+  Services for AR if it's missing. A phone not on Google's ARCore device list can't run the app.
+- **ARCore's depth mode.** The app checks `isDepthModeSupported(Config.DepthMode.AUTOMATIC)` when
+  it opens the AR session. Without depth it doesn't open the session, and the status line reads
+  "this device has no ARCore Depth API". Not every ARCore phone has depth.
+
 ## Build
 
 Android Studio's JDK and the Android SDK, both already on the build laptop. From this folder:

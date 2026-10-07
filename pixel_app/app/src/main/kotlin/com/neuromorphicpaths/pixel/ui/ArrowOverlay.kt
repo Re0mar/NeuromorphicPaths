@@ -96,7 +96,7 @@ fun ArrowOverlay(
             val baseY = size.height * BASE_HEIGHT_FRACTION
             val length = size.height * LENGTH_FRACTION
             val stroke = size.minDimension * STROKE_FRACTION
-            val tip = ArrowGeometry.headingToArrowTip(message?.firstHeadingRadians ?: 0.0, length, baseX, baseY)
+            val tip = ArrowGeometry.headingToArrowTip(message?.lookaheadHeadingRadians ?: 0.0, length, baseX, baseY)
             val tipOffset = Offset(tip.x, tip.y)
             drawLine(color, Offset(baseX, baseY), tipOffset, strokeWidth = stroke, cap = StrokeCap.Round)
             // The head: two strokes back from the tip, half a radian either side of the shaft.
@@ -117,7 +117,7 @@ fun ArrowOverlay(
             if (message == null) {
                 Text("No path yet", color = Color.White, style = MaterialTheme.typography.titleLarge)
             } else {
-                Text(ArrowGeometry.headingText(message.firstHeadingRadians), color = Color.White, style = MaterialTheme.typography.titleLarge)
+                Text(ArrowGeometry.headingText(message.lookaheadHeadingRadians), color = Color.White, style = MaterialTheme.typography.titleLarge)
                 if (message.alarm) Text("ALARM", color = Color.Red, style = MaterialTheme.typography.titleLarge)
                 Text(ArrowGeometry.ageText(now - received.receivedAtMillis), color = Color.White)
             }
