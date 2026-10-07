@@ -7,7 +7,7 @@ import kotlin.test.assertTrue
 /**
  * The part of "when was this path first drawn" that a JVM test can reach. Whether the overlay
  * really calls the gate on a real draw is device only, and the walk's log shows it: a drawn row for
- * every received one.
+ * nearly every received one. A path replaced by a newer one before the next frame is never drawn.
  */
 class FirstDrawGateTest {
     private data class Item(val name: String)

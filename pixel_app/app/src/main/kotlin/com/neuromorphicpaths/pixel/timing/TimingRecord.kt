@@ -89,13 +89,23 @@ sealed interface TimingRecord {
         private const val NANOSECONDS_PER_SECOND = 1.0e9
 
         /**
-         * The frame's ARCore timestamp in nanoseconds, back from the seconds it travels in.
+         * A frame's key, from the seconds its timestamp travels in.
          *
-         * `ArCoreToWire` divides the `Long` by 1e9 to fill `timestamp_seconds`. A double holds that
-         * exactly enough for rounding to recover the original nanoseconds at any realistic uptime.
-         * The laptop's `frame_ns_from_seconds` is this function's twin, and the two must agree.
+         * `ArCoreToWire` divides the `Long` by 1e9 to fill `timestamp_seconds`. Up to about 47 days
+         * of uptime this recovers the original nanoseconds. Past that a double can't hold them, and
+         * the key can be one off the original. So every line of a frame takes its key from the same
+         * seconds, see [frameNanosFromArCore], and the laptop's `frame_ns_from_seconds` is this
+         * function's twin, rounding half up the same way.
          */
         fun frameNanosFromSeconds(timestampSeconds: Double): Long = Math.round(timestampSeconds * NANOSECONDS_PER_SECOND)
+
+        /**
+         * A frame's key from its raw ARCore timestamp, through the seconds the wire carries.
+         *
+         * The handled line has the raw `Long`, while every other line only has the seconds. Taking
+         * the raw value as the key split a frame's lines across two keys past 47 days of uptime.
+         */
+        fun frameNanosFromArCore(timestampNanos: Long): Long = frameNanosFromSeconds(timestampNanos / NANOSECONDS_PER_SECOND)
 
         private fun quoted(value: String): String = JSONObject.quote(value)
 

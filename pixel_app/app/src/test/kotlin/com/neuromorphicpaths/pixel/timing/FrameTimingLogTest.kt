@@ -103,6 +103,30 @@ class FrameTimingLogTest {
     }
 
     @Test
+    fun everyLineOfAFrameSharesOneKeyPastFortySevenDaysOfUptime() {
+        // 50 days in. This stamp's seconds round back to one nanosecond more than the stamp, so a
+        // handled line keyed by the raw Long would no longer match the frame's other lines.
+        val rawNanos = 4_320_000_000_055_433L
+        val wireSeconds = rawNanos / 1.0e9
+        val output = MemoryOutput()
+        val log = FrameTimingLog(output, session, counterClock())
+
+        log.frameHandled(rawNanos)
+        log.frameSent(TimingRecord.frameNanosFromSeconds(wireSeconds))
+        log.close()
+
+        val keys = output.lines.drop(1).map { JSONObject(it).getLong(TimingRecord.FRAME_NS) }
+        assertEquals(listOf(4_320_000_000_055_434L, 4_320_000_000_055_434L), keys)
+    }
+
+    @Test
+    fun anExactHalfRoundsUpLikeTheLaptop() {
+        // The laptop's frame_ns_from_seconds has a test on the same value. Python's own round
+        // gives ...004 here, and the two sides would key the frame differently.
+        assertEquals(4_320_000_000_000_005L, TimingRecord.frameNanosFromSeconds(4_320_000.000000005))
+    }
+
+    @Test
     fun theFixtureRegeneratesByteIdentical() {
         val first = fixtureBytes()
         val second = fixtureBytes()
@@ -190,10 +214,10 @@ class FrameTimingLogTest {
     }
 
     @Test
-    fun aRecordArrivingWhileCloseDrainsIsNotWritten() {
-        // After close returns the writer is gone, so a late record could never be written anyway.
+    fun aRecordArrivingWhileCloseDrainsIsCountedNotWritten() {
         // The window that matters is while close is still waiting on the writer: a record that
-        // slipped in then would land after what the caller thought was the last line.
+        // slipped in then would land after what the caller thought was the last line. It is
+        // counted in the last lost line instead, so the laptop sees that something went missing.
         val gate = CountDownLatch(1)
         val output = MemoryOutput(gate)
         val log = FrameTimingLog(output, session, counterClock(), closeTimeoutMillis = 5_000L)
@@ -208,7 +232,8 @@ class FrameTimingLogTest {
         closer.join(5_000)
 
         assertTrue(!closer.isAlive, "close never returned")
-        assertEquals(listOf(TimingRecord.TYPE_SESSION), typesOf(output.lines))
+        assertEquals(listOf(TimingRecord.TYPE_SESSION, TimingRecord.TYPE_LOST), typesOf(output.lines))
+        assertEquals(1, JSONObject(output.lines.last()).getInt("count"))
     }
 
     @Test
@@ -239,10 +264,10 @@ class FrameTimingLogTest {
     }
 
     @Test
-    fun aMaxBytesTooSmallForTheSessionLineIsRefused() {
+    fun aMaxBytesUnderTheMinimumIsRefused() {
         val refused = runCatching { FrameTimingLog(MemoryOutput(), session, counterClock(), maxBytes = 100L) }
 
-        assertTrue(refused.isFailure, "a cap smaller than one session line cannot hold a log")
+        assertTrue(refused.isFailure, "a cap under the 1,024-byte minimum can't hold the session line and the truncated note")
     }
 
     /**

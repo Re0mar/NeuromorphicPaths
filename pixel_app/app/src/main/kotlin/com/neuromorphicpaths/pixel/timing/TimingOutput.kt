@@ -1,5 +1,6 @@
 package com.neuromorphicpaths.pixel.timing
 
+import android.util.Log
 import java.io.BufferedWriter
 import java.io.File
 import java.io.IOException
@@ -30,10 +31,13 @@ class FileTimingOutput(file: File) : TimingOutput {
             writer.close()
         } catch (closing: IOException) {
             // Nothing left to do with a file that will not close. The lines already flushed are on disk.
+            Log.w(TAG, "timing log did not close cleanly", closing)
         }
     }
 
     companion object {
+        private const val TAG = "FileTimingOutput"
+
         /**
          * A new file in [directory] named for the session's start, never an existing one. Two
          * sessions inside one second get a numbered second file rather than sharing a log, because

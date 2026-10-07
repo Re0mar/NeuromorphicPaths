@@ -28,7 +28,15 @@ adb install -r app/build/outputs/apk/release/app-release.apk
 
 The debug key belongs to the laptop that built the APK. A phone holding the app from another
 laptop's build refuses this one with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`. Uninstall the app
-first in that case.
+first in that case, but **pull the phone's files first**. Uninstalling deletes the app's whole
+folder, every timing log and every recorded walk with it:
+
+```
+MSYS_NO_PATHCONV=1 adb pull /sdcard/Android/data/com.neuromorphicpaths.pixel/files/ phone_files_backup/
+```
+
+Anyone holding a laptop's debug key can sign an update for an app built with it, so this build
+is for the team's own phones and nothing else.
 
 ## Run
 
@@ -61,7 +69,9 @@ arrow over it.
 The phone and the laptop have to reach each other. On a phone hotspot the laptop is usually
 `192.168.43.1`, which is the default on screen. On the emulator the laptop is `10.0.2.2`. Over
 USB, `adb reverse tcp:9000 tcp:9000` and `adb reverse tcp:9100 tcp:9100` make `127.0.0.1` on the
-phone reach the laptop. Started from adb, the app connects by itself:
+phone reach the laptop. Started from adb, a debug build connects by itself. A release build
+ignores these extras, because the activity is exported and any app on the phone could start it
+pointed at an address of its choosing:
 
 ```
 adb shell am start -n com.neuromorphicpaths.pixel/.MainActivity --es host 127.0.0.1 --ei port 9000 --ei path_port 9100
@@ -159,11 +169,17 @@ the same thing the laptop does with a bad prefix on the depth side.
 
 Every time the app starts it writes a timing log for measuring the delay from a depth frame to
 the arrow drawn from it. One JSON line per moment: the session (phone model, build type, start
-time), then for each ARCore frame when it was handled, when its depth finished sending or that it
-was dropped for a newer one, when its path came back, and when the arrow first drew that path.
+time), then for each ARCore frame when it was handled, when its depth was handed to the socket or
+that it never went, when its path came back, and when the arrow was first drawn with that path.
+"Handed to the socket" is when the write returns, so time the bytes then wait in the phone's send
+buffer counts as network. "Drawn" is when the draw commands are issued, before the screen
+shows them. A frame that never went was replaced by a newer one, caught by a failed write, or
+still waiting when the connection stopped.
 Every time in it is the phone's elapsed-realtime clock in nanoseconds, and every line names its
 frame by ARCore's own timestamp, which is what the laptop hands back in each path. The laptop's
-timing report joins this file with the laptop's own log on that timestamp.
+timing report joins this file with the laptop's own log on that timestamp. Every line takes that
+key from the same seconds the frame travels in, so the lines still match past 47 days of uptime,
+where a double can no longer hold the stamp to the nanosecond.
 
 The log goes to the app's own external files folder, one file per session named by its start time:
 
@@ -173,7 +189,13 @@ MSYS_NO_PATHCONV=1 adb pull /sdcard/Android/data/com.neuromorphicpaths.pixel/fil
 
 `MSYS_NO_PATHCONV=1` stops Git Bash rewriting the device path into a Windows one. Pull with
 `adb pull`, never `adb shell cat`, which adds carriage returns. A log stops at 20 MB with a
-`truncated` line, and a `lost` line counts any records the writer was too far behind to keep.
+`truncated` line, and a `lost` line counts any records the writer was too far behind to keep or
+that arrived while the app was closing.
+
+The log starts when the app does, not at Connect, and old logs are never deleted. A walk on
+2026-10-07 wrote 900 KB in about 3 minutes, 5.1 KB a second, so one session reaches 20 MB after
+about an hour. Start the app shortly before a walk rather than leaving it open, and clear old
+logs from the folder now and then.
 
 ## Tests
 
@@ -195,8 +217,8 @@ counter clock. Three of them are the contract checks across the language boundar
   laptop's timing report reads that committed copy. Regenerate it with
   `-PtimingFixturePath=<repo>/server/tests/fixtures/pixel_app_timing.jsonl`, an absolute path.
 
-When either format changes, regenerate the fixture on the writing side and commit it with the
-change, and the reading side's test says whether the two still agree.
+When any of these formats changes, regenerate its fixture on the writing side and commit it with
+the change, and the reading side's test says whether the two still agree.
 
 Nothing that needs an ARCore `Frame`, `Camera` or `Image`, the GL camera quad, or the composable
 overlay has a JVM test. Those cannot be constructed off a device, so the phone is the test for

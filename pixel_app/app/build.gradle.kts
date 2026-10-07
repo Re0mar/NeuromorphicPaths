@@ -27,8 +27,9 @@ android {
                 enable = false
             }
             // Signed with the debug key so a release build installs on the team's phones. It exists
-            // for timing: a debuggable build draws slower, and the arrow's draw time is measured.
-            // This is not a publishing setup, and nothing built this way goes to a store.
+            // for timing: a debuggable build draws slower, and the time to the arrow's draw call is
+            // measured. Each laptop's debug key differs, and anyone holding one can sign an update,
+            // so this is for the team's own phones only. Nothing built this way goes to a store.
             signingConfig = signingConfigs.getByName("debug")
         }
     }

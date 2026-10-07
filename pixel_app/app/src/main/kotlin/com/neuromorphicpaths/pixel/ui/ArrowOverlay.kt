@@ -63,8 +63,9 @@ object ArrowGeometry {
  * Age is measured from when the path arrived on this phone, with the same clock the connection
  * stamped it with, and the overlay ticks on its own so a frozen arrow visibly ages.
  *
- * @param onDrawn called from inside the draw pass the first time a path is drawn, and never again
- * for that path. It runs while the frame is being drawn, so it must only stamp and return
+ * @param onDrawn called from inside the draw pass the first time a path is drawn, and not again for
+ * that path while the overlay stays on screen. It runs while the arrow's draw commands are being
+ * recorded, before the screen shows them, so it must only stamp and return
  */
 @Composable
 fun ArrowOverlay(

@@ -18,10 +18,14 @@ import kotlin.concurrent.thread
  * message replaced before it was sent is counted as dropped. When the socket fails the thread
  * reconnects after a pause and keeps going, because a walk does not stop for a hotspot hiccup.
  *
+ * Every offered frame ends as exactly one of sent or dropped, so the timing log never has a frame
+ * the phone offered and then said nothing more about.
+ *
  * @param onSent called on the sender thread once a frame's message has been written and flushed,
  * with the frame's ARCore timestamp in nanoseconds
- * @param onDropped called on the caller's thread of [offer] for a frame replaced before it went,
- * with that frame's ARCore timestamp in nanoseconds
+ * @param onDropped called with the frame's ARCore timestamp in nanoseconds for a frame that never
+ * went: replaced before it was taken (on [offer]'s thread), lost to a failed write (on the sender
+ * thread), or still pending at [stop] (on its caller's thread)
  */
 class LaptopConnection(
     private val host: String,
@@ -39,7 +43,7 @@ class LaptopConnection(
     /** Messages written to the socket so far. */
     val framesSent: Int get() = sent.get()
 
-    /** Messages replaced in the pending slot before the sender took them. */
+    /** Messages that never went: replaced before the sender took them, caught by a failed write, or pending at stop. */
     val framesDropped: Int get() = dropped.get()
 
     fun start() {
@@ -52,18 +56,25 @@ class LaptopConnection(
         running = false
         worker?.interrupt()
         worker = null
+        pending.getAndSet(null)?.let(::reportDropped)
     }
 
     /** Hand over a frame. If the previous one has not gone yet, it is replaced and counted. */
     fun offer(message: DepthMessage) {
         val replaced = pending.getAndSet(message) ?: return
+        reportDropped(replaced)
+    }
+
+    private fun reportDropped(message: DepthMessage) {
         dropped.incrementAndGet()
-        onDropped(TimingRecord.frameNanosFromSeconds(replaced.timestampSeconds))
+        onDropped(TimingRecord.frameNanosFromSeconds(message.timestampSeconds))
     }
 
     private fun loop() {
         while (running) {
             var socket: Socket? = null
+            // The message taken for sending and not yet reported sent. A failed write leaves it here.
+            var taken: DepthMessage? = null
             try {
                 onStatus(ConnectionStatus.Connecting(host, port))
                 // No apply block here on purpose. Inside one, a bare `port` is the socket's own
@@ -90,8 +101,10 @@ class LaptopConnection(
                         }
                         continue
                     }
+                    taken = message
                     output.write(FrameEncoder.encode(message))
                     output.flush()
+                    taken = null
                     onSent(TimingRecord.frameNanosFromSeconds(message.timestampSeconds))
                     sent.incrementAndGet()
                     onStatus(ConnectionStatus.Connected(host, port, sent.get(), dropped.get()))
@@ -102,7 +115,9 @@ class LaptopConnection(
                 return
             } catch (network: IOException) {
                 // Refused, reset, or the hotspot dropped. Expected in the field. Wait and retry
-                // rather than giving up, and say so on screen.
+                // rather than giving up, and say so on screen. A frame caught mid-write never
+                // arrived whole, so it counts as dropped.
+                taken?.let(::reportDropped)
                 Log.w(TAG, "laptop connection lost, retrying in ${RECONNECT_PAUSE_MILLIS} ms", network)
                 onStatus(ConnectionStatus.Disconnected(network.message ?: network.javaClass.simpleName))
                 try {

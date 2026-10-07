@@ -46,7 +46,9 @@ class FrameTimingLog(
         writer = thread(name = "timing-writer", isDaemon = true) { drain() }
     }
 
-    override fun frameHandled(frameNanos: Long) = record(TimingRecord.Frame(frameNanos, nowNanos()))
+    // Keyed the way every other line is, from the seconds the frame travels in, so the five lines of
+    // one frame always share a key. See TimingRecord.frameNanosFromArCore.
+    override fun frameHandled(frameNanos: Long) = record(TimingRecord.Frame(TimingRecord.frameNanosFromArCore(frameNanos), nowNanos()))
 
     override fun frameSent(frameNanos: Long) = record(TimingRecord.Sent(frameNanos, nowNanos()))
 
@@ -55,8 +57,9 @@ class FrameTimingLog(
     override fun pathReceived(frameNanos: Long) = record(TimingRecord.Received(frameNanos, nowNanos()))
 
     /**
-     * Only the first draw of a frame's path is recorded. The overlay already reports once per path,
-     * and this catches a repeat from a recomposition or a path that arrived twice.
+     * Only the first draw of a frame's path is recorded. The overlay already reports once per path
+     * for as long as it stays on screen, and this catches a repeat after it leaves and comes back,
+     * or a path that arrived twice.
      */
     override fun pathDrawn(frameNanos: Long) {
         val drawnNanos = nowNanos()
@@ -82,8 +85,10 @@ class FrameTimingLog(
     }
 
     private fun record(timingRecord: TimingRecord) {
-        if (closing.get()) return
-        if (!queue.offer(timingRecord)) lost.incrementAndGet()
+        // A record that arrives while close drains is counted, not written. The writer's last
+        // `lost` line includes it if the writer is still running. Neither connection's stop()
+        // waits for its thread, so a send finishing as the app closes ends up here.
+        if (closing.get() || !queue.offer(timingRecord)) lost.incrementAndGet()
     }
 
     private fun drain() {
@@ -129,7 +134,8 @@ class FrameTimingLog(
             emitLost()
             output.flush()
         } catch (interrupted: InterruptedException) {
-            // Only the process going away interrupts a daemon thread. Nothing to save.
+            // Nothing in the app interrupts this thread. If something ever does, it is being told
+            // to stop, and the lines already written are flushed up to the last empty queue.
             Thread.currentThread().interrupt()
         } catch (failed: IOException) {
             // Storage refused the write. The measurement is lost, the app must keep working.
@@ -145,7 +151,8 @@ class FrameTimingLog(
         // Longer than any truncated line, so the note always fits under the cap.
         private const val TRUNCATED_RESERVE_BYTES = 64L
         private const val POLL_MILLIS = 50L
-        // Paths arrive a few a second. This many is minutes of history, plenty to catch a repeat.
+        // Paths arrive at up to the frame rate, about 30 a second, so this is about 8 s of history.
+        // A repeat comes within a frame or two, well inside that.
         private const val DRAWN_MEMORY = 256
         private const val TAG = "FrameTimingLog"
     }
