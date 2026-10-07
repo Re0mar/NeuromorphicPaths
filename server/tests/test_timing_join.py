@@ -197,7 +197,7 @@ def test_clock_base_different_when_a_gap_is_negative() -> None:
     report = join(_steady_phone(120, handled_after_seconds=-0.005), [], exclude_first_seconds=0.0)
 
     assert report.clock_verdict is ClockVerdict.DIFFERENT_BASE
-    assert "outside 0 to 200 ms" in report.clock_reason
+    assert "outside 0 to 500 ms" in report.clock_reason
 
 
 def test_clock_base_different_when_the_spread_is_too_wide() -> None:
@@ -206,6 +206,29 @@ def test_clock_base_different_when_the_spread_is_too_wide() -> None:
 
     assert report.clock_verdict is ClockVerdict.DIFFERENT_BASE
     assert "spreads" in report.clock_reason
+
+
+def test_a_frame_with_no_arcore_stamp_is_counted_and_left_out_of_the_clock_check() -> None:
+    """The first Pixel walk opened with one frame stamped 0, and its gap read as the phone's uptime."""
+    phone = _steady_phone(120, handled_after_seconds=0.137)
+    phone.frames[0] = PhoneFrame(handled_ns=1_889_760_767_400_000)
+
+    report = join(phone, [], exclude_first_seconds=0.0)
+
+    assert report.clock_verdict is ClockVerdict.SAME_BASE
+    assert report.counts["phone frames with no ARCore stamp"] == 1
+
+
+def test_clock_base_same_at_the_first_walks_real_gaps() -> None:
+    """80.9 to 254.7 ms, median 137, on a Pixel 8. The scaffold-time 200 ms limit called this a different base."""
+    # Its extremes were rare: the 5th percentile was 124.2 and the 95th 181.3.
+    gaps_ms = [80.9] * 3 + [254.7] * 3 + [124.2 + (181.3 - 124.2) * step / 113 for step in range(114)]
+    frames = {}
+    for index, gap_ms in enumerate(gaps_ms):
+        frame_ns = 100_000_000_000_000 + index * 33_333_333
+        frames[frame_ns] = PhoneFrame(handled_ns=frame_ns + round(gap_ms * 1e6))
+
+    assert join(_phone_log(frames), [], exclude_first_seconds=0.0).clock_verdict is ClockVerdict.SAME_BASE
 
 
 def test_clock_base_not_enough_frames_under_100() -> None:
@@ -219,6 +242,48 @@ def test_the_sensor_slice_is_left_out_unless_the_clocks_share_a_base() -> None:
 
     assert "sensor to handled" not in format_joined(report)
     assert "not at the sensor" in format_joined(report)
+
+
+# *******************************************
+# The network share over the walk
+# *******************************************
+
+
+def _joined_walk(network_seconds_at: list[tuple[float, float]]) -> tuple[PhoneLog, list[TimingRecord]]:
+    """One joined path per (seconds into the walk, network share), with fixed phone, laptop and display shares."""
+    frames: dict[int, PhoneFrame] = {}
+    laptop: list[TimingRecord] = []
+    for index, (at_seconds, network_seconds) in enumerate(network_seconds_at):
+        frame_ns = 100_000_000_000_000 + index * 33_333_333
+        handled_ns = 200_000_000_000_000 + round(at_seconds * 1e9)
+        sent_ns = handled_ns + 10_000_000
+        received_ns = sent_ns + round((network_seconds + 0.052) * 1e9)
+        frames[frame_ns] = PhoneFrame(handled_ns=handled_ns, sent_ns=sent_ns, received_ns=received_ns, drawn_ns=received_ns + 5_000_000)
+        laptop.append(_published(frame_ns, arrival=1000.0 + at_seconds))
+    return _phone_log(frames), laptop
+
+
+def test_the_network_share_is_reported_per_ten_seconds_of_walk(tmp_path: Path) -> None:
+    """A queue that builds and drains shows here, where one median over the walk hides it."""
+    # 0 to 9 s at 100 ms, nothing from 10 to 29 s, then 30 to 39 s at 1 s.
+    walk = [(second, 0.100) for second in range(10)] + [(30 + second, 1.000) for second in range(10)]
+    phone, laptop = _joined_walk(walk)
+
+    report = join(phone, laptop, exclude_first_seconds=0.0)
+
+    assert [(piece.start_seconds, piece.paths) for piece in report.network_by_slice] == [(0.0, 10), (30.0, 10)]
+    assert [piece.median_milliseconds for piece in report.network_by_slice] == pytest.approx([100.0, 1000.0], abs=MICROSECOND_IN_MILLISECONDS)
+    assert "0 s: 100 (10), 30 s: 1000 (10)" in format_joined(report)
+    saved = joined_as_json(report)["network_by_slice"]
+    assert [(piece["start_seconds"], piece["paths"]) for piece in saved] == [(0.0, 10), (30.0, 10)]
+
+
+def test_a_negative_network_share_is_left_out_of_its_slice() -> None:
+    phone, laptop = _joined_walk([(0.0, 0.100), (1.0, 0.200), (2.0, -0.030)])
+
+    report = join(phone, laptop, exclude_first_seconds=0.0)
+
+    assert [(piece.paths, round(piece.median_milliseconds, 3)) for piece in report.network_by_slice] == [(2, 150.0)]
 
 
 # *******************************************

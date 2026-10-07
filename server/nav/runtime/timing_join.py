@@ -65,12 +65,21 @@ MINIMUM_JOINED_PATHS = 100
 # The clock check needs this many frames before it says anything about the phone's clocks.
 MINIMUM_FRAMES_FOR_CLOCK_CHECK = 100
 # A handled stamp this soon after its own sensor stamp, every time, is the same clock seen twice.
-# ARCore hands a frame over well inside a frame interval, and 200 ms is six of them.
-SAME_BASE_MAXIMUM_GAP_SECONDS = 0.2
-# And steady: a clock drifting from the sensor's spreads out even inside the window. Set at
-# scaffold time, before any real Pixel gaps were seen, and to be revised against the first walk.
-SAME_BASE_MAXIMUM_SPREAD_SECONDS = 0.05
+# Two different bases differ by the phone's whole time asleep, hours after a few days of uptime.
+# The first Pixel 8 walk, 2026-10-06, read 80.9 to 254.7 ms, median 137.1, over 5,757 frames:
+# camera, ARCore and depth before the app sees the frame. 200 ms, set before any real gaps were
+# seen, was under that walk's worst, and 500 ms keeps a wide margin below any sleep offset.
+SAME_BASE_MAXIMUM_GAP_SECONDS = 0.5
+# And steady. That walk spread 57 ms from the 5th to the 95th percentile. A clock drifting from the
+# sensor's would spread further and further over a walk.
+SAME_BASE_MAXIMUM_SPREAD_SECONDS = 0.1
+# ARCore stamps a frame 0 before it has a clock reading for it, at the start of a session. That
+# frame says nothing about the clocks, so it is counted and left out of the check.
+ARCORE_NO_TIMESTAMP_NS = 0
 NEGATIVE_EXAMPLES_SHOWN = 5
+# The network share builds up and drains over seconds, which one median over a walk hides. Ten
+# seconds is long enough for a few hundred paths and short enough to show a queue filling.
+NETWORK_SLICE_SECONDS = 10.0
 MINIMUM_RUNS_TO_COMPARE = 3
 # The order shares are printed and saved in. Every key of Share appears once.
 SHARE_ORDER = (
@@ -144,6 +153,15 @@ class PhoneLog:
 
 
 @dataclass(frozen=True)
+class NetworkSlice:
+    """The network share's median over one stretch of a walk."""
+
+    start_seconds: float  # From the first joined path's handling on the phone.
+    paths: int
+    median_milliseconds: float
+
+
+@dataclass(frozen=True)
 class JoinedReport:
     """The frame-to-arrow delay of one run, with every count it rests on."""
 
@@ -156,6 +174,7 @@ class JoinedReport:
     clock_reason: str
     excluded_as_cold: int
     phone_log_truncated: bool
+    network_by_slice: list[NetworkSlice] = field(default_factory=list)
 
 
 # *******************************************
@@ -300,6 +319,7 @@ def join(phone_log: PhoneLog, laptop_records: list[TimingRecord], exclude_first_
     verdict, reason = _clock_check(phone_log.frames)
     durations: dict[Share, list[float]] = {share: [] for share in Share}
     negatives: dict[Share, list[float]] = {share: [] for share in Share}
+    network_when: list[tuple[int, float]] = []
     joined_paths = 0
     for frame_ns, frame in phone_frames.items():
         record = laptop.get(frame_ns)
@@ -324,6 +344,8 @@ def join(phone_log: PhoneLog, laptop_records: list[TimingRecord], exclude_first_
                 continue
             # A negative duration is a stamp taken in the wrong place, not a fast frame.
             (negatives if seconds < 0 else durations)[share].append(seconds)
+        if per_frame[Share.NETWORK] >= 0:
+            network_when.append((frame.handled_ns, per_frame[Share.NETWORK]))
 
     return JoinedReport(
         shares={share: share_statistics(durations[share]) for share in Share},
@@ -335,7 +357,31 @@ def join(phone_log: PhoneLog, laptop_records: list[TimingRecord], exclude_first_
         clock_reason=reason,
         excluded_as_cold=len(excluded),
         phone_log_truncated=phone_log.truncated_at_bytes is not None,
+        network_by_slice=_network_by_slice(network_when),
     )
+
+
+def _network_by_slice(network_when: list[tuple[int, float]]) -> list[NetworkSlice]:
+    """
+    The network share's median per stretch of the walk, in order. Stretches with no path are left out.
+
+    :param network_when: (phone handled stamp in ns, network share in seconds) per joined path.
+    """
+    if not network_when:
+        return []
+    first_ns = min(handled_ns for handled_ns, _ in network_when)
+    by_slice: dict[int, list[float]] = {}
+    for handled_ns, seconds in network_when:
+        index = int((handled_ns - first_ns) / NANOSECONDS_PER_SECOND // NETWORK_SLICE_SECONDS)
+        by_slice.setdefault(index, []).append(seconds)
+    return [
+        NetworkSlice(
+            start_seconds=index * NETWORK_SLICE_SECONDS,
+            paths=len(values),
+            median_milliseconds=float(np.median(values)) * 1000,
+        )
+        for index, values in sorted(by_slice.items())
+    ]
 
 
 def _cold_frames(phone_log: PhoneLog, laptop: dict[int, TimingRecord], exclude_first_seconds: float) -> set[int]:
@@ -356,7 +402,11 @@ def _cold_frames(phone_log: PhoneLog, laptop: dict[int, TimingRecord], exclude_f
 
 
 def _clock_check(frames: dict[int, PhoneFrame]) -> tuple[ClockVerdict, str]:
-    gaps = [(frame.handled_ns - frame_ns) / NANOSECONDS_PER_SECOND for frame_ns, frame in frames.items() if frame.handled_ns is not None]
+    gaps = [
+        (frame.handled_ns - frame_ns) / NANOSECONDS_PER_SECOND
+        for frame_ns, frame in frames.items()
+        if frame.handled_ns is not None and frame_ns != ARCORE_NO_TIMESTAMP_NS
+    ]
     if len(gaps) < MINIMUM_FRAMES_FOR_CLOCK_CHECK:
         return ClockVerdict.NOT_ENOUGH_FRAMES, f"{len(gaps)} handled frames, {MINIMUM_FRAMES_FOR_CLOCK_CHECK} needed"
     smallest, largest = min(gaps), max(gaps)
@@ -378,6 +428,7 @@ def _counts(phone_log: PhoneLog, phone_frames: dict[int, PhoneFrame], laptop: di
     outcomes = {outcome: sum(record.outcome is outcome for record in laptop.values()) for outcome in FrameOutcome}
     return {
         "phone frames handled": sum(frame.handled_ns is not None for frame in phone_frames.values()),
+        "phone frames with no ARCore stamp": sum(frame_ns == ARCORE_NO_TIMESTAMP_NS for frame_ns in phone_frames),
         "phone frames sent": sum(frame.sent_ns is not None for frame in phone_frames.values()),
         "phone frames dropped": sum(frame.dropped for frame in phone_frames.values()),
         "laptop frames received": len(laptop),
@@ -432,6 +483,12 @@ def format_joined(report: JoinedReport) -> str:
     for share, values in report.negative_examples.items():
         shown = ", ".join(f"{value * 1000:.1f}" for value in values)
         lines.append(f"WARNING {SHARE_LABELS[share].strip()} came out negative, left out: {shown} ms")
+    if report.network_by_slice:
+        lines.append(f"network median per {NETWORK_SLICE_SECONDS:.0f} s of the walk, ms (paths)")
+        lines.append(
+            "  "
+            + ", ".join(f"{piece.start_seconds:.0f} s: {piece.median_milliseconds:.0f} ({piece.paths})" for piece in report.network_by_slice)
+        )
     lines.append("counts")
     lines.extend(f"  {name:<34}{count:8d}" for name, count in report.counts.items())
     lines.append("not joined")
@@ -465,6 +522,10 @@ def joined_as_json(report: JoinedReport) -> dict:
             "clock_reason": report.clock_reason,
             "counts": report.counts,
             "orphans": {orphan.value: count for orphan, count in report.orphans.items()},
+            "network_by_slice": [
+                {"start_seconds": piece.start_seconds, "paths": piece.paths, "median_milliseconds": piece.median_milliseconds}
+                for piece in report.network_by_slice
+            ],
         },
     )
 
