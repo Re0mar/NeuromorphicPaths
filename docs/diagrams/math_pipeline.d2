@@ -1,0 +1,127 @@
+# The math from the sensor to the arrow, one box per stage, each naming what it hands on and in
+# which units. Border and shape say whose math a stage is, so the professor's part can be told
+# from ours without relying on the fill color.
+
+direction: down
+
+classes: {
+  his: {
+    style.double-border: true
+    style.fill: "#e8f0fe"
+  }
+  ours: {
+    style.stroke-dash: 3
+    style.fill: "#fff4e5"
+  }
+  extra: {
+    shape: parallelogram
+    style.fill: "#eaf6ea"
+  }
+}
+
+sensor: "Sensor\nPixel phone or Neon glasses" {
+  shape: oval
+}
+
+depth: "Depth in meters\nd along camera z, m\n(raw x focal / 300 on the glasses)" {
+  class: extra
+}
+
+undistort: "Straightened lens\nlateral position at the edges, m" {
+  class: extra
+}
+
+up: "Up from gravity\nunit vector, camera frame" {
+  class: extra
+}
+
+floor: "Floor plane\nheight above floor, m" {
+  class: extra
+}
+
+groups: "Obstacle groups\none point per 0.25 m cell, m" {
+  class: extra
+}
+
+clearance: "Clearance S\ngap from the footprint edge, m" {
+  class: his
+}
+
+noise: "Noise N\nspread of S over 0.5 s, m" {
+  class: his
+}
+
+collision: "Collision surprise\n1/2 (N / S)^2, per second" {
+  class: his
+}
+
+contact: "Contact surprise\n-ln P(no touch) / pass time, per second" {
+  class: ours
+}
+
+field: "Field F\nworst point per group, sum of groups\ncost per second, 39 x 61" {
+  class: his
+}
+
+memory: "Previous-plan prior and goal term\ncost per second" {
+  class: ours
+}
+
+plan: "Dynamic program\nlateral offset every 0.1 s, m\npath cost (nats, labeled bits)" {
+  class: his
+}
+
+arrow: "Arrow\nheading 1 s ahead, rad" {
+  class: ours
+}
+
+alarm: "Alarm\ntime to contact under 0.7 s" {
+  class: ours
+}
+
+avoidance: "Avoidance surprise\n(1 s / tau)^2 / (2 ln 2), bits" {
+  class: his
+}
+
+information: "Scene information\nKL in bits" {
+  class: his
+}
+
+usermodel: "User model\npredicted turn time, s\nwork per avoidance" {
+  class: his
+}
+
+sensor -> depth: "picture"
+sensor -> undistort: "lens calibration"
+sensor -> up: "IMU or ARCore pose"
+depth -> floor: "points, m"
+undistort -> depth: "square-pixel image"
+up -> floor: "up"
+floor -> groups: "points between ankle and head"
+groups -> clearance: "nearest point, m"
+clearance -> noise: "S over time"
+groups -> collision: "points, walker frame"
+noise -> collision: "N"
+noise -> contact: "N"
+collision -> field: "rate"
+contact -> field: "rate"
+field -> plan: "F"
+memory -> plan: "added to F"
+plan -> arrow: "offsets"
+plan -> information: "forward and backward costs"
+plan -> usermodel: "path cost"
+clearance -> alarm: "S in the corridor"
+alarm -> avoidance: "tau"
+
+legend: "Legend" {
+  near: bottom-center
+  his_key: "his math, from the course\nor marked his in the code\n(double border)" {
+    class: his
+  }
+  ours_key: "ours\n(dashed border)" {
+    class: ours
+  }
+  extra_key: "extra input his math needed\n(parallelogram)" {
+    class: extra
+  }
+}

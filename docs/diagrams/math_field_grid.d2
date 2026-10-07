@@ -1,0 +1,116 @@
+# The field as a table: one row per 0.1 s slice of the horizon, one column per sideways
+# candidate. The second box zooms into one cell to show how points become that cell's cost,
+# because the combining rule is the part people get wrong when they read the code.
+
+direction: down
+
+field: "Field F[k, c]: 39 slices x 61 lateral cells, cost per second" {
+  grid-rows: 5
+  grid-columns: 8
+  grid-gap: 4
+
+  corner: "slice k\nwalker has gone" {
+    shape: text
+  }
+  c_m30: "x = -3.0 m" {
+    shape: text
+  }
+  c_dots1: "..." {
+    shape: text
+  }
+  c_m01: "x = -0.1 m" {
+    shape: text
+  }
+  c_0: "x = 0" {
+    shape: text
+  }
+  c_p01: "x = +0.1 m" {
+    shape: text
+  }
+  c_dots2: "..." {
+    shape: text
+  }
+  c_p30: "x = +3.0 m" {
+    shape: text
+  }
+
+  r0: "k = 0, t = 0.0 s\n0.00 m" {
+    shape: text
+  }
+  r0a: " "
+  r0b: " "
+  r0c: " "
+  r0d: "start"
+  r0e: " "
+  r0f: " "
+  r0g: " "
+
+  r1: "k = 1, t = 0.1 s\n0.14 m" {
+    shape: text
+  }
+  r1a: " "
+  r1b: " "
+  r1c: " "
+  r1d: " "
+  r1e: " "
+  r1f: " "
+  r1g: " "
+
+  r14: "k = 14, t = 1.4 s\n1.96 m" {
+    shape: text
+  }
+  r14a: " "
+  r14b: " "
+  r14c: " "
+  r14d: "0.0911\nper second" {
+    style.fill: "#fff4e5"
+  }
+  r14e: " "
+  r14f: " "
+  r14g: " "
+
+  r38: "k = 38, t = 3.8 s\n5.32 m" {
+    shape: text
+  }
+  r38a: " "
+  r38b: " "
+  r38c: " "
+  r38d: "+ goal term"
+  r38e: " "
+  r38f: " "
+  r38g: " "
+}
+
+advance: "Each row the walker is 1.4 m/s x 0.1 s = 0.14 m further on.\nEvery obstacle point moves 0.14 m closer per row, and nothing moves sideways\nunless motion prediction is switched on, which it isn't by default." {
+  shape: text
+}
+
+one_cell: "One cell, one term" {
+  direction: down
+
+  group_a: "group A\n(one 0.25 m scene cell)" {
+    a1: "point 1\n0.020"
+    a2: "point 2\n0.050"
+  }
+  max_a: "worst in A\n0.050"
+  group_b: "group B\n(one 0.25 m scene cell)" {
+    b1: "point 1\n0.010"
+  }
+  max_b: "worst in B\n0.010"
+  term_sum: "this term: worst point within a group,\nthen the sum across groups\n0.050 + 0.010 = 0.060\n(today the scene sends one point per group,\nso the max has one point to pick from)"
+
+  group_a -> max_a: "max"
+  group_b -> max_b: "max"
+  max_a -> term_sum: "sum"
+  max_b -> term_sum: "sum"
+}
+
+terms: "Then the terms add, each at weight 1.\nAt slice 14, candidate x = 0, a post at (0.5, 2.0) m with N = 0.0337 m:\ncollision 0.0247 + contact 0.0664 = 0.0911 per second" {
+  shape: text
+}
+
+field.r14d -> one_cell
+one_cell -> terms
+field -> advance {
+  style.opacity: 0
+}

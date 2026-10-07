@@ -1,0 +1,132 @@
+# The professor's formulas in the middle, our additions beside them, and the inputs his math
+# needed that the camera doesn't hand over, feeding in from outside. Each arrow names the symbol
+# it supplies, so it's clear which measurement each of his symbols rests on.
+
+direction: down
+
+classes: {
+  his: {
+    style.double-border: true
+    style.fill: "#e8f0fe"
+  }
+  ours: {
+    style.stroke-dash: 3
+    style.fill: "#fff4e5"
+  }
+  extra: {
+    shape: parallelogram
+    style.fill: "#eaf6ea"
+  }
+}
+
+inputs: "Extra inputs" {
+  depth: "depth in meters\nraw x focal / 300" {
+    class: extra
+  }
+  lens: "straightened lens\nsquare pixels" {
+    class: extra
+  }
+  gravity: "gravity\nIMU through the mount, or ARCore" {
+    class: extra
+  }
+  floor: "floor plane\nRANSAC, then least squares" {
+    class: extra
+  }
+  tracking: "the same group followed\nover 0.5 s" {
+    class: extra
+  }
+  speed: "walking speed\n1.4 m/s, assumed" {
+    class: extra
+  }
+  gaze: "gaze on the floor" {
+    class: extra
+  }
+}
+
+his: "His math" {
+  collision: "collision surprise\n1/2 (N / S)^2" {
+    class: his
+  }
+  combine: "worst point in a group,\nsum across groups\n(marked his in the code)" {
+    class: his
+  }
+  posterior: "surprise terms add\n(posterior = prior + likelihood)" {
+    class: his
+  }
+  plan: "plan by total energy\nsum of (field + 1/2 w v^2) dt" {
+    class: his
+  }
+  avoidance: "avoidance surprise\n(1 s / tau)^2 / (2 ln 2)" {
+    class: his
+  }
+  kl: "Bayesian surprise\nKL, in bits\n(his idea, our construction)" {
+    class: his
+  }
+  relax: "critically damped relaxation\ns'' + (2/b) s' + s / b^2 = 0" {
+    class: his
+  }
+  work: "work\nH at start - H at threshold" {
+    class: his
+  }
+
+  collision -> combine
+  combine -> posterior
+  posterior -> plan
+  plan -> kl
+  plan -> work
+}
+
+ours: "Ours, beside his" {
+  contact: "contact surprise\n-ln P(no touch) / pass time" {
+    class: ours
+  }
+  wall: "wall noise x 3" {
+    class: ours
+  }
+  prior: "previous-plan prior\n1/2 ((x - e) / rho)^2" {
+    class: ours
+  }
+  goal: "goal term\non the last row" {
+    class: ours
+  }
+  heading: "arrow at 1 s ahead" {
+    class: ours
+  }
+  alarm: "alarm\ntau under 0.7 s, held 0.5 s" {
+    class: ours
+  }
+  weight: "sideways weight\nw raised from 0.055 to 6.5" {
+    class: ours
+  }
+}
+
+inputs.depth -> his.collision: "S"
+inputs.lens -> his.collision: "S, sideways"
+inputs.gravity -> inputs.floor: "up"
+inputs.floor -> his.collision: "S, on the floor"
+inputs.tracking -> his.collision: "N"
+inputs.speed -> his.avoidance: "tau"
+inputs.speed -> his.plan: "forward advance"
+inputs.gaze -> ours.goal: "x_goal"
+
+ours.wall -> his.collision: "N_eff"
+ours.contact -> his.combine: "second term"
+ours.prior -> his.posterior: "added to the field"
+ours.goal -> his.posterior: "added to the last row"
+ours.weight -> his.plan: "w"
+his.plan -> ours.heading: "offsets"
+ours.alarm -> his.avoidance: "tau"
+ours.heading -> his.relax: "arrow angle, the error to relax"
+
+legend: "Legend" {
+  near: bottom-center
+  his_key: "his math, from the course\nor marked his in the code\n(double border)" {
+    class: his
+  }
+  ours_key: "ours\n(dashed border)" {
+    class: ours
+  }
+  extra_key: "extra input his math needed\n(parallelogram)" {
+    class: extra
+  }
+}
