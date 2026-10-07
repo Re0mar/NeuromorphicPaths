@@ -85,14 +85,52 @@ py -3.12 -m venv .venv
 .venv/Scripts/python -m pytest
 ```
 
-That takes about two and a half minutes.
+That takes about three minutes. `pyproject.toml` holds every version bound a fresh install needs,
+OpenCV below 5 among them. If pip stalls on a 401, your machine has a user-level `pip.ini` pointing
+at a private index, and the fix is under Install in [`server/README.md`](server/README.md). The
+glasses need the `glasses` extra and a CUDA build of torch, also there.
 
-**Replay a recorded walk.** Recordings aren't committed, because they're large. They're shared as
-folders, and you put one under `server/frame_logs/`. Then open `http://localhost:8765` in a browser:
+**The app's tests**, from `pixel_app/`, with the JDK and SDK that come with Android Studio. Full
+build and run steps are in [`pixel_app/README.md`](pixel_app/README.md):
+
+```
+cd pixel_app
+JAVA_HOME="/c/Program Files/Android/Android Studio/jbr" ANDROID_HOME="$LOCALAPPDATA/Android/Sdk" ./gradlew.bat :app:testDebugUnitTest
+```
+
+### Recordings live on your machine, not in the repository
+
+Nothing recorded is committed. The repository is a free private GitHub one with little space, one
+walk is 70 to 280 MB, and the glasses' video shows passers-by. So any command below that names a
+recording needs a local copy of it in `server/frame_logs/`, which git ignores. Ask whoever recorded
+it for the folder. These are the ones the docs and the evaluation refer to:
+
+| Folder under `server/frame_logs/` | What it is | Size |
+|---|---|---|
+| `pixel_walk_3` | Pixel walk, the planner's main test walk | 277 MB |
+| `pixel_display_run` | Pixel walk with the arrow on the phone, the older three-value arrow | 159 MB |
+| `wifi_run_2` | Pixel walk over home Wi-Fi, 2,144 frames, the 1 s lookahead arrow | 127 MB |
+| `straight_walk_4` | Pixel walk in a straight line, for the arrow's spread when nothing is in the way | 122 MB |
+| `contact_walk_1` | indoor Pixel walk, the first with the contact term | 72 MB |
+| `neon_walk_1` | the glasses' live walk, as a frame log | 194 MB |
+| `captures/neon_walk_1`, `captures/neon_walk_2` | the glasses' raw streams, replayable through the whole pipeline | 204 and 184 MB |
+| `before_walk_1`, `after_walk_1`, `before_walk_2_5ghz` | the three Pixel walks the frame-to-arrow delay is measured on, each with its report | 234, 207 and 150 MB |
+| `before_walk_1_phone`, `after_walk_1_phone`, `before_walk_2_5ghz_phone` | the Pixel's own timing log for each of those walks | about 1 MB each |
+| `replays` | the timing logs and reports of the replays behind the delay's before-and-after figures | 14 MB |
+
+The two golden recordings the tests replay are the exception. They're cut down to a few hundred KB
+and committed under `server/tests/fixtures/`, so the suite needs no recording at all.
+
+**Replay a recorded walk.** Then open `http://localhost:8765` in a browser:
 
 ```
 .venv/Scripts/python -m nav --source logged --log-dir frame_logs/<walk> --sink web --realtime
 ```
+
+That replays through the same scene and planner, which is what planner work wants. It isn't for
+timing, because it keeps the original walk's arrival times. To time the laptop on a recorded Pixel
+walk, send the walk over the network into an ordinary live run instead. The commands are under
+*The timing log* in [`server/README.md`](server/README.md).
 
 **Run it live with the Pixel.** Start the laptop first, then the app on the phone. The phone shows
 the arrow and the browser shows the page:
@@ -118,6 +156,12 @@ decoder, depth model and planner:
 .venv/Scripts/python examples/capture_neon_stream.py --neon-address <phone address> --seconds 240 frame_logs/captures/<new walk>
 .venv/Scripts/python -m nav --source neon_live --neon-replay frame_logs/captures/<new walk> --process-resolution 336 --sink web
 ```
+
+**Record a walk on the phone alone**, somewhere the phone can't reach the laptop, and replay it to
+the laptop later: *Recording a walk without the laptop* in [`pixel_app/README.md`](pixel_app/README.md).
+
+**Measure the delay from a frame to the arrow**, and split it into the phone's, the network's, the
+laptop's and the display's shares: [`docs/guides/frame_to_arrow_delay.md`](docs/guides/frame_to_arrow_delay.md).
 
 **Score the planner on a walk.** How often the arrow sits at its limit, how often it swings from one
 side to the other, and what the alarm did:
@@ -158,6 +202,7 @@ PowerShell re-encodes redirected output and the model comes out corrupted.
 | change the messages between the phone and the laptop | [`server/docs/arcore_wire_format.md`](server/docs/arcore_wire_format.md) |
 | see what has been measured on recorded walks | [`docs/evaluation/`](docs/evaluation/) |
 | see how the glasses did on real hardware: latency, frame rate, floor | [`docs/evaluation/neon_glasses_first_session.md`](docs/evaluation/neon_glasses_first_session.md) |
+| measure how late the arrow is, from the frame it was planned from | [`docs/guides/frame_to_arrow_delay.md`](docs/guides/frame_to_arrow_delay.md) |
 | drive a vibration motor or headphones from the planner's output | [`docs/guides/drive_feedback_from_the_path.md`](docs/guides/drive_feedback_from_the_path.md) |
 | score the arrow against how the walker actually turned | [`docs/guides/score_the_arrow_against_turns.md`](docs/guides/score_the_arrow_against_turns.md) |
 | build the diagrams | [`docs/README.md`](docs/README.md) |

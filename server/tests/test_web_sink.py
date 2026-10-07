@@ -8,6 +8,7 @@ on the test thread, which is exactly the two-loop arrangement the design chose.
 # Standard library imports
 import asyncio
 import json
+import threading
 import time
 
 # Third party imports
@@ -166,14 +167,29 @@ def test_a_port_already_in_use_is_reported_rather_than_hung() -> None:
         first.close()
 
 
+def test_a_sink_that_failed_to_start_closes_without_raising() -> None:
+    """A run whose web port was refused still closes every sink on its way out."""
+    first = WebSink(WebConfig(port=0))
+    first.start()
+    try:
+        second = WebSink(WebConfig(port=first.port))
+        with pytest.raises(ConnectionError):
+            second.start()
+        second.close()
+    finally:
+        first.close()
+
+
 def test_closing_an_unstarted_sink_does_not_raise() -> None:
     WebSink(WebConfig(port=0)).close()
 
 
 def test_a_browser_that_stops_reading_cannot_grow_the_queue_without_bound(sink: WebSink, caplog: pytest.LogCaptureFixture) -> None:
-    # The pipeline hands over a path, a plan view and a 128 KB picture per planned frame and never waits, while
-    # one browser whose window has closed suspends the send loop for every browser. Unbounded, a
-    # backgrounded phone browser grew that queue by hundreds of megabytes over a walk.
+    # The pipeline hands over a path per planned frame, plus a plan view and a 128 KB picture up to
+    # ten times a second, and never waits, while one browser whose window has closed suspends the
+    # send loop for every browser. Unbounded, a backgrounded phone browser grew that queue by
+    # hundreds of megabytes over a walk. The publish count is high because a path is about 250
+    # bytes, and the socket's own buffers absorb a few hundred before the send loop stalls.
     async def scenario() -> int:
         import aiohttp
 
@@ -181,7 +197,7 @@ def test_a_browser_that_stops_reading_cannot_grow_the_queue_without_bound(sink: 
             async with session.ws_connect(f"ws://127.0.0.1:{sink.port}/ws"):
                 await asyncio.sleep(0.3)
                 # The client never reads from here on.
-                for _ in range(300):
+                for _ in range(20_000):
                     sink.publish_debug(_path(), *_field(), _view())
                 await asyncio.sleep(1.0)
                 assert sink._outgoing is not None
@@ -190,7 +206,7 @@ def test_a_browser_that_stops_reading_cannot_grow_the_queue_without_bound(sink: 
     depth = asyncio.run(scenario())
 
     assert depth <= OUTGOING_QUEUE_LIMIT, f"the queue grew to {depth}"
-    assert sink.dropped > 0, "900 messages through a queue of 32 must have dropped some"
+    assert sink.dropped > 0, "about 5 MB to a browser that never reads must have dropped some"
 
     with caplog.at_level("INFO", logger="nav.sinks.web"):
         sink.close()
@@ -315,3 +331,203 @@ def test_a_started_sink_installs_the_reset_handler_on_its_loop(sink: WebSink) ->
     # because a refactor of _run can drop the one line that installs it with every other test green.
     assert sink._loop is not None
     assert sink._loop.get_exception_handler() is _quiet_client_resets
+
+
+# *******************************************
+# The render thread
+# *******************************************
+
+
+def _numbered_path(number: int) -> PlannedPath:
+    """A path that names itself through the one number the plan view carries over from it."""
+    return PlannedPath(1.0, np.array([0.0, 0.1]), np.array([0.0, 0.05]), 0.1, False, 2.5, scene_information_bits=float(number), avoidance_surprise_bits=0.0)
+
+
+async def _receive_until_quiet(port: int, after_connect, quiet_seconds: float) -> list:
+    """Every frame after connecting, until none arrives for quiet_seconds."""
+    import aiohttp
+
+    async with aiohttp.ClientSession() as session:
+        async with session.ws_connect(f"ws://127.0.0.1:{port}/ws") as socket:
+            after_connect()
+            received = []
+            while True:
+                try:
+                    message = await asyncio.wait_for(socket.receive(), quiet_seconds)
+                except TimeoutError:
+                    return received
+                received.append(message.data)
+
+
+def test_publish_debug_returns_without_drawing(sink: WebSink, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The publisher thread hands over and moves on. A slow picture must not hold up the phone's next path."""
+    import nav.sinks.web as web_module
+
+    real_render = web_module.render_depth_view
+
+    def slow_render(view, path):
+        time.sleep(0.3)
+        return real_render(view, path)
+
+    monkeypatch.setattr(web_module, "render_depth_view", slow_render)
+    field, grid = _field()
+
+    started = time.perf_counter()
+    for _ in range(3):
+        sink.publish_debug(_path(), field, grid, _view())
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 0.05, f"three publishes took {elapsed * 1000:.0f} ms"
+
+
+def test_every_path_goes_out_and_pictures_are_capped_with_the_newest_drawn_last(sink: WebSink) -> None:
+    published = 40
+    field, grid = _field()
+
+    def publish_quickly() -> None:
+        # 20 ms apart, faster than the cap of 10 pictures a second.
+        for number in range(published):
+            sink.publish_debug(_numbered_path(number), field, grid, _view())
+            time.sleep(0.02)
+
+    started = time.perf_counter()
+    received = asyncio.run(_receive_until_quiet(sink.port, publish_quickly, quiet_seconds=0.5))
+    elapsed = time.perf_counter() - started
+
+    texts = [json.loads(message) for message in received if isinstance(message, str)]
+    paths = [text for text in texts if text["kind"] == WebMessageKind.PATH.value]
+    plan_views = [text for text in texts if text["kind"] == WebMessageKind.PLAN_VIEW.value]
+    pictures = [message for message in received if isinstance(message, bytes)]
+
+    assert len(paths) == published, "every path goes out, whatever the pictures do"
+    # One picture per tenth of a second, plus the first, which has no interval to wait out.
+    assert 2 <= len(pictures) <= elapsed * 10 + 1, f"{len(pictures)} pictures in {elapsed:.2f} s"
+    assert len(plan_views) == len(pictures)
+    assert plan_views[-1]["scene_information_bits"] == published - 1, "the last path published is the last one drawn"
+
+
+def test_close_stops_the_render_thread_with_a_view_still_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nav.sinks.web as web_module
+
+    real_render = web_module.render_depth_view
+
+    def slow_render(view, path):
+        time.sleep(0.3)
+        return real_render(view, path)
+
+    monkeypatch.setattr(web_module, "render_depth_view", slow_render)
+    sink = WebSink(WebConfig(port=0))
+    sink.start()
+    render_thread = sink._render_thread
+    field, grid = _field()
+    for _ in range(3):
+        sink.publish_debug(_path(), field, grid, _view())
+
+    started = time.perf_counter()
+    sink.close()
+
+    assert time.perf_counter() - started < 2.0
+    assert render_thread is not None and not render_thread.is_alive()
+
+
+def test_an_unexpected_drawing_error_stops_the_pictures_and_the_paths_keep_going(sink: WebSink, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    import nav.sinks.web as web_module
+
+    real_render = web_module.render_depth_view
+    calls: list[int] = []
+
+    def broken_once(view, path):
+        # Only the first drawing fails, so a picture for the second path means the thread carried on.
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("a bug in the drawing")
+        return real_render(view, path)
+
+    monkeypatch.setattr(web_module, "render_depth_view", broken_once)
+    field, grid = _field()
+
+    def publish_twice() -> None:
+        sink.publish_debug(_numbered_path(0), field, grid, _view())
+        time.sleep(0.3)
+        sink.publish_debug(_numbered_path(1), field, grid, _view())
+
+    with caplog.at_level("ERROR", logger="nav.sinks.web"):
+        received = asyncio.run(_receive_until_quiet(sink.port, publish_twice, quiet_seconds=0.6))
+
+    paths = [json.loads(message) for message in received if isinstance(message, str) and json.loads(message)["kind"] == WebMessageKind.PATH.value]
+    assert len(paths) == 2
+    assert not any(isinstance(message, bytes) for message in received)
+    assert any("UNEXPECTED RuntimeError drawing the debug view" in record.message for record in caplog.records)
+
+
+@pytest.mark.parametrize("rate", [0.0, -1.0])
+def test_a_picture_rate_that_is_not_positive_is_refused(rate: float) -> None:
+    with pytest.raises(ValueError, match="max_pictures_per_second"):
+        WebConfig(max_pictures_per_second=rate)
+
+
+def test_a_publish_after_close_starts_no_new_server() -> None:
+    """A publisher still inside another display at shutdown can reach this one after it closed."""
+    sink = WebSink(WebConfig(port=0))
+    sink.start()
+    sink.close()
+    threads_before = {thread.name for thread in threading.enumerate()}
+
+    sink.publish(_path())
+    sink.publish_debug(_path(), *_field(), _view())
+
+    assert sink._thread is None
+    started = {thread.name for thread in threading.enumerate()} - threads_before
+    assert not started & {"web-sink", "web-render"}
+
+
+def test_views_are_not_queued_once_the_render_thread_has_ended(sink: WebSink, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    import nav.sinks.web as web_module
+
+    def broken(view, path):
+        raise RuntimeError("a bug in the drawing")
+
+    monkeypatch.setattr(web_module, "render_depth_view", broken)
+    field, grid = _field()
+    sink.publish_debug(_path(), field, grid, _view())
+    sink._render_thread.join(RECEIVE_TIMEOUT_SECONDS)
+    for _ in range(5):
+        sink.publish_debug(_path(), field, grid, _view())
+
+    with caplog.at_level("INFO", logger="nav.sinks.web"):
+        sink.close()
+    assert not any("replaced by a newer one" in record.message for record in caplog.records)
+
+
+def test_a_draw_that_outlives_close_is_dropped_quietly(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    """
+    The draw takes 2.3 s, past close()'s 2 s wait for the render thread, and the server's join is
+    held 0.6 s longer, so the draw finishes after the server's loop closed but before the sink lets
+    go of it. It used to raise there, logged as an unexpected drawing error.
+    """
+    import nav.sinks.web as web_module
+
+    real_render = web_module.render_depth_view
+
+    def slow_render(view, path):
+        time.sleep(2.3)
+        return real_render(view, path)
+
+    monkeypatch.setattr(web_module, "render_depth_view", slow_render)
+    sink = WebSink(WebConfig(port=0))
+    sink.start()
+    server_thread = sink._thread
+    real_join = server_thread.join
+
+    def slow_join(timeout=None):
+        real_join(timeout)
+        time.sleep(0.6)
+
+    server_thread.join = slow_join
+    sink.publish_debug(_path(), *_field(), _view())
+    time.sleep(0.05)
+    with caplog.at_level("DEBUG", logger="nav.sinks.web"):
+        sink.close()
+        time.sleep(1.0)
+
+    assert not any("UNEXPECTED" in record.message for record in caplog.records)

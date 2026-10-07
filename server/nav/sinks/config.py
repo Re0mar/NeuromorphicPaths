@@ -18,6 +18,13 @@ class WebConfig:
     """The websocket server the browser page connects to."""
 
     port: int = 8765
+    # The plan view and the depth picture take about 50 ms to build, on a thread that competes with
+    # the planner. A person watching a laptop doesn't need more than this. Every path still goes out.
+    max_pictures_per_second: float = 10.0
+
+    def __post_init__(self) -> None:
+        if not self.max_pictures_per_second > 0:
+            raise ValueError(f"max_pictures_per_second must be above 0, got {self.max_pictures_per_second}")
 
 
 @dataclass(frozen=True)

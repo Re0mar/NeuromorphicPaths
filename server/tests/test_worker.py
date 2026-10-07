@@ -174,3 +174,14 @@ def test_submit_is_safe_from_another_thread() -> None:
 
     assert worker.submitted == 800
     assert worker.dropped + worker.processed == 800
+
+
+def test_the_worker_reports_the_frame_it_dropped() -> None:
+    # Not started, so nothing is ever taken and each submit replaces the one before.
+    reported: list[float] = []
+    worker = NewestFrameWorker(lambda frame: frame.timestamp_seconds, on_dropped=lambda frame: reported.append(frame.timestamp_seconds))
+    for index in range(3):
+        worker.submit(_frame(index))
+
+    assert reported == [0.0, 1.0], "the replaced frames, never the one still pending"
+    assert worker.dropped == 2

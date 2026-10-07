@@ -29,6 +29,27 @@ JAVA_HOME="/c/Program Files/Android/Android Studio/jbr" ANDROID_HOME="$LOCALAPPD
 The debug APK lands in `app/build/outputs/apk/debug/`. The same toolchain versions as the group's
 app on the `restart` branch: Gradle 9.6, AGP 9.4.1, Kotlin 2.2.10, minSdk 34.
 
+For any walk whose timing goes in a report, build the release APK instead. A debuggable build draws
+slower, and the arrow's draw time is part of what gets measured. It's signed with the debug key so
+it installs like the debug one, and it isn't meant for a store:
+
+```
+JAVA_HOME="/c/Program Files/Android/Android Studio/jbr" ANDROID_HOME="$LOCALAPPDATA/Android/Sdk" ./gradlew.bat :app:assembleRelease
+adb install -r app/build/outputs/apk/release/app-release.apk
+```
+
+The debug key belongs to the laptop that built the APK. A phone holding the app from another
+laptop's build refuses this one with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`. Uninstall the app
+first in that case, but **pull the phone's files first**. Uninstalling deletes the app's whole
+folder, every timing log and every recorded walk with it:
+
+```
+MSYS_NO_PATHCONV=1 adb pull /sdcard/Android/data/com.neuromorphicpaths.pixel/files/ phone_files_backup/
+```
+
+Anyone holding a laptop's debug key can sign an update for an app built with it, so this build
+is for the team's own phones and nothing else.
+
 ## Run
 
 1. Start the laptop listening, from `server/`:
@@ -38,7 +59,10 @@ app on the `restart` branch: Gradle 9.6, AGP 9.4.1, Kotlin 2.2.10, minSdk 34.
    Each needs an inbound firewall rule on the laptop, and the rule has to name the Python that
    owns the socket, which with a venv is the base interpreter and not the venv's launcher. See
    `server/README.md`.
-2. Install and open the app. It asks for the camera, then for ARCore if the phone lacks it.
+2. Install and open the app. It asks for the camera, then for ARCore if the phone lacks it. On
+   Android 17 it also asks for local network access. Allow it: a laptop on home or lab Wi-Fi sits
+   at a private address such as `192.168.x` or `10.x`, and without the permission the connection
+   times out. A refusal shows as a Permission line above the status lines.
 3. Type the laptop's address, leave the two ports unless the laptop was started with others,
    and tap Connect. The app opens both connections to that one address.
 
@@ -57,7 +81,9 @@ arrow over it.
 The phone and the laptop have to reach each other. On a phone hotspot the laptop is usually
 `192.168.43.1`, which is the default on screen. On the emulator the laptop is `10.0.2.2`. Over
 USB, `adb reverse tcp:9000 tcp:9000` and `adb reverse tcp:9100 tcp:9100` make `127.0.0.1` on the
-phone reach the laptop. Started from adb, the app connects by itself:
+phone reach the laptop. Started from adb, a debug build connects by itself. A release build
+ignores these extras, because the activity is exported and any app on the phone could start it
+pointed at an address of its choosing:
 
 ```
 adb shell am start -n com.neuromorphicpaths.pixel/.MainActivity --es host 127.0.0.1 --ei port 9000 --ei path_port 9100
@@ -151,14 +177,46 @@ counted on line three with the rule it broke, and the connection stays up. A zer
 length prefix means the stream is out of step, so the app closes the connection and reconnects,
 the same thing the laptop does with a bad prefix on the depth side.
 
+## Timing log
+
+Every time the app starts it writes a timing log for measuring the delay from a depth frame to
+the arrow drawn from it. One JSON line per moment: the session (phone model, build type, start
+time), then for each ARCore frame when it was handled, when its depth was handed to the socket or
+that it never went, when its path came back, and when the arrow was first drawn with that path.
+"Handed to the socket" is when the write returns, so time the bytes then wait in the phone's send
+buffer counts as network. "Drawn" is when the draw commands are issued, before the screen
+shows them. A frame that never went was replaced by a newer one, caught by a failed write, or
+still waiting when the connection stopped.
+Every time in it is the phone's elapsed-realtime clock in nanoseconds, and every line names its
+frame by ARCore's own timestamp, which is what the laptop hands back in each path. The laptop's
+timing report joins this file with the laptop's own log on that timestamp. Every line takes that
+key from the same seconds the frame travels in, so the lines still match past 47 days of uptime,
+where a double can no longer hold the stamp to the nanosecond.
+
+The log goes to the app's own external files folder, one file per session named by its start time:
+
+```
+MSYS_NO_PATHCONV=1 adb pull /sdcard/Android/data/com.neuromorphicpaths.pixel/files/timing/ timing_from_phone/
+```
+
+`MSYS_NO_PATHCONV=1` stops Git Bash rewriting the device path into a Windows one. Pull with
+`adb pull`, never `adb shell cat`, which adds carriage returns. A log stops at 20 MB with a
+`truncated` line, and a `lost` line counts any records the writer was too far behind to keep or
+that arrived while the app was closing.
+
+The log starts when the app does, not at Connect, and old logs are never deleted. A walk on
+2026-10-07 wrote 900 KB in about 3 minutes, 5.1 KB a second, so one session reaches 20 MB after
+about an hour. Start the app shortly before a walk rather than leaving it open, and clear old
+logs from the folder now and then.
+
 ## Tests
 
 `./gradlew.bat :app:testDebugUnitTest` runs the JVM tests: the two messages' own checks on their
 shapes, the encoder, the path decoder one rule per test, both connections against loopback
 servers, the walk recorder, its file reader and its replayer against a loopback server, the floor
-choice, the arrow's arithmetic, and the ARCore conversion's pure functions (the quaternion, the
-floor plane, the DEPTH16 repacking). Two of them are the contract checks
-across the language boundary:
+choice, the arrow's arithmetic, the ARCore conversion's pure functions (the quaternion, the
+floor plane, the DEPTH16 repacking), and the timing log against an in-memory output and a
+counter clock. Three of them are the contract checks across the language boundary:
 
 - The encoder test writes `app/build/pixel_app_frame.bin`. The laptop's suite decodes a
   committed copy, `server/tests/fixtures/pixel_app_frame.bin`, with its real decoder.
@@ -166,10 +224,16 @@ across the language boundary:
   decoder test here reads that committed file and asserts the same values as literals. Run the
   laptop's tests first on a fresh clone, they write the file. Gradle hands the test the path, and
   `-PlaptopPathFixturePath=...` points it elsewhere.
+- The timing log test writes `app/build/pixel_app_timing.jsonl`, and fails if the committed copy,
+  `server/tests/fixtures/pixel_app_timing.jsonl`, no longer matches what the code writes. The
+  laptop's timing report reads that committed copy. Regenerate it with
+  `-PtimingFixturePath=<repo>/server/tests/fixtures/pixel_app_timing.jsonl`, an absolute path.
 
-When either format changes, regenerate the fixture on the writing side and commit it with the
-change, and the reading side's test says whether the two still agree.
+When any of these formats changes, regenerate its fixture on the writing side and commit it with
+the change, and the reading side's test says whether the two still agree.
 
 Nothing that needs an ARCore `Frame`, `Camera` or `Image`, the GL camera quad, or the composable
 overlay has a JVM test. Those cannot be constructed off a device, so the phone is the test for
-that layer, and the frame counts and the picture on screen are how it is read.
+that layer, and the frame counts and the picture on screen are how it is read. The same goes for
+the timing log's hooks in the renderer and the overlay. A walk's log shows they fire: a `frame`
+line for every frame, and a `drawn` line for nearly every `received` one.

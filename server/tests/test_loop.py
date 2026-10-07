@@ -25,7 +25,7 @@ import pytest
 from nav.config import GoalMode, RunConfig, SinkKind, SourceKind, build_run_config
 from nav.main import main
 from nav.planner.config import PlannerConfig
-from nav.runtime.loop import EPISODES_FILENAME, RUN_CONFIG_FILENAME, FrameResult, NewestResultPublisher, _latency_shares, _report, run
+from nav.runtime.loop import EPISODES_FILENAME, RUN_CONFIG_FILENAME, FrameResult, PublisherThread, _latency_shares, _report, run
 from nav.runtime.tap import RecordingTap
 from nav.runtime.worker import NewestFrameWorker
 from nav.sources.config import ArCoreConfig, LoggedConfig, TapConfig
@@ -88,7 +88,7 @@ def test_the_sink_is_started_before_the_source_yields_a_frame(monkeypatch: pytes
 
     import nav.runtime.loop as loop_module
 
-    monkeypatch.setattr(loop_module, "build_sink", lambda config: RecordingSink())
+    monkeypatch.setattr(loop_module, "build_sink", lambda config, **hooks: RecordingSink())
     monkeypatch.setattr(loop_module, "build_source", lambda config: OneFrameSource())
 
     assert run(build_run_config(["--source", "arcore_tcp", "--sink", "none"])) == 0
@@ -136,7 +136,7 @@ def test_a_sink_that_raises_an_unexpected_error_ends_the_run_with_exit_one_and_a
     import nav.runtime.loop as loop_module
 
     original = loop_module.build_sink
-    loop_module.build_sink = lambda run_config: BrokenSink()
+    loop_module.build_sink = lambda run_config, **hooks: BrokenSink()
     try:
         with caplog.at_level("ERROR"):
             exit_code = run(config)
@@ -246,7 +246,7 @@ def test_the_views_red_point_is_the_runs_alarm_threshold_in_bits(tmp_path: Path,
         def close(self) -> None:
             pass
 
-    monkeypatch.setattr(loop_module, "build_sink", lambda config: CapturingDebugSink())
+    monkeypatch.setattr(loop_module, "build_sink", lambda config, **hooks: CapturingDebugSink())
     log_dir = tmp_path / "log"
     _record_synthetic_log(log_dir, count=6)
     planner = dataclasses.replace(PlannerConfig(), alarm_time_to_contact_seconds=0.9)
@@ -266,7 +266,7 @@ def test_the_views_red_point_is_the_runs_alarm_threshold_in_bits(tmp_path: Path,
     assert {round(view.path_red_from_bits, 9) for view in views} == {round(expected, 9)}
 
 
-def test_a_result_is_published_once_however_many_frames_arrive_while_it_is_the_newest() -> None:
+def test_a_result_is_published_once_however_long_it_stays_the_newest() -> None:
     published: list[PlannedPath] = []
 
     class CountingSink:
@@ -288,15 +288,26 @@ def test_a_result_is_published_once_however_many_frames_arrive_while_it_is_the_n
         def latest_result(self):
             return self.result
 
-    worker = StuckWorker()
-    publisher = NewestResultPublisher(CountingSink())
-    for _ in range(6):
-        publisher.publish(worker)
-    assert len(published) == 1, "six source frames with one result is one publish"
+        def wait_for_result(self, newer_than, timeout_seconds):
+            if self.result is not newer_than:
+                return self.result
+            time.sleep(timeout_seconds)
+            return None
 
-    worker.result = FrameResult(_path(0.2), np.zeros((1, 3)), np.array([-1.0, 0.0, 1.0]), _view())
-    publisher.publish(worker)
-    publisher.publish(worker)
+    worker = StuckWorker()
+    publisher = PublisherThread(CountingSink(), worker)
+    publisher.start()
+    try:
+        assert publisher.flush(5.0)
+        # Several polls with the same result in place. Each one is a chance to publish it again.
+        time.sleep(0.35)
+        assert len(published) == 1, "one result is one publish, however many polls see it"
+
+        worker.result = FrameResult(_path(0.2), np.zeros((1, 3)), np.array([-1.0, 0.0, 1.0]), _view())
+        assert publisher.flush(5.0)
+        time.sleep(0.25)
+    finally:
+        publisher.stop()
     assert [path.lookahead_heading_radians for path in published] == pytest.approx([0.1, 0.2])
 
 

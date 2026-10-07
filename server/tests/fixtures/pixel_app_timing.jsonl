@@ -1,0 +1,8 @@
+{"type":"session","schema":1,"started_wall":"2026-10-04T10:12:03Z","device":"Pixel 8","build_type":"release"}
+{"type":"frame","frame_ns":123456789012345,"handled_ns":123456800000000}
+{"type":"sent","frame_ns":123456789012345,"sent_ns":123456820000000}
+{"type":"frame","frame_ns":123456822345678,"handled_ns":123456840000000}
+{"type":"dropped","frame_ns":123456822345678}
+{"type":"frame","frame_ns":123456855679011,"handled_ns":123456860000000}
+{"type":"received","frame_ns":123456789012345,"received_ns":123456880000000}
+{"type":"drawn","frame_ns":123456789012345,"drawn_ns":123456900000000}

@@ -26,6 +26,11 @@ android {
             optimization {
                 enable = false
             }
+            // Signed with the debug key so a release build installs on the team's phones. It exists
+            // for timing: a debuggable build draws slower, and the time to the arrow's draw call is
+            // measured. Each laptop's debug key differs, and anyone holding one can sign an update,
+            // so this is for the team's own phones only. Nothing built this way goes to a store.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
     compileOptions {
@@ -34,6 +39,8 @@ android {
     }
     buildFeatures {
         compose = true
+        // The timing log's session line names the build type, read from BuildConfig.
+        buildConfig = true
     }
     testOptions {
         // JVM unit tests run against android.jar stubs that throw on every call. The connection
@@ -71,5 +78,12 @@ tasks.withType<Test>().configureEach {
         "laptopPathFixturePath",
         (project.findProperty("laptopPathFixturePath") as String?)
             ?: rootProject.projectDir.resolve("../server/tests/fixtures/laptop_path.bin").absolutePath,
+    )
+    // The timing log test writes its fixture here, and checks the committed one has not gone stale.
+    // Regenerate with -PtimingFixturePath=<repo>/server/tests/fixtures/pixel_app_timing.jsonl.
+    systemProperty("timingFixturePath", (project.findProperty("timingFixturePath") as String?) ?: "build/pixel_app_timing.jsonl")
+    systemProperty(
+        "committedTimingFixturePath",
+        rootProject.projectDir.resolve("../server/tests/fixtures/pixel_app_timing.jsonl").absolutePath,
     )
 }

@@ -658,3 +658,42 @@ def test_a_recording_on_a_cpu_estimator_does_not_warn(caplog: pytest.LogCaptureF
         build_source(config)
 
     assert not any("on the CPU" in record.message for record in caplog.records)
+
+
+def test_timing_log_and_record_to_together_are_refused(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    # A recording run writes timing.jsonl beside its frames. Two destinations would leave a reader guessing.
+    with pytest.raises(SystemExit):
+        build_run_config([*MINIMAL_VIDEO_ARGV, "--timing-log", str(tmp_path / "t.jsonl"), "--record-to", str(tmp_path / "log")])
+
+    assert "--timing-log and --record-to cannot be used together" in capsys.readouterr().err
+
+
+def test_a_timing_log_that_already_holds_lines_is_refused(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    # Two runs appended to one log read back as one run that is not one.
+    used = tmp_path / "t.jsonl"
+    used.write_bytes(b'{"timestamp_seconds": 1.0}\n')
+
+    with pytest.raises(SystemExit):
+        build_run_config([*MINIMAL_VIDEO_ARGV, "--timing-log", str(used)])
+
+    assert "already holds a timing log" in capsys.readouterr().err
+
+
+def test_a_new_or_empty_timing_log_file_is_accepted(tmp_path) -> None:
+    empty = tmp_path / "empty.jsonl"
+    empty.write_bytes(b"")
+
+    assert build_run_config([*MINIMAL_VIDEO_ARGV, "--timing-log", str(empty)]).timing_log == str(empty)
+    assert build_run_config([*MINIMAL_VIDEO_ARGV, "--timing-log", str(tmp_path / "new.jsonl")]).timing_log == str(tmp_path / "new.jsonl")
+
+
+@pytest.mark.parametrize("where", ["a directory", "a missing folder"])
+def test_a_timing_log_that_is_a_directory_or_in_a_missing_folder_is_refused(where: str, tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Either one let the walk start and fail on its first line, running untimed."""
+    target = tmp_path if where == "a directory" else tmp_path / "no_such_folder" / "t.jsonl"
+
+    with pytest.raises(SystemExit):
+        build_run_config([*MINIMAL_VIDEO_ARGV, "--timing-log", str(target)])
+
+    message = capsys.readouterr().err
+    assert ("is a directory" in message) if where == "a directory" else ("in a folder that doesn't exist" in message)

@@ -145,6 +145,104 @@ class LaptopConnectionTest {
     }
 
     @Test
+    fun aReplacedMessageReportsTheDroppedFrame() {
+        // No server, so the slot is never emptied and the second offer replaces the first.
+        val dropped = CopyOnWriteArrayList<Long>()
+        val connection = LaptopConnection("127.0.0.1", 1, onDropped = { dropped.add(it) }) { }
+        connection.offer(message(1.0))
+        connection.offer(message(2.0))
+
+        assertEquals(listOf(1_000_000_000L), dropped.toList(), "the replaced frame, not the newer one")
+    }
+
+    @Test
+    fun aFramePendingAtStopIsReportedDropped() {
+        val dropped = CopyOnWriteArrayList<Long>()
+        // Never started, so nothing takes the message and it is still pending at stop.
+        val connection = LaptopConnection("127.0.0.1", 9, onDropped = { dropped.add(it) }) { }
+
+        connection.offer(message(7.5))
+        connection.stop()
+
+        assertEquals(listOf(7_500_000_000L), dropped.toList())
+        assertEquals(1, connection.framesDropped)
+    }
+
+    @Test
+    fun everyOfferedFrameEndsSentOrDroppedWhenWritesFail() {
+        // A laptop that resets every connection the moment it opens. Writes then fail, and a
+        // frame caught mid-write must still end as dropped, never as nothing or as both.
+        val server = ServerSocket(0, 50, loopback)
+        val accepting = thread(isDaemon = true) {
+            while (!server.isClosed) {
+                runCatching {
+                    server.accept().use { socket ->
+                        socket.setSoLinger(true, 0)
+                        socket.getInputStream().read()
+                    }
+                }
+            }
+        }
+        val sent = CopyOnWriteArrayList<Long>()
+        val dropped = CopyOnWriteArrayList<Long>()
+        val statuses = CopyOnWriteArrayList<ConnectionStatus>()
+        val connection = LaptopConnection("127.0.0.1", server.localPort, onSent = { sent.add(it) }, onDropped = { dropped.add(it) }) {
+            statuses.add(it)
+        }
+        val offered = mutableListOf<Long>()
+        try {
+            connection.start()
+            val deadline = System.currentTimeMillis() + 5_000
+            var seconds = 1.0
+            while (System.currentTimeMillis() < deadline && statuses.none { it is ConnectionStatus.Disconnected }) {
+                connection.offer(message(seconds))
+                offered.add(Math.round(seconds * 1e9))
+                seconds += 0.001
+                Thread.sleep(2)
+            }
+            assertTrue(statuses.any { it is ConnectionStatus.Disconnected }, "no write ever failed, so this proved nothing")
+        } finally {
+            connection.stop()
+            server.close()
+            accepting.join(2_000)
+        }
+        // stop() reports what was pending. Give a send still in flight a moment to report too.
+        Thread.sleep(200)
+
+        val outcomes = sent + dropped
+        assertEquals(offered.sorted(), outcomes.sorted(), "each offered frame needs exactly one of sent or dropped")
+    }
+
+    @Test
+    fun sentIsReportedAfterTheWrite() {
+        val server = ServerSocket(0, 1, loopback)
+        val readAtServer = java.util.concurrent.CountDownLatch(1)
+        thread(isDaemon = true) {
+            server.accept().use { socket ->
+                val input = DataInputStream(socket.getInputStream())
+                input.readFully(ByteArray(input.readInt()))
+                readAtServer.countDown()
+                Thread.sleep(1_000)
+            }
+        }
+        val sent = CopyOnWriteArrayList<Long>()
+        val statuses = CopyOnWriteArrayList<ConnectionStatus>()
+        val connection = LaptopConnection("127.0.0.1", server.localPort, onSent = { sent.add(it) }) { statuses.add(it) }
+        try {
+            connection.start()
+            assertTrue(waitUntil { statuses.any { it is ConnectionStatus.Connected } }, "never connected, saw $statuses")
+            connection.offer(message(7.5))
+            assertTrue(readAtServer.await(5, TimeUnit.SECONDS), "the server never read the message")
+            assertTrue(waitUntil(2_000) { sent.isNotEmpty() }, "the write was never reported")
+        } finally {
+            connection.stop()
+            server.close()
+        }
+
+        assertEquals(listOf(7_500_000_000L), sent.toList())
+    }
+
+    @Test
     fun aRefusedPortIsReportedAndRetriedNotFatal() {
         val probe = ServerSocket(0, 1, loopback)
         val closedPort = probe.localPort

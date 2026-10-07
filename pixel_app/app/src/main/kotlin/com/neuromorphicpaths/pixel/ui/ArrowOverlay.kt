@@ -62,10 +62,21 @@ object ArrowGeometry {
  *
  * Age is measured from when the path arrived on this phone, with the same clock the connection
  * stamped it with, and the overlay ticks on its own so a frozen arrow visibly ages.
+ *
+ * @param onDrawn called from inside the draw pass the first time a path is drawn, and not again for
+ * that path while the overlay stays on screen. It runs while the arrow's draw commands are being
+ * recorded, before the screen shows them, so it must only stamp and return
  */
 @Composable
-fun ArrowOverlay(received: ReceivedPath?, nowMillis: () -> Long, modifier: Modifier = Modifier) {
+fun ArrowOverlay(
+    received: ReceivedPath?,
+    nowMillis: () -> Long,
+    modifier: Modifier = Modifier,
+    onDrawn: (ReceivedPath) -> Unit = {},
+) {
     var now by remember { mutableLongStateOf(nowMillis()) }
+    // Plain remembered object, not state. Reading or writing it must not trigger a recomposition.
+    val drawGate = remember { FirstDrawGate<ReceivedPath>() }
     LaunchedEffect(Unit) {
         while (true) {
             delay(AGE_TICK_MILLIS)
@@ -98,6 +109,9 @@ fun ArrowOverlay(received: ReceivedPath?, nowMillis: () -> Long, modifier: Modif
                 )
                 drawLine(color, tipOffset, end, strokeWidth = stroke, cap = StrokeCap.Round)
             }
+            // After the arrow's strokes are issued, so the stamp is the moment this path's arrow
+            // went into a frame, not the moment it arrived.
+            if (drawGate.isFirstDraw(received)) received?.let(onDrawn)
         }
         Column(modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             if (message == null) {

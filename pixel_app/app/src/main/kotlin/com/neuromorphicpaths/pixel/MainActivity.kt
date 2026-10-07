@@ -2,6 +2,7 @@ package com.neuromorphicpaths.pixel
 
 import android.content.pm.PackageManager
 import android.opengl.GLSurfaceView
+import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
@@ -36,6 +37,10 @@ import com.google.ar.core.exceptions.FatalException
 import com.google.ar.core.exceptions.UnavailableException
 import com.neuromorphicpaths.pixel.ar.CaptureState
 import com.neuromorphicpaths.pixel.ar.DepthCaptureRenderer
+import com.neuromorphicpaths.pixel.timing.FileTimingOutput
+import com.neuromorphicpaths.pixel.timing.FrameTimingLog
+import com.neuromorphicpaths.pixel.timing.TimingRecord
+import com.neuromorphicpaths.pixel.timing.TimingRecorder
 import com.neuromorphicpaths.pixel.ui.ArrowOverlay
 import com.neuromorphicpaths.pixel.wire.ConnectionStatus
 import com.neuromorphicpaths.pixel.wire.LaptopConnection
@@ -50,8 +55,10 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
+import java.time.Instant
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 import java.util.Locale
 import kotlin.concurrent.thread
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -66,7 +73,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
  */
 class MainActivity : ComponentActivity() {
     private var session: Session? = null
-    private var connection: LaptopConnection? = null
+    // Written on the UI thread and read on the GL thread for every frame. Without @Volatile the GL
+    // thread can keep offering to a connection the UI thread has already stopped.
+    @Volatile private var connection: LaptopConnection? = null
     private var pathConnection: PathConnection? = null
     private var surface: GLSurfaceView? = null
     private val captureState = MutableStateFlow<CaptureState>(CaptureState.CameraUnavailable)
@@ -85,6 +94,9 @@ class MainActivity : ComponentActivity() {
 
     private val permissionWarning = MutableStateFlow<String?>(null)
 
+    // The frame-to-arrow timing log. Replaced in onCreate before anything can report to it.
+    private var timing: TimingRecorder = TimingRecorder.None
+
     // The result map is ignored on purpose. applyPermissions asks the system again, so a permission
     // granted on an earlier launch and left out of this request still counts.
     private val startupPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
@@ -93,9 +105,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        timing = openTimingLog()
         // Started from adb with --es host and --ei port, the app connects by itself. That is how
-        // the emulator run drives it with nobody typing into a headless screen.
-        val hostExtra = intent.getStringExtra(EXTRA_HOST)
+        // the emulator run drives it with nobody typing into a headless screen. Debug builds only:
+        // the activity is exported, so in a release build any app on the phone could start it
+        // pointed at a host of its choosing and receive the camera's depth and pose.
+        val hostExtra = if (BuildConfig.DEBUG) intent.getStringExtra(EXTRA_HOST) else null
         if (hostExtra != null) {
             startupHost = hostExtra
             startupPort = intent.getIntExtra(EXTRA_PORT, DEFAULT_PORT)
@@ -126,6 +141,30 @@ class MainActivity : ComponentActivity() {
         surface?.onResume()
     }
 
+    /**
+     * A new timing log in the app's external files, where `adb pull` reaches it without root.
+     * Without external storage, or with a file it cannot create, the app runs unmeasured rather
+     * than not at all.
+     */
+    private fun openTimingLog(): TimingRecorder {
+        val directory: File? = getExternalFilesDir(TIMING_DIRECTORY)
+        if (directory == null) {
+            Log.w(TAG, "no external files directory, running without a timing log")
+            return TimingRecorder.None
+        }
+        val session = TimingRecord.Session(
+            startedWall = Instant.now().truncatedTo(ChronoUnit.SECONDS).toString(),
+            device = Build.MODEL,
+            buildType = BuildConfig.BUILD_TYPE,
+        )
+        return try {
+            FrameTimingLog(FileTimingOutput.createIn(directory, session.startedWall), session)
+        } catch (unwritable: IOException) {
+            Log.w(TAG, "could not create a timing log in $directory, running without one", unwritable)
+            TimingRecorder.None
+        }
+    }
+
     private fun isGranted(permission: String): Boolean =
         ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
 
@@ -148,6 +187,10 @@ class MainActivity : ComponentActivity() {
         // Writes out what is still queued, so a walk recorded right up to closing the app keeps its end.
         recorder?.stop()
         recorder = null
+        // After both connections, so their pending frames are reported first. Neither stop() waits
+        // for its thread, so a send finishing just now can still land after close, and is counted
+        // in the log's last lost line rather than written.
+        timing.close()
         session?.close()
         session = null
         super.onDestroy()
@@ -204,12 +247,20 @@ class MainActivity : ComponentActivity() {
         replayer = null
         connection?.stop()
         pathConnection?.stop()
-        connection = LaptopConnection(host, port) { status -> connectionStatus.value = status }.also { it.start() }
+        connection = LaptopConnection(
+            host = host,
+            port = port,
+            onSent = { frameNanos -> timing.frameSent(frameNanos) },
+            onDropped = { frameNanos -> timing.frameDropped(frameNanos) },
+        ) { status -> connectionStatus.value = status }.also { it.start() }
         pathConnection = PathConnection(
             host = host,
             port = pathPort,
             onStatus = { status -> pathStatus.value = status },
-            onPath = { path -> latestPath.value = path },
+            onPath = { path ->
+                timing.pathReceived(TimingRecord.frameNanosFromSeconds(path.message.timestampSeconds))
+                latestPath.value = path
+            },
         ).also { it.start() }
     }
 
@@ -220,6 +271,7 @@ class MainActivity : ComponentActivity() {
             recorder?.offer(message)
         },
         onState = { state -> captureState.value = state },
+        onFrameHandled = { frameNanos -> timing.frameHandled(frameNanos) },
     )
 
     private fun startRecording() {
@@ -364,7 +416,12 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                 )
                 // The same clock the connection stamps paths with, so the age is one clock's difference.
-                ArrowOverlay(received = path, nowMillis = { SystemClock.elapsedRealtime() }, modifier = Modifier.fillMaxSize())
+                ArrowOverlay(
+                    received = path,
+                    nowMillis = { SystemClock.elapsedRealtime() },
+                    modifier = Modifier.fillMaxSize(),
+                    onDrawn = { drawn -> timing.pathDrawn(TimingRecord.frameNanosFromSeconds(drawn.message.timestampSeconds)) },
+                )
             }
         }
     }
@@ -425,6 +482,7 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_HOST = "host"
         const val EXTRA_PORT = "port"
         const val EXTRA_PATH_PORT = "path_port"
+        const val TIMING_DIRECTORY = "timing"
         // The laptop on a phone hotspot is usually the first client. Edit on screen when not.
         const val DEFAULT_HOST = "192.168.43.1"
         const val DEFAULT_PORT = 9000

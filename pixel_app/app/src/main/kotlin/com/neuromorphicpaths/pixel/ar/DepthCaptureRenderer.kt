@@ -21,11 +21,16 @@ import javax.microedition.khronos.opengles.GL10
  * is sent once per ARCore frame, which [NewFrameGate] decides, because the first phone run sent
  * sixty copies a second of frames that arrived at thirty. The gate guards the message, not the
  * picture.
+ *
+ * @param onFrameHandled called once per new ARCore frame, past the gate and before conversion, with
+ * the frame's own timestamp in nanoseconds. A frame with no depth is still handled, which is how the
+ * timing log tells "never sent" from "never seen". Runs on the GL thread, so it must not block
  */
 class DepthCaptureRenderer(
     private val sessionProvider: () -> Session?,
     private val onFrame: (DepthMessage) -> Unit,
     private val onState: (CaptureState) -> Unit,
+    private val onFrameHandled: (Long) -> Unit = {},
 ) : GLSurfaceView.Renderer {
     private var cameraTexture = 0
     private var frames = 0
@@ -67,6 +72,7 @@ class DepthCaptureRenderer(
         // previous draw already handled sends nothing.
         background?.draw(frame)
         if (!newFrames.isNew(frame.timestamp)) return
+        onFrameHandled(frame.timestamp)
         frames += 1
         val camera = frame.camera
         val tracking = camera.trackingState == TrackingState.TRACKING

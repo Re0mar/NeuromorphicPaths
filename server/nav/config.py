@@ -92,6 +92,9 @@ class RunConfig:
     usermodel: UserModelConfig = field(default_factory=UserModelConfig)
     walker: WalkerConfig = field(default_factory=WalkerConfig)
     tap: TapConfig = field(default_factory=TapConfig)
+    # Where the timing log goes when it is not beside a recording. None with a recording means
+    # timing.jsonl in the record directory, and None without one means no timing log at all.
+    timing_log: str | None = None
     video: VideoConfig | None = None
     neon: NeonConfig | None = None
     arcore: ArCoreConfig | None = None
@@ -231,6 +234,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     tap = parser.add_argument_group("recording tap")
     tap.add_argument("--record-to", help="write every frame to this directory as it passes")
+    tap.add_argument(
+        "--timing-log",
+        help="write the per-frame timing log to this file without recording frames. A recording run writes timing.jsonl beside its frames instead",
+    )
 
     scene = parser.add_argument_group("scene")
     scene.add_argument(
@@ -301,6 +308,17 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
         parser.error(f"--neon-replay only applies to {SourceKind.NEON_LIVE.value}, not {source_kind.value}")
     if arguments.neon_replay is not None and arguments.neon_address is not None:
         parser.error("--neon-address and --neon-replay cannot be used together, a replay plays a capture in place of the glasses")
+    # One log, one place. With both, a reader would have to guess which file the run wrote.
+    if arguments.timing_log is not None and arguments.record_to is not None:
+        parser.error("--timing-log and --record-to cannot be used together, a recording run writes timing.jsonl beside its frames")
+    # Two runs appended to one log read back as one run that is not one, so a used file is refused.
+    if arguments.timing_log is not None and Path(arguments.timing_log).is_file() and Path(arguments.timing_log).stat().st_size > 0:
+        parser.error(f"--timing-log {arguments.timing_log} already holds a timing log, pick a new file")
+    # Either one would let the walk run and fail on its first line, leaving it untimed.
+    if arguments.timing_log is not None and Path(arguments.timing_log).is_dir():
+        parser.error(f"--timing-log {arguments.timing_log} is a directory. It names a file, such as frame_logs/replays/run_1.jsonl")
+    if arguments.timing_log is not None and not Path(arguments.timing_log).parent.is_dir():
+        parser.error(f"--timing-log {arguments.timing_log} is in a folder that doesn't exist: {Path(arguments.timing_log).parent}")
 
     video = None
     neon = None
@@ -371,6 +389,7 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
         scene=SceneConfig(floor_max_tilt_degrees=arguments.floor_max_tilt, floor_max_offset_meters=arguments.floor_max_height),
         walker=WalkerConfig(radius_meters=arguments.walker_radius),
         tap=TapConfig(log_dir=arguments.record_to),
+        timing_log=arguments.timing_log,
         video=video,
         neon=neon,
         arcore=arcore,
@@ -463,7 +482,7 @@ def _build_inner_source(config: RunConfig) -> DepthFrameSource:
             raise ValueError(f"no source constructor for {config.source_kind}")
 
 
-def build_sink(config: RunConfig) -> PathSink:
+def build_sink(config: RunConfig, on_path_sent: Callable[[float], None] | None = None) -> PathSink:
     """
     Turn the chosen sink kinds into one sink.
 
@@ -471,16 +490,18 @@ def build_sink(config: RunConfig) -> PathSink:
     that hands every path to each of them, so nothing upstream counts displays.
 
     :param config: The run configuration.
+    :param on_path_sent: Given to the phone sink, the one display on the walker's path, and called
+        with a path's `timestamp_seconds` once it is on the phone's socket. The timing log's hook.
     :return: A sink accepting PlannedPath objects.
     :rtype: PathSink
     """
-    sinks = [_build_one_sink(kind, config) for kind in config.sink_kinds]
+    sinks = [_build_one_sink(kind, config, on_path_sent) for kind in config.sink_kinds]
     if len(sinks) == 1:
         return sinks[0]
     return FanOutSink(sinks)
 
 
-def _build_one_sink(sink_kind: SinkKind, config: RunConfig) -> PathSink:
+def _build_one_sink(sink_kind: SinkKind, config: RunConfig, on_path_sent: Callable[[float], None] | None) -> PathSink:
     match sink_kind:
         case SinkKind.DEBUG_WINDOW:
             return DebugWindowSink(config.debug_window)
@@ -491,7 +512,7 @@ def _build_one_sink(sink_kind: SinkKind, config: RunConfig) -> PathSink:
         case SinkKind.PHONE_APP:
             if config.phone_app is None:
                 raise ValueError("phone_app needs a phone_app config and none was built")
-            return PhoneAppSink(config.phone_app)
+            return PhoneAppSink(config.phone_app, on_sent=on_path_sent)
         case SinkKind.NONE:
             return NullSink()
         case _:

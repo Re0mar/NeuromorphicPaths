@@ -11,12 +11,18 @@ with the planner's field and what the page needs to draw it top-down, then a bin
 PNG of the depth image the planner saw, groups and path drawn on it. The page dispatches text
 frames on their kind. It draws the arrow and turns red on alarm, draws the plan view, and shows the
 picture when one arrives.
+
+The plan view and the picture are built on a render thread of their own, from the newest debug view
+only, and at most `max_pictures_per_second` times a second. Building them takes about 50 ms. On the
+publisher thread that held up the phone's next path, and at every frame it took planning time too.
 """
 
 # Standard library imports
 import asyncio
 import logging
 import threading
+import time
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
@@ -41,6 +47,19 @@ SHUTDOWN_TIMEOUT_SECONDS = 2.0
 # stops reading suspends the send loop for every browser, so an unbounded queue grows for as long as
 # that lasts.
 OUTGOING_QUEUE_LIMIT = 32
+# How long the render thread waits for a debug view before checking whether it was asked to stop.
+# A new view wakes it at once regardless.
+RENDER_POLL_SECONDS = 0.1
+
+
+@dataclass(frozen=True)
+class _DebugPicture:
+    """What the render thread needs to build one plan view and one depth picture."""
+
+    path: PlannedPath
+    field: np.ndarray
+    grid: np.ndarray
+    view: DebugView
 
 
 class _Slot(Enum):
@@ -63,6 +82,14 @@ class WebSink:
         self._ready = threading.Event()
         self._startup_error: BaseException | None = None
         self._dropped = 0
+        self._render_thread: threading.Thread | None = None
+        self._render_wake = threading.Condition()
+        self._pending_picture: _DebugPicture | None = None
+        self._render_stopping = False
+        self._pictures_replaced = 0
+        # Set by close() for good. A publisher still inside a display at shutdown can call in after
+        # it, and publish() would otherwise start a second server for nobody.
+        self._closed = False
 
     @property
     def dropped(self) -> int:
@@ -85,38 +112,48 @@ class WebSink:
             raise ConnectionError(f"web sink could not start on port {self._config.port}: {self._startup_error}") from self._startup_error
         if not self._ready.is_set():
             raise ConnectionError(f"web sink did not start listening on port {self._config.port} in time")
+        self._render_stopping = False
+        self._render_thread = threading.Thread(target=self._render_pictures, name="web-render", daemon=True)
+        self._render_thread.start()
 
     def publish(self, path: PlannedPath) -> None:
-        """Queue the path for every browser. Starts the server on the first call."""
+        """Queue the path for every browser. Starts the server on the first call, and does nothing once closed."""
+        if self._closed:
+            return
         if self._thread is None:
             self.start()
         self._enqueue(_Slot.PATH, web_text_message(WebMessageKind.PATH, path_message(path)))
 
     def publish_debug(self, path: PlannedPath, field: np.ndarray, grid: np.ndarray, view: DebugView) -> None:
         """
-        Queue the path's JSON, then the plan view, then a PNG of the depth view, for every browser.
+        Queue the path's JSON now, and leave the view for the render thread to draw.
 
-        Each one that cannot be built costs itself and nothing else. A plan view that will not
-        build still leaves the path and the picture, and a view that will not render still leaves
-        the path and the plan view.
+        Returns without drawing anything. A view still waiting to be drawn is replaced by this one,
+        since the page only ever shows the newest.
         """
         self.publish(path)
-        try:
-            plan_view = web_text_message(WebMessageKind.PLAN_VIEW, plan_view_message(path, field, grid, view))
-        except ValueError as unbuildable:
-            log.warning("plan view not sent (caught %s, expected): %s", type(unbuildable).__name__, unbuildable)
-        else:
-            self._enqueue(_Slot.PLAN_VIEW, plan_view)
-        try:
-            png = encode_png(render_depth_view(view, path))
-        except ValueError as unrenderable:
-            log.warning("depth view not sent (caught %s, expected): %s", type(unrenderable).__name__, unrenderable)
+        if self._render_thread is None or not self._render_thread.is_alive():
+            # Closed, never started, or ended by an unexpected drawing error. Nothing would draw it.
             return
-        self._enqueue(_Slot.DEPTH_PNG, png)
+        with self._render_wake:
+            if self._pending_picture is not None:
+                self._pictures_replaced += 1
+            self._pending_picture = _DebugPicture(path, field, grid, view)
+            self._render_wake.notify_all()
 
     def close(self) -> None:
+        self._closed = True
         if self._thread is None:
             return
+        # The render thread stops first, so nothing it builds is offered to a server that has gone.
+        if self._render_thread is not None:
+            with self._render_wake:
+                self._render_stopping = True
+                self._render_wake.notify_all()
+            self._render_thread.join(SHUTDOWN_TIMEOUT_SECONDS)
+            if self._render_thread.is_alive():
+                log.warning("web render thread did not stop within %.0f s", SHUTDOWN_TIMEOUT_SECONDS)
+            self._render_thread = None
         self._enqueue(None, None)
         self._thread.join(SHUTDOWN_TIMEOUT_SECONDS)
         if self._thread.is_alive():
@@ -126,14 +163,73 @@ class WebSink:
         self._outgoing = None
         if self._dropped:
             log.info("%d messages were dropped because the browsers were not keeping up", self._dropped)
+        if self._pictures_replaced:
+            log.info("%d debug views were replaced by a newer one before they were drawn", self._pictures_replaced)
+
+    def _render_pictures(self) -> None:
+        """The render thread. Draws the newest debug view, then waits out the rest of its interval."""
+        minimum_interval_seconds = 1.0 / self._config.max_pictures_per_second
+        last_render_started: float | None = None
+        while True:
+            with self._render_wake:
+                while self._pending_picture is None and not self._render_stopping:
+                    self._render_wake.wait(RENDER_POLL_SECONDS)
+                if self._render_stopping:
+                    return
+            if last_render_started is not None:
+                # Waits on the condition rather than sleeping, so a stop is seen at once. A view
+                # that arrives during the wait replaces the pending one, and the newest is drawn.
+                resume_at = last_render_started + minimum_interval_seconds
+                with self._render_wake:
+                    while not self._render_stopping and time.perf_counter() < resume_at:
+                        self._render_wake.wait(resume_at - time.perf_counter())
+                    if self._render_stopping:
+                        return
+            with self._render_wake:
+                picture, self._pending_picture = self._pending_picture, None
+            last_render_started = time.perf_counter()
+            try:
+                self._draw(picture)
+            except Exception as unexpected_error:
+                # Each expected failure is handled inside _draw. Anything else stops the pictures
+                # for the rest of the run, and the paths keep going, like a fan-out dropping a sink.
+                log.error("UNEXPECTED %s drawing the debug view, no more pictures this run", type(unexpected_error).__name__, exc_info=True)
+                return
+
+    def _draw(self, picture: _DebugPicture) -> None:
+        """
+        Queue the plan view, then a PNG of the depth view.
+
+        Each one that cannot be built costs itself and nothing else. A plan view that will not
+        build still leaves the picture, and a view that will not render still leaves the plan view.
+        The path itself has already gone out.
+        """
+        try:
+            plan_view = web_text_message(WebMessageKind.PLAN_VIEW, plan_view_message(picture.path, picture.field, picture.grid, picture.view))
+        except ValueError as unbuildable:
+            log.warning("plan view not sent (caught %s, expected): %s", type(unbuildable).__name__, unbuildable)
+        else:
+            self._enqueue(_Slot.PLAN_VIEW, plan_view)
+        try:
+            png = encode_png(render_depth_view(picture.view, picture.path))
+        except ValueError as unrenderable:
+            log.warning("depth view not sent (caught %s, expected): %s", type(unrenderable).__name__, unrenderable)
+            return
+        self._enqueue(_Slot.DEPTH_PNG, png)
 
     def _enqueue(self, slot: _Slot | None, message: str | bytes | None) -> None:
         # publish runs on the publisher's thread. The queue belongs to the server's loop, so the
         # put is handed to that loop rather than touched from here. Both values go as arguments,
         # never through a closure, so a later frame cannot rebind what this one queued.
-        if self._loop is None or self._outgoing is None:
+        # Read once. close() clears the field from another thread, and the loop can close before it does.
+        loop = self._loop
+        if loop is None or self._outgoing is None:
             return
-        self._loop.call_soon_threadsafe(self._offer, slot, message)
+        try:
+            loop.call_soon_threadsafe(self._offer, slot, message)
+        except RuntimeError as closed_loop:
+            # The server already stopped: a draw that outlived close() by a moment. Nothing to send it to.
+            log.debug("message not sent, the server had stopped (caught RuntimeError, expected): %s", closed_loop)
 
     def _offer(self, slot: _Slot | None, message: str | bytes | None) -> None:
         """
@@ -168,6 +264,9 @@ class WebSink:
             asyncio.run(self._run(web))
         except OSError as bind_error:
             # The port is taken, or cannot be bound. Reported through start() on the caller's thread.
+            # The loop is closed by now, so close() must not try to hand it a shutdown message.
+            self._loop = None
+            self._outgoing = None
             self._startup_error = bind_error
             self._ready.set()
 
