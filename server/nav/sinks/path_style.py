@@ -6,15 +6,17 @@ shaped the plan. The borders stay at one opacity whatever the fill does, so the 
 visible after the fill has faded. The depth view and the web page both read these, the page as
 values the laptop sends, so neither can drift from the other.
 
+The red point is passed in rather than set here. It's the alarm's threshold in bits, which only the
+planner's config knows, and a constant here would drift the first time that threshold changed.
+
 Plain numpy. No OpenCV, so the web sink's message builder can use it, and no aiohttp.
 """
 
 # Third party imports
 import numpy as np
 
-# Red from tau = 1 s in the avoidance form, which is where an alarm in bits would raise.
-SURPRISE_RED_BITS = 0.72
 FILL_OPACITY_FLOOR = 0.7  # Never fainter than this, so a plan nothing shaped is still clearly drawn.
+# A display choice, unrelated to the alarm: one bit of scene information is when the fill goes solid.
 FILL_OPACITY_FULL_AT_BITS = 1.0
 BORDER_OPACITY = 0.6
 # sRGB, 0 to 255.
@@ -56,17 +58,20 @@ _LMS_TO_LINEAR = np.array(
 )
 
 
-def path_color_rgb(avoidance_surprise_bits: float) -> tuple[int, int, int]:
+def path_color_rgb(avoidance_surprise_bits: float, red_from_bits: float) -> tuple[int, int, int]:
     """
-    The path's color for this much avoidance surprise: blue at 0 bits, red from SURPRISE_RED_BITS.
+    The path's color for this much avoidance surprise: blue at 0 bits, red from `red_from_bits`.
 
     :param avoidance_surprise_bits: From the planned path.
+    :param red_from_bits: Where the path is fully red, the alarm's threshold from `path_red_from_bits`.
     :return: sRGB, each 0 to 255.
     :rtype: tuple[int, int, int]
-    :raises ValueError: When the bits are negative or not finite.
+    :raises ValueError: When the bits are negative or not finite, or the red point is not above zero.
     """
     _check_bits(avoidance_surprise_bits, "avoidance_surprise_bits")
-    fraction = min(1.0, avoidance_surprise_bits / SURPRISE_RED_BITS)
+    if not np.isfinite(red_from_bits) or red_from_bits <= 0.0:
+        raise ValueError(f"red_from_bits must be finite and above zero, got {red_from_bits}")
+    fraction = min(1.0, avoidance_surprise_bits / red_from_bits)
     low = _srgb_to_oklab(np.array(SURPRISE_LOW_RGB, dtype=np.float64))
     high = _srgb_to_oklab(np.array(SURPRISE_HIGH_RGB, dtype=np.float64))
     blended = _oklab_to_srgb(low + fraction * (high - low))

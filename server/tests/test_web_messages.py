@@ -1,6 +1,7 @@
 """Covers the web sink's messages as plain functions: the plan view's contents and the kind envelope."""
 
 # Standard library imports
+import dataclasses
 import json
 
 # Third party imports
@@ -9,7 +10,7 @@ import pytest
 
 # Local package imports
 from nav.sinks.floor_geometry import floor_seen_mask
-from nav.sinks.path_style import BORDER_OPACITY, GROUP_RGB, WALL_RGB, path_color_rgb, path_fill_opacity
+from nav.sinks.path_style import BORDER_OPACITY, GROUP_RGB, SURPRISE_HIGH_RGB, WALL_RGB, path_color_rgb, path_fill_opacity
 from nav.sinks.web_messages import (
     OBSTACLE_KEYS,
     PLAN_VIEW_KEYS,
@@ -28,7 +29,7 @@ def _path(information: float = 0.4, avoidance: float = 0.3) -> PlannedPath:
         timestamp_seconds=2.0,
         times_seconds=np.arange(STEPS) * 0.1,
         lateral_offsets_meters=np.array([0.0, 0.0, 0.1, 0.1]),
-        first_heading_radians=0.1,
+        lookahead_heading_radians=0.1,
         alarm=False,
         cumulative_cost_bits=1.5,
         scene_information_bits=information,
@@ -46,7 +47,7 @@ def _view(points: tuple[ObstaclePoint, ...] = ()) -> DebugView:
         gaze_pixel=None,
     )
     obstacles = ObstacleSet(2.0, points, len({point.group_id for point in points}))
-    return DebugView(frame, obstacles, Plane(np.array([0.0, -1.0, 0.0]), 1.6), FloorSource.FITTED, 1.4, 0.30)
+    return DebugView(frame, obstacles, Plane(np.array([0.0, -1.0, 0.0]), 1.6), FloorSource.FITTED, 1.4, 0.30, 1.47)
 
 
 def _obstacle(lateral: float, forward: float, is_wall: bool) -> ObstaclePoint:
@@ -79,9 +80,11 @@ def test_obstacles_keep_their_wall_flag_and_order() -> None:
 
 
 def test_the_plan_view_color_and_opacity_come_from_path_style() -> None:
-    message = plan_view_message(_path(information=0.4, avoidance=0.3), _field(), GRID, _view())
+    # A red point no constant in the code holds, so the color can only match by reading the view's.
+    view = dataclasses.replace(_view(), path_red_from_bits=2.5)
+    message = plan_view_message(_path(information=0.4, avoidance=0.3), _field(), GRID, view)
 
-    assert message["path_color_rgb"] == list(path_color_rgb(0.3))
+    assert message["path_color_rgb"] == list(path_color_rgb(0.3, 2.5))
     assert message["path_fill_opacity"] == pytest.approx(path_fill_opacity(0.4))
     assert message["path_border_opacity"] == pytest.approx(BORDER_OPACITY)
     assert message["group_color_rgb"] == list(GROUP_RGB)
@@ -134,3 +137,21 @@ def test_a_debug_view_has_no_default_body_width() -> None:
     view = _view()
     with pytest.raises(TypeError, match="body_half_width_meters"):
         DebugView(view.frame, view.obstacles, view.floor, view.floor_source, view.walking_speed_mps)
+
+
+def test_a_debug_view_has_no_default_red_point() -> None:
+    # A default would be a second copy of the alarm's threshold, free to drift from the planner's.
+    view = _view()
+    with pytest.raises(TypeError, match="path_red_from_bits"):
+        DebugView(view.frame, view.obstacles, view.floor, view.floor_source, view.walking_speed_mps, view.body_half_width_meters)
+
+
+def test_the_path_is_fully_red_at_the_views_red_point_and_not_before() -> None:
+    # 2.5 bits, not the shipped 1.47, so a sink that ignored the view and used the shipped value
+    # would already be fully red at 0.9 of it and fail the second assertion.
+    view = dataclasses.replace(_view(), path_red_from_bits=2.5)
+    at_red = plan_view_message(_path(avoidance=view.path_red_from_bits), _field(), GRID, view)
+    below_red = plan_view_message(_path(avoidance=view.path_red_from_bits * 0.9), _field(), GRID, view)
+
+    assert np.abs(np.array(at_red["path_color_rgb"]) - np.array(SURPRISE_HIGH_RGB)).max() <= 1
+    assert np.abs(np.array(below_red["path_color_rgb"]) - np.array(SURPRISE_HIGH_RGB)).max() > 1

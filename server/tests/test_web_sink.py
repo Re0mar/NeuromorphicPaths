@@ -40,7 +40,7 @@ def _view() -> DebugView:
         ground_plane=None,
         gaze_pixel=None,
     )
-    return DebugView(frame, ObstacleSet(1.0, (), 0), Plane(np.array([0.0, -1.0, 0.0]), 1.6), FloorSource.FITTED, 1.4, 0.30)
+    return DebugView(frame, ObstacleSet(1.0, (), 0), Plane(np.array([0.0, -1.0, 0.0]), 1.6), FloorSource.FITTED, 1.4, 0.30, 1.47)
 
 
 def _field() -> tuple[np.ndarray, np.ndarray]:
@@ -138,7 +138,7 @@ def test_a_client_that_disconnects_does_not_break_the_next_publish(sink: WebSink
 
     received = asyncio.run(scenario())
 
-    assert json.loads(received)["first_heading_radians"] == pytest.approx(0.2)
+    assert json.loads(received)["lookahead_heading_radians"] == pytest.approx(0.2)
 
 
 def test_close_returns_within_two_seconds() -> None:
@@ -229,7 +229,7 @@ def test_a_browser_connecting_late_gets_the_latest_of_each_kind_at_once(sink: We
     path_text, plan_text, png = asyncio.run(_receive_frames(sink.port, lambda: None, count=3))
 
     assert json.loads(path_text)["kind"] == WebMessageKind.PATH.value
-    assert json.loads(path_text)["first_heading_radians"] == pytest.approx(0.4)
+    assert json.loads(path_text)["lookahead_heading_radians"] == pytest.approx(0.4)
     assert json.loads(plan_text)["kind"] == WebMessageKind.PLAN_VIEW.value
     assert isinstance(png, bytes) and png[:8] == b"\x89PNG\r\n\x1a\n"
 
@@ -262,7 +262,7 @@ def test_a_png_encode_failure_still_sends_the_path_and_the_plan_view(sink: WebSi
     with caplog.at_level("WARNING", logger="nav.sinks.web"):
         texts, more_arrived = asyncio.run(_receive_texts_then_check_quiet(sink.port, lambda: sink.publish_debug(path, field, grid, _view()), 2))
 
-    assert json.loads(texts[0])["first_heading_radians"] == pytest.approx(0.5)
+    assert json.loads(texts[0])["lookahead_heading_radians"] == pytest.approx(0.5)
     assert json.loads(texts[1])["kind"] == WebMessageKind.PLAN_VIEW.value
     assert not more_arrived, "nothing may follow the plan view when the picture failed"
     assert any("depth view not sent" in record.message for record in caplog.records)

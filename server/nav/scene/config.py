@@ -26,7 +26,7 @@ class SceneConfig:
     min_points_per_cell: int = 2  # One point is as likely to be depth noise as an object.
     noise_window_seconds: float = 0.5  # Half a second of history is what N is measured over.
     min_history_samples: int = 3  # Below this a standard deviation says nothing.
-    noise_floor_meters: float = 0.01  # N never goes below this, or surprise divides by almost zero.
+    noise_floor_meters: float = 0.01  # N never goes below this. N is the numerator, so a steady group still costs something.
     floor_candidate_min_below_camera_meters: float = 0.5  # Old file: only points this far below the camera vote for floor.
     floor_min_candidate_points: int = 200  # Old file: fewer candidates than this and the previous plane is kept.
     floor_ransac_distance_meters: float = 0.05  # Old file's RANSAC inlier distance.

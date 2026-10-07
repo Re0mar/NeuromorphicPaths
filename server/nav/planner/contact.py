@@ -17,7 +17,8 @@ is p = Phi(-S / sigma), where Phi is the standard normal cumulative distribution
 Then the surprise. The surprise of getting past cleanly is -ln(1 - p), which is -ln Phi(S / sigma),
 computed with scipy's log_ndtr so it stays accurate when p is tiny and when it is nearly one. It is
 a natural log, the same log as his term, which is the negative log of a bell curve. That is what
-lets the two add as independent evidence. The course quotes both in bits by convention.
+lets the two add as independent evidence. The course quotes both in bits by convention, and the
+planner converts the summed cost to bits once, in pipeline.py.
 
 Then the rate. The dynamic program multiplies every field value by the time step, so the term is
 a rate per second: the surprise divided by tau, the time it takes to walk past an obstacle, twice
@@ -25,7 +26,8 @@ the half-width over walking speed. Halving the time step then leaves the total u
 straight walk through an obstacle adds up to about one contact's worth.
 
 Three limits. A center distance is never negative, so S never drops below minus the half-width and
-one point can never cost more than -ln Phi(-half-width / sway), 6.61 at the shipped values. The
+one contact can never cost more than -ln Phi(-half-width / sway), 6.61 at the shipped values. As the
+rate the field carries, that is 6.61 over tau, up to 15.4 per second. The
 cap only matters for a much smaller sway. Consecutive slices that overlap the same obstacle are
 summed as if each were a separate contact, which overcounts a long overlap. That is harmless when
 the plan's aim is not to go there at all. And groups add, the way his term's do, while the scene

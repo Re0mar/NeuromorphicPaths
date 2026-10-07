@@ -48,7 +48,7 @@ the line, the tag is "unknown", never "open".
 
 ## How the arrow is scored
 
-The arrow is the planner's own number, `first_heading_radians`, exactly as the server sends it to
+The arrow is the planner's own number, `lookahead_heading_radians`, exactly as the server sends it to
 the phone. Nothing here recomputes, corrects or filters it.
 
 **The arrow is read the way the walker reads it.** It's drawn over the camera picture, so it means

@@ -385,7 +385,7 @@ def check_rounding(window: Sequence[PlannerInput], planner_config: PlannerConfig
     changed = [
         f"{a.input.timestamp_seconds!r}"
         for a, b in zip(exact, stored, strict=True)
-        if a.path.first_heading_radians != b.path.first_heading_radians
+        if a.path.lookahead_heading_radians != b.path.lookahead_heading_radians
         or a.path.alarm != b.path.alarm
         or not np.array_equal(a.path.lateral_offsets_meters, b.path.lateral_offsets_meters)
     ]

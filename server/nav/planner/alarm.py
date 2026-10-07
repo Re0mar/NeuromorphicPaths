@@ -21,6 +21,7 @@ import numpy as np
 
 # Local package imports
 from nav.planner.config import PlannerConfig
+from nav.planner.units import bits_from_nats
 from nav.types import ObstaclePoint, ObstacleSet
 
 # His dt in the avoidance form. The surprise compares time to contact against one second.
@@ -102,13 +103,46 @@ def corridor_time_to_contact(obstacles: ObstacleSet, config: PlannerConfig) -> f
     return min(point.clearance_meters for point in in_the_way) / config.walking_speed_mps
 
 
+def avoidance_surprise_bits_at(time_to_contact_seconds: float) -> float:
+    """
+    The course's avoidance surprise for one time to contact, in bits.
+
+    U = half of (dt / tau) squared, with dt his 1 s and tau the time to contact. That is a natural-log
+    value like his other surprise, converted to bits. One second to contact is 0.72 bits.
+
+    :param time_to_contact_seconds: tau, above zero.
+    :return: Bits.
+    :rtype: float
+    :raises ValueError: When the time is not a finite number above zero.
+    """
+    if not np.isfinite(time_to_contact_seconds) or time_to_contact_seconds <= 0:
+        raise ValueError(f"time to contact must be above zero, got {time_to_contact_seconds}")
+    return float(bits_from_nats(0.5 * (AVOIDANCE_REFERENCE_SECONDS / time_to_contact_seconds) ** 2))
+
+
+def path_red_from_bits(config: PlannerConfig) -> float:
+    """
+    The avoidance surprise at which the drawn path is fully red: the moment the alarm raises.
+
+    The alarm raises at alarm_time_to_contact_seconds, so the path reaches red at that time's surprise
+    and no earlier. 1.47 bits at the shipped 0.7 s.
+
+    :param config: The alarm's threshold.
+    :return: Bits, above zero.
+    :rtype: float
+    :raises ValueError: When the threshold is not above zero.
+    """
+    _check_threshold(config)
+    return avoidance_surprise_bits_at(config.alarm_time_to_contact_seconds)
+
+
 def avoidance_surprise_bits(obstacles: ObstacleSet, config: PlannerConfig) -> float:
     """
     How soon the walker reaches the nearest group in its corridor, as the course's avoidance surprise.
 
-    U = (dt / tau)^2 / (2 ln 2), with dt his 1 s and tau the time to contact at walking pace. One
-    second to contact is 0.72 bits. An alarm threshold in bits should call this rather than restate
-    the formula, so the two cannot drift apart.
+    The time to contact here is the nearest corridor clearance over walking speed, and the formula is
+    avoidance_surprise_bits_at's. Anything that needs a threshold in bits, such as the path's red
+    point, calls that function rather than restating the formula, so the two cannot drift apart.
 
     :param obstacles: This frame's groups.
     :param config: Walking speed, the body half-width, and the clearance floor.
@@ -123,8 +157,7 @@ def avoidance_surprise_bits(obstacles: ObstacleSet, config: PlannerConfig) -> fl
     # Floored at his epsilon before dividing. The scene measures clearance from the footprint's
     # edge, so something touching the footprint reads zero and would otherwise be infinite.
     clearance = max(min(point.clearance_meters for point in in_the_way), config.clearance_epsilon_meters)
-    time_to_contact = clearance / config.walking_speed_mps
-    return float((AVOIDANCE_REFERENCE_SECONDS / time_to_contact) ** 2 / (2.0 * np.log(2.0)))
+    return avoidance_surprise_bits_at(clearance / config.walking_speed_mps)
 
 
 def alarm_raised(obstacles: ObstacleSet, config: PlannerConfig) -> bool:

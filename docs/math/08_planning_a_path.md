@@ -160,9 +160,11 @@ last slice is 0 at the center.
 > - **Forward speed is fixed** at 1.4 m/s. A path is sideways offset against time and nothing else.
 > - **Slice 0 is charged too**, so the total adds up 39 slices, 3.9 s worth of rate, not 3.8.
 >   Far slices count the same as near ones. Nothing is discounted.
-> - **The units are natural-log units.** The field's surprise terms are natural logs, and nothing
->   converts the summed cost. The plan's cost goes out as `cumulative_cost_bits`, so the code calls
->   this bits. A true bit figure would be the number divided by $`\ln 2`$, about 1.44 times larger.
+> - **The search runs in natural-log units, and the cost goes out in bits.** The field's surprise
+>   terms are natural logs, so every figure on this page is one. Once the search has picked a path,
+>   the planner divides its total by $`\ln 2`$, once, and sends that as `cumulative_cost_bits`. Before
+>   2026-10-07 nothing converted it, so a cost recorded before then is 1.443 times smaller than the
+>   same path's cost today.
 
 > [!IMPORTANT]
 > **The forward recurrence and the shape of the effort term.** The code marks these as his,
@@ -277,7 +279,7 @@ j^{\star}_{38} = \arg\min_j J_{38}(j), \qquad C = J_{38}(j^{\star}_{38}) - \Delt
 | $`a`$ | forward distance walked since the last frame | m | walker ground frame | `server/nav/planner/previous_plan.py` |
 | $`f_k`$ | forward distance of slice $`k`$ | m | walker ground frame | `server/nav/planner/previous_plan.py` |
 | $`j^{\star}_k`$ | the plan's cell on slice $`k`$ | none | walker ground frame | `server/nav/planner/dynamic_programming.py` |
-| $`C`$ | cost sent out, `cumulative_cost_bits` | cost | none | `server/nav/planner/pipeline.py` |
+| $`C`$ | cost sent out, `cumulative_cost_bits`, the search's total divided by $`\ln 2`$ | bits | none | `server/nav/planner/pipeline.py` |
 
 ## Building the two terms
 
@@ -322,9 +324,7 @@ at −0.9 m. The walker already went −0.4 m, so the prior asks for −0.5 m. A
 > [!WARNING]
 > - **With today's weights the goal can't move the plan in an empty scene.** One sidestep cell
 >   costs 0.325. The goal term can save at most 0.8 over a whole path, and from the center at most
->   0.2. The goal only breaks near-ties that obstacles create. The docstring in
->   `server/nav/planner/goal.py` says that with nothing in view the goal decides, and with these
->   numbers it doesn't.
+>   0.2. The goal only breaks near-ties that obstacles create.
 > - **Only the goal's sideways position does anything.** The forward distance,
 >   `goal_distance_meters` = 4.0, is read to build the goal's forward value, and nothing downstream
 >   reads that value. So clipping the gaze's forward distance has no effect on any plan.

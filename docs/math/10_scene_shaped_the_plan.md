@@ -38,11 +38,12 @@ cell can't be reached.
 c_j = J_{k_h}(j) + B_{k_h}(j)
 ```
 
-**From costs to chances, base 2.** Every extra unit of cost halves a cell's chance. This is a
+**From costs to chances, base e.** The costs are natural logs, so $`e^{-c}`$ turns them back into
+relative chances. Every extra $`\ln 2 = 0.693`$ of cost halves a cell's chance. This is a
 **softmin**: the cheapest cell gets the biggest share, and cells that cost $`\infty`$ get none.
 
 ```math
-p_j = \frac{2^{-(c_j - \min c)}}{\sum_{j'} 2^{-(c_{j'} - \min c)}}
+p_j = \frac{e^{-(c_j - \min c)}}{\sum_{j'} e^{-(c_{j'} - \min c)}}
 ```
 
 $`q_j`$ is built the same way from the prior field.
@@ -66,6 +67,11 @@ I \le -\log_2 \min_{j:\ q_j > 0} q_j
 
 The minimum runs over the reachable cells only. A cell that can't be reached has $`q_j = 0`$.
 
+The bound moves with the prior. Against the goal alone it's 7.3 bits, worked out below. With the
+pull toward the previous plan in the prior, which is how the planner runs, the prior can be much
+narrower, and the bound with it. On every planned frame of `pixel_walk_3` the highest $`I`$ was
+22.2 bits.
+
 That's **not** $`\log_2`$ of the number of cells, 21 here. $`\log_2 21`$ would be the ceiling against a
 prior that gives every cell the same chance. This prior favors the center, because every sideways
 cell costs effort, so an edge cell has a smaller chance than $`1/21`$ and pinning the plan there reads
@@ -77,7 +83,7 @@ higher.
 | $`j`$ | sideways cell, center 30, 21 reachable at $`k_h`$ | none | walker ground frame | `server/nav/planner/information.py` |
 | $`J_{k_h}(j)`$ | cheapest cost from the start to cell $`j`$, own charge included | cost | none | `server/nav/planner/dynamic_programming.py` |
 | $`B_{k_h}(j)`$ | cheapest cost from cell $`j`$ to the end, own charge left out | cost | none | `server/nav/planner/dynamic_programming.py` |
-| $`c_j`$ | cheapest whole path through cell $`j`$ | cost, natural-log units, read as bits | none | `server/nav/planner/information.py` |
+| $`c_j`$ | cheapest whole path through cell $`j`$ | cost, natural-log units | none | `server/nav/planner/information.py` |
 | $`p_j`$ | chance of being at cell $`j`$ one second out, with the scene | none | walker ground frame | `server/nav/planner/information.py` |
 | $`q_j`$ | the same, for the planner that sees nothing | none | walker ground frame | `server/nav/planner/information.py` |
 | $`I`$ | scene information, KL of $`p`$ from $`q`$ | bits | none | `server/nav/planner/information.py` |
@@ -88,7 +94,7 @@ higher.
 |---|---|---|
 | 1 | $`c_j = J_{k_h}(j) + B_{k_h}(j)`$ | Cheapest whole path through each cell at one second out |
 | 2 | $`c_j - \min c`$ | Shift so the cheapest cell is 0. The shift cancels in the division |
-| 3 | $`2^{-(\cdot)}`$, then divide by the sum | Costs to chances. One unit of cost more is half the chance |
+| 3 | $`e^{-(\cdot)}`$, then divide by the sum | Costs to chances. The costs are natural logs, so base e undoes them |
 | 4 | Same steps on the prior field | What the planner would expect with nothing in view |
 | 5 | $`\sum p_j \log_2 (p_j / q_j)`$ | KL divergence, in bits because of the $`\log_2`$ |
 | 6 | $`\max(0, \cdot)`$ | KL can't be negative. This only clears rounding |
@@ -101,36 +107,35 @@ The prior field with the goal straight ahead and no previous plan. Every number 
    costs the goal term, $`0.0222\,(0.1 n)^2 = 0.000222\,n^2`$. So
    $`c_n = 0.325\,\lvert n \rvert + 0.000222\,n^2`$ for $`n`$ from −10 to 10.
 2. The cheapest is the center, $`c_0 = 0`$. Each cell out multiplies the weight by
-   $`2^{-0.325} = 0.79830`$, and the goal term trims a little more:
-   weight $`= 0.79830^{\lvert n \rvert} \times 2^{-0.000222\,n^2}`$.
-3. The weights for $`n`$ = 1 to 10 are 0.79818, 0.63689, 0.50804, 0.40513, 0.32296, 0.25739,
-   0.20506, 0.16332, 0.13004 and 0.10351. Both sides plus the center:
-   $`Z = 1 + 2 \times 3.53050 = 8.0610`$.
-4. Prior chance of the center: $`q = 1 / 8.0610 = 0.1241`$. Prior chance of an edge cell, a full
-   1.0 m sidestep by one second: $`q = 0.10351 / 8.0610 = 0.01284`$.
+   $`e^{-0.325} = 0.72253`$, and the goal term trims a little more:
+   weight $`= 0.72253^{\lvert n \rvert} \times e^{-0.000222\,n^2}`$.
+3. The weights for $`n`$ = 1 to 10 are 0.72237, 0.52158, 0.37644, 0.27157, 0.19582, 0.14114,
+   0.10168, 0.07323, 0.05271 and 0.03792. Both sides plus the center:
+   $`Z = 1 + 2 \times 2.49446 = 5.9889`$.
+4. Prior chance of the center: $`q = 1 / 5.9889 = 0.1670`$. Prior chance of an edge cell, a full
+   1.0 m sidestep by one second: $`q = 0.03792 / 5.9889 = 0.00633`$.
 5. **Plan pinned to the center.** Everything on the center cell gives
-   $`I = -\log_2 0.1241 = \log_2 8.0610 = 3.011`$ bits. That's not 0, even though the center is the
+   $`I = -\log_2 0.1670 = \log_2 5.9889 = 2.582`$ bits. That's not 0, even though the center is the
    prior's own favorite: the prior spread its chances over 21 cells and the scene narrowed that
    to one.
-6. **Plan pinned to the edge.** $`I = -\log_2 0.01284 = 6.283`$ bits. That's the ceiling for this
+6. **Plan pinned to the edge.** $`I = -\log_2 0.00633 = 7.303`$ bits. That's the ceiling for this
    prior.
 7. Compare $`\log_2 21 = 4.392`$ bits. The edge case goes over it, which is why that isn't the
    ceiling.
 8. **Empty scene.** The two fields are identical, so $`p = q`$ and $`I = 0`$.
-9. **The softmin by itself.** Costs (0, 1, $`\infty`$) give chances (2/3, 1/3, 0).
+9. **The softmin by itself.** Costs (0, $`\ln 2`$, $`\infty`$) give chances (2/3, 1/3, 0).
+
+The planner's own functions give the same 0.1670, 0.00633, 2.582 and 7.303 on this prior.
+
+Before 2026-10-07 the softmin used $`2^{-c}`$ on these natural-log costs, which spread the chances
+more evenly: the center read 3.011 bits and the edge 6.283.
 
 > [!WARNING]
-> - **The units are mixed.** $`c`$ is a natural-log cost, the same units as the field and the effort
->   term. The softmin treats it as bits by using $`2^{-c}`$. The code calls it bits. Read as
->   natural-log units, one sidestep cell would scale the chance by $`e^{-0.325} = 0.7225`$ instead of
->   0.7983, so the code's spread of chances is flatter than a natural-log reading gives. The divergence
->   itself really is in bits, because of the $`\log_2`$.
+> - **Two bases, on purpose.** $`c`$ is a natural-log cost, so the chances use $`e^{-c}`$. The
+>   divergence between the chances is taken with $`\log_2`$, so it comes out in bits.
 > - **One slice only.** It reads the plan one second out and nothing else.
 > - **The goal and the last plan are held fixed, not removed.** The prior keeps both, so $`I`$ is what
->   the scene added given the goal and the memory, not everything that shaped the plan. The
->   docstring at the top of `server/nav/planner/information.py` says the prior has only the
->   sideways cost and the goal. The pipeline also keeps the previous-plan prior in it, and the
->   function's own parameter description says so.
+>   the scene added given the goal and the memory, not everything that shaped the plan.
 
 > [!IMPORTANT]
 > **KL as Bayesian surprise is his.** For two bell curves with the same width, the KL divergence
@@ -142,7 +147,7 @@ The prior field with the goal straight ahead and no previous plan. Every number 
 > curves, so his formula is the special case and this is the general one.
 
 > [!TIP]
-> **The construction is ours.** Forward plus backward per cell, the base-2 softmin, reading it at
+> **The construction is ours.** Forward plus backward per cell, the base-e softmin, reading it at
 > the 1 s lookahead, and what goes into the prior. None of it is marked his. The aim is to say how
 > much this frame's view changed the plan, apart from the goal and the memory.
 > - **The prior keeps the goal**, or the scene would get credit for a turn the gaze caused.

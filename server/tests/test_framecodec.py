@@ -349,7 +349,7 @@ def test_path_round_trip() -> None:
         timestamp_seconds=1.0,
         times_seconds=np.array([0.0, 0.1, 0.2]),
         lateral_offsets_meters=np.array([0.0, 0.05, 0.1]),
-        first_heading_radians=0.42,
+        lookahead_heading_radians=0.42,
         alarm=True,
         cumulative_cost_bits=12.5,
         scene_information_bits=0.37,
@@ -360,7 +360,7 @@ def test_path_round_trip() -> None:
 
     assert decoded.times_seconds == pytest.approx(original.times_seconds)
     assert decoded.lateral_offsets_meters == pytest.approx(original.lateral_offsets_meters)
-    assert decoded.first_heading_radians == pytest.approx(original.first_heading_radians)
+    assert decoded.lookahead_heading_radians == pytest.approx(original.lookahead_heading_radians)
     assert decoded.alarm is True
     assert decoded.cumulative_cost_bits == pytest.approx(original.cumulative_cost_bits)
     assert decoded.scene_information_bits == pytest.approx(0.37)
@@ -373,7 +373,7 @@ def test_path_round_trip() -> None:
         "timestamp_seconds",
         "times_seconds",
         "lateral_offsets_meters",
-        "first_heading_radians",
+        "lookahead_heading_radians",
         "alarm",
         "cumulative_cost_bits",
         "scene_information_bits",
@@ -385,7 +385,7 @@ def test_a_path_message_missing_a_field_is_refused(missing: str) -> None:
         "timestamp_seconds": 1.0,
         "times_seconds": [0.0, 0.1],
         "lateral_offsets_meters": [0.0, 0.05],
-        "first_heading_radians": 0.0,
+        "lookahead_heading_radians": 0.0,
         "alarm": False,
         "cumulative_cost_bits": 0.0,
         "scene_information_bits": 0.0,
@@ -397,6 +397,24 @@ def test_a_path_message_missing_a_field_is_refused(missing: str) -> None:
         decode_path(json.dumps(message).encode("utf-8"))
 
 
+def test_a_path_carrying_the_old_heading_key_is_refused_naming_the_new_one() -> None:
+    # What a laptop on an older build sends. Refused by the key the decoder wants, so a mismatched
+    # pair of builds fails loudly rather than drawing an arrow from a heading nobody read.
+    message = {
+        "timestamp_seconds": 1.0,
+        "times_seconds": [0.0, 0.1],
+        "lateral_offsets_meters": [0.0, 0.05],
+        "first_heading_radians": 0.2,
+        "alarm": False,
+        "cumulative_cost_bits": 0.0,
+        "scene_information_bits": 0.0,
+        "avoidance_surprise_bits": 0.0,
+    }
+
+    with pytest.raises(FrameDecodeError, match="lookahead_heading_radians"):
+        decode_path(json.dumps(message).encode("utf-8"))
+
+
 def test_a_path_with_mismatched_array_lengths_is_refused() -> None:
     # PlannedPath raises a plain ValueError for this. Unwrapped it would escape the handler that
     # exists to treat a bad message as a bad message.
@@ -405,7 +423,7 @@ def test_a_path_with_mismatched_array_lengths_is_refused() -> None:
             "timestamp_seconds": 1.0,
             "times_seconds": [0.0, 0.1],
             "lateral_offsets_meters": [0.0],
-            "first_heading_radians": 0.0,
+            "lookahead_heading_radians": 0.0,
             "alarm": False,
             "cumulative_cost_bits": 0.0,
             "scene_information_bits": 0.0,
@@ -424,7 +442,7 @@ def test_the_path_json_matches_the_wire_docs_example() -> None:
         timestamp_seconds=12.345,
         times_seconds=np.array([0.0, 0.1, 0.2]),
         lateral_offsets_meters=np.array([0.0, 0.05, 0.12]),
-        first_heading_radians=0.0423,
+        lookahead_heading_radians=0.0423,
         alarm=False,
         cumulative_cost_bits=18.4,
         scene_information_bits=0.37,
@@ -451,7 +469,7 @@ def test_a_path_with_a_wrongly_typed_bits_field_is_refused(field: str, wrong_val
         "timestamp_seconds": 1.0,
         "times_seconds": [0.0],
         "lateral_offsets_meters": [0.0],
-        "first_heading_radians": 0.0,
+        "lookahead_heading_radians": 0.0,
         "alarm": False,
         "cumulative_cost_bits": 0.0,
         "scene_information_bits": 0.0,
@@ -540,7 +558,7 @@ def test_the_format_document_carries_the_path_field_table() -> None:
 
 @pytest.mark.parametrize(
     "field",
-    ["first_heading_radians", "cumulative_cost_bits", "scene_information_bits", "avoidance_surprise_bits"],
+    ["lookahead_heading_radians", "cumulative_cost_bits", "scene_information_bits", "avoidance_surprise_bits"],
 )
 def test_a_path_with_a_non_finite_scalar_never_reaches_the_encoder(field: str) -> None:
     # PlannedPath refuses this itself, so encode_path's allow_nan=False is defense in depth that no
@@ -549,7 +567,7 @@ def test_a_path_with_a_non_finite_scalar_never_reaches_the_encoder(field: str) -
         "timestamp_seconds": 1.0,
         "times_seconds": np.array([0.0, 0.1]),
         "lateral_offsets_meters": np.array([0.0, 0.1]),
-        "first_heading_radians": 0.0,
+        "lookahead_heading_radians": 0.0,
         "alarm": False,
         "cumulative_cost_bits": 0.0,
         "scene_information_bits": 0.0,
@@ -568,7 +586,7 @@ def test_planned_path_refuses_negative_bits(field: str) -> None:
         "timestamp_seconds": 1.0,
         "times_seconds": np.array([0.0]),
         "lateral_offsets_meters": np.array([0.0]),
-        "first_heading_radians": 0.0,
+        "lookahead_heading_radians": 0.0,
         "alarm": False,
         "cumulative_cost_bits": 0.0,
         "scene_information_bits": 0.0,

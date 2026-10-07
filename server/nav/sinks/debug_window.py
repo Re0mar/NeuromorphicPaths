@@ -60,7 +60,7 @@ class DebugWindowSink:
 
     def publish(self, path: PlannedPath) -> None:
         """Draw the arrow, the alarm color and the cost. The inset and the depth view only if publish_debug supplied them."""
-        heading = self._display_heading(path.first_heading_radians)
+        heading = self._display_heading(path.lookahead_heading_radians)
         arrow = render_arrow(heading, path)
 
         if self._latest_inset is not None:

@@ -42,7 +42,7 @@ A path message looks like this:
   "timestamp_seconds": 12.345,
   "times_seconds": [0.0, 0.1, 0.2],
   "lateral_offsets_meters": [0.0, 0.05, 0.12],
-  "first_heading_radians": 0.0423,
+  "lookahead_heading_radians": 0.0423,
   "alarm": false,
   "cumulative_cost_bits": 18.4,
   "scene_information_bits": 0.37,
@@ -60,10 +60,10 @@ the driver has to decide how quickly to follow them.
 
 | Field | Kind | What it says | Range | Could drive |
 |---|---|---|---|---|
-| `first_heading_radians` | level, with a side | Where the path is heading, read 1 s ahead. Positive is right | 0 straight ahead, up to ±0.62 rad (±35.5 degrees) | Which side buzzes or sounds, and how strongly |
-| `avoidance_surprise_bits` | level | How soon the walker reaches the nearest thing in their way | 0 with nothing in the way, 0.72 at 1 s to contact, climbing fast after that | How urgent the cue is: its strength or its pulse rate |
+| `lookahead_heading_radians` | level, with a side | Where the path is heading, read 1 s ahead. Positive is right | 0 straight ahead, up to ±0.62 rad (±35.5 degrees) | Which side buzzes or sounds, and how strongly |
+| `avoidance_surprise_bits` | level | How soon the walker reaches the nearest thing in their way | 0 with nothing in the way, 0.72 at 1 s to contact, 1.47 where the alarm goes up and the drawn path is fully red, climbing fast after that | How urgent the cue is: its strength or its pulse rate |
 | `alarm` | switch | Something in the walker's corridor is under 0.7 s away at walking pace, or was in the last 0.5 s | `true` or `false` | A distinct pattern that means stop or step aside |
-| `scene_information_bits` | level, usable as a switch | How much what the camera saw changed the plan from the plan with nothing in view | 0 for an empty scene, at most about 6.3 | Whether to say anything at all. At 0 the scene changed nothing |
+| `scene_information_bits` | level, usable as a switch | How much what the camera saw changed the plan from the plan with nothing in view | 0 for an empty scene. Under 4 on 95 % of one recorded walk's frames, but there's no fixed top: that walk's highest is 22 | Whether to say anything at all. At 0 the scene changed nothing |
 | `lateral_offsets_meters`, `times_seconds` | the whole plan | Where to be sideways, every 0.1 s, out to 3.8 s | positive is right | A warning before a turn the plan already holds |
 
 `cumulative_cost_bits` is not on the list. The contract says it's for display and logging, not for
@@ -91,8 +91,8 @@ them reads 0.
 
 A simple mapping for one motor on each side, or for a wristband that can buzz left or right:
 
-- **Which side:** the sign of `first_heading_radians`.
-- **How strongly:** `abs(first_heading_radians) / 0.62`, from 0 to 1.
+- **Which side:** the sign of `lookahead_heading_radians`.
+- **How strongly:** `abs(lookahead_heading_radians) / 0.62`, from 0 to 1.
 - **How urgently:** pulse faster as `avoidance_surprise_bits` rises. For example, one pulse a second
   at 0.18, four a second at 1.47.
 - **Alarm:** a pattern that is never used for anything else, like three short pulses on both sides.
@@ -105,7 +105,7 @@ The same values can drive audio. Each of these mirrors a control the walker alre
 their own headphones.
 
 **Stereo balance from the heading.** Play the cue panned toward the side the path goes. Take
-`pan = first_heading_radians / 0.62`, clamped to -1 to 1. Equal-power panning keeps the loudness
+`pan = lookahead_heading_radians / 0.62`, clamped to -1 to 1. Equal-power panning keeps the loudness
 the same as the sound moves: left gain `cos((pan + 1) · π/4)`, right gain `sin((pan + 1) · π/4)`.
 
 | Heading | `pan` | Left gain | Right gain |
@@ -136,7 +136,7 @@ quiet tone.
 One path message, read the way a driver would read it:
 
 ```json
-{"first_heading_radians": 0.31, "avoidance_surprise_bits": 0.72, "alarm": false, "scene_information_bits": 2.1}
+{"lookahead_heading_radians": 0.31, "avoidance_surprise_bits": 0.72, "alarm": false, "scene_information_bits": 2.1}
 ```
 
 - The path heads 17.8 degrees right, half the full sidestep. Haptics: the right motor at half

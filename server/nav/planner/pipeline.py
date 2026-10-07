@@ -18,6 +18,7 @@ from nav.planner.heading import lookahead_heading, lookahead_step_index
 from nav.planner.information import scene_information_bits
 from nav.planner.previous_plan import PreviousPlanPrior, check_previous_plan_config
 from nav.planner.surprise import CollisionSurprise
+from nav.planner.units import bits_from_nats
 from nav.types import ObstacleSet, PlannedPath
 from nav.walker import WalkerConfig
 
@@ -111,6 +112,9 @@ class PlannerPipeline:
             # not work the scene imposed, so the prior's charge along the chosen path comes off.
             cells = np.argmin(np.abs(self._grid[None, :] - offsets[:, None]), axis=1)
             cost -= float(np.sum(previous_plan_field[np.arange(len(offsets)), cells]) * config.time_step_seconds)
+        # Everything above sums natural logs. Here they become the bits the course quotes, once, after
+        # the prior's charge came off in the same units. Nothing before this line is in bits.
+        cost_bits = float(bits_from_nats(cost))
         if self._previous_plan is not None:
             self._previous_plan.remember(offsets, obstacles.timestamp_seconds, goal)
 
@@ -132,14 +136,14 @@ class PlannerPipeline:
         alarm = self._alarm_hold.update(alarm_raised(obstacles, config), obstacles.timestamp_seconds)
 
         log.debug(
-            "planner %.1f ms: field %.1f, dp %.1f, info %.1f, %d groups, cost %.2f, heading %.1f deg, "
+            "planner %.1f ms: field %.1f, dp %.1f, info %.1f, %d groups, cost %.2f bits, heading %.1f deg, "
             "information %.2f bits, avoidance %.2f bits, alarm %s",
             (after_information - started) * 1000,
             (after_field - started) * 1000,
             (after_plan - after_field) * 1000,
             (after_information - after_plan) * 1000,
             obstacles.groups_in_view,
-            cost,
+            cost_bits,
             np.degrees(heading),
             information,
             avoidance,
@@ -150,9 +154,9 @@ class PlannerPipeline:
             timestamp_seconds=obstacles.timestamp_seconds,
             times_seconds=self._times.copy(),
             lateral_offsets_meters=np.asarray(offsets, dtype=np.float64),
-            first_heading_radians=heading,
+            lookahead_heading_radians=heading,
             alarm=alarm,
-            cumulative_cost_bits=cost,
+            cumulative_cost_bits=cost_bits,
             scene_information_bits=information,
             avoidance_surprise_bits=avoidance,
         )

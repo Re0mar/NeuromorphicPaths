@@ -144,10 +144,14 @@ def test_the_halved_passes_match_the_full_passes_at_every_step() -> None:
         assert path_cost_through_cells(field, START, GRID, CONFIG, step) == pytest.approx(forward[step] + to_go[step]), f"step {step}"
 
 
-def test_the_distribution_is_in_base_two() -> None:
-    # The number is quoted in bits, so a cost one bit higher must carry half the probability. Base e
-    # would pass every other test here, because they compare the code against itself.
-    assert softmin_distribution(np.array([0.0, 1.0, np.inf])) == pytest.approx([2.0 / 3.0, 1.0 / 3.0, 0.0])
+def test_the_distribution_is_in_base_e() -> None:
+    # The costs are natural logs, so a cost ln 2 higher must carry half the probability. Base 2 would
+    # pass every other test here, because they compare the code against itself.
+    costs = np.array([0.0, math.log(2.0), np.inf])
+
+    assert softmin_distribution(costs) == pytest.approx([2.0 / 3.0, 1.0 / 3.0, 0.0])
+    # Under base 2 a cost one unit higher would halve it. Here it divides by e instead.
+    assert softmin_distribution(np.array([0.0, 1.0]))[1] == pytest.approx(1.0 / (1.0 + math.e))
 
 
 def test_a_negative_step_is_refused_naming_the_step() -> None:

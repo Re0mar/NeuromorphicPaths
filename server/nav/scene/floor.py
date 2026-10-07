@@ -7,8 +7,9 @@ normal pointing up. That convention is what lets the height band be two comparis
 Every function that needs to know which way is up takes it as a camera-frame unit vector, because
 the camera is not level. A phone held in portrait sends a depth image in the sensor's landscape
 orientation, so image-up points sideways and the floor's normal sits 90 degrees from it. Gravity
-from the pose is up when a source places the camera in a world. Image-up, CAMERA_UP, is all a
-plain video file can offer.
+from the pose is up whenever the source says its orientation is gravity aligned, which the Pixel
+and the Neon both do, the Neon with no position. Image-up, CAMERA_UP, is all a plain video file can
+offer.
 
 The floor fit is a RANSAC seeded from the config, so the same points always give the same floor
 and a replayed recording gives the same numbers every run.

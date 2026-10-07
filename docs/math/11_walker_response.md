@@ -212,7 +212,7 @@ curve drags the average along with it, so it doesn't read as one turn that never
 | Symbol | Plain English | Units | Frame | Where in the code |
 |---|---|---|---|---|
 | $`A_k`$ | the alarm as shown on frame $`k`$, after its hold | true or false | none | `server/nav/usermodel/work.py` |
-| $`h_k`$ | the arrow, `first_heading_radians` | rad | on the floor, relative to the camera's forward, positive right | `server/nav/usermodel/work.py` |
+| $`h_k`$ | the arrow, `lookahead_heading_radians` | rad | on the floor, relative to the camera's forward, positive right | `server/nav/usermodel/work.py` |
 | $`\psi_k`$ | camera yaw. A right turn reads negative in a y-up world, the opposite of the arrow | rad | world, horizontal | `server/nav/runtime/loop.py` |
 | $`B_k`$ | running average of the yaw, time constant 5 s | rad | world, horizontal | `server/nav/runtime/loop.py` (`HEADING_BASELINE_SECONDS`) |
 | $`o_k`$ | observed heading, yaw minus its average | rad | world, horizontal | `server/nav/runtime/loop.py` |
@@ -248,7 +248,7 @@ $`o = 0.30 - 0.10132 = 0.1987`$ rad.
 > code) are project choices. The professor's slides frame an action as running from a start to an
 > acceptance threshold, and the episode is our way to find those two moments in a live stream.
 
-## Work, in what the code calls bits
+## Work, in bits
 
 **The plain idea.** The professor prices an action by how much total energy drains away between its
 start and the moment it's done. The server copies that: the work of an avoidance is the plan's total
@@ -258,30 +258,32 @@ His version is $`W = H_0 - H_z`$, with $`H = {\color{blue}{T}} + {\color{purple}
 Hamiltonian, effort plus surprise. Ours:
 
 ```math
-W_{\text{bits}} = H_{\text{open}} - H_{\text{close}}, \qquad H = \sum_{k=0}^{K-1}\Big({\color{purple}{U}}_k + G_k + {\color{blue}{T}}_k\Big)\,\Delta t
+W_{\text{bits}} = H_{\text{open}} - H_{\text{close}}, \qquad H = \frac{1}{\ln 2}\sum_{k=0}^{K-1}\Big({\color{purple}{U}}_k + G_k + {\color{blue}{T}}_k\Big)\,\Delta t
 ```
 
 $`H`$ is the chosen path's cost from the planner in section 8, with the previous-plan prior's charge
-taken back out.
+taken back out. The sum is in natural-log units, and the planner divides it by $`\ln 2`$ once before
+sending it, so both $`H`$ and $`W`$ are bits.
 
 | Symbol | Plain English | Units | Frame | Where in the code |
 |---|---|---|---|---|
-| $`W_{\text{bits}}`$ | work of one avoidance | natural-log cost the code calls bits | none | `server/nav/usermodel/work.py` |
-| $`H_{\text{open}}`$, $`H_{\text{close}}`$ | the plan's cost on the opening and closing frames, `cumulative_cost_bits` | same | none | `server/nav/planner/pipeline.py` |
+| $`W_{\text{bits}}`$ | work of one avoidance | bits | none | `server/nav/usermodel/work.py` |
+| $`H_{\text{open}}`$, $`H_{\text{close}}`$ | the plan's cost on the opening and closing frames, `cumulative_cost_bits` | bits | none | `server/nav/planner/pipeline.py` |
 | $`{\color{purple}{U}}_k`$ | collision and contact surprise of the path's cell at step $`k`$, per second (section 6) | per second | ground | `server/nav/planner/pipeline.py` |
 | $`G_k`$ | goal term, on the last step only (section 8) | per second | ground | `server/nav/planner/pipeline.py` |
 | $`{\color{blue}{T}}_k`$ | effort of moving sideways, $`\tfrac12 w\,\dot x_k^2`$ with $`w = 6.5`$ (section 8 has the exact discrete form) | per second | ground | `server/nav/planner/dynamic_programming.py` |
 | $`\Delta t`$ | planner step, 0.1 s | s | none | `server/nav/planner/config.py` |
 | $`K`$ | 39 steps over the 3.8 s horizon | none | none | `server/nav/planner/config.py` |
 
-Say the opening frame's plan cost 18.4 and the closing frame's cost 6.1. Then
-$`W = 18.4 - 6.1 = 12.3`$. That's 12.3 in natural-log units. In real bits it would be
-$`12.3 / \ln 2 = 12.3 / 0.693 = 17.7`$. If the closing frame had cost 20.0, the work would be
+Say the opening frame's plan cost 18.4 bits and the closing frame's 6.1 bits. Then
+$`W = 18.4 - 6.1 = 12.3`$ bits. If the closing frame had cost 20.0, the work would be
 $`18.4 - 20.0 = -1.6`$, and nothing in the code stops a negative figure.
 
+Before 2026-10-07 the planner sent its natural-log sum unconverted, so the same two plans read
+$`18.4 \times 0.693 = 12.75`$ and $`6.1 \times 0.693 = 4.23`$, and the work 8.53. Work figures
+recorded before then are $`\ln 2`$ times the bits value.
+
 > [!WARNING]
-> - **The units.** The planner's costs are natural-log values, and the code labels them bits without
->   dividing by $`\ln 2`$. Only the avoidance surprise in section 9 converts.
 > - **One difference, not a sum.** His work for a sequence adds up every action's $`H_0 - H_z`$. Ours is
 >   one subtraction of two frames.
 > - **Two different stretches of floor.** Each $`H`$ covers the 3.8 s ahead of where the walker stood on

@@ -78,8 +78,9 @@ What the planner computes, per second, for one point:
 | 6 | $`\min(\cdot, 2.0 \times 10^4)`$ | An upper limit on one point's surprise |
 | 7 | multiply by $`\Delta t = 0.1`$ s in the path search | It's a rate per second (section 7) |
 
-**Units.** This is a natural log, so the values are nats. The code calls the summed cost bits but
-never divides by $`\ln 2`$. In real bits every value here would be $`1/\ln 2 = 1.443`$ times larger.
+**Units.** This is a natural log, so the values are nats. The planner adds every term up in nats
+and divides the path's total by $`\ln 2`$ once, at the end of the path search (section 8), so the
+cost it sends is in bits. One bit is $`\ln 2 = 0.693`$ nats. The figures on this page are nats.
 
 Some real numbers, per second, with the per-step charge at $`\Delta t = 0.1`$ s:
 
@@ -189,9 +190,9 @@ and here the drift is a fixed 0.10 m guess.
 > - The body half-width h = 0.30 m, so the body's gap is $`{\color{teal}{S}}_b = d - h`$
 >   (`server/nav/planner/config.py`).
 > - $`{\color{orange}{N}}_{\text{eff}}`$, with the wall multiplier.
-> - The sway s = 0.10 m. It's an assumption, not a measurement. The code's comment says no recorded
->   walk had anyone steering by the arrow, so there was nothing to measure it from. `wifi_run_2`
->   (section 12) is a walk with the arrow shown, so a measurement may now be possible.
+> - The sway s = 0.10 m. It's an assumption, not a measurement. `wifi_run_2` (section 12) is the
+>   one recorded walk with the arrow shown, six scorable turns, and the sway hasn't been measured
+>   from it yet.
 > - The walking speed $`v_w = 1.4`$ m/s and the cap $`C_{\max} = 50`$.
 
 ```math
@@ -254,11 +255,8 @@ $`-\ln\Phi(-0.30/\sqrt{0.01^2 + 0.10^2}) = -\ln\Phi(-2.985) = 6.56`$, or 15.3 pe
 > - **Groups add** (section 7), and a wall is many 0.25 m squares. Walking beside a wall costs
 >   about 1.4 to 1.5 times one square at the same gap. His term overcounts a wall more, 2 to 4
 >   times.
-> - **The comment's 6.61 is before the division.** The config comment says no point can cost more
->   than 6.61. As a rate it's up to 15.4 per second. Both are the bound at
->   $`{\color{orange}{N}} = 0`$. Live, with the 0.01 m floor, the most is about 6.56, or 15.3 per second.
-> - **Units.** This is a natural log, like his term. The code calls the summed path cost bits
->   without converting.
+> - **Units.** This is a natural log, like his term. The planner converts the summed path cost to
+>   bits once, in section 8.
 
 > [!TIP]
 > Ours, added beside his term. Under his term a steady post costs almost nothing, about 0.16 per

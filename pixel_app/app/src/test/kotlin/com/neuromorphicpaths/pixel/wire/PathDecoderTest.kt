@@ -25,7 +25,7 @@ class PathDecoderTest {
         put("timestamp_seconds", 12.345)
         put("times_seconds", JSONArray(listOf(0.0, 0.1, 0.2)))
         put("lateral_offsets_meters", JSONArray(listOf(0.0, 0.05, 0.12)))
-        put("first_heading_radians", 0.0423)
+        put("lookahead_heading_radians", 0.0423)
         put("alarm", true)
         put("cumulative_cost_bits", 18.4)
     }
@@ -53,7 +53,7 @@ class PathDecoderTest {
         assertEquals(12.345, path.timestampSeconds)
         assertTrue(path.timesSeconds.contentEquals(doubleArrayOf(0.0, 0.1, 0.2)))
         assertTrue(path.lateralOffsetsMeters.contentEquals(doubleArrayOf(0.0, 0.05, 0.12)))
-        assertEquals(0.0423, path.firstHeadingRadians)
+        assertEquals(0.0423, path.lookaheadHeadingRadians)
         assertEquals(true, path.alarm)
         assertEquals(18.4, path.cumulativeCostBits)
     }
@@ -75,19 +75,30 @@ class PathDecoderTest {
         assertEquals(12.345, path.timestampSeconds)
         assertTrue(path.timesSeconds.contentEquals(doubleArrayOf(0.0, 0.1, 0.2)))
         assertTrue(path.lateralOffsetsMeters.contentEquals(doubleArrayOf(0.0, 0.05, 0.12)))
-        assertEquals(0.0423, path.firstHeadingRadians)
+        assertEquals(0.0423, path.lookaheadHeadingRadians)
         assertEquals(true, path.alarm)
         assertEquals(18.4, path.cumulativeCostBits)
     }
 
     @Test
     fun aMissingKeyIsRefusedByName() {
-        for (key in listOf("timestamp_seconds", "times_seconds", "lateral_offsets_meters", "first_heading_radians", "alarm", "cumulative_cost_bits")) {
+        for (key in listOf("timestamp_seconds", "times_seconds", "lateral_offsets_meters", "lookahead_heading_radians", "alarm", "cumulative_cost_bits")) {
             val json = wellFormed()
             json.remove(key)
 
             assertTrue(refusal(json).contains("'$key'"), "missing $key: ${refusal(json)}")
         }
+    }
+
+    @Test
+    fun aPathFromALaptopThatStillSendsTheOldHeadingKeyIsRefusedNamingTheNewOne() {
+        // A laptop on an older build sends the heading as first_heading_radians. The app must refuse
+        // it by the key it wants, rather than drawing an arrow from a heading it never read.
+        val json = wellFormed()
+        json.put("first_heading_radians", json.get("lookahead_heading_radians"))
+        json.remove("lookahead_heading_radians")
+
+        assertTrue(refusal(json).contains("'lookahead_heading_radians'"), refusal(json))
     }
 
     @Test
@@ -99,8 +110,8 @@ class PathDecoderTest {
     @Test
     fun aNumberAsAStringIsRefused() {
         // getDouble would have parsed "0.04". The raw type is checked first.
-        val message = refusal(wellFormed().put("first_heading_radians", "0.04"))
-        assertTrue(message.contains("first_heading_radians") && message.contains("a string"), message)
+        val message = refusal(wellFormed().put("lookahead_heading_radians", "0.04"))
+        assertTrue(message.contains("lookahead_heading_radians") && message.contains("a string"), message)
     }
 
     @Test

@@ -145,13 +145,12 @@ and deleted at $`t = 10.6`$, where the cutoff is 10.1.
 >   floor, 0.01 m, so in practice it isn't measured.
 > - **Below 4 evenly spaced frames a second, $`{\color{orange}{N}}`$ is a constant.** The window
 >   can't hold 3 samples, so it's 0.01 m.
-> - **The floor doesn't stop a division.** The config comment says the floor stops surprise
->   dividing by almost zero. In the professor's term $`{\color{orange}{N}}`$ sits on top of the
->   fraction (section 6), and the contact term's spread never drops below the 0.10 m sway. What
->   the floor does is keep $`{\color{orange}{N}}`$ from reading as zero.
+> - **The floor doesn't stop a division.** In the professor's term $`{\color{orange}{N}}`$ sits on
+>   top of the fraction (section 6), and the contact term's spread never drops below the 0.10 m
+>   sway. What the floor does is keep $`{\color{orange}{N}}`$ from reading as zero, so a group that
+>   reads perfectly steady still costs something.
 > - **The planner doesn't read the closing rate.** It's worked out and attached to every
 >   obstacle, but only the evaluation fixture code (`server/nav/evaluation/fixture.py`) reads it.
->   A comment in `server/nav/scene/history.py` says time to contact divides by it. It doesn't.
 >   Time to contact uses the walking speed, 1.4 m/s (section 9).
 > - **A velocity can come from points, not motion.** The middle of a square's points moves when
 >   points enter or leave the square. A still object that's half hidden one frame and fully

@@ -8,7 +8,15 @@ import numpy as np
 import pytest
 
 # Local package imports
-from nav.planner.alarm import AlarmHold, alarm_raised, avoidance_surprise_bits, corridor_points, corridor_time_to_contact
+from nav.planner.alarm import (
+    AlarmHold,
+    alarm_raised,
+    avoidance_surprise_bits,
+    avoidance_surprise_bits_at,
+    corridor_points,
+    corridor_time_to_contact,
+    path_red_from_bits,
+)
 from nav.planner.config import PlannerConfig
 from nav.planner.pipeline import PlannerPipeline
 from nav.types import ObstaclePoint, ObstacleSet
@@ -241,3 +249,35 @@ def test_avoidance_surprise_refuses_a_walking_speed_of_zero() -> None:
     # would surface as a bare ZeroDivisionError.
     with pytest.raises(ValueError, match="walking_speed_mps must be above zero, got 0.0"):
         avoidance_surprise_bits(_set(_at_clearance(1.0)), replace(CONFIG, walking_speed_mps=0.0))
+
+
+def test_the_avoidance_formula_is_0_72_bits_at_one_second() -> None:
+    # Half of (1 s over 1 s) squared is 0.5 nats, and 0.5 / ln 2 is 0.7213 bits.
+    assert avoidance_surprise_bits_at(1.0) == pytest.approx(0.7213, abs=1e-4)
+
+
+def test_the_path_turns_red_at_the_alarms_own_threshold() -> None:
+    # 0.7 s at the shipped settings: half of (1 / 0.7) squared is 1.0204 nats, over ln 2 that is 1.4721 bits.
+    assert path_red_from_bits(CONFIG) == pytest.approx(avoidance_surprise_bits_at(CONFIG.alarm_time_to_contact_seconds))
+    assert path_red_from_bits(CONFIG) == pytest.approx(1.4721, abs=1e-4)
+    # It follows the threshold rather than holding a number of its own.
+    assert path_red_from_bits(replace(CONFIG, alarm_time_to_contact_seconds=1.0)) == pytest.approx(avoidance_surprise_bits_at(1.0))
+
+
+def test_the_avoidance_surprise_and_the_red_point_share_one_formula() -> None:
+    # A group whose time to contact is exactly the alarm threshold reads exactly the red point.
+    clearance = CONFIG.alarm_time_to_contact_seconds * CONFIG.walking_speed_mps
+    point = ObstaclePoint(0.0, clearance + WALKER.radius_meters, 1, clearance, 0.1, None, None, False, np.zeros(3))
+
+    assert avoidance_surprise_bits(_set(point), CONFIG) == pytest.approx(path_red_from_bits(CONFIG))
+
+
+@pytest.mark.parametrize("seconds", [0.0, -0.5, float("nan"), float("inf")])
+def test_the_avoidance_formula_refuses_a_time_that_is_not_above_zero(seconds: float) -> None:
+    with pytest.raises(ValueError, match="time to contact must be above zero"):
+        avoidance_surprise_bits_at(seconds)
+
+
+def test_a_red_point_from_a_threshold_of_zero_is_refused_at_startup() -> None:
+    with pytest.raises(ValueError, match="alarm_time_to_contact_seconds must be above zero"):
+        path_red_from_bits(replace(CONFIG, alarm_time_to_contact_seconds=0.0))

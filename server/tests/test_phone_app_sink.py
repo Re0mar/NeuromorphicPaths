@@ -64,7 +64,7 @@ def test_a_published_path_arrives_length_prefixed_and_decodes() -> None:
         phone.close()
         sink.close()
 
-    assert received.first_heading_radians == pytest.approx(0.25)
+    assert received.lookahead_heading_radians == pytest.approx(0.25)
     assert sink.dropped == 0
 
 
@@ -77,7 +77,7 @@ def test_three_phones_in_sequence_are_each_served() -> None:
         for heading in (0.1, 0.2, 0.3):
             phone = FakePhone(sink)
             sink.publish(_path(heading=heading))
-            headings.append(phone.read_path().first_heading_radians)
+            headings.append(phone.read_path().lookahead_heading_radians)
             phone.close()
     finally:
         sink.close()
@@ -122,7 +122,7 @@ def test_a_phone_that_closes_is_noticed_on_the_next_send_and_the_run_continues(c
     finally:
         sink.close()
 
-    assert received.first_heading_radians == pytest.approx(0.5)
+    assert received.lookahead_heading_radians == pytest.approx(0.5)
     disconnect_lines = [record for record in caplog.records if "phone disconnected" in record.message]
     assert len(disconnect_lines) == 1, [record.message for record in caplog.records]
     assert disconnect_lines[0].levelno == logging.INFO
@@ -144,7 +144,7 @@ def test_a_new_phone_replaces_the_old_one() -> None:
         new.close()
         sink.close()
 
-    assert received.first_heading_radians == pytest.approx(0.7)
+    assert received.lookahead_heading_radians == pytest.approx(0.7)
 
 
 def test_a_second_sink_on_the_same_port_is_refused() -> None:
@@ -171,7 +171,7 @@ def test_publish_starts_listening_on_its_own() -> None:
         assert sink.dropped == 1
         phone = FakePhone(sink)
         sink.publish(_path(heading=0.3))
-        assert phone.read_path().first_heading_radians == pytest.approx(0.3)
+        assert phone.read_path().lookahead_heading_radians == pytest.approx(0.3)
         phone.close()
     finally:
         sink.close()
