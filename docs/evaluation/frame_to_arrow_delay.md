@@ -30,7 +30,9 @@ A frame's trip from the phone and back as an arrow is cut into four pieces, plus
 
 The laptop share splits three ways. **Queue wait** is the frame waiting for the planner to finish
 the one before it. **Processing** is the scene and the planner working on it. **Publish wait** is
-the finished path waiting to be sent. Publish wait is the part the change was aimed at.
+the finished path waiting to be sent, and it includes the user model, which runs after the plan
+is done and took a median of 0.1 ms on walk 2. The three add up to the laptop share. Publish wait is the part
+the change was aimed at.
 
 The phone stamps when the app gets the frame, not when the camera took it. ARCore's own timestamp
 says when the camera took it, and when the phone's clocks allow it (see *The clock check* below), a
@@ -90,7 +92,7 @@ left out. All values in ms.
 | Network | 1,126 / 3,652 / 4,594 | 372 / 2,877 / 4,080 |
 | Laptop | 69.9 / 143.9 / 194.1 | 84.6 / 138.1 / 194.1 |
 | of which queue wait | 7.1 / 56.1 / 103.9 | 10.9 / 55.3 / 103.9 |
-| of which processing | 45.8 / 84.6 / 129.3 | 50.3 / 86.8 / 129.3 |
+| of which processing | 45.8 / 84.6 / 129.2 | 50.2 / 86.6 / 129.2 |
 | of which publish wait | 15.0 / 34.6 / 70.0 | 9.7 / 35.3 / 70.0 |
 | Display | 11.2 / 19.0 / 30.7 | 11.5 / 19.3 / 26.4 |
 | Sensor to handled | 133.4 / 146.5 / 172.6 | 132.5 / 146.5 / 172.6 |
@@ -126,7 +128,7 @@ across runs in brackets. A difference is only claimed where the two ranges don't
 | Publish wait, median | 11.7 (11.2 to 12.3) | 0.5 (0.5 to 0.5) |
 | Publish wait, worst | 43.2 to 81.1 | 3.7 to 5.1 |
 | Queue wait, median | 3.7 (3.5 to 3.9) | 8.6 (7.7 to 10.1) |
-| Processing, median | 39.0 (34.2 to 39.2) | 39.0 (37.7 to 40.0), ranges overlap |
+| Processing, median | 38.9 (34.1 to 39.1) | 38.9 (37.7 to 40.0), ranges overlap |
 | Arrival to sent, median | 51.2 (45.7 to 53.4) | 54.2 (52.6 to 56.4), ranges overlap |
 
 The aim was a publish wait with a median under 5 ms and a worst case under 20 ms on these
@@ -191,7 +193,7 @@ which leaves it no paths, so the two are compared at 10 s.
 | Network | 11.5 / 23.0 / 79.0 | 2,710 / 4,201 / 5,706 |
 | Laptop | 90.2 / 185.2 / 305.2 | 99.1 / 217.7 / 420.7 |
 | of which queue wait | 25.1 / 52.0 / 81.9 | 5.9 / 92.1 / 151.9 |
-| of which processing | 60.6 / 149.6 / 263.2 | 69.1 / 133.3 / 271.1 |
+| of which processing | 60.5 / 149.5 / 261.6 | 69.0 / 133.1 / 271.0 |
 | of which publish wait | 1.1 / 2.3 / 12.8 | 19.9 / 46.5 / 128.7 |
 | Display | 11.4 / 18.6 / 23.1 | 11.2 / 18.6 / 27.7 |
 | Sensor to handled | 138.3 / 150.7 / 162.9 | 139.0 / 167.0 / 187.8 |
@@ -258,6 +260,11 @@ On walks 2 and 3, the same way:
   still holding back for a next frame.
 - On both, the frames handled and never sent or dropped (1,393 and 265) are the ones the app saw
   with no laptop connected.
+- All three laptop logs predate the line a clean close now writes at the end of the log, so the
+  report warns about each that it may be only part of the run. For walks 1 and 2 that's only
+  their age: both runs ended normally. Walk 3's really was cut short, by the one frame above.
+- Walk 2 has one path whose network share came out at -0.7 ms, a round trip and a laptop share
+  within a millisecond of each other. It's left out and counted.
 
 ## What this doesn't tell you
 

@@ -110,11 +110,14 @@ it for the folder. These are the ones the docs and the evaluation refer to:
 |---|---|---|
 | `pixel_walk_3` | Pixel walk, the planner's main test walk | 277 MB |
 | `pixel_display_run` | Pixel walk with the arrow on the phone, the older three-value arrow | 159 MB |
-| `wifi_run_2` | Pixel walk over home Wi-Fi, 2,145 frames, the 1 s lookahead arrow | 127 MB |
+| `wifi_run_2` | Pixel walk over home Wi-Fi, 2,144 frames, the 1 s lookahead arrow | 127 MB |
 | `straight_walk_4` | Pixel walk in a straight line, for the arrow's spread when nothing is in the way | 122 MB |
 | `contact_walk_1` | indoor Pixel walk, the first with the contact term | 72 MB |
 | `neon_walk_1` | the glasses' live walk, as a frame log | 194 MB |
 | `captures/neon_walk_1`, `captures/neon_walk_2` | the glasses' raw streams, replayable through the whole pipeline | 204 and 184 MB |
+| `before_walk_1`, `after_walk_1`, `before_walk_2_5ghz` | the three Pixel walks the frame-to-arrow delay is measured on, each with its report | 234, 207 and 150 MB |
+| `before_walk_1_phone`, `after_walk_1_phone`, `before_walk_2_5ghz_phone` | the Pixel's own timing log for each of those walks | about 1 MB each |
+| `replays` | the timing logs and reports of the replays behind the delay's before-and-after figures | 14 MB |
 
 The two golden recordings the tests replay are the exception. They're cut down to a few hundred KB
 and committed under `server/tests/fixtures/`, so the suite needs no recording at all.

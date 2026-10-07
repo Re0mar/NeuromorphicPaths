@@ -82,13 +82,13 @@ frame to arrow, ms           median     p95   worst   frames   (percentiles line
   network, both hops            11.5    23.0    79.0     1524
   laptop, arrival to sent       90.2   185.2   305.2     1525
     queue wait                  25.1    52.0    81.9     1525
-    processing                  60.6   149.6   263.2     1525
+    processing                  60.5   149.5   261.6     1525
     publish wait                 1.1     2.3    12.8     1525
   display, received to drawn    11.4    18.6    23.1     1525
   sensor to handled            138.3   150.7   162.9     1525
   total, sensor to drawn       263.5   357.9   465.0     1525
 phone clocks               same base: handled minus sensor 106.2 to 200.7 ms over 5256 frames
-WARNING network, both hops came out negative, left out: -0.7 ms
+WARNING network, both hops came out negative 1 times, left out. First: -0.7 ms
 network median per 10 s of the walk, ms (paths)
   0 s: 12 (123), 10 s: 12 (101), 20 s: 12 (184), 30 s: 12 (160), 40 s: 11 (157), 50 s: 12 (103), 60 s: 11 (141), 70 s: 11 (154), 80 s: 12 (111), 90 s: 11 (110), 100 s: 11 (180)
 counts
@@ -97,6 +97,9 @@ counts
 
 the one negative network value is a frame where the round trip and the laptop's time came out
 within a millisecond of each other. one or two of those is stamp jitter. lots would be a bug.
+this walk's laptop log also got a warning above the table that it has no closing line, since it
+was recorded before the closing line existed. a new log only gets that warning when the run was
+killed or its writer failed, and then the numbers may cover only part of the walk.
 
 that's a table of the shares (median, 95th percentile, worst, frame count), a line on the phone's clocks,
 the network median for every 10 s of the walk, then the counts. check:
