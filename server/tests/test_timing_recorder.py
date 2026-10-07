@@ -18,6 +18,7 @@ import pytest
 
 # Local package imports
 from nav.runtime.timing import (
+    CLOSING_KEY,
     TIMING_FILENAME,
     FrameOutcome,
     StageDurations,
@@ -27,6 +28,7 @@ from nav.runtime.timing import (
     frame_ns_from_seconds,
     read_timing_log,
     summarize,
+    timing_log_closed,
 )
 from nav.types import DepthFrame, FloorSource, FrameTiming, Pose
 
@@ -71,7 +73,17 @@ def _recorder(tmp_path: Path, **overrides) -> tuple[TimingRecorder, Path]:
 
 
 def _lines(path: Path) -> list[dict]:
+    """The frame lines. The closing line a clean close adds is read by `_closing_line`."""
+    return [line for line in _all_lines(path) if CLOSING_KEY not in line]
+
+
+def _all_lines(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def _closing_line(path: Path) -> dict | None:
+    last = _all_lines(path)[-1]
+    return last if CLOSING_KEY in last else None
 
 
 def _publish(recorder: TimingRecorder, frame: DepthFrame, plan_done_seconds: float, sent: bool = True) -> None:
@@ -207,6 +219,16 @@ def test_frame_ns_from_seconds_recovers_integer_nanos_near_a_day_of_uptime() -> 
         assert frame_ns_from_seconds(seconds) == int(original)
 
 
+def test_frame_ns_from_seconds_rounds_an_exact_half_up_like_the_app() -> None:
+    """
+    50 days of uptime in, where seconds can land on an exact half nanosecond.
+
+    Python's round gives ...004 here and Java's Math.round ...005, which would key one frame two
+    ways. The app's `anExactHalfRoundsUpLikeTheLaptop` test pins the same value.
+    """
+    assert frame_ns_from_seconds(4_320_000.000000005) == 4_320_000_000_000_005
+
+
 # *******************************************
 # The reader, old lines and new
 # *******************************************
@@ -333,6 +355,94 @@ def test_a_write_failure_stops_the_log_and_says_so_once(tmp_path: Path, caplog: 
     assert len(stopped) == 1
 
 
+def test_a_clean_close_ends_the_log_with_its_closing_line(tmp_path: Path) -> None:
+    recorder, path = _recorder(tmp_path)
+    _publish(recorder, _frame(1.0), 1000.05)
+    recorder.frame_dropped(_frame(2.0))
+    recorder.close()
+
+    assert _closing_line(path) == {CLOSING_KEY: True, "lines_written": 2}
+    assert timing_log_closed(path)
+    assert len(read_timing_log(path)) == 2, "the reader must skip the closing line"
+
+
+def test_a_log_whose_writer_failed_has_no_closing_line(tmp_path: Path) -> None:
+    """A partial log must not look like a whole one."""
+
+    class FailsOnTheSecondLine(TimingLog):
+        def __init__(self, path: Path) -> None:
+            super().__init__(path)
+            self.lines = 0
+
+        def append(self, record: TimingRecord) -> None:
+            self.lines += 1
+            if self.lines == 2:
+                raise OSError(28, "No space left on device")
+            super().append(record)
+
+    path = tmp_path / TIMING_FILENAME
+    recorder = TimingRecorder(FailsOnTheSecondLine(path), clock=FakeClock())
+    for index in range(3):
+        recorder.frame_dropped(_frame(float(index)))
+    recorder.close()
+
+    assert len(_lines(path)) == 1
+    assert not timing_log_closed(path)
+
+
+def test_a_write_failure_while_closing_is_handled_like_any_other(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """The in-flight lines are written at close. A failure there used to escape to threading's excepthook."""
+
+    class FullAtClose(TimingLog):
+        def append(self, record: TimingRecord) -> None:
+            if record.outcome is FrameOutcome.IN_FLIGHT:
+                raise OSError(28, "No space left on device")
+            super().append(record)
+
+    escaped: list[BaseException] = []
+    previous_hook = threading.excepthook
+    threading.excepthook = lambda arguments: escaped.append(arguments.exc_value)
+    try:
+        path = tmp_path / TIMING_FILENAME
+        recorder = TimingRecorder(FullAtClose(path), clock=FakeClock())
+        recorder.frame_taken(_frame(1.0))
+        with caplog.at_level(logging.ERROR):
+            recorder.close()
+    finally:
+        threading.excepthook = previous_hook
+
+    assert escaped == []
+    assert any("timing log stopped writing" in record.message for record in caplog.records)
+
+
+def test_the_sent_stamp_is_read_on_the_callers_thread(tmp_path: Path) -> None:
+    """The sink's write time is the measurement. Read later on the writer thread, it would include the queue."""
+    release = threading.Event()
+
+    class HeldLog(TimingLog):
+        def append(self, record: TimingRecord) -> None:
+            release.wait(5.0)
+            super().append(record)
+
+    clock = FakeClock(start=1000.0, step=0.0)
+    path = tmp_path / TIMING_FILENAME
+    recorder = TimingRecorder(HeldLog(path), clock=clock)
+    # A dropped line first, so the writer is held inside its append while the stamps below queue.
+    recorder.frame_dropped(_frame(0.5))
+    frame = _frame(1.0)
+    recorder.frame_taken(frame)
+    recorder.frame_planned(frame, 1000.05, FloorSource.FITTED, STAGES)
+    recorder.path_sent(frame.timestamp_seconds)
+    # The clock moves on before the writer gets to the send. The stamp must not.
+    clock._next = 2000.0
+    recorder.path_published(frame.timestamp_seconds)
+    release.set()
+    recorder.close()
+
+    published = next(line for line in _lines(path) if line["outcome"] == FrameOutcome.PUBLISHED.value)
+    assert published["sent_seconds"] == pytest.approx(1000.0)
+
+
 def test_an_unexpected_writer_error_is_logged_as_unexpected(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     class Broken(TimingLog):
         def append(self, record: TimingRecord) -> None:
@@ -359,12 +469,20 @@ def test_a_send_or_publish_for_a_frame_never_taken_writes_nothing(tmp_path: Path
 
 
 def test_a_stamp_after_close_is_ignored(tmp_path: Path) -> None:
+    """A frame closed as in flight stays in flight. Its path going out late writes no second line."""
     recorder, path = _recorder(tmp_path)
+    frame = _frame(1.0)
+    recorder.frame_taken(frame)
+    recorder.frame_planned(frame, 1000.05, FloorSource.FITTED, STAGES)
     recorder.close()
 
-    recorder.frame_dropped(_frame(1.0))
+    recorder.path_sent(frame.timestamp_seconds)
+    recorder.path_published(frame.timestamp_seconds)
+    recorder.frame_dropped(_frame(2.0))
+    time.sleep(0.2)
 
-    assert not path.exists()
+    assert [line["outcome"] for line in _lines(path)] == [FrameOutcome.IN_FLIGHT.value]
+    assert _closing_line(path) == {CLOSING_KEY: True, "lines_written": 1}
 
 
 def test_a_recorder_without_a_log_records_nothing_and_starts_no_thread(tmp_path: Path) -> None:

@@ -22,6 +22,7 @@ report that joins the two reads both from one place.
 # Standard library imports
 import json
 import logging
+import math
 import queue
 import threading
 from collections import Counter, OrderedDict
@@ -53,6 +54,8 @@ MIXED_RUN_GAP_SECONDS = 60.0
 # a stuck publisher produces, and the bound keeps that from growing without end.
 DEFAULT_MAX_OPEN_RECORDS = 1000
 DEFAULT_CLOSE_TIMEOUT_SECONDS = 5.0
+# The key of the line a recorder writes last on a clean close. No frame line has it.
+CLOSING_KEY = "log_closed"
 
 
 class FrameOutcome(Enum):
@@ -74,8 +77,8 @@ class Share(Enum):
     """
 
     LAPTOP_QUEUE_WAIT = "laptop_queue_wait"  # Arrival to the worker taking the frame. Includes decode.
-    LAPTOP_PROCESSING = "laptop_processing"  # Scene, planner and user model.
-    LAPTOP_PUBLISH_WAIT = "laptop_publish_wait"  # Plan done to the phone sink's write.
+    LAPTOP_PROCESSING = "laptop_processing"  # Scene and planner, up to the plan being done.
+    LAPTOP_PUBLISH_WAIT = "laptop_publish_wait"  # Plan done to the phone sink's write. Includes the user model.
     LAPTOP = "laptop"  # Arrival to the phone sink's write. The laptop's whole share.
     PHONE = "phone"  # Frame handled on the phone to its depth sent.
     NETWORK = "network"  # Both hops, the phone's sent-to-received minus the laptop's whole share.
@@ -90,7 +93,9 @@ def _difference(end: float | None, start: float | None) -> float | None:
 
 
 def _processing_seconds(record: "TimingRecord") -> float | None:
-    stages = (record.scene_milliseconds, record.planner_milliseconds, record.usermodel_milliseconds)
+    # The user model runs after the plan is done, so its time is already inside the publish wait.
+    # Counting it here too made the three parts add up to more than the laptop's share.
+    stages = (record.scene_milliseconds, record.planner_milliseconds)
     if any(stage is None for stage in stages):
         return None
     return sum(stages) / MILLISECONDS_PER_SECOND
@@ -192,13 +197,18 @@ def frame_ns_from_seconds(timestamp_seconds: float) -> int:
     """
     The phone's ARCore frame timestamp in nanoseconds, back from the seconds it travels in.
 
-    The app divides the integer by 1e9 to fill `timestamp_seconds`, and a double near a day of
-    uptime holds that closely enough for rounding to recover it exactly. Joins use this, never
-    the float. The app's `TimingRecord.frameNanosFromSeconds` is this function's twin.
+    The app divides the integer by 1e9 to fill `timestamp_seconds`. Past about 48 days of uptime a
+    double can't hold that to the nanosecond, so this isn't always the original integer. It's a
+    key, and the app derives every one of its keys through the same seconds and the same rounding,
+    so the two logs still match. The app's `TimingRecord.frameNanosFromSeconds` is this function's
+    twin.
+
+    Rounds half up like Java's `Math.round`. Python's `round` goes half to even, and past 48 days
+    exact halves are common enough to split the join.
 
     example: 123456.789012345 -> 123456789012345
     """
-    return round(timestamp_seconds * NANOSECONDS_PER_SECOND)
+    return math.floor(timestamp_seconds * NANOSECONDS_PER_SECOND + 0.5)
 
 
 @dataclass(frozen=True)
@@ -256,6 +266,34 @@ class TimingLog:
         line["outcome"] = None if record.outcome is None else record.outcome.value
         append_text_lf(self._path, json.dumps(line, allow_nan=False) + "\n")
 
+    def append_closing_line(self, lines_written: int) -> None:
+        """The last line, written only when the recorder closed cleanly. A log without it was cut short."""
+        append_text_lf(self._path, json.dumps({CLOSING_KEY: True, "lines_written": lines_written}) + "\n")
+
+
+def timing_log_closed(path: Path) -> bool:
+    """
+    Whether a timing log ends with its closing line.
+
+    A log without one was stopped before it closed: the run was killed, the writer failed, or the
+    log predates the closing line. Its lines are then possibly only the first part of the run.
+
+    :param path: The file, or the record directory holding it.
+    :rtype: bool
+    """
+    path = Path(path)
+    if path.is_dir():
+        path = path / TIMING_FILENAME
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if not lines:
+        return False
+    try:
+        last = json.loads(lines[-1])
+    except ValueError:
+        # A last line cut off mid-write is the clearest sign of all that the log didn't close.
+        return False
+    return isinstance(last, dict) and last.get(CLOSING_KEY) is True
+
 
 _CLOSE = object()  # The writer's last event. Everything still open is written in flight after it.
 
@@ -290,6 +328,7 @@ class TimingRecorder:
         # Writer-thread state only. Keyed by frame_ns, in the order the worker took the frames.
         self._open: OrderedDict[int, dict] = OrderedDict()
         self._evicted = 0
+        self._lines_written = 0
         self._writing_failed = False
         if timing_log is not None:
             self._writer = threading.Thread(target=self._write_lines, name="timing-writer", daemon=True)
@@ -343,11 +382,10 @@ class TimingRecorder:
     def _write_lines(self) -> None:
         while True:
             event = self._events.get()
-            if event is _CLOSE:
-                for frame_ns in list(self._open):
-                    self._emit(self._open.pop(frame_ns), FrameOutcome.IN_FLIGHT)
-                return
             try:
+                if event is _CLOSE:
+                    self._close_open_records()
+                    return
                 self._handle(event)
             except OSError as write_error:
                 # A full disk or a vanished directory. The run goes on without its timing, and says
@@ -358,6 +396,16 @@ class TimingRecorder:
                 # Nobody predicted this one. The measurement is lost, the walk must not be.
                 log.error("UNEXPECTED %s in the timing writer, may need a handler", type(unexpected_error).__name__, exc_info=True)
                 self._writing_failed = True
+            if event is _CLOSE:
+                return
+
+    def _close_open_records(self) -> None:
+        """Write every frame still open as in flight, then the closing line if nothing failed."""
+        for frame_ns in list(self._open):
+            self._emit(self._open.pop(frame_ns), FrameOutcome.IN_FLIGHT)
+        # A run that saw no frame leaves no file, as before, so its --timing-log path stays usable.
+        if not self._writing_failed and self._lines_written > 0:
+            self._timing_log.append_closing_line(self._lines_written)
 
     def _handle(self, event: tuple) -> None:
         kind = event[0]
@@ -409,6 +457,7 @@ class TimingRecorder:
         if self._writing_failed:
             return
         self._timing_log.append(TimingRecord(outcome=outcome, **fields))
+        self._lines_written += 1
 
 
 def _frame_fields(frame: DepthFrame) -> dict:
@@ -447,7 +496,7 @@ def read_timing_log(path: Path) -> list[TimingRecord]:
     if path.is_dir():
         path = path / TIMING_FILENAME
     if not path.is_file():
-        raise FileNotFoundError(f"no timing log at {path}. Only a run with --record-to writes one")
+        raise FileNotFoundError(f"no timing log at {path}. Only a run with --record-to or --timing-log writes one")
     records = []
     unknown_keys: set[str] = set()
     for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
@@ -464,6 +513,9 @@ def read_timing_log(path: Path) -> list[TimingRecord]:
             raise ValueError(f"{where} nests too deeply to be a timing line") from nesting_error
         if not isinstance(raw, dict):
             raise ValueError(f"{where} must be a JSON object, got {type(raw).__name__}")
+        if CLOSING_KEY in raw:
+            # The closing line carries no frame. `timing_log_closed` is what reads it.
+            continue
         missing = [key for key in _RECORD_KEYS if key not in raw]
         if missing:
             raise ValueError(f"{where} is missing {', '.join(missing)}")

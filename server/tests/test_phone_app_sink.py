@@ -244,3 +244,25 @@ def test_a_raising_sent_hook_leaves_the_phone_sink_serving(caplog: pytest.LogCap
 
     errors = [record for record in caplog.records if "sent hook" in record.message]
     assert len(errors) == 1, "logged once, not once per path"
+
+
+def test_a_failed_write_reports_no_send(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A path that never reached the phone must not be stamped sent, or its time lands in the network share."""
+    import nav.sinks.phone_app as phone_app_module
+
+    def reset(client, data) -> None:
+        raise ConnectionResetError("the phone went away mid-write")
+
+    sent: list[float] = []
+    sink = PhoneAppSink(PhoneAppConfig(port=0, bind_address="127.0.0.1"), on_sent=sent.append)
+    sink.start()
+    phone = FakePhone(sink)
+    try:
+        sink.publish(_path())
+        monkeypatch.setattr(phone_app_module, "write_message", reset)
+        sink.publish(_path())
+    finally:
+        phone.close()
+        sink.close()
+
+    assert sent == [1.0], "only the first path, which went out, is stamped"

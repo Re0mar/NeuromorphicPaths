@@ -44,6 +44,8 @@ CAMERA_FORWARD = np.array([0.0, 0.0, 1.0])
 # How long the publisher waits for a result before checking whether it was asked to stop. Short,
 # so stopping takes a tenth of a second at most. A new result wakes it at once regardless.
 PUBLISHER_POLL_SECONDS = 0.1
+# How long the end of a source waits for the last path to reach every display.
+PUBLISHER_FLUSH_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -245,7 +247,8 @@ def run(config: RunConfig) -> int:
             # A failure on that last frame is only seen here, since no further submit comes.
             worker.wait_until_idle()
             raise_any_failure()
-            publisher.flush()
+            if not publisher.flush(PUBLISHER_FLUSH_SECONDS):
+                log.warning("the last path didn't reach every display within %.0f s", PUBLISHER_FLUSH_SECONDS)
             raise_any_failure()
 
             if not config.reconnect:
@@ -254,6 +257,12 @@ def run(config: RunConfig) -> int:
             log.info("source ended, waiting for the next connection")
     except KeyboardInterrupt:
         log.info("interrupted")
+        # A failure stored while the source sat quiet would otherwise end the run as a success.
+        try:
+            raise_any_failure()
+        except Exception as stored_failure:
+            log.error("UNEXPECTED %s before the interrupt, may need a handler", type(stored_failure).__name__, exc_info=stored_failure)
+            exit_code = 1
     except (OSError, ValueError) as refused:
         # The source or the sink refused its input: a file that is not there, a port nobody sent
         # to, a phone that is unreachable, a recording in the wrong format. Known and named, and
@@ -311,9 +320,13 @@ class PublisherThread(threading.Thread):
                     self._publish(result)
         except Exception as unexpected_error:
             # The worker's own failure re-raised, or a sink failing in a way no sink handles. The
-            # main loop re-raises it and logs it with its traceback. This line says when it
-            # happened, since a live source can hold the main loop until the next frame.
-            log.error("publisher stopped on UNEXPECTED %s, the run ends at the next frame", type(unexpected_error).__name__)
+            # main loop re-raises it. Logged here as well, because a live source can hold the main
+            # loop until the next frame.
+            if unexpected_error is self._worker.failure:
+                # The worker already logged it with its traceback. This is not a second fault.
+                log.info("publisher stopping, the worker failed")
+            else:
+                log.error("publisher stopped on UNEXPECTED %s, the run ends at the next frame", type(unexpected_error).__name__, exc_info=True)
             self._failure = unexpected_error
         finally:
             # Wakes a flush that would otherwise wait out its timeout on a thread that has ended.
@@ -341,9 +354,17 @@ class PublisherThread(threading.Thread):
             return self._published.wait_for(lambda: self._last is target or not self.is_alive(), timeout_seconds)
 
     def stop(self, timeout_seconds: float = 5.0) -> None:
+        """
+        Ask the thread to stop, and wait for it at most `timeout_seconds`.
+
+        A thread still inside a sink after that is left running, and said so, because the sinks
+        close next and a sink that won't return is the likely reason.
+        """
         self._stopping.set()
         if self.is_alive():
             self.join(timeout_seconds)
+        if self.is_alive():
+            log.warning("publisher thread still inside a display after %.0f s, closing the displays under it", timeout_seconds)
 
     def _publish(self, result: FrameResult) -> None:
         if isinstance(self._sink, DebugSink):

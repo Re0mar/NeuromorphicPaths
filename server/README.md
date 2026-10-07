@@ -319,7 +319,10 @@ came from. Its `outcome` says what became of it:
 - `in_flight`: still unfinished when the run ended.
 
 A line is written when its frame's fate is settled, so the file is in that order, not in frame
-order. Sort by `timestamp_seconds` for frame order.
+order. Sort by `timestamp_seconds` for frame order. A run that closes cleanly ends the file with
+one more line, `{"log_closed": true, "lines_written": n}`. A log without it was cut short: the run
+was killed or its writer failed, and the report warns that it may be only the first part. Logs
+written before 2026-10-07 never have it.
 
 The times are on the laptop's clock. Capture is only there for a source that measured the offset
 between its clock and the laptop's, which today is the Neon. Summarize a run with:
@@ -331,7 +334,9 @@ between its clock and the laptop's, which today is the Neon. Summarize a run wit
 It leaves out the first 10 seconds by default, while the network and the GPU warm up, and prints
 each share's median, 95th percentile and worst case, the planned frame rate, the longest gap
 between plans, and the floor sources. A log with the newer fields also gets the laptop's shares
-toward the phone: the queue wait, the processing, the publish wait, and arrival to sent.
+toward the phone: the queue wait, the processing, the publish wait, and arrival to sent. The
+processing is the scene and the planner. The user model runs after the plan is done, so its time
+is part of the publish wait, and the three add up to arrival to sent.
 `--verbose` prints the same shares per frame while a run is going, along with the observed heading.
 
 The report takes a record directory or a `--timing-log` file. Given the Pixel's own timing log too,
@@ -344,9 +349,12 @@ rest on and a verdict on whether the phone's two clocks share a base:
 .venv/Scripts/python examples/timing_report.py frame_logs/walk --phone timing_from_phone/timing_2026-10-06T10-12-03Z.jsonl --json frame_logs/walk/report.json
 ```
 
-`--json` saves the figures. `--compare` sets saved reports side by side, at least three runs a side,
+`--json` saves the figures, along with whether either log was cut short. It refuses to save over
+a log it is reading. `--compare` sets saved reports side by side, at least three runs a side,
 and flags any share whose run-to-run spreads overlap, because a difference inside that spread is
-not a result:
+not a result. A share that fewer than three runs a side carry, such as the sensor shares when a
+run's clocks didn't share a base, is listed as not compared, and a run that was cut short is
+named in a warning:
 
 ```
 .venv/Scripts/python examples/timing_report.py --compare --before frame_logs/before_1.json frame_logs/before_2.json frame_logs/before_3.json --after frame_logs/after_1.json frame_logs/after_2.json frame_logs/after_3.json

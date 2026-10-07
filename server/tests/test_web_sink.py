@@ -8,6 +8,7 @@ on the test thread, which is exactly the two-loop arrangement the design chose.
 # Standard library imports
 import asyncio
 import json
+import threading
 import time
 
 # Third party imports
@@ -463,3 +464,70 @@ def test_an_unexpected_drawing_error_stops_the_pictures_and_the_paths_keep_going
 def test_a_picture_rate_that_is_not_positive_is_refused(rate: float) -> None:
     with pytest.raises(ValueError, match="max_pictures_per_second"):
         WebConfig(max_pictures_per_second=rate)
+
+
+def test_a_publish_after_close_starts_no_new_server() -> None:
+    """A publisher still inside another display at shutdown can reach this one after it closed."""
+    sink = WebSink(WebConfig(port=0))
+    sink.start()
+    sink.close()
+    threads_before = {thread.name for thread in threading.enumerate()}
+
+    sink.publish(_path())
+    sink.publish_debug(_path(), *_field(), _view())
+
+    assert sink._thread is None
+    started = {thread.name for thread in threading.enumerate()} - threads_before
+    assert not started & {"web-sink", "web-render"}
+
+
+def test_views_are_not_queued_once_the_render_thread_has_ended(sink: WebSink, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    import nav.sinks.web as web_module
+
+    def broken(view, path):
+        raise RuntimeError("a bug in the drawing")
+
+    monkeypatch.setattr(web_module, "render_depth_view", broken)
+    field, grid = _field()
+    sink.publish_debug(_path(), field, grid, _view())
+    sink._render_thread.join(RECEIVE_TIMEOUT_SECONDS)
+    for _ in range(5):
+        sink.publish_debug(_path(), field, grid, _view())
+
+    with caplog.at_level("INFO", logger="nav.sinks.web"):
+        sink.close()
+    assert not any("replaced by a newer one" in record.message for record in caplog.records)
+
+
+def test_a_draw_that_outlives_close_is_dropped_quietly(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    """
+    The draw takes 2.3 s, past close()'s 2 s wait for the render thread, and the server's join is
+    held 0.6 s longer, so the draw finishes after the server's loop closed but before the sink lets
+    go of it. It used to raise there, logged as an unexpected drawing error.
+    """
+    import nav.sinks.web as web_module
+
+    real_render = web_module.render_depth_view
+
+    def slow_render(view, path):
+        time.sleep(2.3)
+        return real_render(view, path)
+
+    monkeypatch.setattr(web_module, "render_depth_view", slow_render)
+    sink = WebSink(WebConfig(port=0))
+    sink.start()
+    server_thread = sink._thread
+    real_join = server_thread.join
+
+    def slow_join(timeout=None):
+        real_join(timeout)
+        time.sleep(0.6)
+
+    server_thread.join = slow_join
+    sink.publish_debug(_path(), *_field(), _view())
+    time.sleep(0.05)
+    with caplog.at_level("DEBUG", logger="nav.sinks.web"):
+        sink.close()
+        time.sleep(1.0)
+
+    assert not any("UNEXPECTED" in record.message for record in caplog.records)

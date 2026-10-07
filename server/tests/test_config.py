@@ -685,3 +685,15 @@ def test_a_new_or_empty_timing_log_file_is_accepted(tmp_path) -> None:
 
     assert build_run_config([*MINIMAL_VIDEO_ARGV, "--timing-log", str(empty)]).timing_log == str(empty)
     assert build_run_config([*MINIMAL_VIDEO_ARGV, "--timing-log", str(tmp_path / "new.jsonl")]).timing_log == str(tmp_path / "new.jsonl")
+
+
+@pytest.mark.parametrize("where", ["a directory", "a missing folder"])
+def test_a_timing_log_that_is_a_directory_or_in_a_missing_folder_is_refused(where: str, tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Either one let the walk start and fail on its first line, running untimed."""
+    target = tmp_path if where == "a directory" else tmp_path / "no_such_folder" / "t.jsonl"
+
+    with pytest.raises(SystemExit):
+        build_run_config([*MINIMAL_VIDEO_ARGV, "--timing-log", str(target)])
+
+    message = capsys.readouterr().err
+    assert ("is a directory" in message) if where == "a directory" else ("in a folder that doesn't exist" in message)

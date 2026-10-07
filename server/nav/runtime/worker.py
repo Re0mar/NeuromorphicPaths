@@ -76,6 +76,11 @@ class NewestFrameWorker(threading.Thread, Generic[Result]):
         self.raise_failure()
         return self._latest
 
+    @property
+    def failure(self) -> BaseException | None:
+        """The unexpected exception that ended the thread, or None while it is working."""
+        return self._failure
+
     def raise_failure(self) -> None:
         """
         :raises: Whatever unexpected exception ended the thread. Returns quietly while it is working.
@@ -143,8 +148,9 @@ class NewestFrameWorker(threading.Thread, Generic[Result]):
                 self._busy = frame is not None
             if frame is None:
                 # Stopping drains: a frame handed over just before stop() is still processed,
-                # so the loop can publish the last thing the source produced. Only an empty
-                # queue ends the thread.
+                # so its timing line gets written. The publisher has stopped by then, so its path
+                # is not sent. A source that ends normally is flushed before stop(). Only an
+                # empty queue ends the thread.
                 if self._stopping.is_set():
                     return
                 time.sleep(IDLE_SLEEP_SECONDS)

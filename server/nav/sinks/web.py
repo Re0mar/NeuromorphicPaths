@@ -87,6 +87,9 @@ class WebSink:
         self._pending_picture: _DebugPicture | None = None
         self._render_stopping = False
         self._pictures_replaced = 0
+        # Set by close() for good. A publisher still inside a display at shutdown can call in after
+        # it, and publish() would otherwise start a second server for nobody.
+        self._closed = False
 
     @property
     def dropped(self) -> int:
@@ -114,7 +117,9 @@ class WebSink:
         self._render_thread.start()
 
     def publish(self, path: PlannedPath) -> None:
-        """Queue the path for every browser. Starts the server on the first call."""
+        """Queue the path for every browser. Starts the server on the first call, and does nothing once closed."""
+        if self._closed:
+            return
         if self._thread is None:
             self.start()
         self._enqueue(_Slot.PATH, web_text_message(WebMessageKind.PATH, path_message(path)))
@@ -127,6 +132,9 @@ class WebSink:
         since the page only ever shows the newest.
         """
         self.publish(path)
+        if self._render_thread is None or not self._render_thread.is_alive():
+            # Closed, never started, or ended by an unexpected drawing error. Nothing would draw it.
+            return
         with self._render_wake:
             if self._pending_picture is not None:
                 self._pictures_replaced += 1
@@ -134,6 +142,7 @@ class WebSink:
             self._render_wake.notify_all()
 
     def close(self) -> None:
+        self._closed = True
         if self._thread is None:
             return
         # The render thread stops first, so nothing it builds is offered to a server that has gone.
@@ -212,9 +221,15 @@ class WebSink:
         # publish runs on the publisher's thread. The queue belongs to the server's loop, so the
         # put is handed to that loop rather than touched from here. Both values go as arguments,
         # never through a closure, so a later frame cannot rebind what this one queued.
-        if self._loop is None or self._outgoing is None:
+        # Read once. close() clears the field from another thread, and the loop can close before it does.
+        loop = self._loop
+        if loop is None or self._outgoing is None:
             return
-        self._loop.call_soon_threadsafe(self._offer, slot, message)
+        try:
+            loop.call_soon_threadsafe(self._offer, slot, message)
+        except RuntimeError as closed_loop:
+            # The server already stopped: a draw that outlived close() by a moment. Nothing to send it to.
+            log.debug("message not sent, the server had stopped (caught RuntimeError, expected): %s", closed_loop)
 
     def _offer(self, slot: _Slot | None, message: str | bytes | None) -> None:
         """

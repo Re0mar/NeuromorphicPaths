@@ -127,6 +127,39 @@ class Orphan(Enum):
     DRAWN_NEVER_RECEIVED = "phone drawn, never received"
 
 
+class Count(Enum):
+    """What the report counts on the way to the join. The values are the printed and saved names."""
+
+    PHONE_FRAMES_HANDLED = "phone frames handled"
+    PHONE_FRAMES_WITH_NO_ARCORE_STAMP = "phone frames with no ARCore stamp"
+    PHONE_FRAMES_SENT = "phone frames sent"
+    PHONE_FRAMES_DROPPED = "phone frames dropped"
+    LAPTOP_FRAMES_RECEIVED = "laptop frames received"
+    LAPTOP_FRAMES_PUBLISHED = "laptop frames published"
+    LAPTOP_FRAMES_SUPERSEDED = "laptop frames superseded"
+    LAPTOP_FRAMES_DROPPED = "laptop frames dropped"
+    LAPTOP_FRAMES_SKIPPED = "laptop frames skipped"
+    LAPTOP_FRAMES_IN_FLIGHT = "laptop frames in flight"
+    PATHS_RECEIVED = "paths received"
+    PATHS_DRAWN = "paths drawn"
+    PHONE_RECORDS_LOST = "phone records lost"
+    DUPLICATE_HANDLED_LINES = "duplicate handled lines"
+    DUPLICATE_SENT_LINES = "duplicate sent lines"
+    DUPLICATE_RECEIVED_LINES = "duplicate received lines"
+    DUPLICATE_DRAWN_LINES = "duplicate drawn lines"
+    DUPLICATE_LAPTOP_LINES = "duplicate laptop lines"
+
+
+# Each laptop outcome's count. Every outcome has one, and a test holds that.
+LAPTOP_OUTCOME_COUNTS: dict[FrameOutcome, Count] = {
+    FrameOutcome.PUBLISHED: Count.LAPTOP_FRAMES_PUBLISHED,
+    FrameOutcome.SUPERSEDED: Count.LAPTOP_FRAMES_SUPERSEDED,
+    FrameOutcome.DROPPED: Count.LAPTOP_FRAMES_DROPPED,
+    FrameOutcome.SKIPPED: Count.LAPTOP_FRAMES_SKIPPED,
+    FrameOutcome.IN_FLIGHT: Count.LAPTOP_FRAMES_IN_FLIGHT,
+}
+
+
 @dataclass
 class PhoneFrame:
     """Everything the phone logged about one frame. Each stamp is None until its line is read."""
@@ -148,6 +181,8 @@ class PhoneLog:
     frames: dict[int, PhoneFrame] = field(default_factory=dict)
     lost_records: int = 0
     truncated_at_bytes: int | None = None
+    duplicate_handled: int = 0
+    duplicate_sent: int = 0
     duplicate_received: int = 0
     duplicate_drawn: int = 0
 
@@ -167,7 +202,7 @@ class JoinedReport:
 
     shares: dict[Share, ShareStatistics | None]
     joined_paths: int
-    counts: dict[str, int]
+    counts: dict[Count, int]
     orphans: dict[Orphan, int]
     negative_examples: dict[Share, list[float]]
     clock_verdict: ClockVerdict
@@ -175,6 +210,8 @@ class JoinedReport:
     excluded_as_cold: int
     phone_log_truncated: bool
     network_by_slice: list[NetworkSlice] = field(default_factory=list)
+    # How many of each share came out negative and were left out. Only the first few are examples.
+    negative_counts: dict[Share, int] = field(default_factory=dict)
 
 
 # *******************************************
@@ -238,16 +275,25 @@ def _read_phone_line(phone_log: PhoneLog, raw: dict, kind: str, where: str) -> N
     if kind == PHONE_TYPE_SESSION:
         raise ValueError(f"{where} is a second session line, and one log is one session")
     frame = phone_log.frames.setdefault(_integer(raw, PHONE_FRAME_NS, where), PhoneFrame())
+    # A phone that reconnects can hand back an older clock, and a frame timestamp can repeat. Every
+    # line type keeps its first value and counts the repeat, so one frame's stamps never mix with
+    # another's, and one stray line doesn't refuse a whole walk.
     if kind == PHONE_TYPE_FRAME:
-        frame.handled_ns = _integer(raw, PHONE_HANDLED_NS, where)
+        handled_ns = _integer(raw, PHONE_HANDLED_NS, where)
+        if frame.handled_ns is None:
+            frame.handled_ns = handled_ns
+        else:
+            phone_log.duplicate_handled += 1
     elif kind == PHONE_TYPE_SENT:
-        frame.sent_ns = _integer(raw, PHONE_SENT_NS, where)
+        sent_ns = _integer(raw, PHONE_SENT_NS, where)
+        if frame.sent_ns is None:
+            frame.sent_ns = sent_ns
+        else:
+            phone_log.duplicate_sent += 1
     elif kind == PHONE_TYPE_DROPPED:
         frame.dropped = True
     elif kind == PHONE_TYPE_RECEIVED:
         received_ns = _integer(raw, PHONE_RECEIVED_NS, where)
-        # A phone that reconnects can hand back an older clock, and a frame timestamp can repeat.
-        # The first is kept and the repeat counted, so one stray line doesn't refuse a whole walk.
         if frame.received_ns is None:
             frame.received_ns = received_ns
         else:
@@ -311,8 +357,19 @@ def join(phone_log: PhoneLog, laptop_records: list[TimingRecord], exclude_first_
     :return: The report.
     :rtype: JoinedReport
     """
-    laptop = {frame_ns_from_seconds(record.timestamp_seconds): record for record in laptop_records}
-    excluded = _cold_frames(phone_log, laptop, exclude_first_seconds)
+    laptop: dict[int, TimingRecord] = {}
+    duplicate_laptop_lines = 0
+    for record in laptop_records:
+        # The first line for a key is kept and a repeat counted, as on the phone side.
+        frame_ns = frame_ns_from_seconds(record.timestamp_seconds)
+        if frame_ns in laptop:
+            duplicate_laptop_lines += 1
+        else:
+            laptop[frame_ns] = record
+    cold = _cold_frames(phone_log, laptop, exclude_first_seconds)
+    # ARCore's 0 stamp is the same key for every frame that has it, so its lines can belong to
+    # different frames. It's counted, and joined with nothing.
+    excluded = cold | {ARCORE_NO_TIMESTAMP_NS}
     phone_frames = {frame_ns: frame for frame_ns, frame in phone_log.frames.items() if frame_ns not in excluded}
     laptop = {frame_ns: record for frame_ns, record in laptop.items() if frame_ns not in excluded}
 
@@ -350,14 +407,15 @@ def join(phone_log: PhoneLog, laptop_records: list[TimingRecord], exclude_first_
     return JoinedReport(
         shares={share: share_statistics(durations[share]) for share in Share},
         joined_paths=joined_paths,
-        counts=_counts(phone_log, phone_frames, laptop),
+        counts=_counts(phone_log, phone_frames, laptop, duplicate_laptop_lines),
         orphans=_orphans(phone_frames, laptop),
         negative_examples={share: values[:NEGATIVE_EXAMPLES_SHOWN] for share, values in negatives.items() if values},
         clock_verdict=verdict,
         clock_reason=reason,
-        excluded_as_cold=len(excluded),
+        excluded_as_cold=len(cold),
         phone_log_truncated=phone_log.truncated_at_bytes is not None,
         network_by_slice=_network_by_slice(network_when),
+        negative_counts={share: len(values) for share, values in negatives.items() if values},
     )
 
 
@@ -424,20 +482,29 @@ def _clock_check(frames: dict[int, PhoneFrame]) -> tuple[ClockVerdict, str]:
     return ClockVerdict.SAME_BASE, f"handled minus sensor {smallest * 1000:.1f} to {largest * 1000:.1f} ms over {len(gaps)} frames"
 
 
-def _counts(phone_log: PhoneLog, phone_frames: dict[int, PhoneFrame], laptop: dict[int, TimingRecord]) -> dict[str, int]:
-    outcomes = {outcome: sum(record.outcome is outcome for record in laptop.values()) for outcome in FrameOutcome}
+def _counts(
+    phone_log: PhoneLog,
+    phone_frames: dict[int, PhoneFrame],
+    laptop: dict[int, TimingRecord],
+    duplicate_laptop_lines: int,
+) -> dict[Count, int]:
+    outcomes = {LAPTOP_OUTCOME_COUNTS[outcome]: sum(record.outcome is outcome for record in laptop.values()) for outcome in FrameOutcome}
     return {
-        "phone frames handled": sum(frame.handled_ns is not None for frame in phone_frames.values()),
-        "phone frames with no ARCore stamp": sum(frame_ns == ARCORE_NO_TIMESTAMP_NS for frame_ns in phone_frames),
-        "phone frames sent": sum(frame.sent_ns is not None for frame in phone_frames.values()),
-        "phone frames dropped": sum(frame.dropped for frame in phone_frames.values()),
-        "laptop frames received": len(laptop),
-        **{f"laptop frames {outcome.value.replace('_', ' ')}": count for outcome, count in outcomes.items()},
-        "paths received": sum(frame.received_ns is not None for frame in phone_frames.values()),
-        "paths drawn": sum(frame.drawn_ns is not None for frame in phone_frames.values()),
-        "phone records lost": phone_log.lost_records,
-        "duplicate received lines": phone_log.duplicate_received,
-        "duplicate drawn lines": phone_log.duplicate_drawn,
+        Count.PHONE_FRAMES_HANDLED: sum(frame.handled_ns is not None for frame in phone_frames.values()),
+        # From the whole log, since the join leaves these frames out.
+        Count.PHONE_FRAMES_WITH_NO_ARCORE_STAMP: int(ARCORE_NO_TIMESTAMP_NS in phone_log.frames),
+        Count.PHONE_FRAMES_SENT: sum(frame.sent_ns is not None for frame in phone_frames.values()),
+        Count.PHONE_FRAMES_DROPPED: sum(frame.dropped for frame in phone_frames.values()),
+        Count.LAPTOP_FRAMES_RECEIVED: len(laptop),
+        **outcomes,
+        Count.PATHS_RECEIVED: sum(frame.received_ns is not None for frame in phone_frames.values()),
+        Count.PATHS_DRAWN: sum(frame.drawn_ns is not None for frame in phone_frames.values()),
+        Count.PHONE_RECORDS_LOST: phone_log.lost_records,
+        Count.DUPLICATE_HANDLED_LINES: phone_log.duplicate_handled,
+        Count.DUPLICATE_SENT_LINES: phone_log.duplicate_sent,
+        Count.DUPLICATE_RECEIVED_LINES: phone_log.duplicate_received,
+        Count.DUPLICATE_DRAWN_LINES: phone_log.duplicate_drawn,
+        Count.DUPLICATE_LAPTOP_LINES: duplicate_laptop_lines,
     }
 
 
@@ -482,7 +549,8 @@ def format_joined(report: JoinedReport) -> str:
         lines.append("                           so the totals start at the phone handling the frame, not at the sensor")
     for share, values in report.negative_examples.items():
         shown = ", ".join(f"{value * 1000:.1f}" for value in values)
-        lines.append(f"WARNING {SHARE_LABELS[share].strip()} came out negative, left out: {shown} ms")
+        count = report.negative_counts.get(share, len(values))
+        lines.append(f"WARNING {SHARE_LABELS[share].strip()} came out negative {count} times, left out. First: {shown} ms")
     if report.network_by_slice:
         lines.append(f"network median per {NETWORK_SLICE_SECONDS:.0f} s of the walk, ms (paths)")
         lines.append(
@@ -490,7 +558,7 @@ def format_joined(report: JoinedReport) -> str:
             + ", ".join(f"{piece.start_seconds:.0f} s: {piece.median_milliseconds:.0f} ({piece.paths})" for piece in report.network_by_slice)
         )
     lines.append("counts")
-    lines.extend(f"  {name:<34}{count:8d}" for name, count in report.counts.items())
+    lines.extend(f"  {name.value:<34}{count:8d}" for name, count in report.counts.items())
     lines.append("not joined")
     lines.extend(f"  {orphan.value:<46}{count:8d}" for orphan, count in report.orphans.items())
     return "\n".join(lines)
@@ -512,7 +580,13 @@ def report_as_json(shares: dict[Share, ShareStatistics | None], extra: dict) -> 
     }
 
 
-def joined_as_json(report: JoinedReport) -> dict:
+def joined_as_json(report: JoinedReport, laptop_log_closed: bool | None = None) -> dict:
+    """
+    The joined report as saved by `--json`.
+
+    :param laptop_log_closed: Whether the laptop's log ended with its closing line, when the caller
+        checked. Saved so `--compare` can say a run may be only part of a walk.
+    """
     return report_as_json(
         report.shares,
         {
@@ -520,7 +594,10 @@ def joined_as_json(report: JoinedReport) -> dict:
             "excluded_as_cold": report.excluded_as_cold,
             "clock_verdict": report.clock_verdict.value,
             "clock_reason": report.clock_reason,
-            "counts": report.counts,
+            "phone_log_truncated": report.phone_log_truncated,
+            "laptop_log_closed": laptop_log_closed,
+            "negative_counts": {share.value: count for share, count in report.negative_counts.items()},
+            "counts": {name.value: count for name, count in report.counts.items()},
             "orphans": {orphan.value: count for orphan, count in report.orphans.items()},
             "network_by_slice": [
                 {"start_seconds": piece.start_seconds, "paths": piece.paths, "median_milliseconds": piece.median_milliseconds}
@@ -559,10 +636,26 @@ def compare(before: list[dict], after: list[dict]) -> str:
     lines = [
         f"median of run medians, ms   before   (min to max)         after   (min to max)      runs {len(before)} and {len(after)}",
     ]
+    for side, runs in (("before", before), ("after", after)):
+        # A run cut short still has medians, and they read like any other run's.
+        truncated = sum(run.get("phone_log_truncated") is True for run in runs)
+        unclosed = sum(run.get("laptop_log_closed") is False for run in runs)
+        if truncated:
+            lines.append(f"WARNING {truncated} of the {side} runs had a phone log cut at its size cap")
+        if unclosed:
+            lines.append(f"WARNING {unclosed} of the {side} runs had a laptop log with no closing line, so possibly only part of the run")
     for share in SHARE_ORDER:
         before_medians = _run_medians(before, share)
         after_medians = _run_medians(after, share)
-        if not before_medians or not after_medians:
+        if not before_medians and not after_medians:
+            continue
+        if len(before_medians) < MINIMUM_RUNS_TO_COMPARE or len(after_medians) < MINIMUM_RUNS_TO_COMPARE:
+            # A run without this share, such as one whose clocks had different bases, gives it no
+            # median. Fewer than three left on a side is no spread at all.
+            lines.append(
+                f"  {SHARE_LABELS[share].strip():<26}in {len(before_medians)} runs before and {len(after_medians)} after, "
+                f"under {MINIMUM_RUNS_TO_COMPARE} a side, not compared"
+            )
             continue
         overlap = min(before_medians) <= max(after_medians) and min(after_medians) <= max(before_medians)
         lines.append(

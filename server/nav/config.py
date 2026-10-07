@@ -314,6 +314,11 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
     # Two runs appended to one log read back as one run that is not one, so a used file is refused.
     if arguments.timing_log is not None and Path(arguments.timing_log).is_file() and Path(arguments.timing_log).stat().st_size > 0:
         parser.error(f"--timing-log {arguments.timing_log} already holds a timing log, pick a new file")
+    # Either one would let the walk run and fail on its first line, leaving it untimed.
+    if arguments.timing_log is not None and Path(arguments.timing_log).is_dir():
+        parser.error(f"--timing-log {arguments.timing_log} is a directory. It names a file, such as frame_logs/replays/run_1.jsonl")
+    if arguments.timing_log is not None and not Path(arguments.timing_log).parent.is_dir():
+        parser.error(f"--timing-log {arguments.timing_log} is in a folder that doesn't exist: {Path(arguments.timing_log).parent}")
 
     video = None
     neon = None

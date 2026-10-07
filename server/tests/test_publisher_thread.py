@@ -332,3 +332,171 @@ def test_publish_wait_after_the_fix_is_small(tmp_path: Path) -> None:
     ]
     assert waits_ms
     assert float(np.median(waits_ms)) < 20.0, f"median publish wait {np.median(waits_ms):.1f} ms"
+
+
+# *******************************************
+# Failures and shutdown, from the audit
+# *******************************************
+
+
+class RaisingSink(RecordingSink):
+    """A single display with a bug. Not behind a fan-out, so nothing drops it."""
+
+    def publish(self, path: PlannedPath) -> None:
+        raise RuntimeError("a bug in the only display")
+
+
+def test_a_single_display_failing_mid_stream_ends_the_run_with_exit_1(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    class EndlessFrames:
+        def __init__(self) -> None:
+            self.stopped = threading.Event()
+
+        def frames(self):
+            frames = list(synthetic_frames(30))
+            while not self.stopped.is_set():
+                for frame in frames:
+                    time.sleep(0.01)
+                    yield frame
+
+        def close(self) -> None:
+            self.stopped.set()
+
+    source = EndlessFrames()
+    monkeypatch.setattr(loop_module, "build_sink", lambda config, **hooks: RaisingSink())
+    monkeypatch.setattr(loop_module, "build_source", lambda config: source)
+
+    with caplog.at_level(logging.ERROR):
+        thread, exit_codes = _run_in_thread(build_run_config(["--source", "arcore_tcp", "--sink", "none"]))
+        thread.join(TEST_TIMEOUT_SECONDS / 2)
+        source.stopped.set()
+        ended_on_its_own = not thread.is_alive()
+        thread.join(TEST_TIMEOUT_SECONDS)
+
+    assert ended_on_its_own, "the run kept going with its only display broken"
+    assert exit_codes == [1]
+    assert any("publisher stopped on UNEXPECTED RuntimeError" in record.message and record.exc_info for record in caplog.records)
+
+
+def test_a_single_display_failing_on_the_last_frame_exits_1_without_waiting_out_the_flush(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only the explicit checks around flush catch this one. flush itself re-raises only the worker's failures."""
+
+    class OneFrame:
+        def frames(self):
+            yield next(iter(synthetic_frames(1)))
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(loop_module, "build_sink", lambda config, **hooks: RaisingSink())
+    monkeypatch.setattr(loop_module, "build_source", lambda config: OneFrame())
+
+    started = time.perf_counter()
+    exit_code = run(build_run_config(["--source", "arcore_tcp", "--sink", "none"]))
+    elapsed = time.perf_counter() - started
+
+    assert exit_code == 1
+    assert elapsed < loop_module.PUBLISHER_FLUSH_SECONDS, f"took {elapsed:.1f} s, the flush timeout"
+
+
+def test_a_display_failure_then_ctrl_c_still_exits_1(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    """The source goes quiet after the failure, so only the interrupt ends the run. It must not end as a success."""
+
+    class OneFrameThenInterrupt:
+        def __init__(self) -> None:
+            self.sink: RaisingSink | None = None
+
+        def frames(self):
+            yield next(iter(synthetic_frames(1)))
+            # Wait for the publisher to have failed, then interrupt the way Ctrl+C would.
+            deadline = time.perf_counter() + TEST_TIMEOUT_SECONDS
+            while not any("publisher stopped" in record.message for record in caplog.records) and time.perf_counter() < deadline:
+                time.sleep(0.01)
+            raise KeyboardInterrupt
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(loop_module, "build_sink", lambda config, **hooks: RaisingSink())
+    monkeypatch.setattr(loop_module, "build_source", lambda config: OneFrameThenInterrupt())
+
+    with caplog.at_level(logging.INFO):
+        assert run(build_run_config(["--source", "arcore_tcp", "--sink", "none"])) == 1
+
+    assert any("before the interrupt" in record.message and record.exc_info for record in caplog.records)
+
+
+def test_a_worker_failure_is_logged_as_the_workers_not_the_publishers(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    class OneFrame:
+        def frames(self):
+            yield next(iter(synthetic_frames(1)))
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(loop_module, "build_sink", lambda config, **hooks: RecordingSink())
+    monkeypatch.setattr(loop_module, "build_source", lambda config: OneFrame())
+    monkeypatch.setattr(loop_module, "gaze_on_the_ground", _raise_runtime_error)
+
+    with caplog.at_level(logging.INFO):
+        assert run(build_run_config(["--source", "arcore_tcp", "--sink", "none"])) == 1
+
+    assert not any("publisher stopped on UNEXPECTED" in record.message for record in caplog.records)
+
+
+def test_the_publisher_stops_before_the_displays_close(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A publisher still running when a display closes can hand it a path afterwards."""
+    order: list[str] = []
+
+    class OrderedSink(RecordingSink):
+        def close(self) -> None:
+            order.append("displays closed")
+
+    real_stop = PublisherThread.stop
+
+    def recorded_stop(self, timeout_seconds: float = 5.0) -> None:
+        order.append("publisher stopped")
+        real_stop(self, timeout_seconds)
+
+    class OneFrame:
+        def frames(self):
+            yield next(iter(synthetic_frames(1)))
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(PublisherThread, "stop", recorded_stop)
+    monkeypatch.setattr(loop_module, "build_sink", lambda config, **hooks: OrderedSink())
+    monkeypatch.setattr(loop_module, "build_source", lambda config: OneFrame())
+
+    assert run(build_run_config(["--source", "arcore_tcp", "--sink", "none"])) == 0
+
+    assert order == ["publisher stopped", "displays closed"]
+
+
+def test_a_display_too_slow_for_the_bounds_is_said_out_loud(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    release = threading.Event()
+
+    class StuckSink(RecordingSink):
+        def publish(self, path: PlannedPath) -> None:
+            release.wait(TEST_TIMEOUT_SECONDS)
+
+    class OneFrame:
+        def frames(self):
+            yield next(iter(synthetic_frames(1)))
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(loop_module, "PUBLISHER_FLUSH_SECONDS", 0.3)
+    monkeypatch.setattr(PublisherThread.stop, "__defaults__", (0.3,))
+    monkeypatch.setattr(loop_module, "build_sink", lambda config, **hooks: StuckSink())
+    monkeypatch.setattr(loop_module, "build_source", lambda config: OneFrame())
+    try:
+        with caplog.at_level(logging.WARNING):
+            assert run(build_run_config(["--source", "arcore_tcp", "--sink", "none"])) == 0
+    finally:
+        release.set()
+
+    messages = [record.message for record in caplog.records]
+    assert any("the last path didn't reach every display" in message for message in messages)
+    assert any("publisher thread still inside a display" in message for message in messages)
