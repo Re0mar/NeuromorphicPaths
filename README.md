@@ -24,7 +24,6 @@ NeuromorphicPaths/
     examples/                small scripts: check the Neon glasses, record their stream, summarize timing
     docs/                    the message format between the Pixel app and the laptop
   pixel_app/                 Android app for a Google Pixel: sends depth to the laptop, shows the arrow
-  SidewalkVision/            Android app that runs on its own on a phone with the Neon glasses
   OldAppEnvrionmentStuff/    the first app, built for Meta glasses, with an early report draft
   docs/                      measured results, how-to guides and diagrams
 ```
@@ -104,7 +103,8 @@ the arrow and the browser shows the page:
 
 **Run it live with the Neon glasses.** Needs the glasses extra and a CUDA build of torch, both in
 [`server/README.md`](server/README.md). Open the Companion app with the glasses plugged in, read the
-phone's address off its streaming screen, and open the page in a browser:
+phone's address off its streaming screen, and open the page in a browser. That can be a phone's
+browser, which is how the walker watches the arrow with the glasses on:
 
 ```
 .venv/Scripts/python examples/check_neon.py --neon-address <phone address>
@@ -126,10 +126,32 @@ side to the other, and what the alarm did:
 .venv/Scripts/python -m nav.evaluation.check_planner numbers frame_logs/<walk>
 ```
 
+## Retired
+
+**SidewalkVision** was a phone-only Android app. It ran its own depth model, surprise map and
+planner on the phone, with the Neon glasses giving gaze. It was retired because the laptop now does
+every calculation, and a phone only shows what the laptop sends, through the web page above. The
+whole app is in commit `125f663`, the last one that changed it.
+
+One part of it is kept for later: its path model,
+`SidewalkVision/app/src/main/assets/best_int8.tflite`, 3,603,922 bytes. It marks which part of a
+camera picture is walkable path. A planned addition to the laptop's planner will use it to charge
+for stepping off the path, switched off by default. To get the model back, run this from the
+repository root in Git Bash:
+
+```bash
+git restore --source=125f663 -- SidewalkVision/app/src/main/assets/best_int8.tflite
+```
+
+For the whole app, use the same command with `-- SidewalkVision` at the end. `git restore` writes
+the file's bytes directly. Don't redirect `git show` into a file instead, because Windows
+PowerShell re-encodes redirected output and the model comes out corrupted.
+
 ## Where to read next
 
 | If you want to | Read |
 |---|---|
+| understand the math, from the camera to the arrow, and which parts are the professor's | [`docs/math/`](docs/math/) |
 | run the pipeline with any sensor, and every flag | [`server/README.md`](server/README.md) |
 | add or change a test | [`server/tests/README.md`](server/tests/README.md) |
 | build and run the Pixel app | [`pixel_app/README.md`](pixel_app/README.md) |
