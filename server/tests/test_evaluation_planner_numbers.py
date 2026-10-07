@@ -263,7 +263,7 @@ def test_replayed_frames_make_the_loops_call() -> None:
     planner = PlannerPipeline(PLANNER, WalkerConfig())
     for row, replayed in zip(inputs, frames, strict=True):
         direct = planner.plan(row.obstacles, 0.0, GoalMode.AHEAD, row.gaze_ground_point)
-        assert replayed.path.first_heading_radians == direct.first_heading_radians
+        assert replayed.path.lookahead_heading_radians == direct.lookahead_heading_radians
         assert np.array_equal(replayed.path.lateral_offsets_meters, direct.lateral_offsets_meters)
         assert replayed.path.alarm == direct.alarm
         assert replayed.raise_decision == alarm_raised(row.obstacles, PLANNER)

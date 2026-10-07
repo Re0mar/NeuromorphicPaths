@@ -194,8 +194,8 @@ gravity-aligned. Turning back is the transpose, $`R^\top`$.
 ```
 
 **Gravity is used whenever the pose is flagged gravity-aligned, with or without a position.** The
-Neon has no position and still gets gravity. A few docstrings and the server README tie up to
-having a position. The code ties it to the flag (`server/nav/scene/pipeline.py`).
+Neon has no position and still gets gravity. The code ties up to the flag, not to a position
+(`server/nav/scene/pipeline.py`).
 
 | Symbol | Plain English | Units | Frame | Where in the code |
 |---|---|---|---|---|

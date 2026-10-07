@@ -66,10 +66,12 @@ The 1 s is the deck's window (College 5 PDF page 65), and the code also marks it
 > avoidance surprise with the deck's driving data.
 
 **Units, as the code computes them.** Every surprise is a natural log, so it's in nats. The
-collision surprise, the contact surprise and the summed path cost are all nats, and the code calls
-them bits without converting. Only the avoidance surprise converts, by dividing by $`2 \ln 2`$. The
-paper itself notes the $`\ln 2`$ factor and then sets it aside (§3.2), and the code's comments call
-quoting nats as bits the course's convention.
+collision surprise, the contact surprise and every other term in the path search are nats, and
+the search adds them up in nats. Every figure the planner sends out is in bits: it divides the
+path's summed cost by $`\ln 2`$ once, the avoidance surprise goes through the same conversion, and
+the scene information is a $`\log_2`$ divergence. The paper notes the $`\ln 2`$ factor too (§3.2).
+Before 2026-10-07 the summed cost and the work figure went out unconverted, so figures recorded
+before then are $`\ln 2`$ times their bits value.
 
 ## Values the code marks as his
 
@@ -145,11 +147,6 @@ first.
   $`H_0 - H_z`$ over each (PDF pages 15 and 17). That isn't built. The planner plans one 3.8 s
   segment and plans it again on the next frame. Catching up would need a walk split into segments,
   each with its own goal and acceptance threshold, and the work of each summed.
-- **The units.** The path cost, the collision and contact surprise, and the work figure are nats
-  that the code calls bits. Only the avoidance surprise converts. Converting means multiplying by
-  $`1 / \ln 2 \approx 1.443`$. Scaling every cost by the same factor doesn't change which path is
-  cheapest, but the work figures and the information measure would read differently, so recorded
-  numbers would move.
 - **$`{\color{orange}{N}}`$ on the glasses.** The Neon glasses report no position, so their
   $`{\color{orange}{N}}`$ is measured on a grid that moves with the walker and is approximate. On the
   2026-10-05 glasses session the server planned 1.68 frames a second, a gap of
@@ -160,9 +157,10 @@ first.
 - **His first-to-threshold rule.** College 5 also selects the candidate that reaches the acceptance
   threshold first (PDF page 18). The planner doesn't use it. It picks the lowest total cost over a
   fixed horizon, and the code has no acceptance threshold for an avoidance.
-- **The most surprising point per thing.** The combining rule described in the code takes the most
-  surprising point within a group. The scene sends one point per 0.25 m cell, the one nearest the
-  walker right now, so the maximum within a group never has a choice to make. The point nearest the
+- **The most surprising point per thing.** His combining rule takes the most surprising point of
+  each thing. The field takes a maximum within each group to follow it, but the scene sends one
+  point per 0.25 m cell, the one nearest the walker right now, so the maximum never has a choice to
+  make. Which point should stand for a group is an open decision. The point nearest the
   walker isn't always the most surprising one from a candidate 1 m to the side. The error is under
   one cell diagonal, $`0.25 \sqrt{2} = 0.354`$ m. Catching up means sending every point in a cell to
   the planner and letting the field take the maximum per candidate.

@@ -6,9 +6,10 @@ clearance S and noise scale N, both in meters, the surprise of one point is half
 squared. A post two meters away whose distance wobbles by a centimeter is barely surprising. One
 whose distance wobbles by half a meter is, and the planner steers around the wobble.
 
-Each obstacle is represented by its most surprising point, and independent obstacles add. That
-is the maximum within a group and the sum across groups, in that order. The geometry and that
-combination live in field.py, which every cost term shares.
+Each group is represented by one point, and independent groups add. The scene sends each group's
+nearest point, which is not always its most surprising one, so the maximum within a group that
+field.py takes has one point to choose from. The geometry and that combination live in field.py,
+which every cost term shares.
 """
 
 # Third party imports

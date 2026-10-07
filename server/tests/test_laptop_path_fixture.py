@@ -26,7 +26,7 @@ STATED = PlannedPath(
     timestamp_seconds=12.345,
     times_seconds=np.array([0.0, 0.1, 0.2]),
     lateral_offsets_meters=np.array([0.0, 0.05, 0.12]),
-    first_heading_radians=0.0423,
+    lookahead_heading_radians=0.0423,
     alarm=True,
     cumulative_cost_bits=18.4,
     scene_information_bits=0.37,
@@ -50,7 +50,7 @@ def test_the_laptops_path_fixture_is_written_and_decodes_to_the_stated_values() 
     assert decoded.timestamp_seconds == pytest.approx(12.345)
     assert decoded.times_seconds == pytest.approx([0.0, 0.1, 0.2])
     assert decoded.lateral_offsets_meters == pytest.approx([0.0, 0.05, 0.12])
-    assert decoded.first_heading_radians == pytest.approx(0.0423)
+    assert decoded.lookahead_heading_radians == pytest.approx(0.0423)
     assert decoded.alarm is True
     assert decoded.cumulative_cost_bits == pytest.approx(18.4)
     assert decoded.scene_information_bits == pytest.approx(0.37)

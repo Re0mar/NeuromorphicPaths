@@ -82,7 +82,7 @@ def test_replay_through_real_planner_finds_both_turns(recording: Path, capsys) -
     scene = scene_pass(recording, SceneConfig(), WalkerConfig(), None)
     frames = planner_pass(scene, PlannerConfig(), WalkerConfig(), GoalMode.AHEAD)
     planner = PlannerPipeline(PlannerConfig(), WalkerConfig())
-    direct = [planner.plan(row.obstacles, 0.0, GoalMode.AHEAD, row.gaze_ground_point).first_heading_radians for row in scene.planned]
+    direct = [planner.plan(row.obstacles, 0.0, GoalMode.AHEAD, row.gaze_ground_point).lookahead_heading_radians for row in scene.planned]
     assert [frame.arrow_radians for frame in frames] == pytest.approx(direct)
     assert len(frames) == len(scene.planned) > 100
 

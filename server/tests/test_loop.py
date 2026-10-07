@@ -10,6 +10,7 @@ loop's own contract, driven through run() with a stub estimator and the fake sen
 import dataclasses
 import json
 import logging
+import math
 import socket
 import threading
 import time
@@ -23,6 +24,7 @@ import pytest
 # Local package imports
 from nav.config import GoalMode, RunConfig, SinkKind, SourceKind, build_run_config
 from nav.main import main
+from nav.planner.config import PlannerConfig
 from nav.runtime.loop import EPISODES_FILENAME, RUN_CONFIG_FILENAME, FrameResult, NewestResultPublisher, _latency_shares, _report, run
 from nav.runtime.tap import RecordingTap
 from nav.runtime.worker import NewestFrameWorker
@@ -57,7 +59,7 @@ def _view() -> DebugView:
         ground_plane=None,
         gaze_pixel=None,
     )
-    return DebugView(frame, ObstacleSet(0.0, (), 0), Plane(np.array([0.0, -1.0, 0.0]), 1.6), FloorSource.FITTED, 1.4, 0.30)
+    return DebugView(frame, ObstacleSet(0.0, (), 0), Plane(np.array([0.0, -1.0, 0.0]), 1.6), FloorSource.FITTED, 1.4, 0.30, 1.47)
 
 
 def test_the_sink_is_started_before_the_source_yields_a_frame(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -223,6 +225,47 @@ def test_one_planner_serves_every_frame_of_a_run(tmp_path: Path, monkeypatch: py
     assert counts["built"] == 1
 
 
+def test_the_views_red_point_is_the_runs_alarm_threshold_in_bits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The path turns fully red when the alarm raises, so the red point a display gets has to come
+    # from the run's own threshold. A constant here would survive every sink test, because they build
+    # their views by hand. 0.9 s is neither the shipped 0.7 s nor the old 1 s red point.
+    import nav.runtime.loop as loop_module
+
+    views: list[DebugView] = []
+
+    class CapturingDebugSink:
+        def start(self) -> None:
+            pass
+
+        def publish(self, path: PlannedPath) -> None:
+            pass
+
+        def publish_debug(self, path: PlannedPath, field: np.ndarray, grid: np.ndarray, view: DebugView) -> None:
+            views.append(view)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(loop_module, "build_sink", lambda config: CapturingDebugSink())
+    log_dir = tmp_path / "log"
+    _record_synthetic_log(log_dir, count=6)
+    planner = dataclasses.replace(PlannerConfig(), alarm_time_to_contact_seconds=0.9)
+    config = RunConfig(
+        source_kind=SourceKind.LOGGED,
+        sink_kinds=(SinkKind.NONE,),
+        goal_mode=GoalMode.AHEAD,
+        planner=planner,
+        logged=LoggedConfig(log_dir=str(log_dir)),
+    )
+
+    assert run(config) == 0
+
+    assert views, "the run must publish at least one view for the check to mean anything"
+    # Half of (1 s over 0.9 s) squared, in natural-log units, over ln 2.
+    expected = 0.5 * (1.0 / 0.9) ** 2 / math.log(2.0)
+    assert {round(view.path_red_from_bits, 9) for view in views} == {round(expected, 9)}
+
+
 def test_a_result_is_published_once_however_many_frames_arrive_while_it_is_the_newest() -> None:
     published: list[PlannedPath] = []
 
@@ -254,7 +297,7 @@ def test_a_result_is_published_once_however_many_frames_arrive_while_it_is_the_n
     worker.result = FrameResult(_path(0.2), np.zeros((1, 3)), np.array([-1.0, 0.0, 1.0]), _view())
     publisher.publish(worker)
     publisher.publish(worker)
-    assert [path.first_heading_radians for path in published] == pytest.approx([0.1, 0.2])
+    assert [path.lookahead_heading_radians for path in published] == pytest.approx([0.1, 0.2])
 
 
 def test_run_config_json_carries_every_field_of_the_run_configuration(tmp_path: Path) -> None:

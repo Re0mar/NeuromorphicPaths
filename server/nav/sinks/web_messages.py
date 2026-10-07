@@ -82,7 +82,7 @@ def plan_view_message(path: PlannedPath, field: np.ndarray, grid: np.ndarray, vi
         ],
         "scene_information_bits": float(path.scene_information_bits),
         "avoidance_surprise_bits": float(path.avoidance_surprise_bits),
-        "path_color_rgb": list(path_color_rgb(path.avoidance_surprise_bits)),
+        "path_color_rgb": list(path_color_rgb(path.avoidance_surprise_bits, view.path_red_from_bits)),
         "path_fill_opacity": path_fill_opacity(path.scene_information_bits),
         "path_border_opacity": BORDER_OPACITY,
         "group_color_rgb": list(GROUP_RGB),

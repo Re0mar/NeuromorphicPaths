@@ -295,7 +295,7 @@ def format_band(name: str, attribution: BandAttribution, config: PlannerNumbersC
             ceiling = 100.0 * (attribution.pinned_band_frames - attribution.fixable) / attribution.band_frames
             lines.append(f"band share with every fixable cause removed: {ceiling:.1f} %, against {100.0 * attribution.pinned_band_frames / attribution.band_frames:.1f} % now")
         mean_terms = {name: float(np.mean([frame.term_difference[name] for frame in attribution.frames])) for name in TERM_NAMES}
-        lines.append("mean cost of the chosen path minus straight on, by term: " + ", ".join(f"{name} {value:+.2f}" for name, value in mean_terms.items()))
+        lines.append("mean cost of the chosen path minus straight on, by term, in bits: " + ", ".join(f"{name} {value:+.2f}" for name, value in mean_terms.items()))
         unexplained = [frame for frame in attribution.frames if not frame.explained and not frame.unknown][:10]
         if unexplained:
             lines.append("unexplained frames, to open in the recording: " + ", ".join(f"{frame.timestamp_seconds:.3f}" for frame in unexplained))

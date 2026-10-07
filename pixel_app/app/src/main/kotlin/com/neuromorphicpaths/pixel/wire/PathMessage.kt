@@ -9,7 +9,7 @@ package com.neuromorphicpaths.pixel.wire
  * @property timestampSeconds the depth frame the path was planned for, this phone's clock handed back
  * @property timesSeconds how far into the future each offset is
  * @property lateralOffsetsMeters where to be at that time, sideways from straight ahead, positive right
- * @property firstHeadingRadians where the path is heading over the planner's lookahead, positive right
+ * @property lookaheadHeadingRadians where the path is heading over the planner's lookahead, positive right
  * @property alarm something in the walker's way is close at walking pace
  * @property cumulativeCostBits total cost of the chosen path, for display and logging
  */
@@ -17,7 +17,7 @@ data class PathMessage(
     val timestampSeconds: Double,
     val timesSeconds: DoubleArray,
     val lateralOffsetsMeters: DoubleArray,
-    val firstHeadingRadians: Double,
+    val lookaheadHeadingRadians: Double,
     val alarm: Boolean,
     val cumulativeCostBits: Double,
 ) {
@@ -27,7 +27,7 @@ data class PathMessage(
             "times_seconds has ${timesSeconds.size} entries and lateral_offsets_meters has ${lateralOffsetsMeters.size}"
         }
         require(timestampSeconds.isFinite()) { "timestamp_seconds must be finite, got $timestampSeconds" }
-        require(firstHeadingRadians.isFinite()) { "first_heading_radians must be finite, got $firstHeadingRadians" }
+        require(lookaheadHeadingRadians.isFinite()) { "lookahead_heading_radians must be finite, got $lookaheadHeadingRadians" }
         require(cumulativeCostBits.isFinite()) { "cumulative_cost_bits must be finite, got $cumulativeCostBits" }
         for (index in timesSeconds.indices) {
             require(timesSeconds[index].isFinite()) { "times_seconds[$index] must be finite, got ${timesSeconds[index]}" }
@@ -42,7 +42,7 @@ data class PathMessage(
         return timestampSeconds == other.timestampSeconds &&
             timesSeconds.contentEquals(other.timesSeconds) &&
             lateralOffsetsMeters.contentEquals(other.lateralOffsetsMeters) &&
-            firstHeadingRadians == other.firstHeadingRadians &&
+            lookaheadHeadingRadians == other.lookaheadHeadingRadians &&
             alarm == other.alarm &&
             cumulativeCostBits == other.cumulativeCostBits
     }
@@ -51,7 +51,7 @@ data class PathMessage(
         var result = timestampSeconds.hashCode()
         result = 31 * result + timesSeconds.contentHashCode()
         result = 31 * result + lateralOffsetsMeters.contentHashCode()
-        result = 31 * result + firstHeadingRadians.hashCode()
+        result = 31 * result + lookaheadHeadingRadians.hashCode()
         result = 31 * result + alarm.hashCode()
         result = 31 * result + cumulativeCostBits.hashCode()
         return result

@@ -6,6 +6,9 @@ tolerance, and closes when both the planner and the walker's observed heading ar
 inside it. The work of the episode is the planner's cost when it opened minus its cost when it
 closed, which is the slides' H at start minus H at threshold.
 
+Both costs arrive in bits, because the planner converts its natural-log sum before it hands the
+path over. So the difference is bits too, and this module does no arithmetic on units.
+
 This layer only reads. It takes the planner's path and the heading the runtime observed, and
 hands back finished episodes when asked. It never writes to a display, because a channel whose
 reader may be absent cannot carry a rule, and the runtime is the one that knows where episodes go.
@@ -58,14 +61,14 @@ class WorkMeter:
         :param timestamp_seconds: This frame's time.
         """
         tolerance = self._config.heading_tolerance_radians
-        planner_wants_a_turn = path.alarm or abs(path.first_heading_radians) > tolerance
+        planner_wants_a_turn = path.alarm or abs(path.lookahead_heading_radians) > tolerance
         walker_is_turned = abs(observed_heading_radians) > tolerance
 
         if self._open_since is None:
             if planner_wants_a_turn:
                 self._open_since = timestamp_seconds
                 self._cost_at_start = path.cumulative_cost_bits
-                self._commanded_error_at_start = abs(path.first_heading_radians)
+                self._commanded_error_at_start = abs(path.lookahead_heading_radians)
                 self._turn_started_at = None
                 self._turn_ended_at = None
             return

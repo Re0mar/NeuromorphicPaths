@@ -59,23 +59,25 @@ or by a timestamp earlier than $`t_r`$. Only frame timestamps count, never the l
 
 **Avoidance surprise in bits.** The course's way of saying how soon the walker reaches the nearest
 thing in the way, as a surprise. One second over the time to contact, squared, halved, and turned
-into bits. It colors the path (section 14). The alarm doesn't use it.
+into bits. It colors the path (section 14). The alarm doesn't use it, but the path's full red is
+this same formula at the alarm's threshold, so the two line up.
 
 ```math
 {\color{red}{\tau}} = \frac{\max\big(\min_{i \in \mathcal{C}} {\color{teal}{S}}_i,\ \varepsilon_S\big)}{v_w}, \qquad {\color{purple}{U}} = \frac{(1\ \text{s} / {\color{red}{\tau}})^2}{2 \ln 2}
 ```
 
 $`{\color{purple}{U}}`$ is 0 when the corridor is empty. Writing it as $`\tfrac12 (1\ \text{s}/{\color{red}{\tau}})^2`$
-natural-log units divided by $`\ln 2`$ gives the same number. This is the one cost term in the planner
-that converts to bits. The scene information in section 10 is in bits too, because its divergence
-uses $`\log_2`$ from the start.
+natural-log units divided by $`\ln 2`$ gives the same number, and that's how the code computes it,
+through the planner's one conversion to bits. The path's summed cost goes through the same
+conversion (section 8). The scene information in section 10 is in bits too, because its divergence
+uses $`\log_2`$.
 
 | Symbol | Plain English | Units | Frame | Where in the code |
 |---|---|---|---|---|
 | $`o_k`$ | plan's sideways offset on slice $`k`$, positive right | m | walker ground frame | `server/nav/planner/heading.py` |
 | $`T_h`$ | lookahead, 1.0 s | s | time | `server/nav/planner/config.py` |
 | $`k_h`$ | lookahead slice, 10 | none | time | `server/nav/planner/heading.py` |
-| $`\theta`$ | arrow angle, sent as `first_heading_radians` | rad | walker ground frame | `server/nav/planner/heading.py` |
+| $`\theta`$ | arrow angle, sent as `lookahead_heading_radians` | rad | walker ground frame | `server/nav/planner/heading.py` |
 | $`v_w`$ | walking speed, 1.4 m/s | m/s | walker ground frame | `server/nav/planner/config.py` |
 | $`x_i, y_i`$ | point's sideways and forward position | m | walker ground frame | `server/nav/planner/alarm.py` |
 | $`h`$ | body half-width, 0.30 m | m | walker ground frame | `server/nav/planner/config.py` |
@@ -143,8 +145,9 @@ classroom walk the arrow takes 20 different values instead of 3, and sits at its
 >   meter per second, so it isn't used.
 > - **The corridor goes straight on**, whatever the plan says.
 > - **The hold delays clearing** by up to 0.5 s.
-> - **The path turns fully red at 0.72 bits**, which is one second to contact. The alarm raises at
->   0.7 s, which is 1.47 bits. The two don't line up. Section 14 has the path's colors.
+> - **The path turns fully red when the alarm raises**, at 0.7 s to contact, which is 1.47 bits.
+>   Both come from the alarm's one threshold, so changing it moves both. Section 14 has the path's
+>   colors.
 
 > [!IMPORTANT]
 > **The avoidance form is his.** When the thing in question is something to keep away from, the
