@@ -112,7 +112,8 @@
   // The music under the steering cue, before the laptop's ear gains. Quiet enough that the floor
   // the laptop sends is still audible as a presence rather than silence.
   const BED_VOLUME = 0.35;
-  // A ramp between one frame's ear gains and the next's, so a step is not a click.
+  // The time constant each ear's gain approaches the next frame's value with, so a step is not a
+  // click. setTargetAtTime is exponential: 63 % of the way at 0.1 s, settled after about 0.3 s.
   const GAIN_RAMP_SECONDS = 0.1;
   // If no path arrives for this long the laptop is gone or stalled, and a beep that still points
   // somewhere would be stale guidance. Silence is the honest signal. The music then plays in both

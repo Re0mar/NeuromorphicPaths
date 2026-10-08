@@ -110,9 +110,10 @@ as `alarm_pan`. **Noise cancellation** plays music instead, a built-in bed or a 
 page, with each ear at the gain the laptop sends: the ear away from the heading goes quieter by the
 course's surprise of the heading error, and the danger's ear drops to a floor while the alarm is up.
 A label beside it says what noise cancellation would do, "ANC on" or "ANC disabled", because no page
-can switch it. Both modes go silent, and the label reads "unknown", when no path has arrived for
-1.5 s. Browsers refuse sound before a tap, so the control has to be touched once on the page that
-should play. The formula is in `docs/math/09_arrow_and_alarm.md`.
+can switch it. When no path has arrived for 1.5 s the beeps stop, the music plays on at full in
+both ears, which is no cue, and the label reads "unknown". Browsers refuse sound before a tap, so
+the control has to be touched once on the page that should play. The formula is in
+`docs/math/09_arrow_and_alarm.md`.
 
 **`--sink` can be repeated, and a walk usually repeats it.** The arrow belongs on the phone, where
 the walker is looking, and the depth view belongs in a browser, where whoever is watching the
