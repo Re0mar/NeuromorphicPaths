@@ -7,6 +7,7 @@ on the test thread, which is exactly the two-loop arrangement the design chose.
 
 # Standard library imports
 import asyncio
+import dataclasses
 import json
 import threading
 import time
@@ -17,11 +18,16 @@ import numpy as np
 import pytest
 
 # Local package imports
+from nav.config import RunConfig, SinkKind, SourceKind, build_sink
+from nav.planner.config import GoalMode
+from nav.scene.config import SceneConfig
 from nav.sinks.config import WebConfig
+from nav.sinks.floor_geometry import floor_hidden_mask
 from nav.sinks.web import OUTGOING_QUEUE_LIMIT, WebSink, _quiet_client_resets
 from nav.sinks.web_messages import OBSTACLE_KEYS, PLAN_VIEW_KEYS, WebMessageKind
 from nav.sources.framecodec import path_message
 from nav.types import DebugSink, DebugView, DepthFrame, FloorSource, ObstacleSet, Plane, PlannedPath, Pose
+from synthetic_depth import intrinsics, level_floor_depth
 
 RECEIVE_TIMEOUT_SECONDS = 3.0
 VIEW_SIDE = 4
@@ -65,7 +71,7 @@ async def _receive_frames(port: int, after_connect, count: int) -> list:
 
 @pytest.fixture
 def sink():
-    sink = WebSink(WebConfig(port=0))
+    sink = WebSink(WebConfig(port=0), SceneConfig())
     sink.start()
     assert sink.port is not None and sink.port > 0
     yield sink
@@ -143,7 +149,7 @@ def test_a_client_that_disconnects_does_not_break_the_next_publish(sink: WebSink
 
 
 def test_close_returns_within_two_seconds() -> None:
-    sink = WebSink(WebConfig(port=0))
+    sink = WebSink(WebConfig(port=0), SceneConfig())
     sink.start()
 
     started = time.monotonic()
@@ -157,10 +163,10 @@ def test_publishing_with_no_browser_connected_does_not_raise(sink: WebSink) -> N
 
 
 def test_a_port_already_in_use_is_reported_rather_than_hung() -> None:
-    first = WebSink(WebConfig(port=0))
+    first = WebSink(WebConfig(port=0), SceneConfig())
     first.start()
     try:
-        second = WebSink(WebConfig(port=first.port))
+        second = WebSink(WebConfig(port=first.port), SceneConfig())
         with pytest.raises(ConnectionError, match="could not start"):
             second.start()
     finally:
@@ -169,10 +175,10 @@ def test_a_port_already_in_use_is_reported_rather_than_hung() -> None:
 
 def test_a_sink_that_failed_to_start_closes_without_raising() -> None:
     """A run whose web port was refused still closes every sink on its way out."""
-    first = WebSink(WebConfig(port=0))
+    first = WebSink(WebConfig(port=0), SceneConfig())
     first.start()
     try:
-        second = WebSink(WebConfig(port=first.port))
+        second = WebSink(WebConfig(port=first.port), SceneConfig())
         with pytest.raises(ConnectionError):
             second.start()
         second.close()
@@ -181,7 +187,7 @@ def test_a_sink_that_failed_to_start_closes_without_raising() -> None:
 
 
 def test_closing_an_unstarted_sink_does_not_raise() -> None:
-    WebSink(WebConfig(port=0)).close()
+    WebSink(WebConfig(port=0), SceneConfig()).close()
 
 
 def test_a_browser_that_stops_reading_cannot_grow_the_queue_without_bound(sink: WebSink, caplog: pytest.LogCaptureFixture) -> None:
@@ -215,7 +221,7 @@ def test_a_browser_that_stops_reading_cannot_grow_the_queue_without_bound(sink: 
 
 def test_the_web_sink_is_a_debug_sink() -> None:
     # The loop dispatches on this. Without it the browser would get the path and never the view.
-    assert isinstance(WebSink(WebConfig(port=0)), DebugSink)
+    assert isinstance(WebSink(WebConfig(port=0), SceneConfig()), DebugSink)
 
 
 def test_a_debug_publish_sends_path_then_plan_view_then_png(sink: WebSink) -> None:
@@ -416,7 +422,7 @@ def test_close_stops_the_render_thread_with_a_view_still_waiting(monkeypatch: py
         return real_render(view, path)
 
     monkeypatch.setattr(web_module, "render_depth_view", slow_render)
-    sink = WebSink(WebConfig(port=0))
+    sink = WebSink(WebConfig(port=0), SceneConfig())
     sink.start()
     render_thread = sink._render_thread
     field, grid = _field()
@@ -468,7 +474,7 @@ def test_a_picture_rate_that_is_not_positive_is_refused(rate: float) -> None:
 
 def test_a_publish_after_close_starts_no_new_server() -> None:
     """A publisher still inside another display at shutdown can reach this one after it closed."""
-    sink = WebSink(WebConfig(port=0))
+    sink = WebSink(WebConfig(port=0), SceneConfig())
     sink.start()
     sink.close()
     threads_before = {thread.name for thread in threading.enumerate()}
@@ -514,7 +520,7 @@ def test_a_draw_that_outlives_close_is_dropped_quietly(monkeypatch: pytest.Monke
         return real_render(view, path)
 
     monkeypatch.setattr(web_module, "render_depth_view", slow_render)
-    sink = WebSink(WebConfig(port=0))
+    sink = WebSink(WebConfig(port=0), SceneConfig())
     sink.start()
     server_thread = sink._thread
     real_join = server_thread.join
@@ -531,3 +537,38 @@ def test_a_draw_that_outlives_close_is_dropped_quietly(monkeypatch: pytest.Monke
         time.sleep(1.0)
 
     assert not any("UNEXPECTED" in record.message for record in caplog.records)
+
+
+def test_a_browser_gets_the_hidden_floor_under_the_runs_scene_config() -> None:
+    # End to end through the production path: the run config, build_sink, the render thread, the
+    # websocket. The run narrows the usable depth to 20 m, and pixel (64, 86), step 30 straight
+    # ahead, reads 25 m. Under the default 30 m that reading is just beyond the floor and hides
+    # nothing. Under the run's 20 m it is no reading, so the cell the browser gets must be hidden.
+    # A sink that dropped the run's config anywhere along the way would send the default's answer.
+    run_scene = dataclasses.replace(SceneConfig(), max_depth_meters=20.0)
+    config = RunConfig(
+        source_kind=SourceKind.LOGGED,
+        sink_kinds=(SinkKind.WEB,),
+        goal_mode=GoalMode.AHEAD,
+        web=WebConfig(port=0),
+        scene=run_scene,
+    )
+    depth = level_floor_depth()
+    depth[86, 64] = 25.0
+    frame = DepthFrame(1.0, depth, intrinsics(), Pose(np.array([1.0, 0.0, 0.0, 0.0]), None, False), None, None)
+    view = DebugView(frame, ObstacleSet(1.0, (), 0), Plane(np.array([0.0, -1.0, 0.0]), 1.6), FloorSource.FITTED, 1.4, 0.30, 1.47)
+    times = np.arange(39) * 0.1
+    grid = np.linspace(-3.0, 3.0, 61)
+    path = PlannedPath(1.0, times, np.zeros(len(times)), 0.0, False, 1.0, scene_information_bits=0.0, avoidance_surprise_bits=0.0)
+
+    sink = build_sink(config)
+    sink.start()
+    try:
+        _, plan_text, _ = asyncio.run(_receive_frames(sink.port, lambda: sink.publish_debug(path, np.zeros((len(times), len(grid))), grid, view), count=3))
+    finally:
+        sink.close()
+
+    hidden = np.array(json.loads(plan_text)["floor_hidden"])
+    assert hidden[30, 30]
+    assert not floor_hidden_mask(view, times, grid, SceneConfig())[30, 30]
+    assert np.array_equal(hidden, floor_hidden_mask(view, times, grid, run_scene))
