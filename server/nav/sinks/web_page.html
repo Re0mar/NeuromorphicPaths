@@ -13,10 +13,8 @@
   #depth[hidden] { display: none; }
   #status { font-size: 1.1rem; }
   #link { font-size: 0.9rem; opacity: 0.7; }
-<<<<<<< HEAD
   #sound { font: inherit; font-size: 1rem; padding: 12px 24px; border-radius: 8px; border: 2px solid var(--fg); background: transparent; color: var(--fg); cursor: pointer; }
   #sound.on { background: var(--fg); color: var(--bg); }
-=======
   /* A fixed size, so the canvas never collapses inside the flex column, shrunk only on a narrow phone. */
   #plan-panel { width: min(360px, 100%); display: flex; flex-direction: column; gap: 8px; }
   /* About as tall as the map it holds: 6.5 m across by 6.1 m ahead, margins included. */
@@ -25,7 +23,6 @@
   #layers { display: flex; gap: 16px; font-size: 0.95rem; }
   #layers label { display: flex; align-items: center; gap: 4px; }
   #legend, #information { font-size: 0.85rem; opacity: 0.8; }
->>>>>>> d06b5891efb013dce9e7496342e536a8afd6e307
 </style>
 </head>
 <body>
@@ -49,11 +46,6 @@
   <button id="sound" type="button">Enable sound</button>
 </main>
 <script>
-<<<<<<< HEAD
-  // Draws the arrow the planner chose. Red background when something is under a second away.
-  // Reconnects on its own, because the laptop restarts more often than the page reloads.
-  // Also beeps in the headphones, panned toward the side the arrow points to.
-=======
   // Draws the arrow the planner chose. Red background when something in the walker's way is close.
   // Under it, the planner's view from above and the depth image the planner saw, when the laptop
   // sends them. Text frames say what they are in their kind: "path" for the arrow, "plan_view" for
@@ -61,15 +53,13 @@
   // paths keeps working with the arrow alone. Reconnects on its own, because the laptop restarts
   // more often than the page reloads. Everything drawn here was computed on the laptop. The page
   // never decides a color, an opacity or a path.
->>>>>>> d06b5891efb013dce9e7496342e536a8afd6e307
+  // Also beeps in the headphones, panned toward the side the arrow points to.
   const canvas = document.getElementById("arrow");
   const context = canvas.getContext("2d");
   const depth = document.getElementById("depth");
   const status = document.getElementById("status");
   const link = document.getElementById("link");
-<<<<<<< HEAD
   const soundButton = document.getElementById("sound");
-=======
   const planPanel = document.getElementById("plan-panel");
   const plan = document.getElementById("plan");
   const information = document.getElementById("information");
@@ -88,7 +78,6 @@
   const SIDE_MARGIN_METERS = 0.2;
   const AHEAD_MARGIN_METERS = 0.3;
   const BEHIND_MARGIN_METERS = 0.3;
->>>>>>> d06b5891efb013dce9e7496342e536a8afd6e307
 
   // ---- Audio -------------------------------------------------------------------------------
   // Heading 0 (straight ahead) is centered, equal in both ears. Heading at or beyond this angle
@@ -220,7 +209,7 @@
     document.body.classList.toggle("alarm", Boolean(message.alarm));
     drawArrow(message.lookahead_heading_radians, message.alarm);
     status.textContent = (message.alarm ? "Obstacle close. " : "") + "Heading " + (degrees >= 0 ? "+" : "") + degrees + " degrees.";
-    latest = { heading: message.first_heading_radians, alarm: Boolean(message.alarm), receivedAt: performance.now() };
+    latest = { heading: message.lookahead_heading_radians, alarm: Boolean(message.alarm), receivedAt: performance.now() };
     if (audio) setPan(panFromHeading(latest.heading));
   }
 

@@ -340,9 +340,6 @@ class WebSink:
         finally:
             for socket in list(sockets):
                 await socket.close()
-<<<<<<< HEAD
-            await runner.cleanup()
-=======
             await runner.cleanup()
 
 
@@ -361,4 +358,3 @@ def _quiet_client_resets(loop: asyncio.AbstractEventLoop, context: dict) -> None
         log.info("a browser's connection was reset (caught ConnectionResetError, expected): %s", context.get("message"))
         return
     loop.default_exception_handler(context)
->>>>>>> d06b5891efb013dce9e7496342e536a8afd6e307
