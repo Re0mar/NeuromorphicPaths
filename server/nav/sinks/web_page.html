@@ -12,6 +12,8 @@
   canvas { max-width: 100%; }
   #status { font-size: 1.1rem; }
   #link { font-size: 0.9rem; opacity: 0.7; }
+  #sound { font: inherit; font-size: 1rem; padding: 12px 24px; border-radius: 8px; border: 2px solid var(--fg); background: transparent; color: var(--fg); cursor: pointer; }
+  #sound.on { background: var(--fg); color: var(--bg); }
 </style>
 </head>
 <body>
@@ -19,15 +21,119 @@
   <canvas id="arrow" width="320" height="320"></canvas>
   <div id="status">Waiting for the laptop.</div>
   <div id="link">Not connected.</div>
+  <button id="sound" type="button">Enable sound</button>
 </main>
 <script>
   // Draws the arrow the planner chose. Red background when something is under a second away.
   // Reconnects on its own, because the laptop restarts more often than the page reloads.
+  // Also beeps in the headphones, panned toward the side the arrow points to.
   const canvas = document.getElementById("arrow");
   const context = canvas.getContext("2d");
   const status = document.getElementById("status");
   const link = document.getElementById("link");
+  const soundButton = document.getElementById("sound");
 
+  // ---- Audio -------------------------------------------------------------------------------
+  // Heading 0 (straight ahead) is centered, equal in both ears. Heading at or beyond this angle
+  // to either side is fully in that ear. Lower it for a more dramatic swing.
+  const FULL_PAN_RADIANS = Math.PI / 3;
+  const BEEP_HZ = 660;
+  const ALARM_HZ = 990;
+  const BEEP_INTERVAL_MS = 700;
+  const ALARM_INTERVAL_MS = 160;
+  const BEEP_SECONDS = 0.12;
+  const MASTER_VOLUME = 0.5;
+  // If no path arrives for this long the laptop is gone or stalled, and a beep that still points
+  // somewhere would be stale guidance. Silence is the honest signal.
+  const STALE_MS = 1500;
+
+  let audio = null;  // Built on the first click, because browsers refuse sound before a gesture.
+  let latest = { heading: 0, alarm: false, receivedAt: -Infinity };
+
+  function buildAudio() {
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    // One envelope feeds a left gain and a right gain, which feed the two channels of a merger.
+    // Plain gains instead of StereoPannerNode so it works on every browser that has Web Audio.
+    const envelope = audioContext.createGain();
+    envelope.gain.value = 0;
+    const leftGain = audioContext.createGain();
+    const rightGain = audioContext.createGain();
+    const merger = audioContext.createChannelMerger(2);
+    const master = audioContext.createGain();
+    master.gain.value = MASTER_VOLUME;
+    envelope.connect(leftGain);
+    envelope.connect(rightGain);
+    leftGain.connect(merger, 0, 0);
+    rightGain.connect(merger, 0, 1);
+    merger.connect(master);
+    master.connect(audioContext.destination);
+    return { audioContext, envelope, leftGain, rightGain, timer: null };
+  }
+
+  function panFromHeading(headingRadians) {
+    // -1 is full left, 0 is center, +1 is full right. Positive heading is right, as in the arrow.
+    return Math.max(-1, Math.min(1, headingRadians / FULL_PAN_RADIANS));
+  }
+
+  function setPan(pan) {
+    // Equal power: the two gains' squares always sum to one, so loudness does not dip or swell as
+    // the sound sweeps across. At center each ear gets cos(45 deg), which is equal in both.
+    const angle = (pan + 1) * Math.PI / 4;
+    const now = audio.audioContext.currentTime;
+    audio.leftGain.gain.setTargetAtTime(Math.cos(angle), now, 0.03);
+    audio.rightGain.gain.setTargetAtTime(Math.sin(angle), now, 0.03);
+  }
+
+  function beep() {
+    const { audioContext, envelope } = audio;
+    const start = audioContext.currentTime;
+    const oscillator = audioContext.createOscillator();
+    oscillator.type = "sine";
+    oscillator.frequency.value = latest.alarm ? ALARM_HZ : BEEP_HZ;
+    oscillator.connect(envelope);
+    // A short ramp each side so the beep does not click.
+    envelope.gain.cancelScheduledValues(start);
+    envelope.gain.setValueAtTime(0, start);
+    envelope.gain.linearRampToValueAtTime(1, start + 0.01);
+    envelope.gain.setValueAtTime(1, start + BEEP_SECONDS - 0.02);
+    envelope.gain.linearRampToValueAtTime(0, start + BEEP_SECONDS);
+    oscillator.start(start);
+    oscillator.stop(start + BEEP_SECONDS + 0.02);
+  }
+
+  function tick() {
+    if (!audio) return;
+    if (performance.now() - latest.receivedAt < STALE_MS) beep();
+    audio.timer = setTimeout(tick, latest.alarm ? ALARM_INTERVAL_MS : BEEP_INTERVAL_MS);
+  }
+
+  async function enableSound() {
+    if (!audio) audio = buildAudio();
+    await audio.audioContext.resume();
+    setPan(panFromHeading(latest.heading));
+    clearTimeout(audio.timer);
+    tick();
+    soundButton.textContent = "Sound on (tap to mute)";
+    soundButton.classList.add("on");
+  }
+
+  function disableSound() {
+    clearTimeout(audio.timer);
+    audio.timer = null;
+    audio.audioContext.suspend();
+    audio = null;
+    soundButton.textContent = "Enable sound";
+    soundButton.classList.remove("on");
+  }
+
+  soundButton.onclick = () => { audio ? disableSound() : enableSound(); };
+
+  // A phone suspends the context when the page is backgrounded or the screen locks.
+  document.addEventListener("visibilitychange", () => {
+    if (audio && !document.hidden) audio.audioContext.resume();
+  });
+
+  // ---- Arrow -------------------------------------------------------------------------------
   function drawArrow(headingRadians, alarm) {
     const width = canvas.width, height = canvas.height;
     context.clearRect(0, 0, width, height);
@@ -57,6 +163,8 @@
     document.body.classList.toggle("alarm", Boolean(message.alarm));
     drawArrow(message.first_heading_radians, message.alarm);
     status.textContent = (message.alarm ? "Obstacle close. " : "") + "Heading " + (degrees >= 0 ? "+" : "") + degrees + " degrees.";
+    latest = { heading: message.first_heading_radians, alarm: Boolean(message.alarm), receivedAt: performance.now() };
+    if (audio) setPan(panFromHeading(latest.heading));
   }
 
   function connect() {
@@ -69,6 +177,7 @@
     };
     socket.onclose = () => {
       link.textContent = "Connection lost. Retrying.";
+      latest.receivedAt = -Infinity;  // Silence the beeps at once rather than after the timeout.
       setTimeout(connect, 1000);
     };
     socket.onerror = () => { socket.close(); };

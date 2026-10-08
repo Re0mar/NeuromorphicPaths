@@ -1,19 +1,8 @@
-"""
-A browser as the display: one static page and one websocket, served from a thread of their own.
-
-The only file in the package allowed to import aiohttp. The server runs its own asyncio loop in
-its own thread, and the pipeline's worker thread hands it paths through call_soon_threadsafe, so
-the two never share a loop. No video is sent. The page draws the arrow and turns red on alarm,
-which is all a display on the far side of a hotspot needs.
-"""
-
-# Standard library imports
 import asyncio
 import logging
 import threading
 from pathlib import Path
 
-# Local package imports
 from nav.sinks.config import WebConfig
 from nav.sources.framecodec import encode_path
 from nav.types import PlannedPath
