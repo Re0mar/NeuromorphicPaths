@@ -32,6 +32,7 @@ from nav.sources.config import (
     LoggedConfig,
     NeonConfig,
     NeonPluginConfig,
+    NeonRecordingConfig,
     TapConfig,
     VideoConfig,
 )
@@ -99,6 +100,7 @@ def test_defaults_land_where_they_belong() -> None:
     [
         (["--source", "video_file", "--sink", "none"], "--path"),
         (["--source", "neon_plugin", "--sink", "none"], "--recording-dir"),
+        (["--source", "neon_recording", "--sink", "none"], "--recording-dir"),
         (["--source", "logged", "--sink", "none"], "--log-dir"),
     ],
 )
@@ -125,6 +127,7 @@ def test_a_video_path_that_is_not_a_file_is_refused_before_anything_loads(tmp_pa
     [
         ("--log-dir", ["--source", "logged", "--log-dir", "no_such_log", "--sink", "none"]),
         ("--recording-dir", ["--source", "neon_plugin", "--recording-dir", "no_such_recording", "--sink", "none"]),
+        ("--recording-dir", ["--source", "neon_recording", "--recording-dir", "no_such_recording", "--sink", "none"]),
     ],
 )
 def test_a_directory_argument_that_is_not_a_directory_is_refused(flag: str, argv: list[str], capsys: pytest.CaptureFixture[str]) -> None:
@@ -173,6 +176,7 @@ BUILT_SOURCE_KINDS = {
     SourceKind.LOGGED: {"logged": LoggedConfig(log_dir="a_log")},
     SourceKind.ARCORE_TCP: {"arcore": ArCoreConfig(port=0)},
     SourceKind.NEON_PLUGIN: {"neon_plugin": NeonPluginConfig(recording_dir="a_recording")},
+    SourceKind.NEON_RECORDING: {"neon_recording": NeonRecordingConfig(recording_dir="a_recording")},
 }
 
 
@@ -409,6 +413,9 @@ def test_every_parsed_default_is_the_dataclass_default() -> None:
     arcore = build_run_config(["--source", "arcore_tcp", "--sink", "none"]).arcore
     assert arcore is not None and arcore.port == ArCoreConfig.port
     assert arcore.accept_timeout_seconds == ArCoreConfig.accept_timeout_seconds
+
+    recording = build_run_config(["--source", "neon_recording", "--recording-dir", ".", "--sink", "none"]).neon_recording
+    assert recording is not None and recording.frames_per_second == NeonRecordingConfig.frames_per_second
 
 
 def test_the_accept_timeout_flag_reaches_the_phone_source() -> None:
@@ -697,3 +704,32 @@ def test_a_timing_log_that_is_a_directory_or_in_a_missing_folder_is_refused(wher
 
     message = capsys.readouterr().err
     assert ("is a directory" in message) if where == "a directory" else ("in a folder that doesn't exist" in message)
+
+
+# *******************************************
+# The neon_recording source's flags
+# *******************************************
+
+
+def test_the_recording_rate_reaches_the_recording_source(tmp_path) -> None:
+    config = build_run_config(["--source", "neon_recording", "--recording-dir", str(tmp_path), "--recording-rate", "3.5", "--sink", "none"])
+
+    assert config.neon_recording == NeonRecordingConfig(recording_dir=str(tmp_path), frames_per_second=3.5)
+    # A recording goes through the estimator like the live glasses, so it gets an estimator config.
+    assert config.estimator is not None
+
+
+@pytest.mark.parametrize("source", ["neon_live", "video_file", "logged", "neon_plugin"])
+def test_a_recording_rate_given_to_another_source_is_refused(source: str, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        build_run_config(["--source", source, "--recording-rate", "2", "--sink", "none"])
+
+    assert "--recording-rate only applies to neon_recording" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("rate", ["0", "-1"])
+def test_a_recording_rate_at_or_below_zero_is_refused(rate: str, tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        build_run_config(["--source", "neon_recording", "--recording-dir", str(tmp_path), "--recording-rate", rate, "--sink", "none"])
+
+    assert "--recording-rate" in capsys.readouterr().err

@@ -18,6 +18,7 @@ from nav.sources.camera_model import (
     Undistorter,
     horizontal_field_of_view_degrees,
     scale_intrinsics,
+    undistorter_for,
 )
 
 HEIGHT, WIDTH = 480, 640
@@ -256,3 +257,29 @@ def test_the_calibration_cannot_be_changed_through_the_callers_array() -> None:
     callers_matrix[0, 0] = 1.0
 
     assert calibration.camera_matrix[0, 0] == pytest.approx(400.0)
+
+
+def test_undistorter_for_scales_a_calibration_to_the_image_it_straightens() -> None:
+    quarter = (NEON_SIZE[0] // 4, NEON_SIZE[1] // 4)
+    by_hand = Undistorter(
+        CameraCalibration(
+            camera_matrix=scale_intrinsics(NEON_CAMERA_MATRIX, NEON_SIZE, quarter),
+            distortion_coefficients=NEON_DISTORTION,
+            image_size=quarter,
+        )
+    )
+
+    built = undistorter_for(NEON_CAMERA_MATRIX, NEON_DISTORTION, NEON_SIZE, quarter)
+
+    assert np.array_equal(built.camera_matrix, by_hand.camera_matrix)
+    image = np.random.default_rng(3).integers(0, 255, size=(*quarter, 3), dtype=np.uint8)
+    assert np.array_equal(built.undistort_image(image), by_hand.undistort_image(image))
+
+
+def test_undistorter_for_at_the_calibrated_size_is_the_calibration_itself() -> None:
+    assert np.array_equal(undistorter_for(NEON_CAMERA_MATRIX, NEON_DISTORTION, NEON_SIZE, NEON_SIZE).camera_matrix, Undistorter(_neon_calibration()).camera_matrix)
+
+
+def test_undistorter_for_refuses_coefficients_no_camera_model_has() -> None:
+    with pytest.raises(CameraModelError, match="distortion_coefficients"):
+        undistorter_for(NEON_CAMERA_MATRIX, NEON_DISTORTION[:7], NEON_SIZE, NEON_SIZE)

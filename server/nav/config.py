@@ -36,6 +36,7 @@ from nav.sources.config import (
     NeonConfig,
     NeonPluginConfig,
     NeonPluginModel,
+    NeonRecordingConfig,
     TapConfig,
     VideoConfig,
     depth_checkpoint_from_name,
@@ -43,7 +44,9 @@ from nav.sources.config import (
 from nav.sources.estimated_depth import EstimatedDepthSource
 from nav.sources.estimator import DepthEstimator, DepthEstimatorProtocol
 from nav.sources.logged import LoggedDepthFrameSource
-from nav.sources.neon_plugin import NativeNeonRecordingReader, NeonPluginDepthFrameSource
+from nav.sources.neon_plugin import NeonPluginDepthFrameSource
+# Module scope, like neon_plugin: pupil_labs is imported inside the reader, not by importing this.
+from nav.sources.neon_recording import NativeNeonRecordingReader, NeonRecordingReader, NeonRecordingRgbSource
 from nav.sources.rgb import RgbSource
 from nav.sources.video_file import URL_MARKER, VideoFileRgbSource
 from nav.types import DepthFrameSource, PathSink
@@ -60,6 +63,7 @@ class SourceKind(Enum):
     NEON_LIVE = "neon_live"
     ARCORE_TCP = "arcore_tcp"
     NEON_PLUGIN = "neon_plugin"
+    NEON_RECORDING = "neon_recording"
     LOGGED = "logged"
 
 
@@ -72,9 +76,9 @@ class SinkKind(Enum):
     NONE = "none"
 
 
-# These two sources carry RGB only, so they need the depth estimator composed in behind them.
-# The other three already deliver depth, so asking them for a model name would be meaningless.
-ESTIMATOR_BACKED_SOURCES = frozenset({SourceKind.VIDEO_FILE, SourceKind.NEON_LIVE})
+# These sources carry RGB only, so they need the depth estimator composed in behind them. The
+# rest already deliver depth, so asking them for a model name would be meaningless.
+ESTIMATOR_BACKED_SOURCES = frozenset({SourceKind.VIDEO_FILE, SourceKind.NEON_LIVE, SourceKind.NEON_RECORDING})
 # Of those, the ones a person walks with while the estimator runs, where a CPU estimator is worth a
 # warning. A recording on the CPU is only slow to process.
 LIVE_ESTIMATOR_SOURCES = frozenset({SourceKind.NEON_LIVE})
@@ -99,6 +103,7 @@ class RunConfig:
     neon: NeonConfig | None = None
     arcore: ArCoreConfig | None = None
     neon_plugin: NeonPluginConfig | None = None
+    neon_recording: NeonRecordingConfig | None = None
     logged: LoggedConfig | None = None
     estimator: EstimatorConfig | None = None
     web: WebConfig | None = None
@@ -112,6 +117,12 @@ class RunConfig:
 
     Deliberately has no command line flag. A run started from the command line always gets the
     real estimator, so a flag here could only ever make a live run quietly fake.
+    """
+    recording_reader_factory: Callable[[Path], NeonRecordingReader] | None = None
+    """Composition-root hook, set by tests to read a fake recording instead of a native one.
+
+    No command line flag, for the same reason as estimator_factory. The native format can't be
+    built by a test, so without this the neon_recording source could only be tested in pieces.
     """
 
 
@@ -198,9 +209,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="seconds to wait for the phone to connect. Launching the app by hand takes longer than the default",
     )
 
-    neon_plugin = parser.add_argument_group("neon_plugin source")
-    neon_plugin.add_argument("--recording-dir", help="a Neon recording the depth plugin has run over")
-    neon_plugin.add_argument(
+    recordings = parser.add_argument_group("neon_recording and neon_plugin sources")
+    recordings.add_argument("--recording-dir", help="a native Neon recording folder. For neon_plugin, one the depth plugin has run over")
+    # None rather than the dataclass default, so a rate given to another source can be told apart
+    # from no rate given at all. The default is filled in from NeonRecordingConfig below.
+    recordings.add_argument(
+        "--recording-rate",
+        type=_positive_float,
+        default=None,
+        help=f"neon_recording frames per second of recording to replay, {NeonRecordingConfig.frames_per_second:g} by default",
+    )
+    recordings.add_argument(
         "--plugin-model",
         choices=[model.value for model in NeonPluginModel],
         default=NeonPluginModel.METRIC_LARGE.value,
@@ -228,7 +247,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=2 * EstimatorConfig.fallback_half_field_of_view_degrees,
         help=(
             "horizontal field of view in degrees, used when the camera has no calibration and the model "
-            "returns no intrinsics. A phone is about 75. Ignored by neon_live, which uses the device's own calibration"
+            "returns no intrinsics. A phone is about 75. Ignored by neon_live and neon_recording, which use the glasses' own calibration"
         ),
     )
 
@@ -306,6 +325,8 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
         parser.error(f"--realtime only applies to {SourceKind.LOGGED.value}, not {source_kind.value}")
     if arguments.neon_replay is not None and source_kind is not SourceKind.NEON_LIVE:
         parser.error(f"--neon-replay only applies to {SourceKind.NEON_LIVE.value}, not {source_kind.value}")
+    if arguments.recording_rate is not None and source_kind is not SourceKind.NEON_RECORDING:
+        parser.error(f"--recording-rate only applies to {SourceKind.NEON_RECORDING.value}, not {source_kind.value}")
     if arguments.neon_replay is not None and arguments.neon_address is not None:
         parser.error("--neon-address and --neon-replay cannot be used together, a replay plays a capture in place of the glasses")
     # One log, one place. With both, a reader would have to guess which file the run wrote.
@@ -324,6 +345,7 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
     neon = None
     arcore = None
     neon_plugin = None
+    neon_recording = None
     logged = None
 
     match source_kind:
@@ -349,6 +371,12 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
                 recording_dir=arguments.recording_dir,
                 model=NeonPluginModel(arguments.plugin_model),
             )
+        case SourceKind.NEON_RECORDING:
+            _require(parser, arguments.recording_dir, "--recording-dir", source_kind)
+            if not Path(arguments.recording_dir).is_dir():
+                parser.error(f"--recording-dir {arguments.recording_dir} is not a directory")
+            rate = NeonRecordingConfig.frames_per_second if arguments.recording_rate is None else arguments.recording_rate
+            neon_recording = NeonRecordingConfig(recording_dir=arguments.recording_dir, frames_per_second=rate)
         case SourceKind.LOGGED:
             _require(parser, arguments.log_dir, "--log-dir", source_kind)
             if not Path(arguments.log_dir).is_dir():
@@ -394,6 +422,7 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
         neon=neon,
         arcore=arcore,
         neon_plugin=neon_plugin,
+        neon_recording=neon_recording,
         logged=logged,
         estimator=estimator,
         web=web,
@@ -472,6 +501,16 @@ def _build_inner_source(config: RunConfig) -> DepthFrameSource:
             if config.arcore is None:
                 raise ValueError("arcore_tcp needs an arcore config and none was built")
             return ArCoreTcpSource(config.arcore)
+        case SourceKind.NEON_RECORDING:
+            if config.neon_recording is None:
+                raise ValueError("neon_recording needs a neon_recording config and none was built")
+            return build_estimated_depth_source(
+                NeonRecordingRgbSource(
+                    config.neon_recording,
+                    reader_factory=config.recording_reader_factory if config.recording_reader_factory is not None else NativeNeonRecordingReader,
+                ),
+                config,
+            )
         case SourceKind.NEON_PLUGIN:
             if config.neon_plugin is None:
                 raise ValueError("neon_plugin needs a neon_plugin config and none was built")

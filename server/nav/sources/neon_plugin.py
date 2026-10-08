@@ -8,15 +8,14 @@ with no estimator on this laptop.
 
 The recording itself is read through a small protocol rather than directly, because the native
 recording format is binary and undocumented and the tests cannot build one. The plugin's array
-they can build. The native reader wrapping pupil_labs.neon_recording is the one shipping
-implementation, and the only other file allowed to import that package.
+they can build. The native reader that wraps pupil_labs.neon_recording lives in neon_recording.py,
+beside the source that straightens a recording's own video.
 """
 
 # Standard library imports
 import logging
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Protocol
 
 # Third party imports
 import numpy as np
@@ -26,6 +25,9 @@ from nav.pose.imu_orientation import identity_pose, is_usable_orientation, pose_
 from nav.pose.neon_mount import NEON_IMU_MOUNT
 from nav.sources.camera_model import scale_intrinsics
 from nav.sources.config import NeonPluginConfig, NeonPluginModel
+# The reader lives with the recording source, the one module besides neon_stream.py allowed to import
+# pupil_labs. xyzw_to_wxyz is re-exported for the callers that still find it here.
+from nav.sources.neon_recording import NeonRecordingReader, xyzw_to_wxyz  # noqa: F401
 from nav.types import DepthFrame
 
 log = logging.getLogger(__name__)
@@ -36,33 +38,6 @@ log = logging.getLogger(__name__)
 PLUGIN_CACHE_RELATIVE_DIR = Path(".neon_player") / "cache" / "DepthEstimationPlugin"
 DEPTH_VALUES_FILENAME_TEMPLATE = "depth_values_{stem}.npy"
 NANOSECONDS_PER_SECOND = 1.0e9
-
-
-class NeonRecordingReader(Protocol):
-    """What this source needs from a recording. Times are the recording's own, in nanoseconds."""
-
-    def scene_times_ns(self) -> np.ndarray: ...
-
-    def scene_size(self) -> tuple[int, int]: ...
-
-    def scene_camera_matrix(self) -> np.ndarray: ...
-
-    def imu_quaternions_wxyz_at(self, times_ns: np.ndarray, tolerance_ns: int) -> np.ndarray | None: ...
-
-    def gaze_points_at(self, times_ns: np.ndarray, tolerance_ns: int) -> np.ndarray | None: ...
-
-
-def xyzw_to_wxyz(quaternions_xyzw: np.ndarray) -> np.ndarray:
-    """
-    Reorder quaternion columns from the recording's (x, y, z, w) to the (w, x, y, z) every Pose uses.
-
-    :param quaternions_xyzw: (N, 4) array in the recording's order.
-    :return: (N, 4) array in Pose order.
-    :rtype: np.ndarray
-    """
-    if quaternions_xyzw.ndim != 2 or quaternions_xyzw.shape[1] != 4:
-        raise ValueError(f"expected (N, 4) quaternions, got shape {quaternions_xyzw.shape}")
-    return quaternions_xyzw[:, [3, 0, 1, 2]]
 
 
 class NeonPluginDepthFrameSource:
@@ -169,49 +144,3 @@ class NeonPluginDepthFrameSource:
 
     def close(self) -> None:
         """Nothing held open between frames. Present because the loop closes every source."""
-
-
-class NativeNeonRecordingReader:
-    """Reads a native Neon recording through pupil_labs.neon_recording. The shipping reader."""
-
-    def __init__(self, recording_dir: Path) -> None:
-        # Optional dependency, present only with the glasses extra. The plugin cache can be read
-        # on a laptop that never installed it, which is why the recording reader is injectable.
-        from pupil_labs.neon_recording import NeonRecording
-
-        self._recording = NeonRecording(recording_dir)
-
-    def scene_times_ns(self) -> np.ndarray:
-        return np.asarray(self._recording.scene.time, dtype=np.int64)
-
-    def scene_size(self) -> tuple[int, int]:
-        scene = self._recording.scene
-        if scene.height is None or scene.width is None:
-            raise ValueError("scene video reports no size, the recording may be missing its video")
-        return int(scene.height), int(scene.width)
-
-    def scene_camera_matrix(self) -> np.ndarray:
-        calibration = self._recording.calibration
-        if calibration is None:
-            raise FileNotFoundError("recording has no calibration.bin, so the scene camera intrinsics are unknown")
-        return np.asarray(calibration.scene_camera_matrix, dtype=np.float64)
-
-    def imu_quaternions_wxyz_at(self, times_ns: np.ndarray, tolerance_ns: int) -> np.ndarray | None:
-        try:
-            imu = self._recording.imu
-        except Exception as missing:  # noqa: BLE001, the library raises its own SensorError subclass
-            log.info("no IMU stream (caught %s, expected on some recordings): %s", type(missing).__name__, missing)
-            return None
-        sampled = imu.sample(times_ns, method="nearest", tolerance=tolerance_ns)
-        # The recording stores x, y, z, w. Every Pose is w, x, y, z. Reordering by name here is
-        # what keeps pitch from flipping silently.
-        return xyzw_to_wxyz(np.asarray(sampled.rotation, dtype=np.float64))
-
-    def gaze_points_at(self, times_ns: np.ndarray, tolerance_ns: int) -> np.ndarray | None:
-        try:
-            gaze = self._recording.gaze
-        except Exception as missing:  # noqa: BLE001, same as above
-            log.info("no gaze stream (caught %s, expected on some recordings): %s", type(missing).__name__, missing)
-            return None
-        sampled = gaze.sample(times_ns, method="nearest", tolerance=tolerance_ns)
-        return np.asarray(sampled.point, dtype=np.float64)

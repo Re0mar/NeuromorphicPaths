@@ -26,7 +26,7 @@ To run the real depth estimator, which the glasses and any plain camera need:
 .venv/Scripts/python -m pip install -e ".[dev,glasses]"
 ```
 
-That adds torch, Depth Anything 3 and the Pupil Labs client. The torch that pip picks is the CPU
+That adds torch, Depth Anything 3, the Pupil Labs client and its recording reader. The torch that pip picks is the CPU
 build, which is fine for a recording and too slow for a live walk. For live use install the CUDA
 build that matches your driver from pytorch.org first, then run the line above. The first run
 downloads the metric depth checkpoint, 1.3 GB.
@@ -76,6 +76,7 @@ is the whole configuration, and `--verbose` prints per-stage timings.
 | `video_file` | a recording, or an IP camera app's stream URL, through the depth estimator | `--path`, checked before the model loads |
 | `neon_live` | the Pupil Labs Neon over the network, through the depth estimator | `--neon-address` only if discovery is blocked |
 | `arcore_tcp` | the Pixel app's depth frames over TCP | `--arcore-port` (9000), `--arcore-accept-timeout` (30), `--reconnect` |
+| `neon_recording` | a native Neon recording, straightened with its own calibration, through the depth estimator | `--recording-dir`, `--recording-rate` (2 frames a second of recording) |
 | `neon_plugin` | a Neon recording the Neon Player depth plugin has run over | `--recording-dir`, `--plugin-model` |
 | `logged` | a frame log this pipeline recorded earlier | `--log-dir`, `--realtime` |
 

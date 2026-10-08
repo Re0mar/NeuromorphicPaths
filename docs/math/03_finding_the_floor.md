@@ -264,6 +264,12 @@ repository doesn't settle why 50 suits the Pixel.
    2.2 m. 395 of 432 frames fitted a floor, 91 percent.
 2. The other 37 were walls, refused for leaning a median 82.6 degrees, over 35. Each of those
    frames kept the last floor it had.
+   `python -m nav.evaluation.check_planner floor <frame log>` prints these figures for any recorded
+   run (`server/nav/evaluation/floor_report.py`). A fresh `--neon-replay` of the same capture on
+   2026-10-08 planned 388 frames and fitted 361 of them, 93 percent. The camera sat a median 1.57 m
+   up, 1.41 to 1.66 m between the 10th and 90th percentiles. 25 frames were refused for leaning a
+   median 81.5 degrees, and 2 for a floor more than 2.2 m down. A replay plans whichever frame is
+   newest when the last one finishes, so how many frames it plans moves with the laptop's speed.
 3. On the live walk without the conversion, the floor came out about 2.9 m down, over 2.2, and
    only 243 of 570 frames fitted a floor.
 4. Section 1's converted heights, 1.51 to 1.56 m, all pass.

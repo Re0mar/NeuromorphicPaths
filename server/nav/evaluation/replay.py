@@ -21,6 +21,7 @@ import re
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 # Third party imports
@@ -50,18 +51,18 @@ from nav.planner.config import GoalMode, PlannerConfig
 from nav.planner.pipeline import PlannerPipeline
 from nav.runtime.loop import RUN_CONFIG_FILENAME, gaze_on_the_ground
 from nav.scene.config import SceneConfig
-from nav.scene.floor import ground_axes
+from nav.scene.floor import FloorRefusal, ground_axes
 from nav.scene.pipeline import CAMERA_FORWARD, ScenePipeline
 from nav.scene.transform import camera_to_world_plane, rotation_matrix_from_quaternion_wxyz
 from nav.sources.framecodec import INDEX_FILENAME
 from nav.sources.logged import LoggedDepthFrameSource
-from nav.types import ObstacleSet, Plane
+from nav.types import FloorSource, ObstacleSet, Plane
 from nav.walker import WalkerConfig
 
 NAV_DIR = Path(nav.__file__).resolve().parent
 CLONE_DIR = NAV_DIR.parent.parent
 # Bumped whenever the pickled layout changes, so an old cache entry is rebuilt rather than misread.
-CACHE_FORMAT = "cache-format-3"
+CACHE_FORMAT = "cache-format-4"
 # Beside the server code, not in whatever folder the command happens to run from, so it always lands
 # where .gitignore covers it.
 DEFAULT_CACHE_DIR = NAV_DIR.parent / ".replay_cache"
@@ -85,6 +86,17 @@ class RecordingRefused(Exception):
     """A recording this code can't evaluate faithfully. The message says which recording and why."""
 
 
+class UnalignedFrames(Enum):
+    """What a scene pass does with a frame whose orientation isn't gravity aligned."""
+
+    # The planner's figures place the walker on the floor in the world, which such a frame can't do,
+    # so the whole recording is refused rather than scored on a guess.
+    REFUSE = "refuse"
+    # Run it through the scene as the live run did, which falls back to the picture's own up. For a
+    # report that only reads the camera-frame floor, and counts these frames apart.
+    PROCESS = "process"
+
+
 @dataclass(frozen=True)
 class PlannedScene:
     """What the scene knew about one frame it accepted, everything a planned frame needs but the arrow."""
@@ -103,6 +115,14 @@ class PlannedScene:
     image_width_pixels: int
     image_height_pixels: int
     gaze_ground_point: np.ndarray | None
+    # The floor as the scene chose it, in the camera frame. floor_world needs a position and the Neon
+    # never has one, so the camera's height is read from here instead.
+    floor_source: FloorSource
+    camera_height_meters: float
+    # Why the fit gave nothing, set only when floor_source is PREVIOUS.
+    floor_refusal: FloorRefusal | None
+    # False means the scene used the picture's own up for this frame, not gravity.
+    gravity_aligned: bool
 
     def planner_input(self) -> PlannerInput:
         """The part of this frame the planner and the whole-walk numbers read."""
@@ -241,7 +261,13 @@ def goal_mode_for(log_dir: Path) -> GoalMode:
         raise RecordingRefused(f"{run_config_path} names goal mode {spelling!r}, which this code doesn't have") from None
 
 
-def scene_pass(log_dir: Path, scene_config: SceneConfig, walker: WalkerConfig, cache_dir: Path | None) -> ScenePass:
+def scene_pass(
+    log_dir: Path,
+    scene_config: SceneConfig,
+    walker: WalkerConfig,
+    cache_dir: Path | None,
+    unaligned_frames: UnalignedFrames = UnalignedFrames.REFUSE,
+) -> ScenePass:
     """
     Run every frame of the log through one scene, as a live run does, or load the cached result.
 
@@ -249,12 +275,13 @@ def scene_pass(log_dir: Path, scene_config: SceneConfig, walker: WalkerConfig, c
     :param scene_config: The scene's settings.
     :param walker: The walker's size.
     :param cache_dir: Where cached passes live. None runs cold and neither reads nor writes the cache.
+    :param unaligned_frames: What to do with a frame whose orientation isn't gravity aligned.
     :return: The pose of every frame, and what the scene knew about each frame it accepted.
     :rtype: ScenePass
-    :raises RecordingRefused: On a frame whose orientation isn't gravity aligned.
+    :raises RecordingRefused: On a frame whose orientation isn't gravity aligned, under REFUSE.
     """
     log_dir = Path(log_dir)
-    key = cache_key(log_dir, scene_config, walker) if cache_dir is not None else None
+    key = cache_key(log_dir, scene_config, walker, unaligned_frames) if cache_dir is not None else None
     cache_file = None if cache_dir is None else Path(cache_dir) / f"{key}.pkl"
     if cache_file is not None and cache_file.is_file():
         try:
@@ -275,7 +302,7 @@ def scene_pass(log_dir: Path, scene_config: SceneConfig, walker: WalkerConfig, c
     refused = 0
     reasons: dict[str, int] = {}
     for frame in LoggedDepthFrameSource(log_dir).frames():
-        if not frame.pose.orientation_is_gravity_aligned:
+        if not frame.pose.orientation_is_gravity_aligned and unaligned_frames is UnalignedFrames.REFUSE:
             raise RecordingRefused(
                 f"the frame at {frame.timestamp_seconds:.3f} s in {log_dir} isn't gravity aligned, "
                 f"so its position can't be put on the floor"
@@ -319,6 +346,11 @@ def scene_pass(log_dir: Path, scene_config: SceneConfig, walker: WalkerConfig, c
                 image_height_pixels=int(height),
                 # While the scene's plane is still this frame's, as the loop computes it.
                 gaze_ground_point=gaze_on_the_ground(frame, scene),
+                floor_source=scene.last_floor_source,
+                # process() returned, so the scene chose a plane for this frame and kept it.
+                camera_height_meters=float(scene.previous_plane.offset_meters),
+                floor_refusal=scene.last_floor_refusal,
+                gravity_aligned=bool(frame.pose.orientation_is_gravity_aligned),
             )
         )
     time_array = np.asarray(times, dtype=np.float64)
@@ -348,7 +380,12 @@ def refusal_reason(error: ValueError) -> str:
     return REFUSAL_NUMBER.sub("N", str(error)) or type(error).__name__
 
 
-def cache_key(log_dir: Path, scene_config: SceneConfig, walker: WalkerConfig) -> str:
+def cache_key(
+    log_dir: Path,
+    scene_config: SceneConfig,
+    walker: WalkerConfig,
+    unaligned_frames: UnalignedFrames = UnalignedFrames.REFUSE,
+) -> str:
     """Hash of everything that decides a scene pass's output: the frames, the settings, the code and its libraries."""
     digest = hashlib.sha256()
     index_path = Path(log_dir) / INDEX_FILENAME
@@ -361,6 +398,9 @@ def cache_key(log_dir: Path, scene_config: SceneConfig, walker: WalkerConfig) ->
         digest.update(f"{frame_path.name}:{stat.st_size}:{stat.st_mtime_ns};".encode())
     digest.update(repr(scene_config).encode())
     digest.update(repr(walker).encode())
+    # A pass that processed unaligned frames holds rows a refusing pass would never have, so the
+    # two can't share an entry, or a cached PROCESS pass would let a REFUSE call skip its refusal.
+    digest.update(unaligned_frames.value.encode())
     sources = sorted({path for pattern in SCENE_PASS_SOURCES for path in NAV_DIR.glob(pattern)}, key=lambda path: path.relative_to(NAV_DIR).as_posix())
     for source in sources:
         digest.update(source.relative_to(NAV_DIR).as_posix().encode())

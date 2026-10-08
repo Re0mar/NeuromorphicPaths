@@ -10,19 +10,28 @@ Run from server/ with its venv:
     python -m nav.evaluation.check_planner flips frame_logs/contact_walk_1 --percentile 90
     python -m nav.evaluation.check_planner band frame_logs/pixel_walk_3
 
+    python -m nav.evaluation.check_planner floor frame_logs/neon_walk_2_replay
+    python -m nav.evaluation.check_planner floor frame_logs/a_plugin_run --scene-set floor_max_offset_meters=10
+
 `numbers` prints every whole-walk figure the heading and alarm are judged by, each with the frame
 count it was taken over, and a pass or fail against each target. `flips` takes the consecutive plan
 pairs at or above a percentile of disagreement and says what each is: a tracker jump, the phone
 turning, a new obstacle, a side flip around something both frames saw, or a shift on the same side.
 `band` takes every frame with something 3 to 5.32 m ahead and the arrow at its limit, splits its
 cost by term, and says which known causes explain it, by re-planning the frame without each one.
+`floor` plans nothing. It says where each frame's floor came from, how high the camera sat above it,
+and why fits were refused. A median camera height near eye level is the check that a depth source
+is in meters. Its second form lifts the floor check's height limit, so a source whose depth is too
+large still shows how much too large instead of being cut off at the limit.
 
 One scene runs across the whole walk, as the live run does, and the chosen segment's frames are
 planned with one planner. The floor fit is seeded, so one cold pass is a verdict on one machine.
---cached reuses a scene pass.
+--cached reuses a scene pass. `floor` takes the whole walk, and keeps frames with no gravity rather
+than refusing the recording, counting them apart.
 
 Exit codes: 0 printed, 1 a recording or an override refused, 2 a usage error such as a segment the
-walk doesn't have, 3 nothing to measure because the segment has no planned frame.
+walk doesn't have, 3 nothing to measure because the segment has no planned frame, or for `floor`
+because no walk had a fitted or supplied floor on a frame with gravity.
 """
 
 # Standard library imports
@@ -37,9 +46,10 @@ from pathlib import Path
 import numpy as np
 
 # Local package imports
-from nav.evaluation.arguments import add_replay_arguments
+from nav.evaluation.arguments import add_replay_arguments, add_scene_arguments
 from nav.evaluation.band_attribution import FIXABLE, ON_HOLD, TERM_NAMES, BandAttribution, PinCandidate, band_attribution
 from nav.evaluation.config import EvaluationConfig, PlannerNumbersConfig
+from nav.evaluation.floor_report import floor_report, format_floor_report, has_heights
 from nav.evaluation.overrides import OverrideRefused, apply_overrides
 from nav.evaluation.planner_numbers import (
     ClearanceBand,
@@ -51,7 +61,16 @@ from nav.evaluation.planner_numbers import (
     share,
     whole_walk_numbers,
 )
-from nav.evaluation.replay import RecordingRefused, clone_state, goal_mode_for, replayed_frames, scene_config_for, scene_pass, segment_bounds
+from nav.evaluation.replay import (
+    RecordingRefused,
+    UnalignedFrames,
+    clone_state,
+    goal_mode_for,
+    replayed_frames,
+    scene_config_for,
+    scene_pass,
+    segment_bounds,
+)
 from nav.evaluation.track import floor_heading_radians, walker_track, wrap_radians
 from nav.planner.config import GoalMode, PlannerConfig
 from nav.sources.framecodec import FrameDecodeError
@@ -86,6 +105,10 @@ def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
         add_replay_arguments(subcommand)
     flips.add_argument("--percentile", type=float, default=90.0, help="pairs at or above this percentile of disagreement, 90 by default")
     flips.add_argument("--largest", type=int, default=10, help="how many of the largest pairs to list, 10 by default")
+    # The floor is a whole-walk figure and nothing is planned, so it takes no segment and no planner override.
+    floor = subcommands.add_parser("floor", help="where each frame's floor came from, and the camera's height above it")
+    floor.add_argument("log_dirs", type=Path, nargs="+", help="frame logs written by --record-to")
+    add_scene_arguments(floor)
     arguments = parser.parse_args(argv)
     if arguments.subcommand == "flips" and not 0.0 <= arguments.percentile <= 100.0:
         parser.error(f"--percentile is from 0 to 100, got {arguments.percentile}")
@@ -95,6 +118,8 @@ def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     arguments = parse_arguments(argv)
     try:
+        if arguments.subcommand == "floor":
+            return _run_floor(arguments)
         return _run(arguments)
     except (RecordingRefused, OverrideRefused, FileNotFoundError, FrameDecodeError) as refused:
         # A recording or an override this code can't use. Known and named, so it ends with the
@@ -218,6 +243,30 @@ def format_numbers(name: str, numbers: PlannerNumbers, planner_config: PlannerCo
     hold_met = numbers.longest_hold_seconds <= planner_config.alarm_hold_seconds + 1e-9
     lines.append(f"  {_verdict(hold_met)}  longest held {numbers.longest_hold_seconds:.3f} s, target at most {planner_config.alarm_hold_seconds} s")
     return f"=== {name}\n" + "\n".join(lines) + "\n"
+
+
+def _run_floor(arguments: argparse.Namespace) -> int:
+    print(f"clone at {clone_state()}")
+    measured_any = False
+    for log_dir in arguments.log_dirs:
+        scene_config, scene_source = scene_config_for(log_dir, arguments.scene_defaults, arguments.scene_set)
+        # A frame with no gravity is kept, as the live run kept it. The report counts it apart and
+        # leaves it out of the height, which reads the camera-frame floor and needs no world.
+        passed = scene_pass(
+            log_dir,
+            scene_config,
+            WalkerConfig(),
+            arguments.cache_dir if arguments.cached else None,
+            unaligned_frames=UnalignedFrames.PROCESS,
+        )
+        report = floor_report(passed)
+        print()
+        print(format_floor_report(log_dir.name, report, scene_source), end="")
+        if not has_heights(report):
+            print(f"nothing measured: {log_dir.name} has no fitted or supplied floor on a frame with gravity", file=sys.stderr)
+            continue
+        measured_any = True
+    return EXIT_PRINTED if measured_any else EXIT_NOTHING_MEASURED
 
 
 def _run(arguments: argparse.Namespace) -> int:

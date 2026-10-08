@@ -29,6 +29,7 @@ from nav.runtime.loop import RUN_CONFIG_FILENAME, HeadingBaseline, gaze_on_the_g
 from nav.runtime.loop import run
 from nav.runtime.tap import RecordingTap
 from nav.runtime.timing import TIMING_FILENAME, FrameOutcome, TimingRecord, read_timing_log
+from nav.scene.floor import FloorRefusal, FloorRefusalCause
 from nav.scene.pipeline import ScenePipeline
 from nav.sinks.web_messages import WebMessageKind
 from nav.sources.framecodec import INDEX_FILENAME, decode_path, read_message
@@ -460,10 +461,11 @@ def test_a_planner_refusal_on_a_second_fallback_still_records_the_previous_floor
     import nav.runtime.loop as loop_module
     import nav.scene.pipeline as scene_module
 
-    real_fit_floor = scene_module.fit_floor
+    real_fit_floor = scene_module.fit_floor_with_refusal
+    no_plane = FloorRefusal(FloorRefusalCause.NO_PLANE, None, None)
 
     def fit_once_then_keep_the_previous(points, previous, config, up_camera):
-        return previous if previous is not None else real_fit_floor(points, previous, config, up_camera)
+        return (previous, no_plane) if previous is not None else real_fit_floor(points, previous, config, up_camera)
 
     calls = {"plan": 0}
 
@@ -474,7 +476,7 @@ def test_a_planner_refusal_on_a_second_fallback_still_records_the_previous_floor
                 raise ValueError("no cell is reachable, so the costs give no distribution")
             return super().plan(*args, **kwargs)
 
-    monkeypatch.setattr(scene_module, "fit_floor", fit_once_then_keep_the_previous)
+    monkeypatch.setattr(scene_module, "fit_floor_with_refusal", fit_once_then_keep_the_previous)
     monkeypatch.setattr(loop_module, "PlannerPipeline", RefusingAfterTheFirstPlanner)
     config, log_dir = _video_run(tmp_path, StubDepthEstimator(), frame_count=10)
 
