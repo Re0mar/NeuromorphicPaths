@@ -7,6 +7,8 @@ the start of a walk.
 """
 
 # Standard library imports
+import dataclasses
+
 import pytest
 
 # Third party imports
@@ -24,6 +26,8 @@ from nav.config import (
 )
 from nav.sources.config import (
     ArCoreConfig,
+    DepthCheckpoint,
+    DepthScale,
     EstimatorConfig,
     LoggedConfig,
     NeonConfig,
@@ -66,7 +70,7 @@ def test_minimal_command_line_builds_a_config() -> None:
     config = build_run_config(MINIMAL_VIDEO_ARGV)
 
     assert config.source_kind is SourceKind.VIDEO_FILE
-    assert config.sink_kind is SinkKind.NONE
+    assert config.sink_kinds == (SinkKind.NONE,)
     assert config.goal_mode is GoalMode.AHEAD
     assert config.video is not None
     assert config.video.path == STREAM_URL
@@ -96,7 +100,6 @@ def test_defaults_land_where_they_belong() -> None:
         (["--source", "video_file", "--sink", "none"], "--path"),
         (["--source", "neon_plugin", "--sink", "none"], "--recording-dir"),
         (["--source", "logged", "--sink", "none"], "--log-dir"),
-        (["--source", "video_file", "--path", STREAM_URL, "--sink", "phone_app"], "--phone-address"),
     ],
 )
 def test_missing_required_argument_names_it(argv: list[str], expected_in_message: str, capsys: pytest.CaptureFixture[str]) -> None:
@@ -176,7 +179,7 @@ BUILT_SOURCE_KINDS = {
 def _run_config_for(source_kind: SourceKind) -> RunConfig:
     return RunConfig(
         source_kind=source_kind,
-        sink_kind=SinkKind.NONE,
+        sink_kinds=(SinkKind.NONE,),
         goal_mode=GoalMode.AHEAD,
         estimator=EstimatorConfig(),
         # Injected at the composition root, so no test ever loads 1.3 GB of weights.
@@ -205,7 +208,7 @@ def test_the_tap_wraps_whatever_source_was_built(tmp_path) -> None:
     # records the same way and the replay reads one format back.
     config = RunConfig(
         source_kind=SourceKind.LOGGED,
-        sink_kind=SinkKind.NONE,
+        sink_kinds=(SinkKind.NONE,),
         goal_mode=GoalMode.AHEAD,
         logged=LoggedConfig(log_dir="a_log"),
         tap=TapConfig(log_dir=str(tmp_path / "recorded")),
@@ -217,7 +220,7 @@ def test_the_tap_wraps_whatever_source_was_built(tmp_path) -> None:
 def test_without_record_to_the_source_is_not_wrapped() -> None:
     config = RunConfig(
         source_kind=SourceKind.LOGGED,
-        sink_kind=SinkKind.NONE,
+        sink_kinds=(SinkKind.NONE,),
         goal_mode=GoalMode.AHEAD,
         logged=LoggedConfig(log_dir="a_log"),
     )
@@ -227,7 +230,7 @@ def test_without_record_to_the_source_is_not_wrapped() -> None:
 def test_a_built_source_refuses_a_missing_config() -> None:
     # RunConfig does not validate across its own fields, so a kind whose config was never built is
     # reachable. The factory must say which one rather than construct a source around a None.
-    config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kind=SinkKind.NONE, goal_mode=GoalMode.AHEAD)
+    config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kinds=(SinkKind.NONE,), goal_mode=GoalMode.AHEAD)
 
     with pytest.raises(ValueError, match="video_file needs a video config"):
         build_source(config)
@@ -236,7 +239,7 @@ def test_a_built_source_refuses_a_missing_config() -> None:
 def test_estimator_backed_source_refuses_a_missing_estimator_config() -> None:
     config = RunConfig(
         source_kind=SourceKind.VIDEO_FILE,
-        sink_kind=SinkKind.NONE,
+        sink_kinds=(SinkKind.NONE,),
         goal_mode=GoalMode.AHEAD,
         video=VideoConfig(path="scene.mp4"),
     )
@@ -249,7 +252,7 @@ BUILT_SINK_KINDS = {
     SinkKind.NONE: {},
     SinkKind.DEBUG_WINDOW: {},
     SinkKind.WEB: {"web": WebConfig(port=0)},
-    SinkKind.PHONE_APP: {"phone_app": PhoneAppConfig(address="127.0.0.1", port=1)},
+    SinkKind.PHONE_APP: {"phone_app": PhoneAppConfig(port=1)},
 }
 
 
@@ -259,7 +262,7 @@ def test_every_sink_kind_is_accounted_for() -> None:
 
 @pytest.mark.parametrize("sink_kind", sorted(BUILT_SINK_KINDS, key=lambda kind: kind.value))
 def test_built_sink_kinds_return_a_sink_without_opening_anything(sink_kind: SinkKind) -> None:
-    config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kind=sink_kind, goal_mode=GoalMode.AHEAD, **BUILT_SINK_KINDS[sink_kind])
+    config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kinds=(sink_kind,), goal_mode=GoalMode.AHEAD, **BUILT_SINK_KINDS[sink_kind])
 
     sink = build_sink(config)
 
@@ -270,8 +273,57 @@ def test_built_sink_kinds_return_a_sink_without_opening_anything(sink_kind: Sink
     sink.close()
 
 
+def test_several_sinks_build_one_fan_out_over_them_all() -> None:
+    # A walk puts the arrow on the phone and the depth view in a browser at the same time, and
+    # the loop still receives one sink.
+    from nav.sinks.fan_out import FanOutSink
+    from nav.sinks.phone_app import PhoneAppSink
+    from nav.sinks.web import WebSink
+
+    config = build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "phone_app", "--sink", "web"])
+
+    assert config.sink_kinds == (SinkKind.PHONE_APP, SinkKind.WEB)
+    assert config.phone_app is not None and config.web is not None
+    sink = build_sink(config)
+    try:
+        assert isinstance(sink, FanOutSink)
+        assert [type(each) for each in sink.sinks] == [PhoneAppSink, WebSink]
+    finally:
+        sink.close()
+
+
+def test_all_three_displays_can_run_together() -> None:
+    config = build_run_config(
+        [*MINIMAL_VIDEO_ARGV[:-2], "--sink", "phone_app", "--sink", "web", "--sink", "debug_window"]
+    )
+
+    sink = build_sink(config)
+    try:
+        assert len(sink.sinks) == 3
+    finally:
+        sink.close()
+
+
+def test_one_sink_is_not_wrapped_in_a_fan_out() -> None:
+    # The common case stays exactly what it was, so a single-display run has nothing extra in it.
+    from nav.sinks.none import NullSink
+
+    sink = build_sink(build_run_config(MINIMAL_VIDEO_ARGV))
+
+    assert isinstance(sink, NullSink)
+
+
+def test_naming_the_same_display_twice_is_refused(capsys: pytest.CaptureFixture[str]) -> None:
+    # Two web sinks is two servers on one port. The second would fail at start with a bind error
+    # that reads as another program holding it, which is the wrong thing to make someone debug.
+    with pytest.raises(SystemExit):
+        build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "web", "--sink", "web"])
+
+    assert "given more than once" in capsys.readouterr().err
+
+
 def test_a_built_sink_refuses_a_missing_config() -> None:
-    config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kind=SinkKind.PHONE_APP, goal_mode=GoalMode.AHEAD)
+    config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kinds=(SinkKind.PHONE_APP,), goal_mode=GoalMode.AHEAD)
 
     with pytest.raises(ValueError, match="phone_app needs"):
         build_sink(config)
@@ -283,7 +335,34 @@ def test_default_checkpoint_is_a_metric_one() -> None:
     # clearance in meters was wrong by an unknown scale and the file carried a cam_height rescale
     # to paper over it. Asserts the property rather than the exact name, so a version bump passes
     # and a swap back to a relative checkpoint does not.
-    assert "METRIC" in EstimatorConfig.model_name.upper()
+    assert EstimatorConfig.model_name.depth_scale is not DepthScale.RELATIVE
+
+
+def test_a_model_named_on_the_command_line_reaches_the_estimator_as_a_checkpoint() -> None:
+    """The estimator config refuses a bare string, so the parser is where a name becomes a checkpoint."""
+    config = build_run_config([*MINIMAL_VIDEO_ARGV, "--model", DepthCheckpoint.NESTED_GIANT_LARGE.value])
+
+    assert config.estimator.model_name is DepthCheckpoint.NESTED_GIANT_LARGE
+
+
+@pytest.mark.parametrize(
+    ("name", "expected_in_message"),
+    [
+        ("depth-anything/DA3-NOT-A-MODEL", "unknown Depth Anything 3 checkpoint"),
+        (DepthCheckpoint.SMALL.value, "gives relative depth"),
+    ],
+)
+def test_a_model_that_is_unknown_or_relative_is_refused_at_parse_time(
+    name: str, expected_in_message: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as exited:
+        build_run_config([*MINIMAL_VIDEO_ARGV, "--model", name])
+
+    assert exited.value.code == 2
+    error = capsys.readouterr().err
+    assert expected_in_message in error
+    assert DepthCheckpoint.METRIC_LARGE.value in error, "the refusal names a checkpoint that would work"
+
 
 def test_the_floor_tilt_and_fallback_fov_flags_reach_their_layers() -> None:
     # The first real recording was refused frame after frame by the floor gate the glasses
@@ -296,10 +375,19 @@ def test_the_floor_tilt_and_fallback_fov_flags_reach_their_layers() -> None:
     assert config.estimator.fallback_half_field_of_view_degrees == pytest.approx(37.5)
 
 
+def test_the_floor_max_height_flag_reaches_the_scene() -> None:
+    # The first Pixel walk's false plane put the camera 2.3 m up, and the ceiling that refuses it
+    # is the one gate that has bitten on real data, so it has to be tunable without editing code.
+    config = build_run_config([*MINIMAL_VIDEO_ARGV, "--floor-max-height", "1.9"])
+
+    assert config.scene.floor_max_offset_meters == pytest.approx(1.9)
+
+
 def test_the_floor_tilt_and_fallback_fov_defaults_match_their_configs() -> None:
     config = build_run_config(MINIMAL_VIDEO_ARGV)
 
     assert config.scene.floor_max_tilt_degrees == SceneConfig.floor_max_tilt_degrees
+    assert config.scene.floor_max_offset_meters == SceneConfig.floor_max_offset_meters
     assert config.estimator is not None
     assert config.estimator.fallback_half_field_of_view_degrees == EstimatorConfig.fallback_half_field_of_view_degrees
 
@@ -310,6 +398,7 @@ def test_every_parsed_default_is_the_dataclass_default() -> None:
     config = build_run_config(MINIMAL_VIDEO_ARGV)
     assert config.estimator is not None
     assert config.walker.radius_meters == WalkerConfig.radius_meters
+    assert config.scene.floor_max_offset_meters == SceneConfig.floor_max_offset_meters
     assert config.estimator.process_resolution == EstimatorConfig.process_resolution
     assert config.estimator.confidence_drop_percentile == EstimatorConfig.confidence_drop_percentile
     assert config.estimator.model_name == EstimatorConfig.model_name
@@ -332,8 +421,17 @@ def test_the_accept_timeout_flag_reaches_the_phone_source() -> None:
     web = build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "web"]).web
     assert web is not None and web.port == WebConfig.port
 
-    phone = build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "phone_app", "--phone-address", "10.0.0.2"]).phone_app
+    phone = build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "phone_app"]).phone_app
     assert phone is not None and phone.port == PhoneAppConfig.port
+
+
+def test_phone_address_is_no_longer_an_argument(capsys: pytest.CaptureFixture[str]) -> None:
+    # The phone connects to the laptop now, with the laptop address it already has. A flag for
+    # the phone's address would be a flag nothing reads, and the parser must say so.
+    with pytest.raises(SystemExit):
+        build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "phone_app", "--phone-address", "10.0.0.2"])
+
+    assert "unrecognized arguments: --phone-address" in capsys.readouterr().err
 
 
 def test_neon_without_an_address_is_left_to_discovery() -> None:
@@ -355,11 +453,72 @@ def test_neon_address_is_carried_through_when_given() -> None:
     assert config.neon.address == "10.0.0.5"
 
 
+def _capture_folder(tmp_path, with_meta: bool):
+    folder = tmp_path / "walk_1"
+    folder.mkdir()
+    if with_meta:
+        (folder / "meta.json").write_text("{}", encoding="utf-8")
+    return folder
+
+
+def test_a_neon_replay_folder_with_meta_reaches_the_neon_config(tmp_path) -> None:
+    capture = _capture_folder(tmp_path, with_meta=True)
+
+    config = build_run_config(["--source", "neon_live", "--sink", "none", "--neon-replay", str(capture)])
+
+    assert config.neon is not None
+    assert config.neon.replay_dir == str(capture)
+    assert config.neon.address is None
+
+
+def test_a_neon_replay_folder_without_meta_is_refused_naming_it(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    """An interrupted capture once had packets and no meta.json. Refused before the estimator loads its model."""
+    folder = _capture_folder(tmp_path, with_meta=False)
+
+    with pytest.raises(SystemExit) as exited:
+        build_run_config(["--source", "neon_live", "--sink", "none", "--neon-replay", str(folder)])
+
+    assert exited.value.code == 2
+    assert f"--neon-replay {folder} is not a capture folder, it has no meta.json" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("source", "source_argv"),
+    [
+        ("video_file", ["--path", STREAM_URL]),
+        ("arcore_tcp", []),
+    ],
+)
+def test_neon_replay_is_refused_for_a_source_that_is_not_neon_live(
+    source: str, source_argv: list[str], tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The same rule --realtime and --reconnect follow. A flag the chosen source silently ignores
+    # is a run that does something other than what was typed.
+    capture = _capture_folder(tmp_path, with_meta=True)
+
+    with pytest.raises(SystemExit):
+        build_run_config(["--source", source, *source_argv, "--sink", "none", "--neon-replay", str(capture)])
+
+    assert f"--neon-replay only applies to neon_live, not {source}" in capsys.readouterr().err
+
+
+def test_neon_address_and_neon_replay_together_are_refused(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    """A replay plays a capture in place of the glasses, so the address would be ignored without a word."""
+    capture = _capture_folder(tmp_path, with_meta=True)
+
+    with pytest.raises(SystemExit):
+        build_run_config(["--source", "neon_live", "--sink", "none", "--neon-address", "10.0.0.5", "--neon-replay", str(capture)])
+
+    assert "--neon-address and --neon-replay cannot be used together" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize(
     ("flag", "bad_value"),
     [
         ("--walker-radius", "0"),
         ("--walker-radius", "-0.35"),
+        ("--floor-max-height", "0"),
+        ("--floor-max-height", "-2.2"),
         ("--process-resolution", "0"),
         ("--process-resolution", "-504"),
         ("--confidence-drop-percentile", "-1"),
@@ -382,12 +541,12 @@ def test_out_of_range_number_is_refused(flag: str, bad_value: str, capsys: pytes
 def test_factory_refuses_a_kind_it_does_not_handle() -> None:
     # RunConfig does not validate its own fields, so this is reachable the day someone adds an
     # enum member and forgets the factory. The catch-all must say so rather than return None.
-    config = RunConfig(source_kind="not_a_kind", sink_kind=SinkKind.NONE, goal_mode=GoalMode.AHEAD)
+    config = RunConfig(source_kind="not_a_kind", sink_kinds=(SinkKind.NONE,), goal_mode=GoalMode.AHEAD)
 
     with pytest.raises(ValueError, match="no source constructor"):
         build_source(config)
 
-    sink_config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kind="not_a_kind", goal_mode=GoalMode.AHEAD)
+    sink_config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kinds=("not_a_kind",), goal_mode=GoalMode.AHEAD)
     with pytest.raises(ValueError, match="no sink constructor"):
         build_sink(sink_config)
 
@@ -435,9 +594,11 @@ def test_planned_path_rejects_mismatched_lengths() -> None:
             timestamp_seconds=0.0,
             times_seconds=np.array([0.0, 0.1, 0.2]),
             lateral_offsets_meters=np.array([0.0, 0.1]),
-            first_heading_radians=0.0,
+            lookahead_heading_radians=0.0,
             alarm=False,
             cumulative_cost_bits=0.0,
+            scene_information_bits=0.0,
+            avoidance_surprise_bits=0.0,
         )
 
 
@@ -450,9 +611,11 @@ def test_planned_path_rejects_a_non_finite_offset(bad_value: float) -> None:
             timestamp_seconds=0.0,
             times_seconds=np.array([0.0, 0.1]),
             lateral_offsets_meters=np.array([0.0, bad_value]),
-            first_heading_radians=0.0,
+            lookahead_heading_radians=0.0,
             alarm=False,
             cumulative_cost_bits=0.0,
+            scene_information_bits=0.0,
+            avoidance_surprise_bits=0.0,
         )
 
 
@@ -462,7 +625,75 @@ def test_planned_path_rejects_a_non_finite_time() -> None:
             timestamp_seconds=0.0,
             times_seconds=np.array([0.0, np.nan]),
             lateral_offsets_meters=np.array([0.0, 0.1]),
-            first_heading_radians=0.0,
+            lookahead_heading_radians=0.0,
             alarm=False,
             cumulative_cost_bits=0.0,
+            scene_information_bits=0.0,
+            avoidance_surprise_bits=0.0,
         )
+
+
+@pytest.mark.parametrize(("device", "warned"), [("cpu", True), ("cuda", False)])
+def test_neon_live_on_a_cpu_estimator_warns_and_still_builds(device: str, warned: bool, caplog: pytest.LogCaptureFixture) -> None:
+    config = dataclasses.replace(
+        _run_config_for(SourceKind.NEON_LIVE),
+        estimator_factory=lambda estimator_config: StubDepthEstimator(device=device),
+    )
+
+    with caplog.at_level("WARNING", logger="nav.config"):
+        source = build_source(config)
+
+    assert hasattr(source, "frames"), "warned, but must still build"
+    assert any("on the CPU" in record.message for record in caplog.records) is warned
+
+
+def test_a_recording_on_a_cpu_estimator_does_not_warn(caplog: pytest.LogCaptureFixture) -> None:
+    # A recording is only slow to process on the CPU. Nobody is walking behind it.
+    config = dataclasses.replace(
+        _run_config_for(SourceKind.VIDEO_FILE),
+        estimator_factory=lambda estimator_config: StubDepthEstimator(device="cpu"),
+    )
+
+    with caplog.at_level("WARNING", logger="nav.config"):
+        build_source(config)
+
+    assert not any("on the CPU" in record.message for record in caplog.records)
+
+
+def test_timing_log_and_record_to_together_are_refused(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    # A recording run writes timing.jsonl beside its frames. Two destinations would leave a reader guessing.
+    with pytest.raises(SystemExit):
+        build_run_config([*MINIMAL_VIDEO_ARGV, "--timing-log", str(tmp_path / "t.jsonl"), "--record-to", str(tmp_path / "log")])
+
+    assert "--timing-log and --record-to cannot be used together" in capsys.readouterr().err
+
+
+def test_a_timing_log_that_already_holds_lines_is_refused(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    # Two runs appended to one log read back as one run that is not one.
+    used = tmp_path / "t.jsonl"
+    used.write_bytes(b'{"timestamp_seconds": 1.0}\n')
+
+    with pytest.raises(SystemExit):
+        build_run_config([*MINIMAL_VIDEO_ARGV, "--timing-log", str(used)])
+
+    assert "already holds a timing log" in capsys.readouterr().err
+
+
+def test_a_new_or_empty_timing_log_file_is_accepted(tmp_path) -> None:
+    empty = tmp_path / "empty.jsonl"
+    empty.write_bytes(b"")
+
+    assert build_run_config([*MINIMAL_VIDEO_ARGV, "--timing-log", str(empty)]).timing_log == str(empty)
+    assert build_run_config([*MINIMAL_VIDEO_ARGV, "--timing-log", str(tmp_path / "new.jsonl")]).timing_log == str(tmp_path / "new.jsonl")
+
+
+@pytest.mark.parametrize("where", ["a directory", "a missing folder"])
+def test_a_timing_log_that_is_a_directory_or_in_a_missing_folder_is_refused(where: str, tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Either one let the walk start and fail on its first line, running untimed."""
+    target = tmp_path if where == "a directory" else tmp_path / "no_such_folder" / "t.jsonl"
+
+    with pytest.raises(SystemExit):
+        build_run_config([*MINIMAL_VIDEO_ARGV, "--timing-log", str(target)])
+
+    message = capsys.readouterr().err
+    assert ("is a directory" in message) if where == "a directory" else ("in a folder that doesn't exist" in message)

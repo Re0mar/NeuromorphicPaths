@@ -14,6 +14,9 @@ from typing import Protocol
 # Third party imports
 import numpy as np
 
+# Local package imports
+from nav.types import FrameTiming, Pose
+
 
 @dataclass(frozen=True)
 class RgbFrame:
@@ -22,7 +25,15 @@ class RgbFrame:
     timestamp_seconds: float
     image_rgb: np.ndarray
     gaze_pixel: np.ndarray | None
-    imu_orientation_wxyz: np.ndarray | None
+    # Built by the source, which is the only thing that knows how its IMU sits on its camera.
+    # None means the device knows nothing about orientation.
+    pose: Pose | None
+    # (3, 3) for image_rgb as delivered, after any undistortion. None means the camera has no
+    # calibration and the intrinsics come from the model or a guess.
+    camera_matrix: np.ndarray | None
+    # Capture and arrival on the laptop clock. depth_ready_seconds is still None at this point,
+    # because no depth exists yet.
+    timing: FrameTiming | None
 
     def __post_init__(self) -> None:
         # Same reasoning as DepthFrame. Two unrelated sources build these, and a wrongly shaped
@@ -31,10 +42,13 @@ class RgbFrame:
             raise ValueError(f"image_rgb must be (height, width, 3), got shape {self.image_rgb.shape}")
         if self.gaze_pixel is not None and self.gaze_pixel.shape != (2,):
             raise ValueError(f"gaze_pixel must be (2,) when present, got shape {self.gaze_pixel.shape}")
-        if self.imu_orientation_wxyz is not None and self.imu_orientation_wxyz.shape != (4,):
-            raise ValueError(
-                f"imu_orientation_wxyz must be (4,) when present, got shape {self.imu_orientation_wxyz.shape}"
-            )
+        if self.pose is not None and not isinstance(self.pose, Pose):
+            raise ValueError(f"pose must be a Pose when present, got {type(self.pose).__name__}")
+        if self.camera_matrix is not None:
+            if self.camera_matrix.shape != (3, 3):
+                raise ValueError(f"camera_matrix must be (3, 3) when present, got shape {self.camera_matrix.shape}")
+            if not np.all(np.isfinite(self.camera_matrix)):
+                raise ValueError("camera_matrix must be finite when present")
 
 
 class RgbSource(Protocol):

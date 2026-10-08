@@ -2,3 +2,10 @@
 
 # The Gradle wrapper is run by cmd.exe, which needs CRLF.
 *.bat text eol=crlf
+
+# Wire fixtures are bytes the other side decodes. No layer may translate them.
+server/tests/fixtures/*.bin binary
+
+# Golden slices are gzipped. They don't diff, so the expected values in test_planner_golden.py
+# and the commit message carry what changed.
+server/tests/fixtures/*.json.gz binary

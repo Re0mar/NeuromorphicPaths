@@ -6,7 +6,8 @@ import pytest
 
 # Local package imports
 from nav.planner.config import PlannerConfig
-from nav.planner.surprise import effective_noise, lateral_grid, point_surprise, step_count, surprise_field, time_to_contact
+from nav.planner.field import effective_noise, lateral_grid, step_count
+from nav.planner.surprise import point_surprise, surprise_field
 from nav.types import ObstaclePoint, ObstacleSet
 from nav.walker import WalkerConfig
 
@@ -16,7 +17,8 @@ WALKER = WalkerConfig(radius_meters=0.35)
 
 def _point(lateral: float, forward: float, group: int, noise: float = 0.1, is_wall: bool = False, closing: float | None = None, velocity=None) -> ObstaclePoint:
     clearance = max(0.0, float(np.hypot(lateral, forward)) - WALKER.radius_meters)
-    return ObstaclePoint(lateral, forward, group, clearance, noise, closing, velocity, is_wall)
+    # A point built by hand has no camera frame. The planner never reads camera_point.
+    return ObstaclePoint(lateral, forward, group, clearance, noise, closing, velocity, is_wall, np.zeros(3))
 
 
 def _set(*points: ObstaclePoint) -> ObstacleSet:
@@ -146,18 +148,6 @@ def test_a_group_without_a_velocity_is_held_even_when_prediction_is_on() -> None
     field = surprise_field(_set(still), grid, PlannerConfig(predict_motion=True, walking_speed_mps=0.0), WALKER)
 
     assert grid[int(np.argmax(field[k]))] == pytest.approx(0.0, abs=CONFIG.grid_spacing_meters)
-
-
-def test_time_to_contact_is_the_nearest_closing_groups() -> None:
-    fast = _point(0.0, 2.35, group=1, closing=2.0)  # clearance 2.0, closes in 1.0 s
-    slow = _point(1.0, 3.0, group=2, closing=0.5)
-
-    assert time_to_contact(_set(fast, slow)) == pytest.approx(1.0)
-
-
-def test_receding_and_unknown_groups_never_set_a_time_to_contact() -> None:
-    assert time_to_contact(_set(_point(0.0, 2.0, group=1, closing=-1.0), _point(0.0, 3.0, group=2, closing=None))) is None
-    assert time_to_contact(_set()) is None
 
 
 @pytest.mark.parametrize("config", [PlannerConfig(grid_spacing_meters=0.0), PlannerConfig(time_step_seconds=0.0), PlannerConfig(horizon_seconds=-1.0)])

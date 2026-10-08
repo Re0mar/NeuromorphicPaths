@@ -17,9 +17,11 @@ def _path(heading: float = 0.0, alarm: bool = False, cost: float = 1.0, timestam
         timestamp_seconds=timestamp,
         times_seconds=np.array([0.0, 0.1]),
         lateral_offsets_meters=np.array([0.0, 0.0]),
-        first_heading_radians=heading,
+        lookahead_heading_radians=heading,
         alarm=alarm,
         cumulative_cost_bits=cost,
+        scene_information_bits=0.0,
+        avoidance_surprise_bits=0.0,
     )
 
 

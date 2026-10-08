@@ -61,7 +61,8 @@ class ClearanceHistory:
         N for a group: the sample standard deviation of its clearance over the window.
 
         Reports the floor when there are too few samples to say anything, and never less than
-        the floor, because surprise divides by N squared.
+        the floor. N is the numerator of the surprise, so a group read as perfectly steady would
+        otherwise cost nothing at all however close it is.
         """
         samples = self._samples.get(group_id)
         if samples is None or len(samples) < self._min_samples:
@@ -74,7 +75,8 @@ class ClearanceHistory:
         Meters per second the clearance shrank between the two most recent samples.
 
         Positive when the group is getting closer. None with fewer than two samples or no time
-        between them. The planner divides clearance by this for time to contact.
+        between them. Carried on every point for the evaluation and a future motion term. The
+        planner doesn't read it: its time to contact uses walking speed, and alarm.py says why.
         """
         samples = self._samples.get(group_id)
         if samples is None or len(samples) < 2:

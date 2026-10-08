@@ -208,6 +208,40 @@ def test_a_header_that_is_not_utf8_is_refused() -> None:
         decode_frame(b"\xff\xfe invalid" + HEADER_TERMINATOR + b"")
 
 
+def _payload_with_raw_timestamp(raw_number: str) -> bytes:
+    """A valid payload whose timestamp is replaced by literal JSON text, which json.dumps cannot write."""
+    header_bytes, terminator, body = _build_payload({"timestamp_seconds": "RAW"}).partition(HEADER_TERMINATOR)
+    return header_bytes.replace(b'"RAW"', raw_number.encode("ascii")) + terminator + body
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_in_message"),
+    [
+        # Past a float's range, so float() overflows. numpy raised TypeError on it before.
+        (_payload_with_raw_timestamp("1" + "0" * 399), "timestamp_seconds is an integer too large for a float"),
+        # Past Python's 4300-digit limit, so json raises a plain ValueError, not a JSONDecodeError.
+        (_payload_with_raw_timestamp("1" + "0" * 4999), "header holds a number json will not parse"),
+        # Deep enough to exhaust the parser's recursion.
+        (b"[" * 100_000 + b"]" * 100_000 + HEADER_TERMINATOR, "header nests too deeply"),
+    ],
+    ids=["400 digits", "5000 digits", "deep nesting"],
+)
+def test_a_header_json_cannot_hold_is_a_decode_error(payload: bytes, expected_in_message: str) -> None:
+    """
+    The port listens on every interface and the source drops a frame only on FrameDecodeError.
+
+    Any other exception from one bad frame ends the run, so each of these has to come out as one.
+    """
+    with pytest.raises(FrameDecodeError, match=expected_in_message):
+        decode_frame(payload)
+
+
+def test_a_path_json_cannot_hold_is_a_decode_error() -> None:
+    """The path decoder reads bytes off a socket too, and goes through the same parse."""
+    with pytest.raises(FrameDecodeError, match="path nests too deeply"):
+        decode_path(b"[" * 100_000 + b"]" * 100_000)
+
+
 def test_encoding_a_non_finite_intrinsic_is_our_bug_not_a_decode_error() -> None:
     broken = INTRINSICS.copy()
     broken[0, 0] = np.nan
@@ -315,36 +349,69 @@ def test_path_round_trip() -> None:
         timestamp_seconds=1.0,
         times_seconds=np.array([0.0, 0.1, 0.2]),
         lateral_offsets_meters=np.array([0.0, 0.05, 0.1]),
-        first_heading_radians=0.42,
+        lookahead_heading_radians=0.42,
         alarm=True,
         cumulative_cost_bits=12.5,
+        scene_information_bits=0.37,
+        avoidance_surprise_bits=0.51,
     )
 
     decoded = decode_path(encode_path(original))
 
     assert decoded.times_seconds == pytest.approx(original.times_seconds)
     assert decoded.lateral_offsets_meters == pytest.approx(original.lateral_offsets_meters)
-    assert decoded.first_heading_radians == pytest.approx(original.first_heading_radians)
+    assert decoded.lookahead_heading_radians == pytest.approx(original.lookahead_heading_radians)
     assert decoded.alarm is True
     assert decoded.cumulative_cost_bits == pytest.approx(original.cumulative_cost_bits)
+    assert decoded.scene_information_bits == pytest.approx(0.37)
+    assert decoded.avoidance_surprise_bits == pytest.approx(0.51)
 
 
 @pytest.mark.parametrize(
     "missing",
-    ["timestamp_seconds", "times_seconds", "lateral_offsets_meters", "first_heading_radians", "alarm", "cumulative_cost_bits"],
+    [
+        "timestamp_seconds",
+        "times_seconds",
+        "lateral_offsets_meters",
+        "lookahead_heading_radians",
+        "alarm",
+        "cumulative_cost_bits",
+        "scene_information_bits",
+        "avoidance_surprise_bits",
+    ],
 )
 def test_a_path_message_missing_a_field_is_refused(missing: str) -> None:
     message = {
         "timestamp_seconds": 1.0,
         "times_seconds": [0.0, 0.1],
         "lateral_offsets_meters": [0.0, 0.05],
-        "first_heading_radians": 0.0,
+        "lookahead_heading_radians": 0.0,
         "alarm": False,
         "cumulative_cost_bits": 0.0,
+        "scene_information_bits": 0.0,
+        "avoidance_surprise_bits": 0.0,
     }
     del message[missing]
 
     with pytest.raises(FrameDecodeError, match=missing):
+        decode_path(json.dumps(message).encode("utf-8"))
+
+
+def test_a_path_carrying_the_old_heading_key_is_refused_naming_the_new_one() -> None:
+    # What a laptop on an older build sends. Refused by the key the decoder wants, so a mismatched
+    # pair of builds fails loudly rather than drawing an arrow from a heading nobody read.
+    message = {
+        "timestamp_seconds": 1.0,
+        "times_seconds": [0.0, 0.1],
+        "lateral_offsets_meters": [0.0, 0.05],
+        "first_heading_radians": 0.2,
+        "alarm": False,
+        "cumulative_cost_bits": 0.0,
+        "scene_information_bits": 0.0,
+        "avoidance_surprise_bits": 0.0,
+    }
+
+    with pytest.raises(FrameDecodeError, match="lookahead_heading_radians"):
         decode_path(json.dumps(message).encode("utf-8"))
 
 
@@ -356,14 +423,62 @@ def test_a_path_with_mismatched_array_lengths_is_refused() -> None:
             "timestamp_seconds": 1.0,
             "times_seconds": [0.0, 0.1],
             "lateral_offsets_meters": [0.0],
-            "first_heading_radians": 0.0,
+            "lookahead_heading_radians": 0.0,
             "alarm": False,
             "cumulative_cost_bits": 0.0,
+            "scene_information_bits": 0.0,
+            "avoidance_surprise_bits": 0.0,
         }
     ).encode("utf-8")
 
     with pytest.raises(FrameDecodeError, match="do not make a path"):
         decode_path(message)
+
+
+def test_the_path_json_matches_the_wire_docs_example() -> None:
+    # A round trip passes even when a key is misspelled the same way on both sides. This pins the
+    # exact key names and values against the example the document shows the phone's maintainer.
+    stated = PlannedPath(
+        timestamp_seconds=12.345,
+        times_seconds=np.array([0.0, 0.1, 0.2]),
+        lateral_offsets_meters=np.array([0.0, 0.05, 0.12]),
+        lookahead_heading_radians=0.0423,
+        alarm=False,
+        cumulative_cost_bits=18.4,
+        scene_information_bits=0.37,
+        avoidance_surprise_bits=0.51,
+    )
+    document = (Path(__file__).parent.parent / "docs" / "arcore_wire_format.md").read_text(encoding="utf-8")
+    path_section = document.split("## What the laptop sends back", 1)[1].split("\n## ", 1)[0]
+    example = json.loads(path_section.split("```json", 1)[1].split("```", 1)[0])
+
+    assert json.loads(encode_path(stated)) == example
+
+
+@pytest.mark.parametrize(
+    ("field", "wrong_value", "expected"),
+    [
+        ("avoidance_surprise_bits", True, "avoidance_surprise_bits must be a number, got bool"),
+        ("scene_information_bits", "0.37", "scene_information_bits must be a number, got str"),
+    ],
+)
+def test_a_path_with_a_wrongly_typed_bits_field_is_refused(field: str, wrong_value: object, expected: str) -> None:
+    # Each case breaks exactly one rule, and the match names the field, so the guard is what fired
+    # rather than some later error that happens to share the type.
+    message = {
+        "timestamp_seconds": 1.0,
+        "times_seconds": [0.0],
+        "lateral_offsets_meters": [0.0],
+        "lookahead_heading_radians": 0.0,
+        "alarm": False,
+        "cumulative_cost_bits": 0.0,
+        "scene_information_bits": 0.0,
+        "avoidance_surprise_bits": 0.0,
+    }
+    message[field] = wrong_value
+
+    with pytest.raises(FrameDecodeError, match=expected):
+        decode_path(json.dumps(message).encode("utf-8"))
 
 
 def test_the_wire_is_little_endian_regardless_of_the_host() -> None:
@@ -409,7 +524,8 @@ def test_the_format_document_contains_the_generated_example() -> None:
         timestamp_seconds=12.345,
         depth_meters=np.array([[1.5, 2.0], [2.5, 3.0]], dtype=np.float32),
         intrinsics=INTRINSICS,
-        pose=Pose(orientation=np.array([1.0, 0.0, 0.0, 0.0]), position=np.zeros(3), has_position=True),
+        # The document's example is a phone's frame, so its orientation is gravity-aligned.
+        pose=Pose(np.array([1.0, 0.0, 0.0, 0.0]), np.zeros(3), True, orientation_is_gravity_aligned=True),
         ground_plane=Plane(normal=np.array([0.0, 1.0, 0.0]), offset_meters=-1.6),
         gaze_pixel=None,
     )
@@ -427,19 +543,99 @@ def test_the_format_document_contains_the_generated_example() -> None:
     assert json.loads(header)["depth"]["byte_length"] == 16
 
 
-@pytest.mark.parametrize("field", ["first_heading_radians", "cumulative_cost_bits"])
+def test_the_format_document_carries_the_path_field_table() -> None:
+    # The Kotlin decoder is written from the document's per-field table for the path, the way the
+    # frame decoder was written from the frame's. A key the encoder writes and the table does not
+    # name is a key the app will not read.
+    document = (Path(__file__).parent.parent / "docs" / "arcore_wire_format.md").read_text(encoding="utf-8")
+    path_section = document.split("## What the laptop sends back", 1)[1].split("\n## ", 1)[0]
+    assert "| Field | Produced by | On the wire | Read by | Value domain | Who enforces it |" in path_section
+
+    written = json.loads(encode_path(PlannedPath(1.0, np.array([0.0]), np.array([0.0]), 0.0, False, 0.0, scene_information_bits=0.0, avoidance_surprise_bits=0.0)))
+    for key in written:
+        assert f"| `{key}` |" in path_section, key
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["lookahead_heading_radians", "cumulative_cost_bits", "scene_information_bits", "avoidance_surprise_bits"],
+)
 def test_a_path_with_a_non_finite_scalar_never_reaches_the_encoder(field: str) -> None:
-    # PlannedPath refuses this itself, so encode_path's allow_nan=False is defence in depth that no
-    # real PlannedPath can reach. This is the test that proves the first line of defence holds.
+    # PlannedPath refuses this itself, so encode_path's allow_nan=False is defense in depth that no
+    # real PlannedPath can reach. This is the test that proves the first line of defense holds.
     fields = {
         "timestamp_seconds": 1.0,
         "times_seconds": np.array([0.0, 0.1]),
         "lateral_offsets_meters": np.array([0.0, 0.1]),
-        "first_heading_radians": 0.0,
+        "lookahead_heading_radians": 0.0,
         "alarm": False,
         "cumulative_cost_bits": 0.0,
+        "scene_information_bits": 0.0,
+        "avoidance_surprise_bits": 0.0,
     }
     fields[field] = np.nan
 
     with pytest.raises(ValueError, match=field):
         PlannedPath(**fields)
+
+
+@pytest.mark.parametrize("field", ["scene_information_bits", "avoidance_surprise_bits"])
+def test_planned_path_refuses_negative_bits(field: str) -> None:
+    # Both are divergences or squared ratios, never below zero. A negative one is a bug upstream.
+    fields = {
+        "timestamp_seconds": 1.0,
+        "times_seconds": np.array([0.0]),
+        "lateral_offsets_meters": np.array([0.0]),
+        "lookahead_heading_radians": 0.0,
+        "alarm": False,
+        "cumulative_cost_bits": 0.0,
+        "scene_information_bits": 0.0,
+        "avoidance_surprise_bits": 0.0,
+    }
+    fields[field] = -0.1
+
+    with pytest.raises(ValueError, match=f"{field} must be finite and zero or more, got -0.1"):
+        PlannedPath(**fields)
+
+
+def _header_and_body(frame: DepthFrame) -> tuple[dict, bytes]:
+    """The encoder's header as a dict and the bytes after it, for a test that edits one key."""
+    header, _, body = _payload_of(encode_frame(frame)).partition(HEADER_TERMINATOR)
+    return json.loads(header), body
+
+
+def _rebuild(header: dict, body: bytes) -> bytes:
+    return json.dumps(header).encode("utf-8") + HEADER_TERMINATOR + body
+
+
+def test_whether_the_orientation_is_gravity_aligned_survives_a_round_trip() -> None:
+    # The scene reads the floor's up from this, so a recording that loses it replays with the
+    # defect the flag exists to prevent.
+    aligned = _frame(pose=Pose(np.array([1.0, 0.0, 0.0, 0.0]), np.zeros(3), True, orientation_is_gravity_aligned=True))
+    unaligned = _frame(pose=Pose(np.array([1.0, 0.0, 0.0, 0.0]), None, False, orientation_is_gravity_aligned=False))
+
+    assert decode_frame(_payload_of(encode_frame(aligned))).pose.orientation_is_gravity_aligned is True
+    assert decode_frame(_payload_of(encode_frame(unaligned))).pose.orientation_is_gravity_aligned is False
+
+
+def test_a_header_without_the_gravity_key_is_read_as_the_phones() -> None:
+    # Every frame log that existed when the key was added came from the phone, and those are what
+    # the planner is tuned against. Reading them as un-aligned would reintroduce the defect.
+    header, body = _header_and_body(_frame())
+    del header["pose"]["orientation_is_gravity_aligned"]
+
+    assert decode_frame(_rebuild(header, body)).pose.orientation_is_gravity_aligned is True
+
+
+def test_a_gravity_flag_that_is_not_a_boolean_is_refused_by_name() -> None:
+    header, body = _header_and_body(_frame())
+    header["pose"]["orientation_is_gravity_aligned"] = 1
+
+    with pytest.raises(FrameDecodeError, match="pose.orientation_is_gravity_aligned must be true or false"):
+        decode_frame(_rebuild(header, body))
+
+
+def test_planned_path_has_no_default_for_either_new_number() -> None:
+    # A default would let a construction site that forgot them send a plausible zero on both wires.
+    with pytest.raises(TypeError, match="scene_information_bits.*avoidance_surprise_bits"):
+        PlannedPath(1.0, np.array([0.0]), np.array([0.0]), 0.0, False, 0.0)

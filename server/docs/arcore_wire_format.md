@@ -5,7 +5,9 @@ laptop sends planned paths back. This document is the contract. If the two sides
 file is right and the code that does not match it is wrong.
 
 The laptop listens on a port you choose with `--arcore-port`, default 9000. It accepts one
-connection at a time.
+connection at a time. It also listens on a second port, `--phone-port`, default 9100, for the
+path connection. You open both, to the one laptop address you already have, and nothing on the
+laptop ever needs your address.
 
 ---
 
@@ -42,6 +44,7 @@ stream is out of step rather than that a real frame is that big.
 | `pose.orientation_wxyz` | 4 numbers | | yes | Quaternion, w first. ARCore gives you x, y, z, w, so reorder it |
 | `pose.position_xyz` | 3 numbers or `null` | meters | yes | `null` when tracking is lost |
 | `pose.has_position` | boolean | | yes | Must agree with whether `position_xyz` is present |
+| `pose.orientation_is_gravity_aligned` | boolean | | yes | True when the orientation rotates into a world whose +y is straight up. Send `true` |
 | `ground_plane` | object or `null` | | yes | `null` if you have no plane. The laptop fits one itself in that case |
 | `ground_plane.normal` | 3 numbers | | when present | Unit vector |
 | `ground_plane.offset_meters` | number | meters | when present | Signed, so that `normal · point + offset == 0` on the plane |
@@ -53,6 +56,22 @@ forgot look identical otherwise, and only one of those is a bug worth telling yo
 
 Every number must be finite. A JSON `NaN` or `Infinity` is not valid JSON anyway, and the laptop's
 parser rejects it rather than reading it as a number.
+
+### `timing`, which the app does not send
+
+One more key exists, and it is not yours to send. The laptop adds `timing` to each frame itself,
+when the frame reaches it, and writes it into the frame log so a recorded walk keeps its latency
+figures. The app leaves it out, and the laptop reads a frame without it exactly as before.
+
+| Field | Type | Unit | Notes |
+|---|---|---|---|
+| `timing.capture_seconds` | number, `null`, or absent | seconds | When the sensor captured the frame, on the laptop's clock. Absent or `null` when the offset between the two clocks is unknown, which is always the case for this app today |
+| `timing.arrival_seconds` | number | seconds | When the laptop received the frame. Required whenever `timing` is present |
+| `timing.depth_ready_seconds` | number, `null`, or absent | seconds | When depth was ready. Absent or `null` for a frame that arrived with its depth, as this app's do |
+
+All three are on the laptop's clock: wall time since the Unix epoch, read once when the pipeline
+started and advanced by a clock that never runs backwards. Depth ready can never come before
+arrival, and a frame that says so is refused by name.
 
 ---
 
@@ -90,6 +109,22 @@ tell that happened.
 
 Orientation is always required, even when position is not.
 
+**The world has y up, and you say so.** The orientation rotates the laptop's camera axes (x right,
+y down, z forward) into ARCore's world, where +y is straight up and the other two axes are
+horizontal. Send `orientation_is_gravity_aligned` as `true` to say that, and the laptop reads
+gravity from your orientation and uses it to decide which way is down when it looks for the floor.
+
+Send it whether or not you have a position. The two fields answer different questions:
+`has_position` says whether points can be placed in a world that persists between frames, and
+`orientation_is_gravity_aligned` says whether your orientation can be trusted to point at the sky.
+A phone that has lost tracking still knows which way is down, and the floor needs only that.
+
+The laptop needs it because the depth image arrives in the sensor's landscape orientation whatever
+way the phone is held, so with the phone in portrait the image's own up points sideways and every
+floor measured against it leans ninety degrees. A sender whose orientation means nothing, such as a
+plain video file, sends `false` and the laptop falls back to the image's own up and assumes the
+camera is held level.
+
 ---
 
 ## Versioning
@@ -101,6 +136,11 @@ When the format changes in a way that would break an older reader, the version g
 sides change together. Adding a new optional field does not need a version bump, because an older
 reader ignores keys it does not know. Changing the meaning or the unit of an existing field does.
 
+Two keys have been added this way. `orientation_is_gravity_aligned` is accepted as absent and read
+as `true`, because every frame log that existed when it was added came from this app. Send it
+anyway. `timing` is accepted as absent and read as no timing at all, because the app never sends
+it. Neither one needed the version to go up.
+
 ---
 
 ## What the laptop sends back
@@ -108,14 +148,21 @@ reader ignores keys it does not know. Changing the meaning or the unit of an exi
 A planned path, framed the same way: a 4-byte big-endian length, then UTF-8 JSON. No header and
 newline split, because there is no binary part.
 
+You open this connection, the same way you open the depth one, to the path port. The laptop writes
+one message per planned path and never reads from this socket. You never write on it. A phone that
+reconnects gets the next path, not a replay of the one it missed: a path is a decision about this
+instant, and the next frame produces the next one within a frame interval.
+
 ```json
 {
   "timestamp_seconds": 12.345,
   "times_seconds": [0.0, 0.1, 0.2],
   "lateral_offsets_meters": [0.0, 0.05, 0.12],
-  "first_heading_radians": 0.0423,
+  "lookahead_heading_radians": 0.0423,
   "alarm": false,
-  "cumulative_cost_bits": 18.4
+  "cumulative_cost_bits": 18.4,
+  "scene_information_bits": 0.37,
+  "avoidance_surprise_bits": 0.51
 }
 ```
 
@@ -123,11 +170,29 @@ newline split, because there is no binary part.
 |---|---|
 | `times_seconds` | How far into the future each offset is |
 | `lateral_offsets_meters` | Where to be at that time, sideways from straight ahead. Positive is right |
-| `first_heading_radians` | Where to point the arrow now. Positive is right |
-| `alarm` | Something is under a second from contact. Turn the display red |
-| `cumulative_cost_bits` | Total cost of the chosen path. For display and logging, not for steering |
+| `lookahead_heading_radians` | Where the path is heading. The planner reads the path a fixed time ahead, set on the laptop, and takes the angle from here to there. Positive is right |
+| `alarm` | Something in the walker's way is close at walking pace, or was a moment ago. Turn the display red |
+| `cumulative_cost_bits` | Total cost of the chosen path: the surprise of how unsure the readings of near things are, plus the surprise of the body touching something, plus the costs of moving sideways and of ending away from the goal. In bits: the planner adds these up as natural logs and divides the total by ln 2 once before sending it. For display and logging, not for steering |
+| `scene_information_bits` | How far what the camera saw moved the plan from what the planner would do with nothing in view, measured where the arrow reads the path. 0 for an empty scene. It is not a confidence: an empty corridor gives a plan the planner is completely sure of and 0 bits. Drives how solid the drawn path looks |
+| `avoidance_surprise_bits` | How soon the walker reaches the nearest thing in its way, as the course's avoidance surprise: (1 s over the time to contact) squared, over 2 ln 2. 0 with nothing in the way, 0.72 at one second to contact. Drives the drawn path's color, blue at 0 and fully red from the alarm's threshold, 1.47 bits with the laptop's current settings |
 
 `times_seconds` and `lateral_offsets_meters` always have the same length.
+
+Every key is required and every number is finite. The app does not read `scene_information_bits`
+or `avoidance_surprise_bits` yet, and it can ignore them safely, because it checks only the keys it
+reads. They are there for the path drawing on the phone, which will use them the way the laptop's
+web page does. Per field, who produces it and who checks it:
+
+| Field | Produced by | On the wire | Read by | Value domain | Who enforces it |
+|---|---|---|---|---|---|
+| `timestamp_seconds` | the depth frame the path was planned for | JSON number | display, logging | finite, your clock's seconds handed back | laptop refuses a non-finite path before encoding, you check finite |
+| `times_seconds` | planner, its time step and horizon | JSON array of numbers | the arrow, later a ribbon | finite, at least one entry, same length as the offsets | both sides, you refuse a length mismatch or an empty array |
+| `lateral_offsets_meters` | planner | JSON array of numbers | the arrow, later a ribbon | finite, positive is right | both sides |
+| `lookahead_heading_radians` | planner, from the path a fixed time ahead | JSON number | the arrow | finite, positive is right, within the sidestep limit | both sides |
+| `alarm` | planner, from what is in the walker's way | JSON boolean | display color | `true` or `false`, never a number | you refuse a number where the boolean belongs |
+| `cumulative_cost_bits` | planner | JSON number | display, logging | finite, zero or more | both sides |
+| `scene_information_bits` | planner, from the cheapest path through each cell at the arrow's lookahead | JSON number | the web page now, the phone's path drawing later | finite, zero or more. No fixed upper bound. It can't exceed minus log2 of the prior's least likely reachable cell, which is 7.3 bits when the prior is the goal alone. The pull toward the previous plan narrows the prior, so the bound moves frame to frame. The highest seen on `pixel_walk_3` is 22.2 bits | laptop refuses a negative or non-finite value before encoding |
+| `avoidance_surprise_bits` | planner, from the nearest group in the walker's corridor | JSON number | the web page now, the phone's path drawing later | finite, zero or more | laptop refuses a negative or non-finite value before encoding |
 
 ---
 
@@ -136,13 +201,13 @@ newline split, because there is no binary part.
 A 2 by 2 depth frame with a known ground plane and no gaze. Produced by the encoder, not written
 by hand, so it is exactly what you will receive.
 
-Total message, 401 bytes. Length prefix:
+Total message, 441 bytes. Length prefix:
 
 ```
-00 00 01 8d
+00 00 01 b5
 ```
 
-That is 397, the number of bytes that follow. Then the header, 380 bytes of UTF-8, shown here with
+That is 437, the number of bytes that follow. Then the header, 420 bytes of UTF-8, shown here with
 indentation it does not have on the wire:
 
 ```json
@@ -151,7 +216,7 @@ indentation it does not have on the wire:
   "timestamp_seconds": 12.345,
   "depth": {"dtype": "float32", "shape": [2, 2], "byte_length": 16},
   "intrinsics": [[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]],
-  "pose": {"orientation_wxyz": [1.0, 0.0, 0.0, 0.0], "position_xyz": [0.0, 0.0, 0.0], "has_position": true},
+  "pose": {"orientation_wxyz": [1.0, 0.0, 0.0, 0.0], "position_xyz": [0.0, 0.0, 0.0], "has_position": true, "orientation_is_gravity_aligned": true},
   "ground_plane": {"normal": [0.0, 1.0, 0.0], "offset_meters": -1.6},
   "gaze_pixel": null
 }
@@ -190,8 +255,10 @@ this table is that nothing is aligned by assuming both sides derive from the sam
 | `pose.orientation_wxyz` | ARCore pose, reordered | JSON array of 4 | scene frame transform | finite, non-zero | decoder checks shape, pose construction checks the rest |
 | `pose.position_xyz` | ARCore pose | JSON array of 3 or null | scene frame choice | finite when present | decoder, and consistency against `has_position` |
 | `pose.has_position` | ARCore tracking state | JSON boolean | scene, chooses body or world frame | true or false | decoder, must match whether position is present |
+| `pose.orientation_is_gravity_aligned` | Android, constant for this app | JSON boolean | scene, picks gravity or image-up for the floor | true or false | decoder, defaulting to true for a recording older than the key |
 | `ground_plane` | ARCore plane, when found | JSON object or null | scene floor fit | null means fit one here | decoder, scene falls back |
 | `gaze_pixel` | not sent by the Pixel | JSON null | planner goal | null | decoder |
+| `timing` | the laptop, on arrival. Never the app | JSON object, absent from the app's frames | the timing log and `--verbose` | arrival required and finite, the other two finite, null or absent, depth ready not before arrival | decoder, and `FrameTiming` when the laptop builds it |
 
 ---
 
@@ -221,6 +288,15 @@ frame is bad:
 - **A length prefix over 64 MB, or zero.** The connection is treated as desynchronised.
 - **The connection closing mid-message.** The reader reports how many bytes it was still waiting
   for, rather than blocking forever.
+
+### The path direction
+
+The same rules, applied by you. A path message that breaks a field rule above is dropped on the
+phone with the key named, and the connection stays up. A zero length prefix, or one over 1 MB (a
+path is a few hundred bytes), means the stream is out of step: close the connection and reconnect,
+which is what the laptop does with a bad prefix on the depth side. The laptop never closes the
+path connection for a bad message, because it never reads one. It closes it only when the run
+ends, and it counts the paths it had nobody to send to.
 
 ---
 

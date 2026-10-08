@@ -26,11 +26,14 @@ class SceneConfig:
     min_points_per_cell: int = 2  # One point is as likely to be depth noise as an object.
     noise_window_seconds: float = 0.5  # Half a second of history is what N is measured over.
     min_history_samples: int = 3  # Below this a standard deviation says nothing.
-    noise_floor_meters: float = 0.01  # N never goes below this, or surprise divides by almost zero.
+    noise_floor_meters: float = 0.01  # N never goes below this. N is the numerator, so a steady group still costs something.
     floor_candidate_min_below_camera_meters: float = 0.5  # Old file: only points this far below the camera vote for floor.
     floor_min_candidate_points: int = 200  # Old file: fewer candidates than this and the previous plane is kept.
     floor_ransac_distance_meters: float = 0.05  # Old file's RANSAC inlier distance.
     floor_ransac_iterations: int = 300  # Old file's RANSAC iteration count.
+    floor_ransac_seed: int = 0  # Seeds the floor RANSAC, so a replay fits the same floor every run.
+    floor_ransac_success_probability: float = 0.99999999  # Open3D's default. The RANSAC stops once a better floor is this unlikely to be left undrawn.
     floor_max_tilt_degrees: float = 35.0  # Old file's floor sanity check.
     floor_min_offset_meters: float = 0.3  # Old file's floor sanity check.
+    floor_max_offset_meters: float = 2.2  # A head-worn or hand-held camera is under about two meters. The first Pixel walk's false plane put it at 2.3.
     wall_cell_min_height_meters: float = 1.5  # A cell with points this tall is treated as a wall.

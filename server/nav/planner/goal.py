@@ -1,9 +1,15 @@
 """
 Where the walker is trying to go, and how that enters the planner.
 
-The goal is a prior on the terminal row only. It picks among paths that are all safe rather than
-pulling the walker through something in the way, which is what an attractive term on every row
-did in the old planner. With nothing in view, every path is equally safe and the goal decides.
+The goal is a prior on the terminal row only. It picks among paths that otherwise cost the same,
+rather than pulling the walker through something in the way, which is what an attractive term on
+every row did in the old planner. At the shipped sideways weight it can't move the plan by even one
+cell in an empty scene. One cell sideways costs 0.325, and the most the goal row can save between
+two neighboring cells is 0.013, because the dynamic program multiplies it by the time step like
+every other row. So it only breaks ties.
+
+The goal has a forward component too, which goal_position clips and returns. Nothing reads it yet.
+It's kept for a term that weighs how far ahead the goal is.
 """
 
 # Third party imports
@@ -46,7 +52,7 @@ def goal_term(grid: np.ndarray, goal: np.ndarray, config: PlannerConfig) -> np.n
 
     :param grid: The lateral candidates.
     :param goal: (2,) goal, only its lateral component matters here.
-    :param config: The tolerance, half the corridor width by default.
+    :param config: The tolerance, half a typical hallway's width by default.
     :return: (len(grid),) term.
     :rtype: np.ndarray
     """

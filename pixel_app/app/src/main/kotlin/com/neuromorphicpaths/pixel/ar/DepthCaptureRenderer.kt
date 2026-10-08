@@ -13,22 +13,30 @@ import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
 /**
- * Drives the ARCore session from a GL surface and hands each frame's depth to a callback.
+ * Drives the ARCore session from a GL surface, draws the camera, and hands each new frame's depth
+ * to a callback.
  *
- * ARCore wants a GL texture to render the camera into and an update call per drawn frame, so the
- * simplest honest host is a GLSurfaceView whose renderer draws nothing. The screen stays black
- * on purpose. The walker reads the arrow from the laptop's web page in the browser, and this app
- * has one job, which is to get depth off the phone.
+ * Two rates on purpose. The picture is drawn on every draw, at the display rate, because ARCore's
+ * texture is valid on every draw and the display expects a picture every refresh. A depth message
+ * is sent once per ARCore frame, which [NewFrameGate] decides, because the first phone run sent
+ * sixty copies a second of frames that arrived at thirty. The gate guards the message, not the
+ * picture.
+ *
+ * @param onFrameHandled called once per new ARCore frame, past the gate and before conversion, with
+ * the frame's own timestamp in nanoseconds. A frame with no depth is still handled, which is how the
+ * timing log tells "never sent" from "never seen". Runs on the GL thread, so it must not block
  */
 class DepthCaptureRenderer(
     private val sessionProvider: () -> Session?,
     private val onFrame: (DepthMessage) -> Unit,
     private val onState: (CaptureState) -> Unit,
+    private val onFrameHandled: (Long) -> Unit = {},
 ) : GLSurfaceView.Renderer {
     private var cameraTexture = 0
     private var frames = 0
     private var framesWithDepth = 0
     private val newFrames = NewFrameGate()
+    private var background: CameraBackground? = null
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         val textures = IntArray(1)
@@ -38,6 +46,8 @@ class DepthCaptureRenderer(
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
         GLES20.glClearColor(0f, 0f, 0f, 1f)
+        // A new surface means a new GL context, so the program is built again with the texture.
+        background = CameraBackground().also { it.createOnGlThread(cameraTexture) }
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
@@ -58,8 +68,11 @@ class DepthCaptureRenderer(
             onState(CaptureState.CameraUnavailable)
             return
         }
-        // A draw that got the frame the previous draw already handled sends nothing.
+        // The picture first, on every draw. Then the gate: a draw that got the frame the
+        // previous draw already handled sends nothing.
+        background?.draw(frame)
         if (!newFrames.isNew(frame.timestamp)) return
+        onFrameHandled(frame.timestamp)
         frames += 1
         val camera = frame.camera
         val tracking = camera.trackingState == TrackingState.TRACKING
@@ -82,15 +95,19 @@ class DepthCaptureRenderer(
     }
 
     /**
-     * The lowest upward-facing plane ARCore is tracking, which is the floor when there is one.
+     * The largest upward-facing plane ARCore is tracking, which is the floor when there is one.
      *
-     * Table tops are upward facing too. Taking the lowest keeps a table from being sent as the
-     * ground, and the laptop fits its own floor when this is null.
+     * The choice itself is [FloorChoice.chooseFloorIndex], a pure function with its own tests. This
+     * only builds its input and maps the winning index back to the plane. The laptop fits its own
+     * floor when this is null, and gates whatever is sent, so neither side has to be right alone.
      */
-    private fun chooseFloor(session: Session): Plane? =
-        session.getAllTrackables(Plane::class.java)
+    private fun chooseFloor(session: Session): Plane? {
+        val planes = session.getAllTrackables(Plane::class.java)
             .filter { it.trackingState == TrackingState.TRACKING && it.type == Plane.Type.HORIZONTAL_UPWARD_FACING }
-            .minByOrNull { it.centerPose.ty() }
+        val candidates = planes.map { FloorCandidate(it.extentX, it.extentZ, it.centerPose.ty()) }
+        val index = FloorChoice.chooseFloorIndex(candidates) ?: return null
+        return planes[index]
+    }
 
     private companion object {
         const val TAG = "DepthCaptureRenderer"

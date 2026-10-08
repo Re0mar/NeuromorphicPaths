@@ -31,24 +31,28 @@ class GroupSummary:
     nearest_forward_meters: float
     max_height_meters: float
     is_wall: bool
+    # The row, in the arrays summarize_groups was given, of the point it chose as nearest. The
+    # pipeline uses it to look that point up in the camera frame for the depth view.
+    nearest_index: int
 
 
 def filter_height_band(
     points: np.ndarray,
     heights: np.ndarray,
     config: SceneConfig,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Keep the points a walker could collide with: above the ankles, below the head.
 
     :param points: (N, 3) points in whichever frame the heights were measured in.
     :param heights: (N,) height above the floor for each point.
     :param config: The two heights.
-    :return: (points, heights) of the survivors.
-    :rtype: tuple[np.ndarray, np.ndarray]
+    :return: (points, heights, keep) of the survivors, keep being the (N,) mask that chose them so
+        a caller can apply the same cut to an array it kept alongside.
+    :rtype: tuple[np.ndarray, np.ndarray, np.ndarray]
     """
     keep = (heights > config.ankle_height_meters) & (heights < config.head_height_meters)
-    return points[keep], heights[keep]
+    return points[keep], heights[keep], keep
 
 
 def flatten_to_ground(
@@ -178,7 +182,8 @@ def summarize_groups(
 
         points = ground_points[members]
         distances = np.hypot(points[:, 0], points[:, 1])
-        nearest = points[int(np.argmin(distances))]
+        nearest_member = int(np.argmin(distances))
+        nearest = points[nearest_member]
         max_height = float(heights[members].max())
         summaries.append(
             GroupSummary(
@@ -192,6 +197,7 @@ def summarize_groups(
                 # The one place a wall is decided. A cell with points this tall is a wall or a
                 # tree trunk, and both deserve a wider berth than a bollard.
                 is_wall=max_height >= config.wall_cell_min_height_meters,
+                nearest_index=int(np.flatnonzero(members)[nearest_member]),
             )
         )
     return summaries

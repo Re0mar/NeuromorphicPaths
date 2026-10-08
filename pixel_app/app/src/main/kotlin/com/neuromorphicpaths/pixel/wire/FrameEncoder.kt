@@ -55,6 +55,11 @@ object FrameEncoder {
                 put("orientation_wxyz", JSONArray(message.orientationWxyz.toList()))
                 put("position_xyz", message.positionXyz?.let { JSONArray(it.toList()) } ?: JSONObject.NULL)
                 put("has_position", message.hasPosition)
+                // Constant for this app rather than a field on the message: every orientation we
+                // send is an ARCore one, and ARCore's world has y straight up. The laptop reads
+                // the floor's up from it, and says so whether or not tracking still has a
+                // position, because a phone that lost tracking still knows which way is down.
+                put("orientation_is_gravity_aligned", true)
             },
         )
         put(

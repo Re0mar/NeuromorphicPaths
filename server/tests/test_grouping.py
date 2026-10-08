@@ -49,7 +49,7 @@ def test_the_height_band_drops_the_floor_and_keeps_the_box() -> None:
     scene = clean_scene(box_height_meters=1.0)
     cloud, heights = _prepared(scene)
 
-    kept, kept_heights = filter_height_band(cloud, heights, CONFIG)
+    kept, kept_heights, _ = filter_height_band(cloud, heights, CONFIG)
 
     assert len(kept) > 0
     assert len(kept) < len(cloud) // 2, "most of the image is floor and must have gone"
@@ -61,7 +61,7 @@ def test_a_scene_with_only_floor_leaves_nothing_in_the_band() -> None:
     scene = clean_scene(box_lateral_meters=None, box_forward_meters=None, box_height_meters=None)
     cloud, heights = _prepared(scene)
 
-    kept, _ = filter_height_band(cloud, heights, CONFIG)
+    kept, _, _ = filter_height_band(cloud, heights, CONFIG)
 
     assert len(kept) == 0
 
@@ -69,7 +69,7 @@ def test_a_scene_with_only_floor_leaves_nothing_in_the_band() -> None:
 def test_the_box_lands_in_the_cell_its_position_predicts() -> None:
     scene = clean_scene(box_lateral_meters=0.5, box_forward_meters=3.0, box_height_meters=1.0, box_half_width_meters=0.1)
     cloud, heights = _prepared(scene)
-    kept, kept_heights = filter_height_band(cloud, heights, CONFIG)
+    kept, kept_heights, _ = filter_height_band(cloud, heights, CONFIG)
     ground = flatten_to_ground(kept, scene.floor_plane_camera)
 
     ids = assign_groups(ground, CONFIG)
@@ -88,7 +88,7 @@ def test_a_tall_group_is_a_wall_and_a_short_one_is_not() -> None:
 
     def walls(scene) -> list[bool]:
         cloud, heights = _prepared(scene)
-        kept, kept_heights = filter_height_band(cloud, heights, CONFIG)
+        kept, kept_heights, _ = filter_height_band(cloud, heights, CONFIG)
         ground = flatten_to_ground(kept, scene.floor_plane_camera)
         return [summary.is_wall for summary in summarize_groups(ground, kept_heights, assign_groups(ground, CONFIG), CONFIG)]
 
@@ -173,20 +173,48 @@ def test_clearance_is_distance_minus_the_footprint_radius() -> None:
         nearest_forward_meters=2.0,
         max_height_meters=1.0,
         is_wall=False,
+        nearest_index=0,
     )
 
     assert clearance(group, WALKER) == pytest.approx(2.0 - 0.35)
 
 
+def test_a_summary_names_the_row_of_its_nearest_point() -> None:
+    # The pipeline looks the nearest point up in a camera-frame copy by this row, so it has to
+    # be the row of the point whose ground coordinates the summary reports, not a row within
+    # the group.
+    ground = np.array([[5.0, 5.0], [0.1, 2.0], [0.0, 1.5], [0.2, 2.2]])  # rows 1 to 3 share a cell
+    heights = np.array([1.0, 1.0, 1.0, 1.0])
+    ids = np.array([7, 3, 3, 3])
+
+    summaries = summarize_groups(ground, heights, ids, SceneConfig(min_points_per_cell=1))
+
+    nearest = next(summary for summary in summaries if summary.group_id == 3)
+    assert nearest.nearest_index == 2
+    assert ground[nearest.nearest_index] == pytest.approx([nearest.nearest_lateral_meters, nearest.nearest_forward_meters])
+    lone = next(summary for summary in summaries if summary.group_id == 7)
+    assert lone.nearest_index == 0
+
+
+def test_the_height_band_returns_the_mask_that_chose_the_survivors() -> None:
+    scene = clean_scene(box_height_meters=1.0)
+    cloud, heights = _prepared(scene)
+
+    kept, _, mask = filter_height_band(cloud, heights, CONFIG)
+
+    assert mask.dtype == bool and mask.shape == (len(cloud),)
+    assert np.array_equal(cloud[mask], kept)
+
+
 def test_clearance_never_goes_negative() -> None:
-    touching = GroupSummary(0, 5, 0.0, 0.1, 0.0, 0.1, 1.0, False)
+    touching = GroupSummary(0, 5, 0.0, 0.1, 0.0, 0.1, 1.0, False, 0)
 
     assert clearance(touching, WALKER) == 0.0
 
 
 def test_the_radius_comes_from_the_walker_and_scene_config_has_none() -> None:
     assert not hasattr(CONFIG, "radius_meters")
-    assert clearance(GroupSummary(0, 5, 0.0, 2.0, 0.0, 2.0, 1.0, False), WalkerConfig(radius_meters=0.5)) == pytest.approx(1.5)
+    assert clearance(GroupSummary(0, 5, 0.0, 2.0, 0.0, 2.0, 1.0, False, 0), WalkerConfig(radius_meters=0.5)) == pytest.approx(1.5)
 
 
 def test_a_non_positive_cell_size_is_refused() -> None:
