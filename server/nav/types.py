@@ -204,6 +204,13 @@ class PlannedPath:
     # How soon the walker reaches the nearest thing in its way, in the course's avoidance form.
     # 0 with nothing in the way, 0.72 at one second to contact.
     avoidance_surprise_bits: float
+    # The stereo cue, decided by the planner's audio module so a display only applies it. Where the
+    # danger is while the alarm is up, -1 left to +1 right, None while it is down. Then how loud each
+    # ear should be, from the cue's floor to 1. Full volume in both ears is no cue, which is what a
+    # path from before the cue existed reads back as.
+    alarm_pan: float | None = None
+    ear_gain_left: float = 1.0
+    ear_gain_right: float = 1.0
 
     def __post_init__(self) -> None:
         # This is the last shape before a sink serializes it, so a non-finite value caught here
@@ -225,6 +232,15 @@ class PlannedPath:
             value = getattr(self, field_name)
             if not np.isfinite(value) or value < 0.0:
                 raise ValueError(f"{field_name} must be finite and zero or more, got {value}")
+        if self.alarm_pan is not None and (not np.isfinite(self.alarm_pan) or not -1.0 <= self.alarm_pan <= 1.0):
+            raise ValueError(f"alarm_pan must be from -1 to 1, got {self.alarm_pan}")
+        if self.alarm_pan is not None and not self.alarm:
+            # A side with no alarm would pan a danger tone that is not sounding.
+            raise ValueError(f"alarm_pan must be None while the alarm is down, got {self.alarm_pan}")
+        for field_name in ("ear_gain_left", "ear_gain_right"):
+            value = getattr(self, field_name)
+            if not np.isfinite(value) or not 0.0 <= value <= 1.0:
+                raise ValueError(f"{field_name} must be from 0 to 1, got {value}")
 
 
 class DepthFrameSource(Protocol):

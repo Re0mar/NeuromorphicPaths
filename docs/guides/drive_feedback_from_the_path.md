@@ -104,6 +104,15 @@ A simple mapping for one motor on each side, or for a wristband that can buzz le
 The same values can drive audio. Each of these mirrors a control the walker already knows from
 their own headphones.
 
+**Three of them arrive ready-made.** Every path carries `ear_gain_left` and `ear_gain_right`, how
+loud each ear should be, and `alarm_pan`, where the danger is while the alarm is up, −1 left to +1
+right. The laptop works them out, the ear away from the heading going quieter by the course's
+surprise of the heading error and the danger's ear dropping to a floor, so a display applies them
+and decides nothing. The laptop's own web page does exactly that in its noise-cancellation mode, and
+the formula is in `docs/math/09_arrow_and_alarm.md`. A path from a laptop older than these keys has
+none of them, which reads as no cue: both ears at full. The recipes below are for a cue built from
+the other values, and the page's alarm mode still uses the first of them for its guidance beep.
+
 **Stereo balance from the heading.** Play the cue panned toward the side the path goes. Take
 `pan = lookahead_heading_radians / 0.62`, clamped to -1 to 1. Equal-power panning keeps the loudness
 the same as the sound moves: left gain `cos((pan + 1) · π/4)`, right gain `sin((pan + 1) · π/4)`.
