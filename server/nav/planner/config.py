@@ -110,3 +110,8 @@ class PlannerConfig:
     previous_plan_spread_growth_square_meters_per_second: float = 0.05
     goal_distance_meters: float = 4.0  # Old file's goal_dist.
     goal_tolerance_meters: float = 1.5  # Half a typical hallway's width, so the goal term picks among safe paths.
+    # Ours. The quietest the stereo cue lets an ear go. A far ear that falls fully silent reads as broken
+    # headphones rather than as a cue. With the goal tolerance as the cue's spread, 20.6 degrees, the
+    # far ear only reaches this past 44 degrees of heading, beyond the 35.5 degree sidestep limit, so
+    # steering alone never gets here. The alarm does: the danger's ear drops straight to it.
+    far_ear_floor_gain: float = 0.10

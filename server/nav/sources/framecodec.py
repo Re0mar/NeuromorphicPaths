@@ -229,6 +229,10 @@ def path_message(path: PlannedPath) -> dict:
         "cumulative_cost_bits": float(path.cumulative_cost_bits),
         "scene_information_bits": float(path.scene_information_bits),
         "avoidance_surprise_bits": float(path.avoidance_surprise_bits),
+        # The stereo cue, decided on the laptop. Null pan while the alarm is down.
+        "alarm_pan": None if path.alarm_pan is None else float(path.alarm_pan),
+        "ear_gain_left": float(path.ear_gain_left),
+        "ear_gain_right": float(path.ear_gain_right),
     }
 
 
@@ -257,6 +261,11 @@ def decode_path(payload: bytes) -> PlannedPath:
             cumulative_cost_bits=_number(_required(message, "cumulative_cost_bits"), "cumulative_cost_bits"),
             scene_information_bits=_number(_required(message, "scene_information_bits"), "scene_information_bits"),
             avoidance_surprise_bits=_number(_required(message, "avoidance_surprise_bits"), "avoidance_surprise_bits"),
+            # Optional, so a path from before the cue existed still reads back. Missing gains are
+            # full volume in both ears, which is no cue, the honest reading of a path that sent none.
+            alarm_pan=None if message.get("alarm_pan") is None else _number(message["alarm_pan"], "alarm_pan"),
+            ear_gain_left=_number(message.get("ear_gain_left", 1.0), "ear_gain_left"),
+            ear_gain_right=_number(message.get("ear_gain_right", 1.0), "ear_gain_right"),
         )
     except ValueError as inconsistent_error:
         if isinstance(inconsistent_error, FrameDecodeError):

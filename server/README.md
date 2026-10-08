@@ -103,6 +103,18 @@ The web page gets every path's arrow, but its plan view and depth picture are dr
 their own, at most 10 times a second, from the newest frame. Drawing one takes about 50 ms. Done on
 the publisher thread, it held up the phone's next path and slowed the planner.
 
+The page also plays sound, in two modes picked from its "Sound" control, both from numbers the
+laptop sends with every path. **Alarm** beeps toward the side the arrow points to, and while the
+alarm is up the beep quickens, rises in pitch and moves to the danger's side, which the laptop sends
+as `alarm_pan`. **Noise cancellation** plays music instead, a built-in bed or a file picked on the
+page, with each ear at the gain the laptop sends: the ear away from the heading goes quieter by the
+course's surprise of the heading error, and the danger's ear drops to a floor while the alarm is up.
+A label beside it says what noise cancellation would do, "ANC on" or "ANC disabled", because no page
+can switch it. When no path has arrived for 1.5 s the beeps stop, the music plays on at full in
+both ears, which is no cue, and the label reads "unknown". Browsers refuse sound before a tap, so
+the control has to be touched once on the page that should play. The formula is in
+`docs/math/09_arrow_and_alarm.md`.
+
 **`--sink` can be repeated, and a walk usually repeats it.** The arrow belongs on the phone, where
 the walker is looking, and the depth view belongs in a browser, where whoever is watching the
 laptop is looking. Name both and both are served from the one run:
@@ -473,9 +485,12 @@ values in `tests/test_laptop_path_fixture.py` and decoded by the app's test.
 
 ## Driving haptics and headphones from the path
 
-Nothing in the pipeline vibrates or plays a sound yet. Which values in the path message are worth
-listening to, what they mean in numbers, and how they could drive a vibration motor, stereo
-balance, volume or a noise cancelling switch is in
+The laptop decides the stereo cue and sends it with every path: `alarm_pan`, where the danger is
+while the alarm is up, and `ear_gain_left` and `ear_gain_right`, how loud each ear should be. The
+web page plays them, see *Sinks* above. Nothing vibrates yet, and no phone API switches noise
+cancellation on third-party headphones, so the page only shows what it would do. Which values in
+the path message are worth listening to, what they mean in numbers, and how they could drive a
+vibration motor or a real noise cancelling switch is in
 [`../docs/guides/drive_feedback_from_the_path.md`](../docs/guides/drive_feedback_from_the_path.md).
 
 ## Measured on the glasses

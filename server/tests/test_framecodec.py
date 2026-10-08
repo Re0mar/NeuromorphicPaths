@@ -435,6 +435,50 @@ def test_a_path_with_mismatched_array_lengths_is_refused() -> None:
         decode_path(message)
 
 
+def test_a_path_without_the_sound_keys_decodes_as_no_cue() -> None:
+    # What a laptop from before the stereo cue sends. The wire document promises it reads as no
+    # cue: no side, both ears at full. Requiring the keys would refuse every path from that laptop.
+    message = {
+        "timestamp_seconds": 1.0,
+        "times_seconds": [0.0, 0.1],
+        "lateral_offsets_meters": [0.0, 0.05],
+        "lookahead_heading_radians": 0.0,
+        "alarm": True,
+        "cumulative_cost_bits": 0.0,
+        "scene_information_bits": 0.0,
+        "avoidance_surprise_bits": 0.0,
+    }
+
+    decoded = decode_path(json.dumps(message).encode("utf-8"))
+
+    assert decoded.alarm_pan is None
+    assert (decoded.ear_gain_left, decoded.ear_gain_right) == (1.0, 1.0)
+
+
+def test_a_null_pan_on_the_wire_is_none_and_a_pan_with_the_alarm_down_is_refused() -> None:
+    # Null is what the encoder writes while the alarm is down. A number there with the alarm down
+    # is a path no laptop produces, and PlannedPath's rule refuses it as a bad message.
+    message = {
+        "timestamp_seconds": 1.0,
+        "times_seconds": [0.0, 0.1],
+        "lateral_offsets_meters": [0.0, 0.05],
+        "lookahead_heading_radians": 0.0,
+        "alarm": False,
+        "cumulative_cost_bits": 0.0,
+        "scene_information_bits": 0.0,
+        "avoidance_surprise_bits": 0.0,
+        "alarm_pan": None,
+        "ear_gain_left": 0.6,
+        "ear_gain_right": 1.0,
+    }
+
+    assert decode_path(json.dumps(message).encode("utf-8")).alarm_pan is None
+
+    message["alarm_pan"] = -0.5
+    with pytest.raises(FrameDecodeError, match="alarm_pan must be None while the alarm is down"):
+        decode_path(json.dumps(message).encode("utf-8"))
+
+
 def test_the_path_json_matches_the_wire_docs_example() -> None:
     # A round trip passes even when a key is misspelled the same way on both sides. This pins the
     # exact key names and values against the example the document shows the phone's maintainer.
@@ -595,6 +639,37 @@ def test_planned_path_refuses_negative_bits(field: str) -> None:
     fields[field] = -0.1
 
     with pytest.raises(ValueError, match=f"{field} must be finite and zero or more, got -0.1"):
+        PlannedPath(**fields)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"alarm": True, "alarm_pan": 1.5}, "alarm_pan must be from -1 to 1, got 1.5"),
+        ({"alarm": True, "alarm_pan": float("nan")}, "alarm_pan must be from -1 to 1"),
+        ({"alarm": False, "alarm_pan": 0.5}, "alarm_pan must be None while the alarm is down, got 0.5"),
+        ({"ear_gain_left": 1.2}, "ear_gain_left must be from 0 to 1, got 1.2"),
+        ({"ear_gain_right": -0.1}, "ear_gain_right must be from 0 to 1, got -0.1"),
+        ({"ear_gain_right": float("inf")}, "ear_gain_right must be from 0 to 1"),
+    ],
+    ids=["pan past the edge", "pan nan", "pan with the alarm down", "left gain over 1", "right gain under 0", "right gain inf"],
+)
+def test_planned_path_refuses_a_cue_outside_its_range_by_name(overrides: dict, expected: str) -> None:
+    # The cue's numbers are applied by a page that trusts them. A pan with no alarm would pan a
+    # tone that is not sounding, and a gain outside 0 to 1 is not a volume.
+    fields = {
+        "timestamp_seconds": 1.0,
+        "times_seconds": np.array([0.0]),
+        "lateral_offsets_meters": np.array([0.0]),
+        "lookahead_heading_radians": 0.0,
+        "alarm": False,
+        "cumulative_cost_bits": 0.0,
+        "scene_information_bits": 0.0,
+        "avoidance_surprise_bits": 0.0,
+    }
+    fields.update(overrides)
+
+    with pytest.raises(ValueError, match=expected):
         PlannedPath(**fields)
 
 
