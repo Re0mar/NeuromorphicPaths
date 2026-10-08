@@ -11,7 +11,16 @@ import pytest
 
 # Local package imports
 from nav.pose.device import pose_from_device
-from nav.pose.imu_orientation import ImuMount, identity_pose, is_usable_orientation, multiply_wxyz, pose_from_imu
+from nav.pose.imu_orientation import (
+    IMU_MATCH_TOLERANCE_SECONDS,
+    ImuMount,
+    identity_pose,
+    is_usable_orientation,
+    multiply_wxyz,
+    orientation_at,
+    pose_from_imu,
+    usable_orientation_mask,
+)
 from nav.pose.neon_mount import rotation_about_x_wxyz
 from nav.scene.transform import rotation_matrix_from_quaternion_wxyz
 
@@ -104,6 +113,60 @@ def test_an_empty_imu_reading_is_not_a_usable_orientation(orientation: np.ndarra
 def test_a_real_imu_reading_is_a_usable_orientation(orientation: np.ndarray) -> None:
     """Unit, unnormalized and borderline readings are rotations, and pose_from_imu normalizes them."""
     assert is_usable_orientation(orientation) is True
+
+
+def test_the_mask_and_the_single_check_agree_reading_for_reading() -> None:
+    readings = np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0], [np.nan, 0.0, 0.0, 0.0], [0.5, 0.0, 0.0, 0.0]])
+
+    assert usable_orientation_mask(readings).tolist() == [is_usable_orientation(reading) for reading in readings]
+    assert usable_orientation_mask(readings).tolist() == [True, False, False, True]
+
+
+# Readings 10 ms apart, each one's w its own stamp in hundredths, so a test can see which was chosen.
+STAMPS = np.array([0.00, 0.01, 0.02, 0.03, 0.04])
+READINGS = np.array([[1.0 + index, 0.0, 0.0, 0.0] for index in range(5)])
+
+
+def test_the_reading_nearest_the_frames_stamp_is_its_orientation() -> None:
+    assert orientation_at(STAMPS, READINGS, 0.021)[0] == 3.0
+    assert orientation_at(STAMPS, READINGS, 0.029)[0] == 4.0
+
+
+def test_an_empty_reading_is_passed_over_for_a_usable_one_further_off() -> None:
+    readings = READINGS.copy()
+    readings[2] = 0.0
+
+    assert orientation_at(STAMPS, readings, 0.02)[0] in (2.0, 4.0)
+
+
+def test_a_stamp_exactly_at_the_tolerance_is_matched_and_one_past_it_is_not() -> None:
+    stamps = np.array([0.0])
+    readings = np.array([[1.0, 0.0, 0.0, 0.0]])
+
+    assert orientation_at(stamps, readings, IMU_MATCH_TOLERANCE_SECONDS) is not None
+    assert orientation_at(stamps, readings, IMU_MATCH_TOLERANCE_SECONDS + 1e-6) is None
+    assert orientation_at(stamps, readings, -IMU_MATCH_TOLERANCE_SECONDS - 1e-6) is None
+
+
+def test_only_empty_readings_give_no_orientation_anywhere() -> None:
+    assert orientation_at(STAMPS, np.zeros((5, 4)), 0.02) is None
+
+
+def test_no_readings_give_no_orientation() -> None:
+    assert orientation_at(np.array([]), np.zeros((0, 4)), 0.0) is None
+
+
+def test_the_chosen_reading_is_a_copy() -> None:
+    readings = READINGS.copy()
+    chosen = orientation_at(STAMPS, readings, 0.0)
+    chosen[0] = 99.0
+
+    assert readings[0, 0] == 1.0
+
+
+def test_stamps_and_readings_that_do_not_pair_up_are_refused() -> None:
+    with pytest.raises(ValueError, match="5 stamps for 4 orientations"):
+        orientation_at(STAMPS, READINGS[:4], 0.0)
 
 
 @pytest.mark.parametrize(

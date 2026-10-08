@@ -31,6 +31,9 @@ STATED = PlannedPath(
     cumulative_cost_bits=18.4,
     scene_information_bits=0.37,
     avoidance_surprise_bits=0.51,
+    alarm_pan=-0.5,
+    ear_gain_left=0.1,
+    ear_gain_right=0.9,
 )
 
 
@@ -55,6 +58,9 @@ def test_the_laptops_path_fixture_is_written_and_decodes_to_the_stated_values() 
     assert decoded.cumulative_cost_bits == pytest.approx(18.4)
     assert decoded.scene_information_bits == pytest.approx(0.37)
     assert decoded.avoidance_surprise_bits == pytest.approx(0.51)
+    # The Kotlin decoder reads none of these three and must not refuse them.
+    assert decoded.alarm_pan == pytest.approx(-0.5)
+    assert (decoded.ear_gain_left, decoded.ear_gain_right) == pytest.approx((0.1, 0.9))
     # One line of JSON after the prefix. The Kotlin side reads it with readFully, not by lines,
     # but a newline here would mean the encoder changed shape.
     assert b"\n" not in raw

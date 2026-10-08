@@ -27,7 +27,7 @@ from nav.pose.imu_orientation import pose_from_imu
 from nav.pose.neon_mount import NEON_IMU_MOUNT
 from nav.sources.camera_model import scale_intrinsics
 from nav.sources.config import NeonConfig
-from nav.sources.neon_device import NeonDeviceError, NeonStreamEnded, NeonUnexpectedFailure
+from nav.sources.neon_device import DeviceMatched, NeonDeviceError, NeonStreamEnded, NeonUnexpectedFailure
 from nav.sources.neon_live import NEON_SCENE_SIZE, RECEIVE_POLL_SECONDS, NeonCalibrationError, NeonLiveRgbSource
 from neon_captures import encode_h264, write_capture
 
@@ -78,8 +78,11 @@ class FakeQuaternion:
 
 
 @dataclass
-class FakeImuDatum:
-    quaternion: FakeQuaternion | None
+class FakeImuStatus:
+    readings: int = 0
+    empty_readings: int = 0
+    unstamped_empty_readings: int = 0
+    frames_without_orientation: int = 0
 
 
 @dataclass
@@ -96,33 +99,33 @@ class FakeScene:
 
 @dataclass
 class FakeMatched:
-    """Shaped like the client's `MatchedItem`, whose scene frame is `frame`.
+    """Shaped like `DeviceMatched`, which is what the source is handed by the device process.
 
-    The eye-video variant names it `scene`. A fake that copied that name passed every test while
-    the real stream failed on its first frame.
+    A fake that named a field differently from the real one once passed every test while the real
+    stream failed on its first frame, so the next test pins the names.
     """
 
     frame: FakeScene
     gaze: FakeGaze | None
+    orientation: FakeQuaternion | None = None
 
 
-def test_the_fake_matched_item_has_the_real_clients_field_names() -> None:
-    # Checked against the installed client when it is present. The suite is meant to run without
-    # it, so this skips there, and the lane venv that has the glasses extra is where it bites.
-    models = pytest.importorskip("pupil_labs.realtime_api.simple.models")
-
-    assert tuple(FakeMatched.__dataclass_fields__) == models.MatchedItem._fields
+def test_the_fake_matched_item_has_the_device_processes_field_names() -> None:
+    assert tuple(FakeMatched.__dataclass_fields__) == tuple(DeviceMatched.__dataclass_fields__)
 
 
 @dataclass
 class FakeDevice:
-    """Hands out scripted matched frames and IMU readings, the way the simple client does.
+    """Hands out scripted matched frames and IMU counts, the way the device process does.
 
     It has no eye video method on purpose. A source that asks for eye video fails on it.
     """
 
     matched: list
-    imu: list
+    imu: FakeImuStatus = field(default_factory=FakeImuStatus)
+    # Raised by the counts request instead of answering, when set.
+    imu_status_error: BaseException | None = None
+    imu_status_calls: int = 0
     calibration: FakeCalibration | None = None
     calibration_error: BaseException | None = None
     silent_polls: int = 0
@@ -158,8 +161,11 @@ class FakeDevice:
         time.sleep(self.receive_delay_seconds)
         return self.matched.pop(0)
 
-    def receive_imu_datum(self, timeout_seconds: float):
-        return self.imu.pop(0) if self.imu else None
+    def imu_status(self) -> FakeImuStatus:
+        self.imu_status_calls += 1
+        if self.imu_status_error is not None:
+            raise self.imu_status_error
+        return self.imu
 
     def close(self) -> None:
         self.closed = True
@@ -193,8 +199,7 @@ def _take(source: NeonLiveRgbSource, count: int) -> list:
 
 def test_the_imu_quaternion_is_read_by_field_name_and_mounted_into_the_pose() -> None:
     device = FakeDevice(
-        matched=[FakeMatched(_scene(1.0), FakeGaze(100.0, 200.0))],
-        imu=[FakeImuDatum(FakeQuaternion(w=0.9, x=0.1, y=0.2, z=0.3))],
+        matched=[FakeMatched(_scene(1.0), FakeGaze(100.0, 200.0), FakeQuaternion(w=0.9, x=0.1, y=0.2, z=0.3))],
     )
 
     frame = _take(_source_with(device), 1)[0]
@@ -207,10 +212,13 @@ def test_the_imu_quaternion_is_read_by_field_name_and_mounted_into_the_pose() ->
     assert frame.image_rgb[0, 0].tolist() == [0, 0, 255], "BGR in, RGB out"
 
 
-def test_a_frame_without_a_new_imu_reading_keeps_the_previous_orientation() -> None:
+def test_a_frame_with_no_imu_reading_near_its_capture_has_no_pose_rather_than_an_older_one() -> None:
     device = FakeDevice(
-        matched=[FakeMatched(_scene(1.0), None), FakeMatched(_scene(2.0), None), FakeMatched(_scene(3.0), None)],
-        imu=[FakeImuDatum(FakeQuaternion(1.0, 0.0, 0.0, 0.0)), None, FakeImuDatum(None)],
+        matched=[
+            FakeMatched(_scene(1.0), None, FakeQuaternion(1.0, 0.0, 0.0, 0.0)),
+            FakeMatched(_scene(2.0), None),
+            FakeMatched(_scene(3.0), None, FakeQuaternion(0.9, 0.1, 0.2, 0.3)),
+        ],
     )
 
     frames = _take(_source_with(device), 3)
@@ -218,14 +226,15 @@ def test_a_frame_without_a_new_imu_reading_keeps_the_previous_orientation() -> N
     assert len(frames) == 3
     level = pose_from_imu(np.array([1.0, 0.0, 0.0, 0.0]), NEON_IMU_MOUNT).orientation
     assert frames[0].pose.orientation == pytest.approx(level)
-    # No datum, then a datum with no quaternion. Both carry the last orientation forward rather
-    # than dropping to None, which would flip the scene into fitting the floor from scratch.
-    assert frames[1].pose.orientation == pytest.approx(level)
-    assert frames[2].pose.orientation == pytest.approx(level)
+    # The first frame's orientation does not carry over. The head may have turned since, and a
+    # floor fitted against a stale up leans by however far it turned.
+    assert frames[1].pose is None
+    tilted = pose_from_imu(np.array([0.9, 0.1, 0.2, 0.3]), NEON_IMU_MOUNT).orientation
+    assert frames[2].pose.orientation == pytest.approx(tilted)
 
 
 def test_before_the_first_imu_reading_the_frame_has_no_pose_and_no_gaze_is_none() -> None:
-    device = FakeDevice(matched=[FakeMatched(_scene(1.0), None)], imu=[])
+    device = FakeDevice(matched=[FakeMatched(_scene(1.0), None)])
 
     frame = _take(_source_with(device), 1)[0]
 
@@ -235,7 +244,7 @@ def test_before_the_first_imu_reading_the_frame_has_no_pose_and_no_gaze_is_none(
 
 
 def test_closing_closes_the_device() -> None:
-    device = FakeDevice(matched=[], imu=[])
+    device = FakeDevice(matched=[])
     source = _source_with(device)
 
     source.close()
@@ -250,7 +259,6 @@ def test_frames_carry_the_undistorted_camera_matrix_and_an_undistorted_image() -
     pixels = rng.integers(0, 255, size=(*FRAME_SIZE, 3), dtype=np.uint8)
     device = FakeDevice(
         matched=[FakeMatched(_scene(1.0, pixels), None)],
-        imu=[],
         calibration=FakeCalibration(NATIVE_CAMERA_MATRIX, BARREL),
     )
 
@@ -264,7 +272,7 @@ def test_frames_carry_the_undistorted_camera_matrix_and_an_undistorted_image() -
 
 
 def test_with_no_distortion_the_matrix_is_the_devices_scaled_to_the_frame() -> None:
-    device = FakeDevice(matched=[FakeMatched(_scene(1.0), None)], imu=[])
+    device = FakeDevice(matched=[FakeMatched(_scene(1.0), None)])
 
     frame = _take(_source_with(device), 1)[0]
 
@@ -276,7 +284,6 @@ def test_the_undistortion_maps_are_built_once_and_not_per_frame() -> None:
     """Building the maps takes milliseconds the estimator is waiting on, at every frame."""
     device = FakeDevice(
         matched=[FakeMatched(_scene(1.0), None), FakeMatched(_scene(2.0), None), FakeMatched(_scene(3.0), None)],
-        imu=[],
         calibration=FakeCalibration(NATIVE_CAMERA_MATRIX, BARREL),
     )
     source = _source_with(device)
@@ -301,7 +308,6 @@ def test_the_gaze_point_is_undistorted_with_the_image() -> None:
     cv2.circle(pixels, (int(round(gaze_x)), int(round(gaze_y))), 2, (255, 255, 255), -1)
     device = FakeDevice(
         matched=[FakeMatched(_scene(1.0, pixels), FakeGaze(float(gaze_x), float(gaze_y)))],
-        imu=[],
         calibration=FakeCalibration(NATIVE_CAMERA_MATRIX, BARREL),
     )
 
@@ -317,7 +323,7 @@ def test_the_gaze_point_is_undistorted_with_the_image() -> None:
 def test_the_source_asks_for_scene_and_gaze_without_eye_video() -> None:
     # The fake has no eye video method. A source still asking for the eyes stream fails here.
     assert not hasattr(FakeDevice, "receive_matched_scene_and_eyes_video_frames_and_gaze")
-    device = FakeDevice(matched=[FakeMatched(_scene(1.0), None)], imu=[])
+    device = FakeDevice(matched=[FakeMatched(_scene(1.0), None)])
 
     frames = _take(_source_with(device), 1)
 
@@ -327,7 +333,7 @@ def test_the_source_asks_for_scene_and_gaze_without_eye_video() -> None:
 def test_a_silent_stream_polls_with_a_short_timeout_and_warns_after_the_stall_interval(caplog: pytest.LogCaptureFixture) -> None:
     # 25 empty polls of a quarter second each is 6.25 s of silence, so one warning at 5 s and no
     # second one until 10.
-    device = FakeDevice(matched=[FakeMatched(_scene(1.0), None)], imu=[], silent_polls=25)
+    device = FakeDevice(matched=[FakeMatched(_scene(1.0), None)], silent_polls=25)
 
     with caplog.at_level(logging.WARNING, logger="nav.sources.neon_live"):
         frames = _take(_source_with(device, NeonConfig(stall_warning_seconds=5.0)), 1)
@@ -344,7 +350,7 @@ def test_a_silent_stream_polls_with_a_short_timeout_and_warns_after_the_stall_in
     [NeonDeviceError("DeviceError: (500, 'Failed to fetch calibration')"), ConnectionRefusedError("refused"), ValueError("bad buffer")],
 )
 def test_a_device_that_cannot_give_its_calibration_ends_the_run_with_a_message(failure: BaseException) -> None:
-    device = FakeDevice(matched=[FakeMatched(_scene(1.0), None)], imu=[], calibration_error=failure)
+    device = FakeDevice(matched=[FakeMatched(_scene(1.0), None)], calibration_error=failure)
 
     with pytest.raises(NeonCalibrationError, match="did not provide its camera calibration") as refused:
         next(_source_with(device).frames())
@@ -354,7 +360,6 @@ def test_a_device_that_cannot_give_its_calibration_ends_the_run_with_a_message(f
 def test_a_camera_matrix_that_is_not_nine_numbers_ends_the_run_with_a_message() -> None:
     device = FakeDevice(
         matched=[FakeMatched(_scene(1.0), None)],
-        imu=[],
         calibration=FakeCalibration(np.arange(8, dtype=np.float64), NO_DISTORTION),
     )
 
@@ -366,7 +371,6 @@ def test_a_calibration_that_cannot_describe_a_camera_ends_the_run_with_a_message
     # Seven coefficients is a length no OpenCV distortion model has.
     device = FakeDevice(
         matched=[FakeMatched(_scene(1.0), None)],
-        imu=[],
         calibration=FakeCalibration(NATIVE_CAMERA_MATRIX, np.zeros(7)),
     )
 
@@ -376,7 +380,7 @@ def test_a_calibration_that_cannot_describe_a_camera_ends_the_run_with_a_message
 
 def test_an_unexpected_calibration_failure_is_not_disguised_as_a_known_one() -> None:
     # Anything the source cannot name goes to the loop's unexpected branch with its own type.
-    device = FakeDevice(matched=[FakeMatched(_scene(1.0), None)], imu=[], calibration_error=KeyError("surprise"))
+    device = FakeDevice(matched=[FakeMatched(_scene(1.0), None)], calibration_error=KeyError("surprise"))
 
     with pytest.raises(KeyError):
         next(_source_with(device).frames())
@@ -384,7 +388,7 @@ def test_an_unexpected_calibration_failure_is_not_disguised_as_a_known_one() -> 
 
 def test_capture_is_moved_onto_the_laptop_clock_by_the_measured_offset() -> None:
     # The laptop's clock runs 250 ms ahead of the Neon's, so a Neon stamp of 100.0 is 100.25 here.
-    device = FakeDevice(matched=[FakeMatched(_scene(100.0), None)], imu=[], offsets_ms=[250.0])
+    device = FakeDevice(matched=[FakeMatched(_scene(100.0), None)], offsets_ms=[250.0])
 
     frame = _take(_source_with(device), 1)[0]
 
@@ -394,7 +398,7 @@ def test_capture_is_moved_onto_the_laptop_clock_by_the_measured_offset() -> None
 
 def test_arrival_is_stamped_on_receipt_on_the_laptop_clock() -> None:
     """Arrival is when the frame reached the laptop, so it comes after the wait for it and not before."""
-    device = FakeDevice(matched=[FakeMatched(_scene(100.0), None)], imu=[], receive_delay_seconds=0.3)
+    device = FakeDevice(matched=[FakeMatched(_scene(100.0), None)], receive_delay_seconds=0.3)
     frames = _source_with(device).frames()
 
     before = laptop_time_seconds()
@@ -406,7 +410,7 @@ def test_arrival_is_stamped_on_receipt_on_the_laptop_clock() -> None:
 
 
 def test_the_offset_is_measured_again_on_close_and_the_drift_logged(caplog: pytest.LogCaptureFixture) -> None:
-    device = FakeDevice(matched=[FakeMatched(_scene(100.0), None)], imu=[], offsets_ms=[250.0, 253.0])
+    device = FakeDevice(matched=[FakeMatched(_scene(100.0), None)], offsets_ms=[250.0, 253.0])
     source = _source_with(device)
     _take(source, 1)
 
@@ -421,7 +425,7 @@ def test_the_offset_is_measured_again_on_close_and_the_drift_logged(caplog: pyte
 
 def test_close_does_not_measure_again_when_connect_measured_nothing() -> None:
     """With no offset at connect there is nothing to compare a closing one with."""
-    device = FakeDevice(matched=[FakeMatched(_scene(1.0), None)], imu=[], offsets_ms=[])
+    device = FakeDevice(matched=[FakeMatched(_scene(1.0), None)], offsets_ms=[])
     source = _source_with(device)
     _take(source, 1)
 
@@ -441,7 +445,7 @@ def test_an_unexpected_failure_measuring_at_close_still_closes_the_device(caplog
                 raise NeonUnexpectedFailure("UNEXPECTED failure in the Neon process: Traceback ... ServerDisconnectedError")
             return FakeTimeEcho(FakeEstimate(250.0), FakeEstimate(4.0))
 
-    device = GoneByCloseDevice(matched=[FakeMatched(_scene(1.0), None)], imu=[])
+    device = GoneByCloseDevice(matched=[FakeMatched(_scene(1.0), None)])
     source = _source_with(device)
     _take(source, 1)
 
@@ -454,7 +458,7 @@ def test_an_unexpected_failure_measuring_at_close_still_closes_the_device(caplog
 
 def test_a_replay_logs_the_offset_recorded_with_the_capture_and_checks_no_drift(caplog: pytest.LogCaptureFixture) -> None:
     """A replay measures nothing. Reading the stored offset twice and calling it 0 ms of drift is a made-up result."""
-    device = FakeDevice(matched=[FakeMatched(_scene(100.0), None)], imu=[], offsets_ms=[1300.0, 1300.0])
+    device = FakeDevice(matched=[FakeMatched(_scene(100.0), None)], offsets_ms=[1300.0, 1300.0])
     source = _source_with(device, NeonConfig(replay_dir="captures/walk_1"))
 
     with caplog.at_level(logging.INFO, logger="nav.sources.neon_live"):
@@ -471,7 +475,7 @@ def test_a_replay_logs_the_offset_recorded_with_the_capture_and_checks_no_drift(
 
 
 def test_a_replay_recorded_without_an_offset_says_so_and_gives_no_capture_time(caplog: pytest.LogCaptureFixture) -> None:
-    device = FakeDevice(matched=[FakeMatched(_scene(100.0), None)], imu=[], offsets_ms=[])
+    device = FakeDevice(matched=[FakeMatched(_scene(100.0), None)], offsets_ms=[])
     source = _source_with(device, NeonConfig(replay_dir="captures/walk_1"))
 
     with caplog.at_level(logging.WARNING, logger="nav.sources.neon_live"):
@@ -482,7 +486,7 @@ def test_a_replay_recorded_without_an_offset_says_so_and_gives_no_capture_time(c
 
 
 def test_a_companion_without_time_echo_gives_no_capture_time_and_warns_once(caplog: pytest.LogCaptureFixture) -> None:
-    device = FakeDevice(matched=[FakeMatched(_scene(1.0), None), FakeMatched(_scene(2.0), None)], imu=[])
+    device = FakeDevice(matched=[FakeMatched(_scene(1.0), None), FakeMatched(_scene(2.0), None)])
 
     with caplog.at_level(logging.WARNING, logger="nav.sources.neon_live"):
         frames = _take(_source_with(device), 2)
@@ -496,7 +500,7 @@ def test_a_failing_time_echo_is_logged_and_the_stream_goes_on(caplog: pytest.Log
         def estimate_time_offset(self, number_of_measurements: int = 100):
             raise ConnectionRefusedError("time echo port closed")
 
-    device = RefusingDevice(matched=[FakeMatched(_scene(1.0), None)], imu=[])
+    device = RefusingDevice(matched=[FakeMatched(_scene(1.0), None)])
 
     with caplog.at_level(logging.WARNING, logger="nav.sources.neon_live"):
         frames = _take(_source_with(device), 1)
@@ -505,29 +509,75 @@ def test_a_failing_time_echo_is_logged_and_the_stream_goes_on(caplog: pytest.Log
     assert any("ConnectionRefusedError" in record.message for record in caplog.records)
 
 
-@pytest.mark.parametrize("empty", [0.0, float("nan")], ids=["zero", "nan"])
-def test_an_empty_quaternion_from_the_imu_is_skipped_and_the_last_real_orientation_carries_on(
-    empty: float, caplog: pytest.LogCaptureFixture
-) -> None:
-    # The glasses sent only zeros for minutes on 2026-10-05. Before this, the first one ended the
-    # run. A NaN is no orientation either, and would end it the same way.
+def test_frames_without_a_pose_are_reported_once_an_interval_with_the_imus_counts(caplog: pytest.LogCaptureFixture) -> None:
+    # The glasses sent only zeros for minutes on 2026-10-05. A line per frame would bury the log.
     device = FakeDevice(
-        matched=[FakeMatched(_scene(1.0), None), FakeMatched(_scene(2.0), None), FakeMatched(_scene(3.0), None)],
-        imu=[
-            FakeImuDatum(FakeQuaternion(empty, empty, empty, empty)),
-            FakeImuDatum(FakeQuaternion(1.0, 0.0, 0.0, 0.0)),
-            FakeImuDatum(FakeQuaternion(empty, empty, empty, empty)),
-        ],
+        matched=[FakeMatched(_scene(float(stamp)), None) for stamp in range(1, 6)],
+        imu=FakeImuStatus(readings=400, empty_readings=400, frames_without_orientation=5),
     )
 
     with caplog.at_level(logging.WARNING, logger="nav.sources.neon_live"):
-        frames = _take(_source_with(device), 3)
+        frames = _take(_source_with(device), 5)
 
-    level = pose_from_imu(np.array([1.0, 0.0, 0.0, 0.0]), NEON_IMU_MOUNT).orientation
-    assert frames[0].pose is None, "no real reading yet, so no gravity"
-    assert frames[1].pose.orientation == pytest.approx(level)
-    assert frames[2].pose.orientation == pytest.approx(level)
-    assert len([record for record in caplog.records if "empty orientations" in record.message]) == 1
+    assert len(frames) == 5, "the run goes on without a pose"
+    assert all(frame.pose is None for frame in frames)
+    reports = [record.message for record in caplog.records if "no IMU reading within" in record.message]
+    assert len(reports) == 1, "five frames well inside one interval give one line"
+    assert "400 of the IMU's 400 readings so far were empty" in reports[0]
+
+
+def test_after_the_interval_a_second_report_counts_only_the_misses_since_the_first(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Three frames in the first second, then the clock jumps past the interval, then two more.
+    # The first frame is reported at once. The fourth is the first past the interval, so the
+    # second line counts frames two to four, 3. A count that never reset would say 4, and
+    # overstate a stream that went empty for a moment.
+    # The source reads the clock once per frame without a pose, so one value per frame. The
+    # last one repeats, so another reader of the clock during the test doesn't run it dry.
+    clock = iter([0.0, 0.5, 1.0, 20.0, 20.5])
+    monkeypatch.setattr(time, "monotonic", lambda: next(clock, 20.5))
+    device = FakeDevice(
+        matched=[FakeMatched(_scene(float(stamp)), None) for stamp in range(1, 6)],
+        imu=FakeImuStatus(readings=500, empty_readings=500, frames_without_orientation=5),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="nav.sources.neon_live"):
+        _take(_source_with(device), 5)
+
+    reports = [record.message for record in caplog.records if "no IMU reading within" in record.message]
+    assert [report.split(" ")[0] for report in reports] == ["1", "3"]
+
+
+def test_a_failing_counts_request_still_reports_the_missing_pose_and_the_run_goes_on(caplog: pytest.LogCaptureFixture) -> None:
+    device = FakeDevice(
+        matched=[FakeMatched(_scene(1.0), None), FakeMatched(_scene(2.0), None, FakeQuaternion(1.0, 0.0, 0.0, 0.0))],
+        imu_status_error=NeonDeviceError("the Neon process did not answer 'imu_status' within 5.0 s"),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="nav.sources.neon_live"):
+        frames = _take(_source_with(device), 2)
+
+    assert frames[0].pose is None
+    assert frames[1].pose is not None
+    assert any("counts are unavailable" in record.message and "NeonDeviceError" in record.message for record in caplog.records)
+
+
+def test_a_frame_with_its_orientation_never_asks_the_device_for_counts() -> None:
+    # The control for the two tests above: the counts request runs only on the missing-pose path.
+    device = FakeDevice(matched=[FakeMatched(_scene(1.0), None, FakeQuaternion(1.0, 0.0, 0.0, 0.0))])
+
+    _take(_source_with(device), 1)
+
+    assert device.imu_status_calls == 0
+
+
+def test_imu_status_is_none_before_connect_and_the_devices_counts_after() -> None:
+    source = NeonLiveRgbSource(NeonConfig())
+    assert source.imu_status() is None
+
+    counts = FakeImuStatus(readings=12, empty_readings=3, frames_without_orientation=1)
+    assert _source_with(FakeDevice(matched=[], imu=counts)).imu_status() == counts
 
 
 def test_a_played_back_capture_that_ends_ends_the_frames_normally() -> None:
@@ -537,7 +587,7 @@ def test_a_played_back_capture_that_ends_ends_the_frames_normally() -> None:
                 return self.matched.pop(0)
             raise NeonStreamEnded("the capture has been played to the end")
 
-    device = EndingDevice(matched=[FakeMatched(_scene(1.0), None), FakeMatched(_scene(2.0), None)], imu=[])
+    device = EndingDevice(matched=[FakeMatched(_scene(1.0), None), FakeMatched(_scene(2.0), None)])
 
     frames = list(_source_with(device).frames())
 
@@ -552,9 +602,12 @@ def test_a_real_capture_plays_through_the_real_device_process_into_frames(tmp_pa
     pytest.importorskip("av", reason="PyAV comes with the glasses extra")
     pytest.importorskip("pupil_labs.realtime_api.streaming.nal_unit", reason="the client comes with the glasses extra")
     stream = encode_h264(frame_count=12)
+    # The IMU at 110 Hz over the whole capture, level, so every frame has a reading within a few ms.
+    imu = [(500.0 + index / 110, 1.0, 0.0, 0.0, 0.0) for index in range(60)]
     capture = write_capture(
         tmp_path / "capture",
         [(500.0 + index / 30, picture) for index, picture in enumerate(stream.pictures)],
+        imu=imu,
         offset_ms=1300.0,
         parameter_sets=stream.parameter_sets,
     )
@@ -566,7 +619,11 @@ def test_a_real_capture_plays_through_the_real_device_process_into_frames(tmp_pa
         source.close()
 
     assert frames, "the capture ended without a frame"
+    level = pose_from_imu(np.array([1.0, 0.0, 0.0, 0.0]), NEON_IMU_MOUNT).orientation
     for frame in frames:
+        # Posed from the reading nearest its capture, carried across the pipe with the frame.
+        assert frame.pose is not None
+        assert frame.pose.orientation == pytest.approx(level)
         assert frame.camera_matrix.shape == (3, 3)
         assert np.all(np.isfinite(frame.camera_matrix))
         # Stamped as if it were happening now, so capture and arrival are both this moment.

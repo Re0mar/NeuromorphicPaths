@@ -96,6 +96,89 @@ with 95th percentiles of 422 and 371 ms.
 A raw capture replayed through `--neon-replay` took a median of 86 ms on the laptop from a packet
 being fed in to its decoded frame reaching the pipeline, and 137 ms at the 95th percentile.
 
+## The pose, from when the picture was taken
+
+On this walk each frame was posed with whatever IMU reading was newest when the frame reached the
+laptop. That was 155 ms after the picture was taken at the median, 714 ms at the 95th percentile.
+A head turning at 100 degrees a second turns 15 to 70 degrees in that time, and the floor is fitted
+against "up" from that pose. Now the glasses' process keeps the last 3 s of IMU readings, and each
+frame gets the reading nearest the moment its picture was taken, within 50 ms. A frame with no
+reading that near has no pose rather than an older one.
+
+The second capture was replayed twice on 2026-10-08, before and after the change. Then the before
+replay's own frames were fitted again both ways with `check_planner floor-lean`, so both poses are
+compared on the same 380 frames. Lean is the angle between the fitted floor and that pose's up. On a
+flat floor a right pose gives about zero.
+
+| Pose | Frames | Floor fitted | Lean, median | 90th percentile | Largest |
+|---|---|---|---|---|---|
+| Newest reading on arrival | 380 | 353 (92.9 %) | 1.94° | 6.13° | 20.93° |
+| Reading nearest the capture | 380 | 348 (91.6 %) | 1.79° | 4.99° | 20.46° |
+
+Refitting with the arrival pose gave the run's own floor on every frame, so the left column is the
+run itself. On the after replay both poses are the same frame for frame, which is the live code
+choosing exactly what the rule says.
+
+These understate a live walk. In a replay a frame is late only by this laptop's share, 96 ms at the
+median, against 155 ms live, because the network share isn't there.
+
+## Holding the previous plan between the glasses' frames
+
+The planner leans toward the plan it made on the frame before, so a near-tie doesn't flip sides
+every frame. It's our term, in the professor's half-squared shape, and it dropped any plan older than
+0.5 s. On this walk 334 of 594 gaps between plans were longer, so most of the time it wasn't there.
+It now keeps a plan up to 3 s old, and lets an older one pull less: the plan's spread, 0.25 m when
+fresh, widens with its age, 0.30 m at 0.6 s and 0.36 m at 1.4 s.
+
+The glasses replay can't show the difference. It has no full swings of the arrow with the old rule,
+the new one, or the prior switched off, and with no position the plan-disagreement figures can't be
+computed. So the choice was measured on the three Pixel walks, thinned to the glasses' own gaps
+between plans (median 0.6 to 0.7 s, more than half over 0.5 s). Full swings of the arrow from one
+sidestep limit to the other, last segment of each walk:
+
+| | `pixel_walk_3`, 76 frames | classroom, 129 | `contact_walk_1`, 59 |
+|---|---|---|---|
+| No prior | 14 | 24 | 8 |
+| Dropped after 0.5 s | 5 | 13 | 3 |
+| Kept to 3 s, widening | 0 | 0 | 0 |
+
+Dropping it after 1.0 s instead still let 2 swings through on the classroom. Widening faster than
+0.05 m² a second let them back too (2 and 3), because a plan 0.6 s old then pulls too weakly to hold
+a near-tie. At the phone's full rate the change does almost nothing. `contact_walk_1` and the
+classroom give the same figures, and `pixel_walk_3` holds the arrow at its limit on 36.8 % of frames
+instead of 34.1 %, through its tracking dropouts, with swings and alarm unchanged.
+
+## The IMU that sent only zeros
+
+Every IMU reading in the captures from 17:36 to 17:45 was (0, 0, 0, 0), and its timestamp was 0 too:
+519 readings in `smoke` and 24,650 in `neon_walk_1`. From 17:49 they were normal. A zero timestamp
+means each packet decoded to nothing at all. The Pupil Labs client reads both the rotation and the
+time out of a protobuf message, and an empty one reads back as zeros.
+
+Pupil Labs answered the same report in
+[pl-realtime-api issue 71](https://github.com/pupil-labs/pl-realtime-api/issues/71): the streamed IMU
+sends zeros after an earlier connection to the glasses wasn't closed cleanly, and force-stopping and
+restarting the Companion app clears it. Recording on the phone carries on unaffected.
+
+Tested with the glasses on 2026-10-08, five runs of `examples/check_neon.py`, which now watches the
+IMU for 3 s after the first frame and counts its readings:
+
+| Condition | IMU readings in 3 s | Empty |
+|---|---|---|
+| Control | 508 | 0 |
+| After a capture that closed its sessions cleanly | 515 | 0 |
+| After a capture killed hard, 3 s earlier | 448 | 0 |
+| While another capture still held the stream | 478 | 478, none with a timestamp |
+| 25 s later, the other capture gone | 426 | 0 |
+
+So the phone serves the IMU stream to one client. A second client connected while the first is still
+open gets packets that decode to nothing, the first keeps receiving, and the second recovers the
+moment the first connection is gone. A process that dies takes its socket with it, which is why the
+kill didn't do it. What does it is a client still alive and no longer reading. On the 5th that was
+the first live runs, whose reader thread was starved of the interpreter lock, with new runs started
+beside them. Closing the other run clears it. Force-stopping the app does the same when the other
+run can't be found. The check now says so.
+
 ## Rerunning it
 
 The recordings aren't committed, because they're large. They're shared as folders under
@@ -111,7 +194,18 @@ The recordings aren't committed, because they're large. They're shared as folder
 
 # The planner figures on that replay, the same output every run
 .venv/Scripts/python -m nav.evaluation.check_planner numbers frame_logs/neon_walk_2_replay
+
+# The floor refitted with both poses. The shift is the replay's own "stamps shifted by" log line
+.venv/Scripts/python -m nav --source neon_live --neon-replay frame_logs/captures/neon_walk_2 --process-resolution 336 --sink web --record-to frame_logs/neon_walk_2_before --verbose > frame_logs/neon_walk_2_before.log 2>&1
+.venv/Scripts/python -m nav.evaluation.check_planner floor-lean frame_logs/neon_walk_2_before --capture frame_logs/captures/neon_walk_2 --replay-shift-seconds <shift>
+
+# The empty-IMU check on a capture
+.venv/Scripts/python examples/check_neon.py --neon-replay frame_logs/captures/neon_walk_1
 ```
+
+The floor-lean comparison needs a replay recorded by code from before the pose change, since the
+new code logs the capture-time pose. Replays are recorded at real time, so a second run plans a
+slightly different set of frames, which is why the comparison refits one run's own frames.
 
 The scene and planner medians come from that replay's `--verbose` lines. The floor's refusal
 reasons come from running the scene's own floor functions over each frame of the log.

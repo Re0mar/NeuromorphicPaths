@@ -5,9 +5,12 @@ The connection itself lives in a child process, in neon_device.py. Here, the sou
 process for the newest frame when it wants one. Run in this process, the client's video decoder
 lost the GIL to the estimator and the scene, and frames reached the planner 4 to 12 s old.
 
-Scene frames drive the loop. The IMU runs at its own, faster rate on a separate stream, so it is
-polled without blocking and the most recent orientation is carried forward onto whichever scene
-frame arrives next.
+Scene frames drive the loop. The IMU runs at its own, faster rate on a separate stream, and the
+device process keeps the last few seconds of it. Each frame comes back with the usable reading
+nearest the moment it was captured, not the one that was newest when it arrived. A frame reaches
+the laptop 155 ms after capture at the median and up to 1.6 s on a bad stretch, and a head turning
+at 100 degrees a second turns 15 to 70 degrees in that time. A frame with no reading near its
+capture has no pose, rather than an older one.
 
 Every frame is undistorted with the device's own calibration before it leaves here, and carries the
 undistorted camera matrix. The scene camera's lens is wide enough that guessing a field of view
@@ -16,6 +19,7 @@ instead puts obstacles at the edges of the image in the wrong place sideways.
 
 # Standard library imports
 import logging
+import time
 from collections.abc import Iterator
 
 # Third party imports
@@ -24,12 +28,13 @@ import numpy as np
 
 # Local package imports
 from nav.clock import laptop_time_seconds
-from nav.pose.imu_orientation import is_usable_orientation, pose_from_imu
+from nav.pose.imu_orientation import IMU_MATCH_TOLERANCE_SECONDS, pose_from_imu
 from nav.pose.neon_mount import NEON_IMU_MOUNT
 from nav.sources.camera_model import CameraModelError, Undistorter, undistorter_for
 from nav.sources.config import NeonConfig
 from nav.sources.neon_camera import NEON_SCENE_SIZE
 from nav.sources.neon_device import (
+    DeviceImuStatus,
     DeviceMatched,
     NeonDeviceError,
     NeonDeviceProcess,
@@ -37,7 +42,7 @@ from nav.sources.neon_device import (
     NeonUnexpectedFailure,
 )
 from nav.sources.rgb import RgbFrame
-from nav.types import FrameTiming
+from nav.types import FrameTiming, Pose
 
 log = logging.getLogger(__name__)
 
@@ -46,9 +51,9 @@ log = logging.getLogger(__name__)
 CONNECT_OFFSET_MEASUREMENTS = 100  # The client's own default.
 CLOSE_OFFSET_MEASUREMENTS = 20
 
-# Long enough that a dropped IMU packet does not stall the scene stream, short enough that the
-# orientation never lags a frame behind. The IMU runs far faster than the scene camera.
-IMU_POLL_TIMEOUT_SECONDS = 0.0
+# How often frames without a pose are reported. The IMU sent only zeros for minutes on 2026-10-05,
+# and a line per frame would bury everything else in the log.
+MISSING_ORIENTATION_LOG_INTERVAL_SECONDS = 10.0
 # How long one receive may block. Short, so Ctrl+C lands within a quarter of a second even when
 # the stream has stopped, which a receive with no timeout does not allow.
 RECEIVE_POLL_SECONDS = 0.25
@@ -67,7 +72,6 @@ class NeonLiveRgbSource:
     def __init__(self, config: NeonConfig) -> None:
         self._config = config
         self._device: NeonDeviceProcess | None = None
-        self._latest_orientation_wxyz: np.ndarray | None = None
         self._calibration_matrix: np.ndarray | None = None
         self._distortion_coefficients: np.ndarray | None = None
         self._undistorter: Undistorter | None = None
@@ -75,7 +79,18 @@ class NeonLiveRgbSource:
         # Companion app cannot answer, in which case capture times are left out.
         self._clock_offset_seconds: float | None = None
         self._clock_offset_measured = False
-        self._warned_about_empty_imu = False
+        self._frames_without_pose_unreported = 0
+        self._last_missing_pose_report: float | None = None
+
+    def imu_status(self) -> DeviceImuStatus | None:
+        """
+        What the IMU has sent since connect, for a hardware check to judge. None before connect.
+
+        :raises ConnectionError: When the device process has stopped answering.
+        """
+        if self._device is None:
+            return None
+        return self._device.imu_status()
 
     @property
     def undistorter(self) -> Undistorter | None:
@@ -190,7 +205,6 @@ class NeonLiveRgbSource:
                 log.info("the capture has been played to the end")
                 return
             arrival_seconds = laptop_time_seconds()
-            self._poll_imu(device)
 
             image_rgb = cv2.cvtColor(matched.frame.bgr_pixels, cv2.COLOR_BGR2RGB)
             undistorter = self._undistorter_for(image_rgb.shape[:2])
@@ -201,9 +215,7 @@ class NeonLiveRgbSource:
                 # the crop cut it off.
                 gaze_pixel = undistorter.undistort_pixel(np.array([matched.gaze.x, matched.gaze.y]))
 
-            pose = None
-            if self._latest_orientation_wxyz is not None:
-                pose = pose_from_imu(self._latest_orientation_wxyz, NEON_IMU_MOUNT)
+            pose = self._pose_for(matched, device)
 
             capture_seconds = None
             if self._clock_offset_seconds is not None:
@@ -239,26 +251,46 @@ class NeonLiveRgbSource:
                 log.warning("no scene frame from the Neon for %.0f s, still waiting", silent_seconds)
                 next_warning_seconds += self._config.stall_warning_seconds
 
-    def _poll_imu(self, device: NeonDeviceProcess) -> None:
-        """Take the newest IMU reading if one is waiting, otherwise keep the previous one."""
-        datum = device.receive_imu_datum(timeout_seconds=IMU_POLL_TIMEOUT_SECONDS)
-        if datum is None or datum.quaternion is None:
-            return
-
+    def _pose_for(self, matched: DeviceMatched, device: NeonDeviceProcess) -> Pose | None:
+        """The frame's pose from the IMU reading nearest its capture, or None when there was none."""
+        quaternion = matched.orientation
+        if quaternion is None:
+            self._report_missing_pose(device)
+            return None
         # Read by field name rather than by position. The client exposes w, x, y and z explicitly,
         # so there is no order to guess at, and guessing wrong would flip pitch and quietly break
         # the floor fit.
-        quaternion = datum.quaternion
         orientation = np.array([quaternion.w, quaternion.x, quaternion.y, quaternion.z])
-        if not is_usable_orientation(orientation):
-            # The glasses sent nothing but zero quaternions for minutes at a time on 2026-10-05.
-            # A zero is no orientation at all, so it is skipped like a reading without one, and the
-            # last real orientation carries on. Letting it through ended the run on its first frame.
-            if not self._warned_about_empty_imu:
-                log.warning("the Neon's IMU is sending empty orientations, frames carry the last real one or none")
-                self._warned_about_empty_imu = True
+        return pose_from_imu(orientation, NEON_IMU_MOUNT)
+
+    def _report_missing_pose(self, device: NeonDeviceProcess) -> None:
+        """Count a frame with no pose, and say so at most once an interval, with the IMU's counts."""
+        self._frames_without_pose_unreported += 1
+        now = time.monotonic()
+        if self._last_missing_pose_report is not None and now - self._last_missing_pose_report < MISSING_ORIENTATION_LOG_INTERVAL_SECONDS:
             return
-        self._latest_orientation_wxyz = orientation
+        self._last_missing_pose_report = now
+        try:
+            status = device.imu_status()
+        except DEVICE_FAILURES as failure:
+            # The line is only a report. The frame goes on without a pose either way, and a device
+            # that really stopped ends the run at the next frame request.
+            log.warning(
+                "%d frames had no IMU reading within %.0f ms of capture, the IMU's counts are unavailable (caught %s, expected): %s",
+                self._frames_without_pose_unreported,
+                IMU_MATCH_TOLERANCE_SECONDS * 1000.0,
+                type(failure).__name__,
+                failure,
+            )
+        else:
+            log.warning(
+                "%d frames had no IMU reading within %.0f ms of capture and carry no pose. %d of the IMU's %d readings so far were empty",
+                self._frames_without_pose_unreported,
+                IMU_MATCH_TOLERANCE_SECONDS * 1000.0,
+                status.empty_readings,
+                status.readings,
+            )
+        self._frames_without_pose_unreported = 0
 
     def close(self) -> None:
         if self._device is None:

@@ -30,7 +30,7 @@ from nav.sources.neon_stream import (
     META_FILENAME,
     SCENE_PACKETS_FILENAME,
     NeonStreamDevice,
-    _read_packets,
+    read_capture_packets,
 )
 from neon_captures import CAMERA_MATRIX, DISTORTION, encode_h264, write_capture
 
@@ -121,7 +121,7 @@ def test_packets_written_in_the_capture_format_read_back_unchanged(tmp_path: Pat
     packets = [(100.0, b"\x01abc"), (100.033, b"\x02"), (100.066, bytes(range(256)))]
     capture = write_capture(tmp_path / "capture", packets)
 
-    assert list(_read_packets(capture / SCENE_PACKETS_FILENAME)) == packets
+    assert list(read_capture_packets(capture / SCENE_PACKETS_FILENAME)) == packets
 
 
 def test_a_replay_hands_over_the_newest_frame_and_never_the_same_frame_twice(tmp_path: Path) -> None:
@@ -207,7 +207,9 @@ def test_a_replay_that_decodes_no_frames_ends_in_an_error_naming_the_capture(tmp
     finally:
         device.close()
 
-    assert waited_seconds < 2.0, "the receive waited out its timeout instead of raising the failure"
+    # Under the 5 s timeout with room to spare is what says it raised. A tighter 2 s budget failed one
+    # run in three on a loaded laptop, with this code unchanged.
+    assert waited_seconds < 4.0, "the receive waited out its timeout instead of raising the failure"
 
 
 def test_a_damaged_packet_is_skipped_and_decoding_goes_on(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
@@ -291,19 +293,155 @@ def test_a_capture_without_gaze_gives_frames_without_gaze(tmp_path: Path) -> Non
     assert matched.gaze is None
 
 
-def test_an_imu_reading_is_handed_over_once(tmp_path: Path) -> None:
-    capture = write_capture(tmp_path / "capture", [(40.0, b"\x01"), (40.5, b"\x02")], imu=[(40.0, 0.9, 0.1, 0.2, 0.3)])
+def test_a_replayed_frame_comes_with_the_imu_reading_nearest_its_capture(tmp_path: Path) -> None:
+    capture = write_capture(
+        tmp_path / "capture",
+        [(40.0, b"\x01")],
+        imu=[(39.99, 0.9, 0.1, 0.2, 0.3), (40.3, 1.0, 0.0, 0.0, 0.0)],
+    )
     device = _started(capture)
     try:
-        device.receive_matched_scene_video_frame_and_gaze(timeout_seconds=1.0)
-        first = device.receive_imu_datum(timeout_seconds=0.0)
-        again = device.receive_imu_datum(timeout_seconds=0.0)
+        matched = device.receive_matched_scene_video_frame_and_gaze(timeout_seconds=1.0)
     finally:
         device.close()
 
-    quaternion = first.quaternion
+    quaternion = matched.orientation
     assert (quaternion.w, quaternion.x, quaternion.y, quaternion.z) == (0.9, 0.1, 0.2, 0.3)
-    assert again is None, "the source carries an orientation forward itself, a repeat would look new"
+
+
+def test_a_replay_logs_its_shift_and_the_shift_takes_a_frame_back_to_its_recorded_stamp(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    capture = write_capture(tmp_path / "capture", [(40.0, b"\x01")])
+    with caplog.at_level(logging.INFO, logger="nav.sources.neon_stream"):
+        device = _started(capture)
+        try:
+            matched = device.receive_matched_scene_video_frame_and_gaze(timeout_seconds=1.0)
+        finally:
+            device.close()
+
+    lines = [record.getMessage() for record in caplog.records if "stamps shifted by" in record.getMessage()]
+    assert len(lines) == 1
+    shift = float(lines[0].rsplit("stamps shifted by ", 1)[1].removesuffix(" s"))
+    # Exact, because the paired floor check matches a logged frame back to the capture to within 2 us.
+    assert matched.frame.timestamp_unix_seconds - shift == pytest.approx(40.0, abs=1e-6)
+
+
+# A head turning about the vertical at 100 degrees a second, read by the IMU at 110 Hz.
+HEAD_TURN_DEGREES_PER_SECOND = 100.0
+IMU_RATE_HZ = 110.0
+
+
+def _turning_head(seconds: float) -> list[tuple[float, float, float, float, float]]:
+    samples = []
+    for index in range(int(seconds * IMU_RATE_HZ) + 1):
+        stamp = index / IMU_RATE_HZ
+        half_angle = np.radians(HEAD_TURN_DEGREES_PER_SECOND * stamp) / 2.0
+        samples.append((stamp, float(np.cos(half_angle)), 0.0, 0.0, float(np.sin(half_angle))))
+    return samples
+
+
+def _holding(frame_stamp: float, imu: list[tuple[float, float, float, float, float]]) -> NeonStreamDevice:
+    """A receiver whose IMU readings have all arrived and whose newest frame was captured at frame_stamp."""
+    device = NeonStreamDevice(NeonConfig())
+    for sample in imu:
+        device._on_imu(*sample)
+    device._newest_frame = (FakeFrame(1), frame_stamp)
+    device._frames_decoded = 1
+    return device
+
+
+def _as_tuple(quaternion) -> tuple[float, float, float, float]:
+    return (quaternion.w, quaternion.x, quaternion.y, quaternion.z)
+
+
+def test_a_frame_served_late_during_a_head_turn_gets_the_orientation_from_its_capture() -> None:
+    # 0.8 s of readings have arrived, and the frame handed over was captured at 0.5 s. The newest
+    # reading is 30 degrees further round. The frame must get the one from 0.5 s.
+    imu = _turning_head(0.8)
+    nearest_capture = min(imu, key=lambda sample: abs(sample[0] - 0.5))
+
+    matched = _holding(0.5, imu).receive_matched_scene_video_frame_and_gaze(timeout_seconds=0.0)
+
+    assert _as_tuple(matched.orientation) == pytest.approx(nearest_capture[1:])
+    assert _as_tuple(matched.orientation) != pytest.approx(imu[-1][1:], abs=1e-3)
+
+
+def test_a_frame_served_at_once_gets_the_newest_reading() -> None:
+    # The control: same head turn, but the frame was captured when the newest reading was taken.
+    imu = _turning_head(0.8)
+
+    matched = _holding(imu[-1][0], imu).receive_matched_scene_video_frame_and_gaze(timeout_seconds=0.0)
+
+    assert _as_tuple(matched.orientation) == pytest.approx(imu[-1][1:])
+
+
+def test_an_empty_reading_is_never_a_frames_orientation_and_is_counted() -> None:
+    # The usable reading 30 ms off is chosen over the empty one exactly at the frame's stamp.
+    device = _holding(0.5, [(0.47, 0.9, 0.1, 0.2, 0.3), (0.5, 0.0, 0.0, 0.0, 0.0)])
+
+    matched = device.receive_matched_scene_video_frame_and_gaze(timeout_seconds=0.0)
+
+    assert _as_tuple(matched.orientation) == pytest.approx((0.9, 0.1, 0.2, 0.3))
+    status = device.imu_status()
+    assert (status.readings, status.empty_readings, status.frames_without_orientation) == (2, 1, 0)
+
+
+def test_an_empty_reading_with_no_timestamp_is_counted_apart_from_a_stamped_empty_one() -> None:
+    # On 2026-10-05 every empty reading had a zero timestamp too, a packet that decoded to nothing.
+    device = _holding(0.5, [(0.0, 0.0, 0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 0.0, 0.0), (0.49, 0.0, 0.0, 0.0, 0.0)])
+
+    status = device.imu_status()
+
+    assert (status.empty_readings, status.unstamped_empty_readings) == (3, 2)
+
+
+def test_only_empty_readings_give_a_frame_no_orientation_and_count_the_miss() -> None:
+    device = _holding(0.5, [(stamp / 100, 0.0, 0.0, 0.0, 0.0) for stamp in range(100)])
+
+    matched = device.receive_matched_scene_video_frame_and_gaze(timeout_seconds=0.0)
+
+    assert matched.orientation is None
+    status = device.imu_status()
+    assert (status.readings, status.empty_readings, status.frames_without_orientation) == (100, 100, 1)
+
+
+def test_empty_readings_take_no_room_in_the_history() -> None:
+    # One usable reading, then a full history's worth of empties. Kept, the empties would have
+    # pushed the usable one out and the frame captured at its stamp would have no orientation.
+    # The 3 s window is for usable readings, and a partly empty stream must not shrink it.
+    imu = [(0.5, 0.9, 0.1, 0.2, 0.3)] + [(0.5 + index / IMU_RATE_HZ, 0.0, 0.0, 0.0, 0.0) for index in range(1, neon_stream.IMU_HISTORY + 1)]
+
+    matched = _holding(0.5, imu).receive_matched_scene_video_frame_and_gaze(timeout_seconds=0.0)
+
+    assert _as_tuple(matched.orientation) == pytest.approx((0.9, 0.1, 0.2, 0.3))
+
+
+def test_a_frame_with_no_reading_within_the_tolerance_gets_no_orientation() -> None:
+    # Readings stop at 0.2 s and the frame is from 0.5 s, the IMU stream having dropped meanwhile.
+    matched = _holding(0.5, _turning_head(0.2)).receive_matched_scene_video_frame_and_gaze(timeout_seconds=0.0)
+
+    assert matched.orientation is None
+
+
+def test_the_history_keeps_the_newest_readings_and_a_frame_older_than_all_of_them_gets_none() -> None:
+    imu = _turning_head((neon_stream.IMU_HISTORY + 50) / IMU_RATE_HZ)
+    device = _holding(0.0, imu)
+
+    matched = device.receive_matched_scene_video_frame_and_gaze(timeout_seconds=0.0)
+
+    assert len(device._imu) == neon_stream.IMU_HISTORY
+    assert device._imu[-1][0] == pytest.approx(imu[-1][0])
+    assert matched.orientation is None, "the oldest kept reading is not a stand-in for one long gone"
+
+
+def test_a_reading_that_arrives_out_of_order_is_still_found_as_the_nearest() -> None:
+    late = (0.5, 0.9, 0.1, 0.2, 0.3)
+    imu = [sample for sample in _turning_head(0.8) if abs(sample[0] - 0.5) > 0.02] + [late]
+
+    matched = _holding(0.5, imu).receive_matched_scene_video_frame_and_gaze(timeout_seconds=0.0)
+
+    assert _as_tuple(matched.orientation) == pytest.approx(late[1:])
 
 
 def test_replayed_stamps_land_on_the_laptop_clock_as_they_are_fed(tmp_path: Path) -> None:
@@ -545,6 +683,32 @@ def test_a_gaze_stream_that_fails_mid_run_leaves_frames_coming_without_gaze(
     warnings = [record.getMessage() for record in caplog.records if "gaze stream stopped" in record.getMessage()]
     assert len(warnings) == 1
     assert "ConnectionResetError" in warnings[0]
+
+
+def test_with_no_address_the_glasses_are_discovered_and_connected_to(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The client's discovery runs an event loop of its own. Called on the receiver's loop it raised
+    # RuntimeError on every run without an address, and nothing had ever run one.
+    pytest.importorskip("pupil_labs.realtime_api", reason="the client comes with the glasses extra")
+    from fake_neon_client import FakeNeonScript, install
+
+    install(FakeNeonScript(scene_packets=_scene_packets(4), discovered_address="192.0.2.9"), monkeypatch.setattr)
+    device = NeonStreamDevice(NeonConfig(address=None, discovery_timeout_seconds=1.0), decoder_factory=FakeDecoder)
+    device.start()
+    try:
+        assert device._address == "192.0.2.9"
+    finally:
+        device.close()
+
+
+def test_with_no_address_and_no_glasses_on_the_network_start_fails_naming_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("pupil_labs.realtime_api", reason="the client comes with the glasses extra")
+    from fake_neon_client import FakeNeonScript, install
+
+    install(FakeNeonScript(discovered_address=None), monkeypatch.setattr)
+    device = NeonStreamDevice(NeonConfig(address=None, discovery_timeout_seconds=1.0), decoder_factory=FakeDecoder)
+    with pytest.raises(ConnectionError, match="no Neon found within 1 s"):
+        device.start()
+    device.close()
 
 
 def test_an_imu_stream_that_fails_ends_the_run_naming_the_imu_stream(monkeypatch: pytest.MonkeyPatch) -> None:

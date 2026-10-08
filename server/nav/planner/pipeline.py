@@ -8,7 +8,8 @@ import time
 import numpy as np
 
 # Local package imports
-from nav.planner.alarm import AlarmHold, alarm_raised, avoidance_surprise_bits, check_alarm_config
+from nav.planner.alarm import AlarmHold, alarm_raised, avoidance_surprise_bits, check_alarm_config, nearest_corridor_point
+from nav.planner.audio import alarm_pan, check_audio_config, ear_gains
 from nav.planner.config import GoalMode, PlannerConfig
 from nav.planner.contact import ContactSurprise, check_contact_config
 from nav.planner.dynamic_programming import plan, start_cell_index
@@ -51,6 +52,9 @@ class PlannerPipeline:
         # Checked here so a bad lookahead stops the run at startup rather than on its first frame.
         self._lookahead_index = lookahead_step_index(config)
         check_alarm_config(config)
+        check_audio_config(config)
+        # Where the danger is while the alarm is up, kept through the hold. None while it is down.
+        self._alarm_pan: float | None = None
         check_contact_config(config)
         self._terms = planner_terms(config)
         self._alarm_hold = AlarmHold(config.alarm_hold_seconds)
@@ -133,7 +137,17 @@ class PlannerPipeline:
         # Where the arrow points: at where the path is a lookahead from now, not at its first step.
         heading = lookahead_heading(offsets, self._lookahead_index, config)
 
-        alarm = self._alarm_hold.update(alarm_raised(obstacles, config), obstacles.timestamp_seconds)
+        raised_now = alarm_raised(obstacles, config)
+        alarm = self._alarm_hold.update(raised_now, obstacles.timestamp_seconds)
+        # The danger's side is read on the frames that raise the alarm and kept through the hold, so
+        # the cue stays on the side the walker last heard it rather than jumping to center the
+        # moment the point leaves the corridor.
+        if raised_now:
+            danger = nearest_corridor_point(obstacles, config)
+            self._alarm_pan = None if danger is None else alarm_pan(danger.lateral_meters, config)
+        elif not alarm:
+            self._alarm_pan = None
+        ear_left, ear_right = ear_gains(heading, alarm, self._alarm_pan, config)
 
         log.debug(
             "planner %.1f ms: field %.1f, dp %.1f, info %.1f, %d groups, cost %.2f bits, heading %.1f deg, "
@@ -159,4 +173,7 @@ class PlannerPipeline:
             cumulative_cost_bits=cost_bits,
             scene_information_bits=information,
             avoidance_surprise_bits=avoidance,
+            alarm_pan=self._alarm_pan,
+            ear_gain_left=ear_left,
+            ear_gain_right=ear_right,
         )

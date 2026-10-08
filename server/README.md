@@ -104,6 +104,18 @@ The web page gets every path's arrow, but its plan view and depth picture are dr
 their own, at most 10 times a second, from the newest frame. Drawing one takes about 50 ms. Done on
 the publisher thread, it held up the phone's next path and slowed the planner.
 
+The page also plays sound, in two modes picked from its "Sound" control, both from numbers the
+laptop sends with every path. **Alarm** beeps toward the side the arrow points to, and while the
+alarm is up the beep quickens, rises in pitch and moves to the danger's side, which the laptop sends
+as `alarm_pan`. **Noise cancellation** plays music instead, a built-in bed or a file picked on the
+page, with each ear at the gain the laptop sends: the ear away from the heading goes quieter by the
+course's surprise of the heading error, and the danger's ear drops to a floor while the alarm is up.
+A label beside it says what noise cancellation would do, "ANC on" or "ANC disabled", because no page
+can switch it. When no path has arrived for 1.5 s the beeps stop, the music plays on at full in
+both ears, which is no cue, and the label reads "unknown". Browsers refuse sound before a tap, so
+the control has to be touched once on the page that should play. The formula is in
+`docs/math/09_arrow_and_alarm.md`.
+
 **`--sink` can be repeated, and a walk usually repeats it.** The arrow belongs on the phone, where
 the walker is looking, and the depth view belongs in a browser, where whoever is watching the
 laptop is looking. Name both and both are served from the one run:
@@ -276,7 +288,18 @@ that between subnets, in which case read the address off the Companion app's str
 `check_neon.py` connects, receives one frame and exits 0, or says which path it tried and exits
 1. On success it also prints the camera matrix after straightening, how many degrees of field of
 view the straightening crops off, and the measured offset between the laptop's clock and the
-glasses'. It exits 1 if the glasses do not hand over their calibration. `check_neon.py` and the
+glasses'. It exits 1 if the glasses do not hand over their calibration. It then watches the IMU for
+3 s and prints how many readings arrived and how many were empty. It exits 1 if none arrived, or if
+every one was an empty orientation, because then no frame of a walk would have a pose and every
+floor would be fitted against a level head. On 2026-10-05 the IMU sent nothing but zeros, timestamps
+included, for minutes. Reproduced on 2026-10-08 with the glasses: the phone serves the IMU stream to
+one client, and a second client connected while the first is still open gets packets that decode to
+nothing, 478 of 478 in the test, while the first keeps receiving. It clears the moment the first
+connection is gone, which a crash or a kill does on its own. A run that is still alive and not
+reading, such as one hung in another terminal, is what holds it. Close that run, or, as Pupil Labs
+answered the same report ([pl-realtime-api issue 71](https://github.com/pupil-labs/pl-realtime-api/issues/71)),
+force-stop and restart the Companion app. Recording on the phone is unaffected.
+`--neon-replay <capture>` runs the same check on a capture folder. `check_neon.py` and the
 `neon_live` command with `--neon-address` were run on 2026-10-05 with the glasses worn, on a school
 network where discovery was not tried. The figures from that day are under *Measured on the
 glasses* below. The `neon_plugin` command has not been run, because there was no plugin recording
@@ -463,9 +486,12 @@ values in `tests/test_laptop_path_fixture.py` and decoded by the app's test.
 
 ## Driving haptics and headphones from the path
 
-Nothing in the pipeline vibrates or plays a sound yet. Which values in the path message are worth
-listening to, what they mean in numbers, and how they could drive a vibration motor, stereo
-balance, volume or a noise cancelling switch is in
+The laptop decides the stereo cue and sends it with every path: `alarm_pan`, where the danger is
+while the alarm is up, and `ear_gain_left` and `ear_gain_right`, how loud each ear should be. The
+web page plays them, see *Sinks* above. Nothing vibrates yet, and no phone API switches noise
+cancellation on third-party headphones, so the page only shows what it would do. Which values in
+the path message are worth listening to, what they mean in numbers, and how they could drive a
+vibration motor or a real noise cancelling switch is in
 [`../docs/guides/drive_feedback_from_the_path.md`](../docs/guides/drive_feedback_from_the_path.md).
 
 ## Measured on the glasses
@@ -487,8 +513,10 @@ conditions they were taken under and the commands that rerun them, are in
 - The planner's walker sway, how far a person drifts from the line the arrow asks for, is an
   assumed 0.10 m. `wifi_run_2` is the one recorded walk with the arrow shown, six scorable turns,
   and the sway has not been measured from it.
-- The planner's memory of its previous plan was tuned and checked on replays only. It has not run
-  live on the phone or the glasses yet.
+- The planner's memory of its previous plan ran live once, on the glasses walk of 2026-10-05, where
+  it lapsed on 56 % of gaps between frames. It now holds across gaps up to 3 s with its spread
+  widening as the plan ages. That was tuned on Pixel walks thinned to the glasses' gaps, because
+  the glasses replay has no position and no swings to measure. It hasn't run live since.
 - The depth conversion from the model's 300 pixel focal was checked on a replayed glasses capture,
   not on a live walk. Every `video_file` figure taken before it was added used depth at the wrong
   scale.

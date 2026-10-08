@@ -13,6 +13,13 @@
   #depth[hidden] { display: none; }
   #status { font-size: 1.1rem; }
   #link { font-size: 0.9rem; opacity: 0.7; }
+  #sound-panel { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; font-size: 0.95rem; }
+  #sound-panel select, #sound-panel input { font: inherit; }
+  #music-label[hidden], #anc[hidden] { display: none; }
+  #anc { padding: 4px 10px; border-radius: 6px; border: 2px solid currentColor; }
+  #anc.on { color: #3fdf5f; }
+  #anc.off { color: #ff5050; }
+  #anc.unknown { opacity: 0.6; }
   /* A fixed size, so the canvas never collapses inside the flex column, shrunk only on a narrow phone. */
   #plan-panel { width: min(360px, 100%); display: flex; flex-direction: column; gap: 8px; }
   /* About as tall as the map it holds: 6.5 m across by 6.1 m ahead, margins included. */
@@ -41,6 +48,15 @@
   </section>
   <img id="depth" alt="The depth image the planner saw, with the obstacle groups and the chosen path drawn on it" hidden>
   <div id="link">Not connected.</div>
+  <div id="sound-panel">
+    <label>Sound <select id="mode">
+      <option value="off">Off</option>
+      <option value="alarm">Alarm</option>
+      <option value="cancel">Noise cancellation</option>
+    </select></label>
+    <label id="music-label" hidden>Music <input type="file" id="music" accept="audio/*"></label>
+    <span id="anc" class="unknown" hidden>ANC unknown</span>
+  </div>
 </main>
 <script>
   // Draws the arrow the planner chose. Red background when something in the walker's way is close.
@@ -50,11 +66,20 @@
   // paths keeps working with the arrow alone. Reconnects on its own, because the laptop restarts
   // more often than the page reloads. Everything drawn here was computed on the laptop. The page
   // never decides a color, an opacity or a path.
+  // Sound, in two modes, both from numbers the laptop sends. Alarm mode beeps toward the side the
+  // arrow points to, and while the alarm is up the beep moves to the danger's side and quickens.
+  // Noise-cancellation mode plays music, a built-in bed or a file, with each ear at the gain the
+  // laptop gives it: the ear away from the heading goes quieter, and the danger's ear drops to the
+  // floor. It also shows what noise cancellation would do, since no page can switch it.
   const canvas = document.getElementById("arrow");
   const context = canvas.getContext("2d");
   const depth = document.getElementById("depth");
   const status = document.getElementById("status");
   const link = document.getElementById("link");
+  const modeSelect = document.getElementById("mode");
+  const musicLabel = document.getElementById("music-label");
+  const musicInput = document.getElementById("music");
+  const ancLabel = document.getElementById("anc");
   const planPanel = document.getElementById("plan-panel");
   const plan = document.getElementById("plan");
   const information = document.getElementById("information");
@@ -74,6 +99,213 @@
   const AHEAD_MARGIN_METERS = 0.3;
   const BEHIND_MARGIN_METERS = 0.3;
 
+  // ---- Audio -------------------------------------------------------------------------------
+  // Heading 0 (straight ahead) is centered, equal in both ears. Heading at or beyond this angle
+  // to either side is fully in that ear. Lower it for a more dramatic swing.
+  const FULL_PAN_RADIANS = Math.PI / 3;
+  const BEEP_HZ = 660;
+  const ALARM_HZ = 990;
+  const BEEP_INTERVAL_MS = 700;
+  const ALARM_INTERVAL_MS = 160;
+  const BEEP_SECONDS = 0.12;
+  const MASTER_VOLUME = 0.5;
+  // The music under the steering cue, before the laptop's ear gains. Quiet enough that the floor
+  // the laptop sends is still audible as a presence rather than silence.
+  const BED_VOLUME = 0.35;
+  // The time constant each ear's gain approaches the next frame's value with, so a step is not a
+  // click. setTargetAtTime is exponential: 63 % of the way at 0.1 s, settled after about 0.3 s.
+  const GAIN_RAMP_SECONDS = 0.1;
+  // If no path arrives for this long the laptop is gone or stalled, and a beep that still points
+  // somewhere would be stale guidance. Silence is the honest signal. The music then plays in both
+  // ears at full, which is no cue, and the label says the state is unknown.
+  const STALE_MS = 1500;
+
+  let audio = null;  // Built on the first mode change, because browsers refuse sound before a gesture.
+  let mode = "off";
+  let musicBuffer = null;  // A decoded file, once one is picked. Null plays the built-in bed.
+  let latest = { heading: 0, alarm: false, alarmPan: null, earGainLeft: 1, earGainRight: 1, receivedAt: -Infinity };
+
+  function buildAudio() {
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const master = audioContext.createGain();
+    master.gain.value = MASTER_VOLUME;
+    const merger = audioContext.createChannelMerger(2);
+    merger.connect(master);
+    master.connect(audioContext.destination);
+    // The beeps: one envelope feeds a left gain and a right gain, which feed the two channels of
+    // the merger. Plain gains instead of StereoPannerNode so it works on every browser that has
+    // Web Audio.
+    const envelope = audioContext.createGain();
+    envelope.gain.value = 0;
+    const beepLeft = audioContext.createGain();
+    const beepRight = audioContext.createGain();
+    envelope.connect(beepLeft);
+    envelope.connect(beepRight);
+    beepLeft.connect(merger, 0, 0);
+    beepRight.connect(merger, 0, 1);
+    // The music: whatever plays feeds a left gain and a right gain of its own, at the laptop's
+    // ear gains. A stereo file keeps its channels apart, the built-in bed goes to both.
+    const bedLeft = audioContext.createGain();
+    const bedRight = audioContext.createGain();
+    bedLeft.gain.value = 0;
+    bedRight.gain.value = 0;
+    bedLeft.connect(merger, 0, 0);
+    bedRight.connect(merger, 0, 1);
+    return { audioContext, envelope, beepLeft, beepRight, bedLeft, bedRight, bedNodes: [], timer: null };
+  }
+
+  function panFromHeading(headingRadians) {
+    // -1 is full left, 0 is center, +1 is full right. Positive heading is right, as in the arrow.
+    return Math.max(-1, Math.min(1, headingRadians / FULL_PAN_RADIANS));
+  }
+
+  function beepPan() {
+    // While the alarm is up the beep sits where the danger is, which the laptop sends as a pan.
+    // Otherwise it sits where the arrow points.
+    if (latest.alarm && latest.alarmPan !== null) return latest.alarmPan;
+    return panFromHeading(latest.heading);
+  }
+
+  function setBeepPan(pan) {
+    // Equal power: the two gains' squares always sum to one, so loudness does not dip or swell as
+    // the sound sweeps across. At center each ear gets cos(45 deg), which is equal in both.
+    const angle = (pan + 1) * Math.PI / 4;
+    const now = audio.audioContext.currentTime;
+    audio.beepLeft.gain.setTargetAtTime(Math.cos(angle), now, 0.03);
+    audio.beepRight.gain.setTargetAtTime(Math.sin(angle), now, 0.03);
+  }
+
+  function applyEarGains() {
+    // The laptop's gains, not a pan: each ear has its own number from the steering cue and the
+    // alarm. Stale paths get no cue, so both ears go back to full.
+    const stale = performance.now() - latest.receivedAt >= STALE_MS;
+    const left = stale ? 1 : latest.earGainLeft;
+    const right = stale ? 1 : latest.earGainRight;
+    const now = audio.audioContext.currentTime;
+    audio.bedLeft.gain.setTargetAtTime(left * BED_VOLUME, now, GAIN_RAMP_SECONDS);
+    audio.bedRight.gain.setTargetAtTime(right * BED_VOLUME, now, GAIN_RAMP_SECONDS);
+    ancLabel.hidden = false;
+    if (stale) {
+      ancLabel.textContent = "ANC unknown";
+      ancLabel.className = "unknown";
+    } else if (latest.alarm) {
+      ancLabel.textContent = "ANC disabled";
+      ancLabel.className = "off";
+    } else {
+      ancLabel.textContent = "ANC on";
+      ancLabel.className = "on";
+    }
+  }
+
+  function beep() {
+    const { audioContext, envelope } = audio;
+    setBeepPan(beepPan());
+    const start = audioContext.currentTime;
+    const oscillator = audioContext.createOscillator();
+    oscillator.type = "sine";
+    oscillator.frequency.value = latest.alarm ? ALARM_HZ : BEEP_HZ;
+    oscillator.connect(envelope);
+    // A short ramp each side so the beep does not click.
+    envelope.gain.cancelScheduledValues(start);
+    envelope.gain.setValueAtTime(0, start);
+    envelope.gain.linearRampToValueAtTime(1, start + 0.01);
+    envelope.gain.setValueAtTime(1, start + BEEP_SECONDS - 0.02);
+    envelope.gain.linearRampToValueAtTime(0, start + BEEP_SECONDS);
+    oscillator.start(start);
+    oscillator.stop(start + BEEP_SECONDS + 0.02);
+  }
+
+  function tick() {
+    if (!audio) return;
+    if (mode === "alarm") {
+      if (performance.now() - latest.receivedAt < STALE_MS) beep();
+      audio.timer = setTimeout(tick, latest.alarm ? ALARM_INTERVAL_MS : BEEP_INTERVAL_MS);
+    } else if (mode === "cancel") {
+      // Only to notice a laptop that went quiet. Fresh paths apply their gains as they arrive.
+      applyEarGains();
+      audio.timer = setTimeout(tick, STALE_MS);
+    }
+  }
+
+  function startBed() {
+    // Whatever was playing stops first, so picking a file mid-run swaps the sound cleanly.
+    stopBed();
+    const { audioContext, bedLeft, bedRight } = audio;
+    if (musicBuffer !== null) {
+      const source = audioContext.createBufferSource();
+      source.buffer = musicBuffer;
+      source.loop = true;
+      const splitter = audioContext.createChannelSplitter(2);
+      source.connect(splitter);
+      splitter.connect(bedLeft, 0);
+      // A mono file has one channel, which the splitter leaves silent on the right. Feed it both.
+      splitter.connect(bedRight, musicBuffer.numberOfChannels > 1 ? 1 : 0);
+      source.start();
+      audio.bedNodes = [source];
+      return;
+    }
+    // The built-in bed: a soft fifth, low enough to sit under the beeps and read as "music".
+    const nodes = [];
+    for (const hz of [220, 330]) {
+      const oscillator = audioContext.createOscillator();
+      oscillator.type = "triangle";
+      oscillator.frequency.value = hz;
+      const soften = audioContext.createBiquadFilter();
+      soften.type = "lowpass";
+      soften.frequency.value = 800;
+      oscillator.connect(soften);
+      soften.connect(bedLeft);
+      soften.connect(bedRight);
+      oscillator.start();
+      nodes.push(oscillator);
+    }
+    audio.bedNodes = nodes;
+  }
+
+  function stopBed() {
+    if (!audio) return;
+    for (const node of audio.bedNodes) node.stop();
+    audio.bedNodes = [];
+  }
+
+  async function setMode(next) {
+    mode = next;
+    if (audio) {
+      clearTimeout(audio.timer);
+      audio.timer = null;
+      stopBed();
+    }
+    musicLabel.hidden = next !== "cancel";
+    ancLabel.hidden = next !== "cancel";
+    if (next === "off") {
+      if (audio) audio.audioContext.suspend();
+      return;
+    }
+    if (!audio) audio = buildAudio();
+    await audio.audioContext.resume();
+    if (next === "cancel") {
+      startBed();
+      applyEarGains();
+    }
+    tick();
+  }
+
+  modeSelect.onchange = () => { setMode(modeSelect.value); };
+
+  musicInput.onchange = async () => {
+    const file = musicInput.files[0];
+    if (!file) return;
+    if (!audio) audio = buildAudio();
+    musicBuffer = await audio.audioContext.decodeAudioData(await file.arrayBuffer());
+    if (mode === "cancel") startBed();
+  };
+
+  // A phone suspends the context when the page is backgrounded or the screen locks.
+  document.addEventListener("visibilitychange", () => {
+    if (audio && mode !== "off" && !document.hidden) audio.audioContext.resume();
+  });
+
+  // ---- Arrow -------------------------------------------------------------------------------
   function drawArrow(headingRadians, alarm) {
     const width = canvas.width, height = canvas.height;
     context.clearRect(0, 0, width, height);
@@ -103,6 +335,18 @@
     document.body.classList.toggle("alarm", Boolean(message.alarm));
     drawArrow(message.lookahead_heading_radians, message.alarm);
     status.textContent = (message.alarm ? "Obstacle close. " : "") + "Heading " + (degrees >= 0 ? "+" : "") + degrees + " degrees.";
+    latest = {
+      heading: message.lookahead_heading_radians,
+      alarm: Boolean(message.alarm),
+      // The cue's numbers, decided on the laptop. A path from an older laptop has none, which
+      // reads as no cue: beeps by heading, both ears at full.
+      alarmPan: typeof message.alarm_pan === "number" ? message.alarm_pan : null,
+      earGainLeft: typeof message.ear_gain_left === "number" ? message.ear_gain_left : 1,
+      earGainRight: typeof message.ear_gain_right === "number" ? message.ear_gain_right : 1,
+      receivedAt: performance.now(),
+    };
+    if (audio && mode === "alarm") setBeepPan(beepPan());
+    if (audio && mode === "cancel") applyEarGains();
   }
 
   function rgba(rgb, opacity) {
@@ -261,6 +505,7 @@
     };
     socket.onclose = () => {
       link.textContent = "Connection lost. Retrying.";
+      latest.receivedAt = -Infinity;  // Silence the beeps at once rather than after the timeout.
       setTimeout(connect, 1000);
     };
     socket.onerror = () => { socket.close(); };

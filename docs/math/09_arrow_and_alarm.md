@@ -176,6 +176,73 @@ classroom walk the arrow takes 20 different values instead of 3, and sits at its
 > - **The 0.5 s hold**, so the alarm doesn't flicker. It takes the classroom walk from 108 changes to
 >   66, and the last stretch of `pixel_walk_3` from 55 to 35.
 
+## The stereo cue
+
+The arrow and the alarm, as sound. The laptop works out how loud each ear should be and sends the
+two numbers with every path, so the page and the phone only apply them.
+
+Picture walking with music on and one ear going a little quiet. You drift away from the quiet ear
+without thinking about it, which is the steering cue. Then something gets close on your left and
+the left ear drops right down, which is the danger cue. Where it stops working: a walker who has
+taken the headphones half off, or one whose own head wobble is as wide as the tolerance, hears the
+cue flicker.
+
+> [!NOTE]
+> **Ingredients**
+> - The planned heading $`\theta_h`$ from the arrow above, positive right.
+> - The goal tolerance $`\lambda`$ = 1.5 m and the goal distance 4.0 m, from section 8.
+> - The alarm, and the corridor point that raised it, from the alarm above.
+> - The floor $`g_{\min}`$ = 0.10, from `server/nav/planner/config.py`.
+
+**The steering cue.** The ear on the far side from the heading gets quieter by the course's surprise
+of the heading error, with the goal tolerance seen as an angle for its spread:
+
+```math
+\sigma = \mathrm{atan}\!\left(\frac{\lambda}{4.0}\right), \qquad
+{\color{purple}{U}} = \tfrac12 \left(\frac{\theta_h}{\sigma}\right)^2, \qquad
+g_{\text{far}} = \max\!\left(g_{\min},\ e^{-{\color{purple}{U}}}\right), \qquad g_{\text{near}} = 1
+```
+
+**The danger cue.** While the alarm is up, the ear on the danger's side drops to the floor. The
+side is the lateral position $`x_d`$ of the corridor point that raised the alarm, over the corridor's
+half-width $`h`$, so it reaches full at the corridor's edge:
+
+```math
+p = \mathrm{clip}\!\left(\frac{x_d}{h},\ -1,\ 1\right), \qquad
+g_{\text{left}} \leftarrow g_{\min} \text{ if } p < 0, \qquad g_{\text{right}} \leftarrow g_{\min} \text{ if } p > 0
+```
+
+Dead ahead, $`p = 0`$, drops both. The side is read on the frames that raise the alarm and kept
+through the hold, so the cue does not jump to center the moment the point leaves the corridor.
+
+| Symbol | Plain English | Units | Frame | Where in the code |
+|---|---|---|---|---|
+| $`\sigma`$ | the goal tolerance as an angle, 20.56° | rad | walker ground frame | `server/nav/planner/audio.py` |
+| $`g_{\text{far}}, g_{\text{near}}`$ | gain of the ear away from, and toward, the heading | none | | `server/nav/planner/audio.py` |
+| $`g_{\min}`$ | the quietest an ear may go, 0.10 | none | | `server/nav/planner/config.py` |
+| $`p`$ | where the danger is, `alarm_pan`, −1 left to +1 right | none | walker ground frame | `server/nav/planner/audio.py` |
+| $`x_d`$ | lateral position of the corridor point that raised the alarm | m | walker ground frame | `server/nav/planner/alarm.py` |
+
+**Worked numbers.**
+1. $`\sigma = \mathrm{atan}(1.5 / 4.0) = 20.56°`$.
+2. Far ear against heading: 98.1 % at 4°, an ordinary head wobble and not audible. 88.8 % at 10°,
+   62.3 % at 20°, 22.5 % at the 35.5° sidestep limit.
+3. The floor is reached only past 44°, beyond the arrow's limit, so steering alone never gets there.
+4. A danger 0.15 m to the left in the 0.30 m corridor: $`p = -0.5`$, the left ear at 0.10, the right
+   at its steering gain.
+
+> [!TIP]
+> **Ours, with why.**
+> - **The spread is the goal tolerance, not the walker's measured wobble.** In the course's goal-type
+>   surprise the denominator is the target's tolerance. A spread set to a 4° wobble made the far ear
+>   swing to 60 % and back while walking straight.
+> - **The floor at 10 %.** An ear that goes fully silent reads as broken headphones, not as a cue.
+> - **The danger cue pans to the obstacle, not away from the heading.** The two differ when the
+>   planner goes around a slightly-left obstacle on the left because the right is blocked, and the
+>   obstacle's own side is the honest one.
+> - **The gain is the surprise in his form, used as it is.** $`e^{-U}`$ is the likelihood the surprise
+>   came from, and each bit of surprise is one halving of the far ear.
+
 ---
 
 [Contents](README.md#contents) · [The colors](README.md#the-colors) · Previous: [8. Planning a path](08_planning_a_path.md) · Next: [10. How much the scene shaped the plan](10_scene_shaped_the_plan.md)

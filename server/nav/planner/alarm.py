@@ -97,10 +97,25 @@ def corridor_time_to_contact(obstacles: ObstacleSet, config: PlannerConfig) -> f
     :raises ValueError: When the walking speed is not above zero.
     """
     _check_walking_speed(config)
+    nearest = nearest_corridor_point(obstacles, config)
+    if nearest is None:
+        return None
+    return nearest.clearance_meters / config.walking_speed_mps
+
+
+def nearest_corridor_point(obstacles: ObstacleSet, config: PlannerConfig) -> ObstaclePoint | None:
+    """
+    The corridor group the walker reaches first: the one the alarm is about, and the one the cue points at.
+
+    :param obstacles: This frame's groups.
+    :param config: The body half-width.
+    :return: The corridor point with the least clearance, or None when the corridor is empty.
+    :rtype: ObstaclePoint | None
+    """
     in_the_way = corridor_points(obstacles, config)
     if not in_the_way:
         return None
-    return min(point.clearance_meters for point in in_the_way) / config.walking_speed_mps
+    return min(in_the_way, key=lambda point: point.clearance_meters)
 
 
 def avoidance_surprise_bits_at(time_to_contact_seconds: float) -> float:

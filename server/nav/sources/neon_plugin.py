@@ -117,8 +117,9 @@ class NeonPluginDepthFrameSource:
                 if is_usable_orientation(orientation):
                     latest_orientation_wxyz = orientation
                 elif not warned_about_empty_imu:
-                    # Same rule as the live stream. An empty reading is skipped and the last real
-                    # orientation carries on, because letting a zero through ends the replay.
+                    # An empty reading is skipped and the last real orientation carries on, because
+                    # letting a zero through ends the replay. The live stream no longer carries one
+                    # forward: it poses a frame from the reading nearest its capture or not at all.
                     log.warning("%s has empty IMU orientations, frames carry the last real one or none", self._recording_dir.name)
                     warned_about_empty_imu = True
 

@@ -9,6 +9,7 @@ Run from server/ with its venv:
 
     python -m nav.evaluation.check_planner flips frame_logs/contact_walk_1 --percentile 90
     python -m nav.evaluation.check_planner band frame_logs/pixel_walk_3
+    python -m nav.evaluation.check_planner floor-lean frame_logs/neon_walk_2_before --capture frame_logs/captures/neon_walk_2 --replay-shift-seconds 197905.21935606003
 
     python -m nav.evaluation.check_planner floor frame_logs/neon_walk_2_replay
     python -m nav.evaluation.check_planner floor frame_logs/a_plugin_run --scene-set floor_max_offset_meters=10
@@ -23,6 +24,8 @@ cost by term, and says which known causes explain it, by re-planning the frame w
 and why fits were refused. A median camera height near eye level is the check that a depth source
 is in meters. Its second form lifts the floor check's height limit, so a source whose depth is too
 large still shows how much too large instead of being cut off at the limit.
+`floor-lean` refits a glasses replay's own frames with the pose they were logged with and with the
+pose from the capture's IMU at each frame's capture, and prints how far each floor leans from up.
 
 One scene runs across the whole walk, as the live run does, and the chosen segment's frames are
 planned with one planner. The floor fit is seeded, so one cold pass is a verdict on one machine.
@@ -50,6 +53,7 @@ from nav.evaluation.arguments import add_replay_arguments, add_scene_arguments
 from nav.evaluation.band_attribution import FIXABLE, ON_HOLD, TERM_NAMES, BandAttribution, PinCandidate, band_attribution
 from nav.evaluation.config import EvaluationConfig, PlannerNumbersConfig
 from nav.evaluation.floor_report import floor_report, format_floor_report, has_heights
+from nav.evaluation.floor_lean import NothingToCompare, StampsDoNotMatch, floor_lean, format_floor_lean
 from nav.evaluation.overrides import OverrideRefused, apply_overrides
 from nav.evaluation.planner_numbers import (
     ClearanceBand,
@@ -103,12 +107,28 @@ def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
         subcommand.add_argument("log_dirs", type=Path, nargs="+", help="frame logs written by --record-to")
         subcommand.add_argument("--segment", type=int, default=-1, help="which segment to plan, counted from zero, negative from the end. The last by default")
         add_replay_arguments(subcommand)
+        # The same spelling `python -m nav.evaluation` uses for its own settings. The yardstick, never
+        # the planner: a full swing across a gap longer than swing_max_gap_seconds isn't counted, and
+        # the glasses plan 0.5 to 1.4 s apart.
+        subcommand.add_argument("--eval-set", action="append", default=[], metavar="FIELD=VALUE", help="override a PlannerNumbersConfig field")
     flips.add_argument("--percentile", type=float, default=90.0, help="pairs at or above this percentile of disagreement, 90 by default")
     flips.add_argument("--largest", type=int, default=10, help="how many of the largest pairs to list, 10 by default")
     # The floor is a whole-walk figure and nothing is planned, so it takes no segment and no planner override.
     floor = subcommands.add_parser("floor", help="where each frame's floor came from, and the camera's height above it")
     floor.add_argument("log_dirs", type=Path, nargs="+", help="frame logs written by --record-to")
     add_scene_arguments(floor)
+    lean = subcommands.add_parser("floor-lean", help="a glasses replay's floors refit with the logged pose and with the pose at capture")
+    lean.add_argument("log_dir", type=Path, help="a frame log written by --record-to during a --neon-replay run")
+    lean.add_argument("--capture", type=Path, required=True, help="the capture that run played back")
+    lean.add_argument(
+        "--replay-shift-seconds",
+        type=float,
+        required=True,
+        help="the shift from that run's 'stamps shifted by' log line, copied in full",
+    )
+    # The scene settings only. The planner, its overrides and the scene cache play no part in a refit.
+    lean.add_argument("--scene-defaults", action="store_true", help="today's scene defaults, for a recording with no run_config.json")
+    lean.add_argument("--scene-set", action="append", default=[], metavar="FIELD=VALUE", help="override a SceneConfig field")
     arguments = parser.parse_args(argv)
     if arguments.subcommand == "flips" and not 0.0 <= arguments.percentile <= 100.0:
         parser.error(f"--percentile is from 0 to 100, got {arguments.percentile}")
@@ -120,8 +140,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if arguments.subcommand == "floor":
             return _run_floor(arguments)
+        if arguments.subcommand == "floor-lean":
+            return _run_floor_lean(arguments)
         return _run(arguments)
-    except (RecordingRefused, OverrideRefused, FileNotFoundError, FrameDecodeError) as refused:
+    except (RecordingRefused, OverrideRefused, FileNotFoundError, FrameDecodeError, StampsDoNotMatch, NothingToCompare) as refused:
         # A recording or an override this code can't use. Known and named, so it ends with the
         # message and no traceback. Anything else is a defect and keeps its traceback.
         print(f"{type(refused).__name__}: {refused}", file=sys.stderr)
@@ -271,11 +293,14 @@ def _run_floor(arguments: argparse.Namespace) -> int:
 
 def _run(arguments: argparse.Namespace) -> int:
     planner_config, overridden = apply_overrides(PlannerConfig(), arguments.planner_set)
-    config = PlannerNumbersConfig()
+    config, evaluation_overridden = apply_overrides(PlannerNumbersConfig(), arguments.eval_set)
     print(f"clone at {clone_state()}")
     for field in dataclasses.fields(PlannerConfig):
         marker = "  <- --set" if field.name in overridden else ""
         print(f"  {field.name} = {getattr(planner_config, field.name)}{marker}")
+    # Only what was changed, so a default run's header reads as it always has.
+    for name in sorted(evaluation_overridden):
+        print(f"  evaluation {name} = {getattr(config, name)}  <- --eval-set")
     measured_any = False
     for log_dir in arguments.log_dirs:
         replay = segment_frames(log_dir, arguments, planner_config, keep_fields=arguments.subcommand == "band")
@@ -294,6 +319,15 @@ def _run(arguments: argparse.Namespace) -> int:
         else:
             print(format_numbers(log_dir.name, whole_walk_numbers(frames, planner_config, config), planner_config, config), end="")
     return EXIT_PRINTED if measured_any else EXIT_NOTHING_MEASURED
+
+
+def _run_floor_lean(arguments: argparse.Namespace) -> int:
+    scene_config, scene_source = scene_config_for(arguments.log_dir, arguments.scene_defaults, arguments.scene_set)
+    print(f"clone at {clone_state()}")
+    print(f"{arguments.log_dir.name} against {arguments.capture.name}, shift {arguments.replay_shift_seconds!r} s. Scene settings from {scene_source}")
+    result = floor_lean(arguments.log_dir, arguments.capture, arguments.replay_shift_seconds, scene_config)
+    print(format_floor_lean(arguments.log_dir.name, result), end="")
+    return EXIT_PRINTED
 
 
 def format_flips(name: str, threshold: float | None, pairs: list[DiagnosedPair], percentile: float, largest: int) -> str:

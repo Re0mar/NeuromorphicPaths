@@ -104,7 +104,7 @@ class ScenePipeline:
         log.debug(
             "floor: camera %.2f m above it, normal %.1f deg from up, %s",
             plane_camera.offset_meters,
-            np.degrees(np.arccos(np.clip(plane_camera.normal @ self._up_in_camera_frame(frame), -1.0, 1.0))),
+            np.degrees(np.arccos(np.clip(plane_camera.normal @ self.up_in_camera_frame(frame), -1.0, 1.0))),
             floor_source.value,
         )
 
@@ -184,7 +184,13 @@ class ScenePipeline:
         )
 
     @staticmethod
-    def _up_in_camera_frame(frame: DepthFrame) -> np.ndarray:
+    def up_in_camera_frame(frame: DepthFrame) -> np.ndarray:
+        """
+        Which way is up in this frame's camera axes, the direction a floor's normal is judged against.
+
+        :return: (3,) unit vector in the camera frame.
+        :rtype: np.ndarray
+        """
         # Gravity, whenever the source says its orientation is aligned to it. Image-up otherwise,
         # which assumes the camera is held roughly level and is all a plain video file can offer.
         # The Pixel in portrait sends its depth image sideways, and measured against image-up its
@@ -201,7 +207,7 @@ class ScenePipeline:
         # A source that knows the ground says so, but it is not believed on its word. The first
         # Pixel walk sent a plane a meter below the real floor on every frame, and the fit is the
         # second opinion. A refused plane takes the path a frame with no plane takes.
-        up_camera = self._up_in_camera_frame(frame)
+        up_camera = self.up_in_camera_frame(frame)
         if frame.ground_plane is not None:
             supplied = normalize_plane(frame.ground_plane, up_camera)
             refusal = plane_is_a_floor(supplied, self._config, up_camera)

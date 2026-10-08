@@ -165,7 +165,7 @@ def test_an_empty_imu_sample_mid_recording_carries_the_last_real_orientation(
     caplog: pytest.LogCaptureFixture,
     empty_sample: np.ndarray,
 ) -> None:
-    """An empty reading is a missing sample, so the replay goes on with the last real one, as live does."""
+    """An empty reading is a missing sample, so the replay goes on with the last real one. Live no longer does, it poses from the reading at capture or not at all."""
     # Each frame a different pitch, so carrying the wrong frame's orientation shows.
     recording = tmp_path / "rec"
     _write_cache(recording)
