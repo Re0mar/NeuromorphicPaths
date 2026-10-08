@@ -58,7 +58,7 @@ def test_level_glasses_give_world_up_in_the_camera_frame() -> None:
 
     # Read through the scene's own method, the one that decides what the floor is measured against.
     # Mostly image-up (minus y), tipped toward minus z because the camera looks down.
-    up_camera = ScenePipeline._up_in_camera_frame(frame)
+    up_camera = ScenePipeline.up_in_camera_frame(frame)
 
     assert up_camera == pytest.approx([0.0, -COS_12, -SIN_12], abs=1e-9)
 

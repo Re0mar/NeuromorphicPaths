@@ -53,8 +53,11 @@ class _Quaternion:
 
 
 @dataclasses.dataclass
-class _Imu:
-    quaternion: _Quaternion | None
+class _ImuStatus:
+    readings: int
+    empty_readings: int
+    unstamped_empty_readings: int
+    frames_without_orientation: int
 
 
 @dataclasses.dataclass
@@ -73,6 +76,7 @@ class _Gaze:
 class _Matched:
     frame: _Frame
     gaze: _Gaze | None
+    orientation: _Quaternion | None
 
 
 @dataclasses.dataclass
@@ -93,14 +97,13 @@ class _Calibration:
 
 
 class ChildFakeDevice:
-    """Answers like the client's simple Device. Scripted by its constructor arguments."""
+    """Answers like the receiver in the device process. Scripted by its constructor arguments."""
 
     def __init__(self, gaze: bool = True, time_echo: bool = True, offset_delay_seconds: float = 0.0) -> None:
         self._gaze = gaze
         self._time_echo = time_echo
         self._offset_delay_seconds = offset_delay_seconds
         self._frame_index = 0
-        self._imu = [None, _Imu(None), _Imu(_Quaternion(0.9, 0.1, 0.2, 0.3))]
         self.closed = False
 
     def get_calibration(self) -> _Calibration:
@@ -116,10 +119,12 @@ class ChildFakeDevice:
         self._frame_index += 1
         pixels = np.full(FRAME_SHAPE, self._frame_index, dtype=np.uint8)
         gaze = _Gaze(3.0, 4.0) if self._gaze else None
-        return _Matched(_Frame(pixels, 100.0 + self._frame_index), gaze)
+        # Odd frames had an IMU reading near their capture, even ones did not.
+        orientation = _Quaternion(0.9, 0.1, 0.2, 0.3) if self._frame_index % 2 == 1 else None
+        return _Matched(_Frame(pixels, 100.0 + self._frame_index), gaze, orientation)
 
-    def receive_imu_datum(self, timeout_seconds: float | None = None) -> _Imu | None:
-        return self._imu.pop(0) if self._imu else None
+    def imu_status(self) -> _ImuStatus:
+        return _ImuStatus(readings=40, empty_readings=3, unstamped_empty_readings=2, frames_without_orientation=1)
 
     def close(self) -> None:
         self.closed = True
@@ -134,7 +139,7 @@ class RefusingDevice(ChildFakeDevice):
     def estimate_time_offset(self, number_of_measurements: int = 100):
         raise ValueError("not enough valid samples")
 
-    def receive_imu_datum(self, timeout_seconds: float | None = None):
+    def imu_status(self):
         raise KeyError("a failure nobody named")
 
 
@@ -206,12 +211,19 @@ def test_a_frame_without_gaze_crosses_as_no_gaze() -> None:
     assert proxy.receive_matched_scene_video_frame_and_gaze(timeout_seconds=0.25).gaze is None
 
 
-def test_imu_answers_keep_no_datum_and_a_datum_without_a_quaternion_apart(served: NeonDeviceProcess) -> None:
-    # The source carries the last orientation forward on both, but they are different answers.
-    assert served.receive_imu_datum(timeout_seconds=0.0) is None
-    assert served.receive_imu_datum(timeout_seconds=0.0).quaternion is None
-    quaternion = served.receive_imu_datum(timeout_seconds=0.0).quaternion
+def test_a_frames_orientation_crosses_the_pipe_with_it_field_for_field_and_none_as_none(served: NeonDeviceProcess) -> None:
+    with_reading = served.receive_matched_scene_video_frame_and_gaze(timeout_seconds=0.25)
+    without_reading = served.receive_matched_scene_video_frame_and_gaze(timeout_seconds=0.25)
+
+    quaternion = with_reading.orientation
     assert (quaternion.w, quaternion.x, quaternion.y, quaternion.z) == (0.9, 0.1, 0.2, 0.3)
+    assert without_reading.orientation is None
+
+
+def test_the_imu_counts_cross_the_pipe_as_the_device_counted_them(served: NeonDeviceProcess) -> None:
+    status = served.imu_status()
+
+    assert (status.readings, status.empty_readings, status.unstamped_empty_readings, status.frames_without_orientation) == (40, 3, 2, 1)
 
 
 def test_the_time_offset_crosses_with_its_medians(served: NeonDeviceProcess) -> None:
@@ -240,7 +252,7 @@ def test_an_unknown_failure_is_raised_as_unexpected_and_not_as_a_known_kind() ->
     proxy = _serve_on_thread(RefusingDevice())
 
     with pytest.raises(NeonUnexpectedFailure, match="UNEXPECTED") as raised:
-        proxy.receive_imu_datum(timeout_seconds=0.0)
+        proxy.imu_status()
     assert "KeyError" in str(raised.value)
     assert not isinstance(raised.value, (OSError, ValueError))
 
@@ -438,7 +450,7 @@ def test_a_frame_reply_carries_where_the_pixels_are_and_not_the_pixels() -> None
         frames.close()
 
     assert not any(isinstance(part, np.ndarray) for part in payload)
-    block_name, shape, dtype, timestamp, gaze = payload
+    block_name, shape, dtype, timestamp, gaze, orientation = payload
     assert isinstance(block_name, str)
     assert tuple(shape) == FRAME_SHAPE
     assert np.dtype(dtype) == np.uint8

@@ -218,8 +218,9 @@ the cost of switching.
 > - Last frame's plan: its offsets, its timestamp and its goal. Kept by
 >   `server/nav/planner/previous_plan.py`.
 > - This frame's timestamp, and the walking speed $`v_w`$ = 1.4 m/s.
-> - The prior's spread $`\rho`$ = 0.25 m, how long it covers $`T_p`$ = 1.0 s, and the oldest plan it will
->   use, 0.5 s. All from `server/nav/planner/config.py`.
+> - The prior's spread $`\rho`$ = 0.25 m, how fast it widens with the plan's age $`\gamma`$ = 0.05 m²/s,
+>   how long it covers $`T_p`$ = 1.0 s, and the oldest plan it will use, 3.0 s. All from
+>   `server/nav/planner/config.py`.
 
 ## The formulas
 
@@ -242,8 +243,13 @@ plan also reaches, and 0 everywhere else. $`e_k`$ is where last frame's plan say
 be on slice $`k`$.
 
 ```math
-P_k(j) = \tfrac{1}{2}\left(\frac{g_j - e_k}{\rho}\right)^2 \quad \text{for } 0 < t_k \le T_p
+P_k(j) = \tfrac{1}{2}\,\frac{(g_j - e_k)^2}{\rho_f^2} \quad \text{for } 0 < t_k \le T_p, \qquad \rho_f^2 = \rho^2 + \gamma\,\Delta_f
 ```
+
+An older plan says less precisely where the walker is now, so its spread widens with the time since
+it was made. On a phone at 30 frames a second $`\rho_f`$ is 0.253 m against 0.25, and nothing changes.
+On the glasses, a plan 0.6 s old has $`\rho_f`$ = 0.30 m and one 1.4 s old 0.36 m. It's the same
+half-squared shape at a wider spread.
 
 **Sliding the old plan forward.** Between frames the walker has walked on a little, sideways too.
 So each slice reads the old plan from further along, and the sideways part already walked comes
@@ -255,8 +261,9 @@ a = v_w\,\Delta_f, \qquad f_k = v_w\,t_k, \qquad e_k = o(f_k + a) - o(a)
 ```
 
 **The old plan is dropped**, and no prior is added, on the first frame, when the timestamp goes
-backward, when more than 0.5 s has passed, or when the goal moved sideways by more than
-$`\lambda`$ = 1.5 m.
+backward, when more than 3.0 s has passed, or when the goal moved sideways by more than
+$`\lambda`$ = 1.5 m. It was 0.5 s, which the glasses, planning 0.4 to 1.6 s apart, crossed on 56 % of
+their gaps.
 
 **The plan and the cost sent out.** The plan ends in the cheapest last cell. The cost sent out is
 that path's total with the prior's charge along it taken off.
@@ -271,7 +278,9 @@ j^{\star}_{38} = \arg\min_j J_{38}(j), \qquad C = J_{38}(j^{\star}_{38}) - \Delt
 | $`x_{\text{gaze}}, y_{\text{gaze}}`$ | gaze point on the floor, sideways and forward | m | walker ground frame | `server/nav/planner/goal.py` |
 | $`\lambda`$ | goal tolerance, 1.5 m | m | none | `server/nav/planner/config.py` |
 | $`P_k(j)`$ | previous-plan prior, per second | cost per second | walker ground frame | `server/nav/planner/previous_plan.py` |
-| $`\rho`$ | prior's spread, one standard deviation, 0.25 m | m | none | `server/nav/planner/config.py` |
+| $`\rho`$ | prior's spread for a fresh plan, one standard deviation, 0.25 m | m | none | `server/nav/planner/config.py` |
+| $`\gamma`$ | how fast the spread's square grows with the plan's age, 0.05 | m²/s | time | `server/nav/planner/config.py` |
+| $`\rho_f`$ | prior's spread for a plan $`\Delta_f`$ old | m | none | `server/nav/planner/previous_plan.py` |
 | $`T_p`$ | how long the prior covers, 1.0 s | s | time | `server/nav/planner/config.py` |
 | $`e_k`$ | where the old plan puts the walker on slice $`k`$ | m | walker ground frame | `server/nav/planner/previous_plan.py` |
 | $`o(\cdot)`$ | old plan's offset at a forward distance | m | walker ground frame | `server/nav/planner/previous_plan.py` |

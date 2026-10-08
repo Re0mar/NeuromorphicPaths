@@ -10,7 +10,11 @@ The expected values are a snapshot of the planner, not arithmetic. First capture
 e983176 plus the commit that added this test. Updated 2026-10-05 for the prior toward the previous
 plan (previous_plan_spread_meters 0.25 over the first 1.0 s), which moved every heading figure and no
 alarm figure. The full swings, the alarm's hold and raise figures and the near noise were added the
-same day, at their values with the prior on. The arithmetic check beside them is `test_a_hand_built_slice_gives_the_numbers_worked_out_by_hand` in
+same day, at their values with the prior on. Updated 2026-10-08 for the prior kept across gaps up to
+3.0 s with its spread widening 0.05 m² a second, so it holds at the glasses' frame rate: on the
+pixel_walk_3 slice the arrow sits at its limit on 420 frames instead of 383 and 5 band frames
+instead of 2, because the prior now holds a side through the walk's tracking dropouts. Nothing else
+moved on either slice. The arithmetic check beside them is `test_a_hand_built_slice_gives_the_numbers_worked_out_by_hand` in
 test_evaluation_fixture.py, which a uniform defect in the planner can't satisfy by accident.
 
 The slices were cut from the recordings in the root clone's server/frame_logs/ with:
@@ -79,8 +83,8 @@ EXPECTED = {
     # pixel_walk_3, last segment, 1537469.27 to 1537502.30 s, 967 frames, outdoors.
     "golden_pixel_walk_3.json.gz": Expected(
         # Before the prior: 564 of 967 pinned, band 64 of 108, p90 1.3046 m.
-        pinned_all_percent=39.607,  # 383 of 967, one frame 0.10 points
-        pinned_band_percent=1.852,  # 2 of 108, one frame 0.93 points
+        pinned_all_percent=43.433,  # 420 of 967, one frame 0.10 points
+        pinned_band_percent=4.630,  # 5 of 108, one frame 0.93 points
         pinned_clear_percent=0.0,  # 0 of 100, one frame 1.00 point
         restated_band_pinned=0,
         restated_band_frames=52,
