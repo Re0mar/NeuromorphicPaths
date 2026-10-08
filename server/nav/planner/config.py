@@ -94,8 +94,19 @@ class PlannerConfig:
     # 0.5 m held the arrow at its limit on 12 to 17 % of the classroom's clear-corridor frames, over the
     # 10 % allowed, because the far rows were committed to before anything new came into view.
     previous_plan_prior_seconds: float = 1.0
-    # Ours. A previous plan older than this says nothing about the next one. Half a second is 0.7 m of
-    # walking, and about fifteen frames dropped at 30 Hz.
-    previous_plan_max_gap_seconds: float = 0.5
+    # Ours. A previous plan older than this says nothing about the next one, such as after a stalled
+    # stream or a reconnect. The glasses plan 0.4 to 1.6 s apart on this laptop, so it sits well past
+    # that. It was 0.5 s, which on the glasses dropped the prior on 56 % of gaps.
+    previous_plan_max_gap_seconds: float = 3.0
+    # Ours. How fast an old plan's spread widens: its variance grows this much per second since it was
+    # made, so an older plan pulls less. On a phone at 30 Hz the spread moves from 0.25 to 0.253 m and
+    # nothing changes. Measured 2026-10-08 on contact_walk_1, the classroom walk and pixel_walk_3 thinned
+    # to the glasses' own gaps (median 0.6 to 0.7 s), last segments: full swings 3, 13 and 5 with the
+    # prior dropped after 0.5 s, 0, 0 and 0 here, and 8, 24 and 14 with no prior. 0.05 rather than more,
+    # because at 0.1 two swings come back on the classroom and at 0.2 three, a plan 0.6 s old then
+    # pulling too weakly to hold a near-tie. At full rate contact_walk_1 and the classroom give the same
+    # figures as before. pixel_walk_3 holds the arrow at its limit on 36.8 % of frames instead of 34.1,
+    # the prior now holding a side through its tracking dropouts, with swings, band and alarm unchanged.
+    previous_plan_spread_growth_square_meters_per_second: float = 0.05
     goal_distance_meters: float = 4.0  # Old file's goal_dist.
     goal_tolerance_meters: float = 1.5  # Half a typical hallway's width, so the goal term picks among safe paths.

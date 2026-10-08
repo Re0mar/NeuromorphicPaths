@@ -316,6 +316,27 @@ def test_numbers_command_marks_an_override(recording: Path, capsys) -> None:
     assert "lateral_kinetic_weight = 0.055  <- --set" in out
 
 
+def test_numbers_command_marks_an_evaluation_override_and_leaves_a_default_run_without_one(recording: Path, capsys) -> None:
+    code, out, _ = run(["numbers", recording, "--eval-set", "swing_max_gap_seconds=1.5"], capsys)
+    assert code == 0
+    assert "evaluation swing_max_gap_seconds = 1.5  <- --eval-set" in out
+
+    code, out, _ = run(["numbers", recording], capsys)
+    assert code == 0
+    assert "--eval-set" not in out
+
+
+@pytest.mark.parametrize(
+    "override, named",
+    [("no_such_field=1", "no_such_field"), ("swing_max_gap_seconds=soon", "swing_max_gap_seconds"), ("swing_max_gap_seconds=0", "swing_max_gap_seconds")],
+    ids=["unknown field", "not a number", "zero, which the config refuses"],
+)
+def test_numbers_command_refuses_a_bad_evaluation_override(recording: Path, capsys, override: str, named: str) -> None:
+    code, _, err = run(["numbers", recording, "--eval-set", override], capsys)
+    assert code == 1
+    assert named in err
+
+
 # *******************************************
 # Refusals
 # *******************************************

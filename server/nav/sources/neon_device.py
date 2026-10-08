@@ -62,7 +62,7 @@ class DeviceRequest(Enum):
     CALIBRATION = "calibration"
     TIME_OFFSET = "time_offset"
     MATCHED = "matched"
-    IMU = "imu"
+    IMU_STATUS = "imu_status"
     CLOSE = "close"
 
 
@@ -130,12 +130,6 @@ class DeviceGaze:
 
 
 @dataclass(frozen=True)
-class DeviceMatched:
-    frame: DeviceFrame
-    gaze: DeviceGaze | None
-
-
-@dataclass(frozen=True)
 class DeviceQuaternion:
     w: float
     x: float
@@ -144,8 +138,21 @@ class DeviceQuaternion:
 
 
 @dataclass(frozen=True)
-class DeviceImuDatum:
-    quaternion: DeviceQuaternion | None
+class DeviceMatched:
+    frame: DeviceFrame
+    gaze: DeviceGaze | None
+    # The usable IMU reading nearest the frame's capture stamp, or None when none was near enough.
+    orientation: DeviceQuaternion | None
+
+
+@dataclass(frozen=True)
+class DeviceImuStatus:
+    """What the IMU has sent since the stream started. Field for field the stream's own status."""
+
+    readings: int
+    empty_readings: int
+    unstamped_empty_readings: int
+    frames_without_orientation: int
 
 
 def apply_opencv_pyav_import_workaround() -> None:
@@ -235,22 +242,22 @@ class NeonDeviceProcess:
             answer = self._request(DeviceRequest.MATCHED, timeout_seconds, wait_seconds=timeout_seconds + RESPONSE_GRACE_SECONDS)
             if answer is None:
                 return None
-            block_name, shape, dtype, timestamp_unix_seconds, gaze = answer
+            block_name, shape, dtype, timestamp_unix_seconds, gaze, orientation = answer
             # Copied while the lock is held, so no other request can reach the child, and the
             # child cannot write the next frame over this one before it is out.
             bgr_pixels = self._copy_frame(block_name, shape, dtype)
         return DeviceMatched(
             frame=DeviceFrame(bgr_pixels=bgr_pixels, timestamp_unix_seconds=timestamp_unix_seconds),
             gaze=None if gaze is None else DeviceGaze(*gaze),
+            orientation=None if orientation is None else DeviceQuaternion(*orientation),
         )
 
-    def receive_imu_datum(self, timeout_seconds: float | None = None) -> DeviceImuDatum | None:
-        if timeout_seconds is None:
-            raise ValueError("a timeout is required, because a request that never returns holds the pipe for good")
-        answer = self._request(DeviceRequest.IMU, timeout_seconds, wait_seconds=timeout_seconds + RESPONSE_GRACE_SECONDS)
-        if answer is None:
-            return None
-        return DeviceImuDatum(quaternion=None if answer == () else DeviceQuaternion(*answer))
+    def imu_status(self) -> DeviceImuStatus:
+        """How many IMU readings arrived, how many were empty, and how many frames had none near them."""
+        readings, empty_readings, unstamped_empty_readings, frames_without_orientation = self._request(
+            DeviceRequest.IMU_STATUS, wait_seconds=RESPONSE_GRACE_SECONDS
+        )
+        return DeviceImuStatus(readings, empty_readings, unstamped_empty_readings, frames_without_orientation)
 
     def close(self) -> None:
         """Ask the child to close the device and exit. Ends it by force if it does not."""
@@ -471,20 +478,21 @@ def answer(device: object, name: DeviceRequest, arguments: tuple, frames: Shared
             if matched is None:
                 return None
             gaze = None if matched.gaze is None else (float(matched.gaze.x), float(matched.gaze.y))
+            quaternion = matched.orientation
+            orientation = None
+            if quaternion is not None:
+                orientation = (float(quaternion.w), float(quaternion.x), float(quaternion.y), float(quaternion.z))
             # The pixels go into shared memory. Only where to find them crosses the pipe.
             block_name, shape, dtype = frames.put(matched.frame.bgr_pixels)
-            return (block_name, shape, dtype, float(matched.frame.timestamp_unix_seconds), gaze)
-        case DeviceRequest.IMU:
-            (timeout_seconds,) = arguments
-            datum = device.receive_imu_datum(timeout_seconds=timeout_seconds)
-            if datum is None:
-                return None
-            quaternion = datum.quaternion
-            # An empty tuple is a datum that came without a quaternion, which the source treats
-            # differently from no datum at all.
-            if quaternion is None:
-                return ()
-            return (float(quaternion.w), float(quaternion.x), float(quaternion.y), float(quaternion.z))
+            return (block_name, shape, dtype, float(matched.frame.timestamp_unix_seconds), gaze, orientation)
+        case DeviceRequest.IMU_STATUS:
+            status = device.imu_status()
+            return (
+                int(status.readings),
+                int(status.empty_readings),
+                int(status.unstamped_empty_readings),
+                int(status.frames_without_orientation),
+            )
         case _:
             raise ValueError(f"the Neon process does not answer {name} here")
 

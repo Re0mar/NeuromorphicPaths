@@ -135,6 +135,45 @@ def test_a_gap_longer_than_the_maximum_forgets_the_plan() -> None:
     assert prior.field(GRID, CONFIG.previous_plan_max_gap_seconds, AHEAD) is not None
 
 
+def _prior_after(gap_seconds: float, growth: float) -> np.ndarray:
+    config = replace(CONFIG, previous_plan_spread_growth_square_meters_per_second=growth, previous_plan_max_gap_seconds=3.0)
+    prior = PreviousPlanPrior(config, TIMES)
+    prior.remember(straight_plan(0.0), 0.0, AHEAD)
+    return prior.field(GRID, gap_seconds, AHEAD)
+
+
+def test_with_no_growth_the_prior_after_a_gap_is_todays_half_squared_distance_over_the_spread() -> None:
+    field = _prior_after(1.0, 0.0)
+    row = field[5]
+    # A straight plan stays straight however far it's advanced, so the expected offset is zero.
+    assert row == pytest.approx(0.5 * (GRID / CONFIG.previous_plan_spread_meters) ** 2)
+
+
+def test_with_growth_the_spread_widens_by_the_variance_grown_since_the_plan() -> None:
+    growth = 0.05
+    field = _prior_after(1.4, growth)
+    spread_squared = CONFIG.previous_plan_spread_meters**2 + growth * 1.4
+    # Still his form, half of (distance over spread) squared, at the widened spread.
+    assert field[5] == pytest.approx(0.5 * GRID**2 / spread_squared)
+
+
+def test_an_older_plan_pulls_less_everywhere_and_never_pushes() -> None:
+    fresh = _prior_after(0.1, 0.05)
+    stale = _prior_after(1.4, 0.05)
+    reached = fresh > 0
+    assert np.all(stale[reached] < fresh[reached])
+    assert np.all(stale >= 0.0)
+    # The cheapest place is still the old plan, only less sharply so.
+    assert int(np.argmin(stale[5])) == int(np.argmin(np.abs(GRID)))
+
+
+def test_a_gap_past_the_ceiling_forgets_the_plan_even_with_growth() -> None:
+    config = replace(CONFIG, previous_plan_spread_growth_square_meters_per_second=0.05, previous_plan_max_gap_seconds=3.0)
+    prior = PreviousPlanPrior(config, TIMES)
+    prior.remember(straight_plan(0.5), 0.0, AHEAD)
+    assert prior.field(GRID, 3.01, AHEAD) is None
+
+
 def test_a_goal_that_moved_past_its_tolerance_forgets_the_plan() -> None:
     # A wearer who looks from one gap to the other moves the gaze goal 2.5 m, past the 1.5 m tolerance.
     prior = PreviousPlanPrior(CONFIG, TIMES)
@@ -250,7 +289,18 @@ def test_last_field_includes_the_prior() -> None:
     assert np.any(pipeline.last_field != first)
 
 
-@pytest.mark.parametrize("name, value", [("previous_plan_spread_meters", 0.0), ("previous_plan_spread_meters", -1.0), ("previous_plan_prior_seconds", 0.0), ("previous_plan_max_gap_seconds", -0.1)])
+@pytest.mark.parametrize(
+    "name, value",
+    [
+        ("previous_plan_spread_meters", 0.0),
+        ("previous_plan_spread_meters", -1.0),
+        ("previous_plan_prior_seconds", 0.0),
+        ("previous_plan_max_gap_seconds", -0.1),
+        ("previous_plan_spread_growth_square_meters_per_second", -0.01),
+        ("previous_plan_spread_growth_square_meters_per_second", float("nan")),
+        ("previous_plan_spread_growth_square_meters_per_second", float("inf")),
+    ],
+)
 def test_a_bad_prior_constant_stops_the_pipeline_at_construction(name: str, value: float) -> None:
     with pytest.raises(ValueError, match=name):
         PlannerPipeline(replace(CONFIG, **{name: value}), WALKER)

@@ -13,8 +13,14 @@ which the Neon glasses don't stream. Between frames it is advanced the way the p
 assumes the walker moves: forward at walking speed, and sideways along the plan itself.
 
 Small adjustments cost almost nothing, since the cost is quadratic, and only a swing to the other
-side is expensive. There is no clock. A side holds until the other side is cheaper by more than the
-cost of switching, so a near-tie stays put and a side that becomes blocked is left at once.
+side is expensive. Nothing makes a side expire. A side holds until the other side is cheaper by more
+than the cost of switching, so a near-tie stays put and a side that becomes blocked is left at once.
+
+How old the previous plan is does matter, through the spread. The glasses plan only every 0.4 to
+1.6 s, and a plan made that long ago says less precisely where the walker is now, so its spread
+widens with the time since: its variance grows by previous_plan_spread_growth_square_meters_per_second
+each second. That is still half of (distance over spread) squared, only at a wider spread, so the
+prior stays a log probability added to his field. Past previous_plan_max_gap_seconds it is dropped.
 """
 
 # Third party imports
@@ -36,6 +42,9 @@ def check_previous_plan_config(config: PlannerConfig) -> None:
         raise ValueError(f"previous_plan_prior_seconds must be above zero, got {config.previous_plan_prior_seconds}")
     if not np.isfinite(config.previous_plan_max_gap_seconds) or config.previous_plan_max_gap_seconds < 0:
         raise ValueError(f"previous_plan_max_gap_seconds must be zero or more, got {config.previous_plan_max_gap_seconds}")
+    growth = config.previous_plan_spread_growth_square_meters_per_second
+    if not np.isfinite(growth) or growth < 0:
+        raise ValueError(f"previous_plan_spread_growth_square_meters_per_second must be zero or more, got {growth}")
 
 
 class PreviousPlanPrior:
@@ -88,8 +97,10 @@ class PreviousPlanPrior:
         # the rows stay free to replan as new things come into view.
         rows = reached & (self._times > 0) & (self._times <= self._config.previous_plan_prior_seconds + 1e-9)
         prior = np.zeros((len(self._times), len(grid)), dtype=np.float64)
-        spread = self._config.previous_plan_spread_meters
-        prior[rows] = 0.5 * ((grid[None, :] - expected[rows, None]) / spread) ** 2
+        # The older the plan, the less precisely it says where the walker will be, so its spread
+        # widens with the time since it was made. Still half of (distance over spread) squared.
+        spread_squared = self._config.previous_plan_spread_meters**2 + self._config.previous_plan_spread_growth_square_meters_per_second * elapsed
+        prior[rows] = 0.5 * (grid[None, :] - expected[rows, None]) ** 2 / spread_squared
         return prior
 
     def remember(self, offsets: np.ndarray, timestamp_seconds: float, goal: np.ndarray) -> None:

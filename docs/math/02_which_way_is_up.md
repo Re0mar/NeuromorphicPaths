@@ -34,8 +34,11 @@ Every quantity here lives in one of these frames.
 >   ARCore's world, where +y is straight up. The phone sends the gravity-aligned flag as true, and
 >   the laptop assumes true when the key is missing. ARCore also sends a position
 >   (`server/nav/sources/framecodec.py`, `server/docs/arcore_wire_format.md`).
-> - **Neon, live.** The newest IMU quaternion, read by field name as $`(w, x, y, z)`$
->   (`server/nav/sources/neon_live.py`).
+> - **Neon, live.** The IMU quaternion taken nearest the moment the frame was captured, within
+>   0.05 s, read by field name as $`(w, x, y, z)`$. Not the newest one, because a frame reaches the
+>   laptop 155 ms after capture at the median and the head keeps turning. A zero reading is never
+>   used, and a frame with no usable reading that near has no orientation at all
+>   (`server/nav/pose/imu_orientation.py`, `server/nav/sources/neon_stream.py`).
 > - **Neon, recorded.** The recording's IMU sample nearest in time, within 0.05 s, reordered from
 >   $`(x, y, z, w)`$ (`server/nav/sources/neon_plugin.py`).
 > - **Mount angles.** Two fixed turns from Pupil Labs' documentation, not measured on our glasses
@@ -173,8 +176,9 @@ A mount quaternion written into the code has to be a true rotation, $`\big\lvert
 
 > [!WARNING]
 > The pose has no position, so nothing on the Neon route places points in a world that stays put.
-> On the live route the newest IMU reading is reused for the next picture, with no matching of
-> times. And the 0.5 cut accepts a badly scaled but nonzero reading and quietly rescales it.
+> A live frame with no usable IMU reading within 0.05 s of its capture falls back to the picture's
+> own up, which assumes the head is level. And the 0.5 cut accepts a badly scaled but nonzero
+> reading and quietly rescales it.
 
 ## Up, as the camera sees it
 
