@@ -41,6 +41,8 @@ class FakeNeonScript:
     time_echo_never_answers: bool = False
     time_offset_ms: float = 1300.0
     round_trip_ms: float = 7.0
+    # What discovery finds when no address is given. None means no glasses on the network.
+    discovered_address: str | None = "192.0.2.9"
 
 
 def install(script: FakeNeonScript, set_attribute: Callable[[object, str, object], None]) -> None:
@@ -53,9 +55,18 @@ def install(script: FakeNeonScript, set_attribute: Callable[[object, str, object
     # Optional dependency, importorskipped by every caller. Imported here, because this module is
     # also imported by name in a spawned child, before it knows which test it is serving.
     import pupil_labs.realtime_api as client
-    from pupil_labs.realtime_api import time_echo
+    from pupil_labs.realtime_api import simple, time_echo
     from pupil_labs.realtime_api.streaming import base, gaze, imu, video
     from pupil_labs.realtime_api.streaming.base import SDPDataNotAvailableError
+
+    def fake_discover_one_device(max_search_duration_seconds: float = 10.0) -> SimpleNamespace | None:
+        # Blocking, like the real one, which runs an event loop of its own. Run here too, because
+        # called from the receiver's loop it raises RuntimeError, and that is what the discovery
+        # test is there to catch. Without this line the test passed with the crash put back.
+        asyncio.run(asyncio.sleep(0))
+        if script.discovered_address is None:
+            return None
+        return SimpleNamespace(address=script.discovered_address, close=lambda: None)
 
     status = SimpleNamespace(
         phone=SimpleNamespace(ip="192.0.2.7", time_echo_port=script.time_echo_port),
@@ -155,3 +166,4 @@ def install(script: FakeNeonScript, set_attribute: Callable[[object, str, object
     set_attribute(gaze, "RTSPGazeStreamer", FakeGazeStreamer)
     set_attribute(imu, "RTSPImuStreamer", FakeImuStreamer)
     set_attribute(time_echo, "TimeOffsetEstimator", FakeTimeOffsetEstimator)
+    set_attribute(simple, "discover_one_device", fake_discover_one_device)

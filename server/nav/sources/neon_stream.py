@@ -38,6 +38,7 @@ from pathlib import Path
 import numpy as np
 
 # Local package imports
+from nav.pose.imu_orientation import is_usable_orientation, orientation_at
 from nav.sources.config import NeonConfig
 
 log = logging.getLogger(__name__)
@@ -55,6 +56,9 @@ IMU_FIELDS = ("t", "w", "x", "y", "z")
 # How far a gaze sample may be from a frame and still count as that frame's gaze. A frame is 33 ms.
 GAZE_MATCH_TOLERANCE_SECONDS = 0.05
 GAZE_HISTORY = 400  # About two seconds of gaze at 200 Hz.
+# Three seconds of usable IMU readings at about 110 Hz. A frame can reach the pipeline 1.6 s after it
+# was captured (the worst seen on the 2026-10-05 walk), and its orientation has to still be in here.
+IMU_HISTORY = 330
 # Decoder threads. Frame threading would add a frame of delay per thread. Slice threading costs
 # nothing, and helps whenever the phone's encoder splits a frame into slices.
 DECODER_THREAD_TYPE = "SLICE"
@@ -110,12 +114,6 @@ class StreamGaze:
 
 
 @dataclass(frozen=True)
-class StreamMatched:
-    frame: StreamFrame
-    gaze: StreamGaze | None
-
-
-@dataclass(frozen=True)
 class StreamQuaternion:
     w: float
     x: float
@@ -124,8 +122,23 @@ class StreamQuaternion:
 
 
 @dataclass(frozen=True)
-class StreamImuDatum:
-    quaternion: StreamQuaternion | None
+class StreamMatched:
+    frame: StreamFrame
+    gaze: StreamGaze | None
+    # The usable IMU reading nearest the frame's capture stamp, or None when none was near enough.
+    orientation: StreamQuaternion | None
+
+
+@dataclass(frozen=True)
+class StreamImuStatus:
+    """What the IMU has sent since the stream started, for a check to judge it by."""
+
+    readings: int
+    empty_readings: int
+    # Empty readings whose timestamp was zero as well. On 2026-10-05 every empty one was like
+    # this, a packet that decoded to nothing at all rather than a stamped one with no rotation.
+    unstamped_empty_readings: int
+    frames_without_orientation: int
 
 
 def client_failure_types() -> tuple[type[BaseException], ...]:
@@ -228,8 +241,12 @@ class NeonStreamDevice:
         self._frames_decoded = 0
         self._frames_served = 0
         self._gaze: collections.deque[tuple[float, float, float]] = collections.deque(maxlen=GAZE_HISTORY)
-        self._imu: tuple[float, float, float, float, float] | None = None
-        self._imu_served_stamp: float | None = None
+        # Usable readings only, (stamp, w, x, y, z), oldest first. Empty ones are counted, never kept.
+        self._imu: collections.deque[tuple[float, float, float, float, float]] = collections.deque(maxlen=IMU_HISTORY)
+        self._imu_readings = 0
+        self._imu_empty_readings = 0
+        self._imu_unstamped_empty_readings = 0
+        self._frames_without_orientation = 0
         self._failure: BaseException | None = None
         self._replay_finished = False
         self._stopping = threading.Event()
@@ -295,18 +312,25 @@ class NeonStreamDevice:
             frame, timestamp = self._newest_frame
             self._frames_served = self._frames_decoded
             gaze = self._gaze_near(timestamp)
+            # From when the frame was captured, not from now. The frame handed over is the newest
+            # decoded one, which can be 1.6 s old by the time it's asked for, and the head has moved.
+            orientation = self._orientation_at(timestamp)
+            if orientation is None:
+                self._frames_without_orientation += 1
         # Converted here, once, for the one frame that is used.
         pixels = frame.to_ndarray(format="bgr24")
-        return StreamMatched(StreamFrame(pixels, timestamp), gaze)
+        return StreamMatched(StreamFrame(pixels, timestamp), gaze, orientation)
 
-    def receive_imu_datum(self, timeout_seconds: float | None = None) -> StreamImuDatum | None:
+    def imu_status(self) -> StreamImuStatus:
+        """What the IMU has sent so far: readings, how many were empty, and frames left without one."""
         with self._condition:
             self._raise_if_failed()
-            if self._imu is None or self._imu[0] == self._imu_served_stamp:
-                return None
-            stamp, w, x, y, z = self._imu
-            self._imu_served_stamp = stamp
-        return StreamImuDatum(StreamQuaternion(w, x, y, z))
+            return StreamImuStatus(
+                readings=self._imu_readings,
+                empty_readings=self._imu_empty_readings,
+                unstamped_empty_readings=self._imu_unstamped_empty_readings,
+                frames_without_orientation=self._frames_without_orientation,
+            )
 
     def close(self) -> None:
         self._stopping.set()
@@ -346,7 +370,10 @@ class NeonStreamDevice:
         from pupil_labs.realtime_api.streaming.imu import RTSPImuStreamer
         from pupil_labs.realtime_api.streaming.video import RTSPVideoFrameStreamer
 
-        address = self._config.address or _discover(self._config)
+        # The client's discovery helper runs its own event loop, which cannot start inside this
+        # one. On a worker thread it has none to collide with. Discovery had never run live before
+        # 2026-10-08, every session having passed the address, and the crash was waiting here.
+        address = self._config.address or await asyncio.to_thread(_discover, self._config)
         self._address = address
         async with Device(address, self._config.port) as device:
             status = await device.get_status()
@@ -417,9 +444,9 @@ class NeonStreamDevice:
         self._calibration = calibration
         decoder = self._decoder_factory(parameter_sets)
 
-        packets = list(_read_packets(capture / SCENE_PACKETS_FILENAME))
-        gaze = _read_samples(capture / GAZE_FILENAME, GAZE_FIELDS)
-        imu = _read_samples(capture / IMU_FILENAME, IMU_FIELDS)
+        packets = list(read_capture_packets(capture / SCENE_PACKETS_FILENAME))
+        gaze = read_capture_samples(capture / GAZE_FILENAME, GAZE_FIELDS)
+        imu = read_capture_samples(capture / IMU_FILENAME, IMU_FIELDS)
         if not packets:
             raise ValueError(f"{capture} holds no scene packets")
         first_stamp = packets[0][0]
@@ -428,7 +455,16 @@ class NeonStreamDevice:
         # capture time on the laptop clock is the moment it is fed, so lag measures this laptop.
         offset_ms = 0.0 if self._time_offset is None else self._time_offset.time_offset_ms.median
         self._replay_shift_seconds = (time.time() - offset_ms / 1000.0) - first_stamp
-        log.info("replaying %d scene packets, %.0f s, from %s", len(packets), packets[-1][0] - first_stamp, capture.name)
+        # The shift in full, so a replay's frame log can be matched back to the capture's own stamps.
+        # Fitting it afterwards can't work: frames are 33.3 ms apart to within 11 us, so a fit one
+        # frame off looks as good as the right one.
+        log.info(
+            "replaying %d scene packets, %.0f s, from %s, stamps shifted by %r s",
+            len(packets),
+            packets[-1][0] - first_stamp,
+            capture.name,
+            self._replay_shift_seconds,
+        )
         self._ready.set()
 
         events = sorted(
@@ -456,7 +492,9 @@ class NeonStreamDevice:
                     self._on_gaze(shifted, x, y)
                 case ReplayEventKind.IMU:
                     _, w, x, y, z = payload
-                    self._on_imu(shifted, w, x, y, z)
+                    # A zero stamp is a packet that carried none, as on 2026-10-05, not a moment in
+                    # time. Shifted, it would look stamped, and a replay would hide that.
+                    self._on_imu(shifted if stamp != 0.0 else 0.0, w, x, y, z)
         # The parser holds the last frame until another one starts, and none will.
         self._packets.put((decoder, None, 0.0))
         # Finished means decoded too, or the last frames would be lost to the end-of-replay check.
@@ -542,8 +580,30 @@ class NeonStreamDevice:
             self._gaze.append((timestamp, x, y))
 
     def _on_imu(self, timestamp: float, w: float, x: float, y: float, z: float) -> None:
+        usable = is_usable_orientation(np.array([w, x, y, z], dtype=np.float64))
         with self._condition:
-            self._imu = (timestamp, w, x, y, z)
+            self._imu_readings += 1
+            if not usable:
+                # The glasses sent only zeros for minutes on 2026-10-05. A zero is no orientation, so
+                # it never stands in for one. The count is how a check finds out.
+                self._imu_empty_readings += 1
+                if timestamp == 0.0:
+                    self._imu_unstamped_empty_readings += 1
+                return
+            self._imu.append((timestamp, w, x, y, z))
+
+    def _orientation_at(self, timestamp: float) -> StreamQuaternion | None:
+        """The usable IMU reading nearest a frame's stamp, by the one rule every route uses. Caller holds the lock."""
+        if not self._imu:
+            return None
+        samples = np.array(self._imu, dtype=np.float64)
+        # Sorted here rather than trusted, since a reading that arrives late over the network would
+        # otherwise sit out of order and the nearest-stamp search would read past it.
+        samples = samples[np.argsort(samples[:, 0], kind="stable")]
+        orientation = orientation_at(samples[:, 0], samples[:, 1:], timestamp)
+        if orientation is None:
+            return None
+        return StreamQuaternion(*(float(component) for component in orientation))
 
     def _gaze_near(self, timestamp: float) -> StreamGaze | None:
         """The gaze sample nearest the frame's stamp, within a frame and a half. Caller holds the lock."""
@@ -588,7 +648,7 @@ def _read_meta(capture: Path) -> tuple[StreamCalibration, StreamTimeEcho | None,
     return calibration, time_offset, parameter_sets
 
 
-def _read_packets(path: Path) -> Iterator[tuple[float, bytes]]:
+def read_capture_packets(path: Path) -> Iterator[tuple[float, bytes]]:
     """
     The capture's scene packets, in order, as (timestamp, bytes).
 
@@ -610,7 +670,7 @@ def _read_packets(path: Path) -> Iterator[tuple[float, bytes]]:
         offset = payload_start + length
 
 
-def _read_samples(path: Path, field_names: tuple[str, ...]) -> list[tuple[float, ...]]:
+def read_capture_samples(path: Path, field_names: tuple[str, ...]) -> list[tuple[float, ...]]:
     """
     Each line of a gaze or IMU file as its fields in the order named, stamp first.
 

@@ -275,7 +275,18 @@ that between subnets, in which case read the address off the Companion app's str
 `check_neon.py` connects, receives one frame and exits 0, or says which path it tried and exits
 1. On success it also prints the camera matrix after straightening, how many degrees of field of
 view the straightening crops off, and the measured offset between the laptop's clock and the
-glasses'. It exits 1 if the glasses do not hand over their calibration. `check_neon.py` and the
+glasses'. It exits 1 if the glasses do not hand over their calibration. It then watches the IMU for
+3 s and prints how many readings arrived and how many were empty. It exits 1 if none arrived, or if
+every one was an empty orientation, because then no frame of a walk would have a pose and every
+floor would be fitted against a level head. On 2026-10-05 the IMU sent nothing but zeros, timestamps
+included, for minutes. Reproduced on 2026-10-08 with the glasses: the phone serves the IMU stream to
+one client, and a second client connected while the first is still open gets packets that decode to
+nothing, 478 of 478 in the test, while the first keeps receiving. It clears the moment the first
+connection is gone, which a crash or a kill does on its own. A run that is still alive and not
+reading, such as one hung in another terminal, is what holds it. Close that run, or, as Pupil Labs
+answered the same report ([pl-realtime-api issue 71](https://github.com/pupil-labs/pl-realtime-api/issues/71)),
+force-stop and restart the Companion app. Recording on the phone is unaffected.
+`--neon-replay <capture>` runs the same check on a capture folder. `check_neon.py` and the
 `neon_live` command with `--neon-address` were run on 2026-10-05 with the glasses worn, on a school
 network where discovery was not tried. The figures from that day are under *Measured on the
 glasses* below. The `neon_plugin` command has not been run, because there was no plugin recording
@@ -486,8 +497,10 @@ conditions they were taken under and the commands that rerun them, are in
 - The planner's walker sway, how far a person drifts from the line the arrow asks for, is an
   assumed 0.10 m. `wifi_run_2` is the one recorded walk with the arrow shown, six scorable turns,
   and the sway has not been measured from it.
-- The planner's memory of its previous plan was tuned and checked on replays only. It has not run
-  live on the phone or the glasses yet.
+- The planner's memory of its previous plan ran live once, on the glasses walk of 2026-10-05, where
+  it lapsed on 56 % of gaps between frames. It now holds across gaps up to 3 s with its spread
+  widening as the plan ages. That was tuned on Pixel walks thinned to the glasses' gaps, because
+  the glasses replay has no position and no swings to measure. It hasn't run live since.
 - The depth conversion from the model's 300 pixel focal was checked on a replayed glasses capture,
   not on a live walk. Every `video_file` figure taken before it was added used depth at the wrong
   scale.

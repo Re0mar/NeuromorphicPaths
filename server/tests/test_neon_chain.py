@@ -27,7 +27,7 @@ from nav.sources.neon_live import NEON_SCENE_SIZE, NeonLiveRgbSource
 from nav.types import FloorSource
 from nav.walker import WalkerConfig
 from synthetic_depth import CAMERA_HEIGHT_METERS, HEIGHT, WIDTH, clean_scene
-from test_neon_live import FakeCalibration, FakeDevice, FakeImuDatum, FakeMatched, FakeQuaternion, FakeScene
+from test_neon_live import FakeCalibration, FakeDevice, FakeMatched, FakeQuaternion, FakeScene
 
 # Level glasses: the scene camera looks 12 degrees down, which is what the documented mount says.
 LEVEL_GLASSES_SCENE = clean_scene(box_lateral_meters=None, pitch_degrees=12.0)
@@ -69,8 +69,13 @@ def test_a_fake_neon_frame_reaches_the_scene_with_gravity_up_device_intrinsics_a
     """Mount, calibration, conversion and timing have to agree for the floor under level glasses to pass."""
     captured_on_the_neon = time.time() - 0.3
     device = FakeDevice(
-        matched=[FakeMatched(FakeScene(np.zeros((*FRAME_SIZE, 3), dtype=np.uint8), captured_on_the_neon), None)],
-        imu=[FakeImuDatum(FakeQuaternion(w=1.0, x=0.0, y=0.0, z=0.0))],
+        matched=[
+            FakeMatched(
+                FakeScene(np.zeros((*FRAME_SIZE, 3), dtype=np.uint8), captured_on_the_neon),
+                None,
+                FakeQuaternion(w=1.0, x=0.0, y=0.0, z=0.0),
+            )
+        ],
         calibration=FakeCalibration(NATIVE_CAMERA_MATRIX, np.zeros(8)),
         offsets_ms=[0.0, 0.0],
     )
