@@ -362,7 +362,8 @@ def scene_pass(
     # half-written entry under the real name.
     partial = cache_file.with_name(cache_file.name + ".partial")
     with open(partial, "wb") as handle:
-        # Plain tuples of plain values and nav.types instances, never PlannedScene itself, so the file
+        # Plain tuples of plain values, nav.types instances and nav.scene.floor's refusal types, never
+        # PlannedScene itself, so the file
         # loads in any process. astuple would also flatten the nav.types instances, so it isn't used.
         rows = [tuple(getattr(row, field.name) for field in dataclasses.fields(PlannedScene)) for row in planned]
         pickle.dump((time_array, position_array, rows, refused, reasons), handle)

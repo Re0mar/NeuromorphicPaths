@@ -22,8 +22,9 @@ turning, a new obstacle, a side flip around something both frames saw, or a shif
 cost by term, and says which known causes explain it, by re-planning the frame without each one.
 `floor` plans nothing. It says where each frame's floor came from, how high the camera sat above it,
 and why fits were refused. A median camera height near eye level is the check that a depth source
-is in meters. Its second form lifts the floor check's height limit, so a source whose depth is too
-large still shows how much too large instead of being cut off at the limit.
+is in meters. Its second form lifts the floor check's height limit. Without it, floors too far down
+are refused and show only as a median under "too far". With it, they're fitted and counted in the
+camera heights, so a source whose depth is too large shows up in the median itself.
 `floor-lean` refits a glasses replay's own frames with the pose they were logged with and with the
 pose from the capture's IMU at each frame's capture, and prints how far each floor leans from up.
 
@@ -52,8 +53,8 @@ import numpy as np
 from nav.evaluation.arguments import add_replay_arguments, add_scene_arguments
 from nav.evaluation.band_attribution import FIXABLE, ON_HOLD, TERM_NAMES, BandAttribution, PinCandidate, band_attribution
 from nav.evaluation.config import EvaluationConfig, PlannerNumbersConfig
-from nav.evaluation.floor_report import floor_report, format_floor_report, has_heights
 from nav.evaluation.floor_lean import NothingToCompare, StampsDoNotMatch, floor_lean, format_floor_lean
+from nav.evaluation.floor_report import floor_report, format_floor_report, has_heights
 from nav.evaluation.overrides import OverrideRefused, apply_overrides
 from nav.evaluation.planner_numbers import (
     ClearanceBand,
@@ -281,6 +282,8 @@ def _run_floor(arguments: argparse.Namespace) -> int:
             arguments.cache_dir if arguments.cached else None,
             unaligned_frames=UnalignedFrames.PROCESS,
         )
+        # Stderr, so a cached run and a cold one print the same stdout.
+        print(f"{log_dir.name}: scene cache {passed.cache_state}", file=sys.stderr)
         report = floor_report(passed)
         print()
         print(format_floor_report(log_dir.name, report, scene_source), end="")

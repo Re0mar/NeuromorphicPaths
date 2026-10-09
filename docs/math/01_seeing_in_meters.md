@@ -120,12 +120,15 @@ frame keeps the last floor it had. On a replay with the conversion, 395 of 432 f
 > made square first and the fallback camera has one focal. The depth image's exact size is set
 > inside Depth Anything 3 and isn't written in the repository. 504 by 378 is inferred.
 
-> [!WARNING]
-> **One route this doesn't cover.** A recorded session replayed through Pupil Labs' Neon Player
-> plugin reads Depth Anything's cached depth maps directly as meters
-> (`server/nav/sources/neon_plugin.py`). The repository doesn't say whether the plugin applied the
-> focal over 300 conversion before it wrote that cache. So whether depths on that route are in
-> meters is unknown. The server README notes that the plugin command hasn't been run yet.
+> [!NOTE]
+> **Neon Player's depth plugin is in meters too, and no route reads it any more.** Pupil Labs'
+> plugin applies the same conversion before it saves its depth maps. It uses the recording's mean
+> focal, scaled to the 504 px it runs the model at, over 300. On a recorded walk its saved maps came
+> to 0.9343 times the model's raw output, against 0.9353 for exactly that conversion
+> (`docs/evaluation/neon_recording_routes.md`). It estimates depth on the picture before the lens is
+> straightened, though, so its floor sat 0.08 m off on the same frames. A recording is now replayed
+> by `server/nav/sources/neon_recording.py`, which straightens it and runs this conversion like the
+> live route.
 
 > [!NOTE]
 > **Library rule: Depth Anything 3.** Mean focal over 300 is the rule in Depth Anything 3's own
@@ -327,14 +330,15 @@ Neon (`server/tests/test_camera_model.py`). The straight image is 1600 by 1200, 
 > larger focal crops the sides again. An obstacle near the left or right edge of the raw picture
 > can fall outside the straight one. At the outermost row the lookup can land half a pixel past
 > the source, so the code copies the edge pixel there instead of leaving black, because the depth
-> model would invent depth for black. Only the live Neon route straightens. The Neon Player plugin
-> route scales the recording's own camera matrix to the depth image's size and ignores the bend
-> entirely.
+> model would invent depth for black. Both Neon routes straighten the same way: the live glasses
+> (`server/nav/sources/neon_live.py`) and a recording (`server/nav/sources/neon_recording.py`) build
+> the straightener through one function, `undistorter_for`.
 
 > [!NOTE]
 > **Library rules: OpenCV and Pupil Labs.** The rational model, the border-free matrix and the
 > remap are OpenCV's, and the code doesn't write the model out. The eight coefficients are Pupil
-> Labs' per-device calibration, read from the glasses at connect.
+> Labs' per-device calibration, read from the glasses at connect, or from a recording's
+> `calibration.bin`.
 
 > [!TIP]
 > **Ours: the larger focal for both axes.** The depth model learned on square pixels, and the

@@ -14,7 +14,7 @@ as tuples of plain values and this file's enums, because the client's own object
 to pickle.
 
 This file does not import the Pupil Labs client. neon_stream.py does, inside the child, and
-test_import_boundaries.py keeps the import to that file and neon_plugin.py.
+test_import_boundaries.py keeps the import to that file and neon_recording.py.
 """
 
 # Standard library imports

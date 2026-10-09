@@ -43,6 +43,7 @@ class FloorRefusalCause(Enum):
     TOO_FAR = "too far"  # Camera over the maximum height above it.
     TOO_FEW_CANDIDATES = "too few candidates"  # Not enough points below the camera to search.
     NO_PLANE = "no plane"  # Every drawn triple was degenerate, so there was nothing to judge.
+    NOT_FINITE = "not finite"  # The normal or the offset holds a NaN or an infinity.
 
 
 @dataclass(frozen=True)
@@ -51,7 +52,7 @@ class FloorRefusal:
     One refusal, with the number that broke the rule and the rule's limit.
 
     measured is degrees for LEANS, meters for the two height causes and a point count for
-    TOO_FEW_CANDIDATES. NO_PLANE has neither.
+    TOO_FEW_CANDIDATES. NO_PLANE and NOT_FINITE have neither.
     """
 
     cause: FloorRefusalCause
@@ -71,6 +72,8 @@ class FloorRefusal:
                 return f"{self.measured:.0f} candidate points below the camera, under the minimum {self.limit:.0f}"
             case FloorRefusalCause.NO_PLANE:
                 return "every drawn triple was degenerate, so there was no plane to judge"
+            case FloorRefusalCause.NOT_FINITE:
+                return "the plane's normal or offset isn't a finite number"
             case _:
                 # Unreachable while every member is handled. Loud, so a new cause can't print nothing.
                 raise ValueError(f"no message for {self.cause}")
@@ -104,8 +107,9 @@ def plane_is_a_floor(plane: Plane, config: SceneConfig, up_camera: np.ndarray) -
     """
     Judge a normalized plane against where a floor can be, and say which rule it broke.
 
-    Three rules: level enough, not too close to the camera, and not too far below it. The first
-    two are the old file's. The third came from the first Pixel walk, where ARCore handed over a
+    Three rules: level enough, not too close to the camera, and not too far below it. A plane with
+    a NaN or an infinity in it is refused before any of them, since every comparison with NaN is
+    False and it would pass all three. The first two rules are the old file's. The third came from the first Pixel walk, where ARCore handed over a
     plane 2.3 m down, a meter below the real floor, and nothing refused it. This is the one place
     the rules live, so the fit and a supplied plane cannot drift apart on what a floor is.
 
@@ -115,6 +119,8 @@ def plane_is_a_floor(plane: Plane, config: SceneConfig, up_camera: np.ndarray) -
     :return: None when the plane passes, otherwise the rule it broke, with the numbers.
     :rtype: FloorRefusal | None
     """
+    if not (np.all(np.isfinite(plane.normal)) and np.isfinite(plane.offset_meters)):
+        return FloorRefusal(FloorRefusalCause.NOT_FINITE, None, None)
     tilt_degrees = float(np.degrees(np.arccos(np.clip(plane.normal @ up_camera, -1.0, 1.0))))
     if tilt_degrees > config.floor_max_tilt_degrees:
         return FloorRefusal(FloorRefusalCause.LEANS, tilt_degrees, config.floor_max_tilt_degrees)

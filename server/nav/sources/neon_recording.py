@@ -5,12 +5,17 @@ The recording's scene video is decoded here, a frame at a time, and each frame i
 the recording's own calibration before the depth estimator sees it. The frame carries the
 straightened camera matrix on, so the estimator's focal-over-300 conversion uses the focal the
 picture actually has. From the frame onward this is the live route exactly: same straightener, same
-estimator, same IMU rule, so a recorded walk and a live one can only differ in where the frames came
-from.
+estimator, same IMU rule. A recorded walk and a live one differ in where the frames come from, and
+in which frames get planned: the live route takes the newest frame, this one a set rate of recording.
 
-Neon Player's depth plugin cache is not read. That cache was estimated on the picture before
-straightening, so its depth disagrees with the live route at the image's edges, where an obstacle
-beside the walker sits.
+Neon Player's depth plugin cache is not read. Its values are meters. The plugin at
+pupil-labs/npp-depth-estimation e6202a9 multiplies the model's output by the recording's focal
+scaled to the 504 px it ran at, over 300, before saving. On walk_2026_10_08_b its saved maps came to
+0.9343 times the model's raw output, against 0.9353 predicted for that one conversion
+(docs/evaluation/neon_recording_routes.md). But it was estimated on the picture before
+straightening, so on the same 47 frames its fitted floor put the camera 0.079 m higher than this
+source does. The floor sits at the bottom of the picture, where the lens bends it most. So a
+recording is replayed here instead, and the route that read the cache was removed.
 
 The recording is read through a small protocol, because the native format is binary and undocumented
 and the tests can't build one. This file and neon_stream.py are the only two allowed to import
@@ -20,8 +25,9 @@ pupil_labs.
 # Standard library imports
 import logging
 from collections.abc import Callable, Iterator
+from enum import Enum
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 # Third party imports
 import numpy as np
@@ -36,14 +42,28 @@ from nav.sources.neon_camera import NEON_SCENE_SIZE
 from nav.sources.rgb import RgbFrame
 from nav.types import FrameTiming
 
+if TYPE_CHECKING:
+    # For the annotation only. At run time the package is imported inside the reader, because it
+    # comes with the glasses extra.
+    from pupil_labs.neon_recording.calib import Calibration
+
 log = logging.getLogger(__name__)
 
 NANOSECONDS_PER_SECOND = 1_000_000_000
+# Every Companion export has this beside its streams. Its absence means the folder isn't a recording.
+NEON_RECORDING_INFO_FILENAME = "info.json"
 # How far a gaze sample may sit from a scene frame and still be that frame's gaze. A scene frame is
 # 33 ms and gaze runs far faster, the same reasoning as the IMU's tolerance beside its rule.
 GAZE_SAMPLE_TOLERANCE_NANOSECONDS = 50_000_000
 # How often, in recording time, the running count of frames with no orientation is logged.
 POSE_MISS_LOG_INTERVAL_NANOSECONDS = 5 * NANOSECONDS_PER_SECOND
+
+
+class RecordingStream(Enum):
+    """The recording's streams the reader reads besides the scene video, by the library's attribute names."""
+
+    IMU = "imu"
+    GAZE = "gaze"
 
 
 class NeonRecordingCalibrationError(ValueError):
@@ -64,8 +84,6 @@ class NeonRecordingReader(Protocol):
     def scene_frame_rgb(self, index: int) -> np.ndarray: ...
 
     def imu_samples(self) -> tuple[np.ndarray, np.ndarray]: ...
-
-    def imu_quaternions_wxyz_at(self, times_ns: np.ndarray, tolerance_ns: int) -> np.ndarray | None: ...
 
     def gaze_points_at(self, times_ns: np.ndarray, tolerance_ns: int) -> np.ndarray | None: ...
 
@@ -128,8 +146,9 @@ def thinned_indices(times_ns: np.ndarray, frames_per_second: float) -> np.ndarra
     Which frames to keep so the replay runs at about the given rate in recording time.
 
     A grid of ticks one period apart, anchored at the first frame. The first frame at or after each
-    tick is kept, and at most one per tick. After a gap the next frame is kept and the grid moves on
-    from it, so a gap never turns into a burst of frames catching up.
+    tick is kept, and at most one per tick. After a gap the next frame is kept, and the next tick is the
+    grid's first one after it, so a gap never turns into a burst of frames catching up and the grid
+    keeps the phase it started with.
 
     :param times_ns: (N,) int64 frame times, strictly increasing.
     :param frames_per_second: The rate wanted. Above the recording's own rate every frame is kept.
@@ -142,7 +161,8 @@ def thinned_indices(times_ns: np.ndarray, frames_per_second: float) -> np.ndarra
     times = np.asarray(times_ns, dtype=np.int64).reshape(-1)
     if times.size > 1 and np.any(np.diff(times) <= 0):
         raise ValueError("frame times must be strictly increasing")
-    period_ns = int(round(NANOSECONDS_PER_SECOND / frames_per_second))
+    # At least 1 ns, so a rate above a billion a second keeps every frame instead of dividing by zero.
+    period_ns = max(1, int(round(NANOSECONDS_PER_SECOND / frames_per_second)))
     kept: list[int] = []
     next_tick = None
     for index, time in enumerate(times.tolist()):
@@ -254,8 +274,9 @@ class NativeNeonRecordingReader:
         from pupil_labs.neon_recording import NeonRecording
 
         self._recording = NeonRecording(recording_dir)
-        # The library raises its own nested class for a stream the recording doesn't have.
-        self._missing_stream = NeonRecording.SensorError
+        # The library raises its own nested class when a stream won't load, whether its files are
+        # missing or damaged. The original error is on its __cause__.
+        self._stream_error = NeonRecording.SensorError
 
     def scene_times_ns(self) -> np.ndarray:
         return np.asarray(self._recording.scene.time, dtype=np.int64)
@@ -273,11 +294,12 @@ class NativeNeonRecordingReader:
         return np.asarray(self._calibration().scene_distortion_coefficients, dtype=np.float64).reshape(-1)
 
     def scene_frame_rgb(self, index: int) -> np.ndarray:
-        # Indexing decodes this one frame only, so a thinned replay never decodes the frames it skips.
+        # Only the kept frame is converted to RGB. The video decoder still steps through the frames
+        # between this one and the last, so decode cost follows the recording's length.
         return np.asarray(self._recording.scene[index].rgb, dtype=np.uint8)
 
     def imu_samples(self) -> tuple[np.ndarray, np.ndarray]:
-        imu = self._stream("imu")
+        imu = self._stream(RecordingStream.IMU)
         if imu is None:
             return np.empty(0, dtype=np.int64), np.empty((0, 4), dtype=np.float64)
         # The recording stores x, y, z, w. Every Pose is w, x, y, z. Reordering by name here is what
@@ -285,14 +307,8 @@ class NativeNeonRecordingReader:
         rotations = np.asarray(imu.rotation, dtype=np.float64).reshape(-1, 4)
         return np.asarray(imu.time, dtype=np.int64), xyzw_to_wxyz(rotations)
 
-    def imu_quaternions_wxyz_at(self, times_ns: np.ndarray, tolerance_ns: int) -> np.ndarray | None:
-        if self._stream("imu") is None:
-            return None
-        sample_times, orientations = self.imu_samples()
-        return sample_nearest(sample_times, orientations, times_ns, tolerance_ns)
-
     def gaze_points_at(self, times_ns: np.ndarray, tolerance_ns: int) -> np.ndarray | None:
-        gaze = self._stream("gaze")
+        gaze = self._stream(RecordingStream.GAZE)
         if gaze is None:
             return None
         points = np.asarray(gaze.point, dtype=np.float64).reshape(-1, 2)
@@ -301,16 +317,27 @@ class NativeNeonRecordingReader:
     def close(self) -> None:
         self._recording.close()
 
-    def _calibration(self):
+    def _calibration(self) -> "Calibration":
         calibration = self._recording.calibration
         if calibration is None:
             raise FileNotFoundError("recording has no calibration.bin, so the scene camera intrinsics are unknown")
         return calibration
 
-    def _stream(self, name: str):
-        """A stream, or None when this recording doesn't have one, which some recordings don't."""
+    def _stream(self, stream: "RecordingStream") -> object | None:
+        """
+        A stream, or None when it won't load.
+
+        A Companion export always carries both streams, so a load failure is never routine. It's logged
+        as a warning with what actually went wrong, and the replay carries on without that stream.
+        """
         try:
-            return getattr(self._recording, name)
-        except self._missing_stream as missing:
-            log.info("no %s stream (caught %s, expected on some recordings): %s", name, type(missing).__name__, missing)
+            return getattr(self._recording, stream.value)
+        except self._stream_error as failure:
+            log.warning(
+                "the %s stream would not load (caught %s: %s, caused by %r), so frames get none",
+                stream.value,
+                type(failure).__name__,
+                failure,
+                failure.__cause__,
+            )
             return None

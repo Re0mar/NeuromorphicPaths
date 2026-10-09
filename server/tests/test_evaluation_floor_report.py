@@ -17,7 +17,7 @@ import pytest
 
 # Local package imports
 from nav.evaluation.check_planner import EXIT_NOTHING_MEASURED, EXIT_PRINTED, EXIT_REFUSED, main, parse_arguments
-from nav.evaluation.floor_report import floor_report, format_floor_report, measured_unit
+from nav.evaluation.floor_report import FloorReport, floor_report, format_floor_report, measured_unit
 from nav.evaluation.replay import NAV_DIR, RecordingRefused, UnalignedFrames, scene_pass
 from nav.runtime.tap import RecordingTap
 from nav.scene.config import SceneConfig
@@ -180,4 +180,57 @@ def test_two_processes_print_byte_identical_reports(tmp_path: Path) -> None:
 
 def test_every_refusal_cause_has_a_unit_to_print_its_median_in() -> None:
     # A cause added without a unit would raise the first time a walk had one, mid-report.
-    assert [measured_unit(cause) for cause in FloorRefusalCause] == ["deg", "m", "m", "points", ""]
+    assert [measured_unit(cause) for cause in FloorRefusalCause] == ["deg", "m", "m", "points", "", ""]
+
+
+def test_a_refused_fit_on_a_frame_with_no_gravity_is_not_tallied_with_the_others(tmp_path: Path) -> None:
+    # Its lean is against the picture's up, not gravity, so it can't share a median with a real lean.
+    frames = [_frame(index) for index in range(4)] + [_frame(index, floor=False, pose=UNALIGNED) for index in range(4, 7)]
+    log_dir = _write(tmp_path / "floor_then_unaligned_none", frames)
+
+    report = _report(log_dir)
+
+    assert report.by_source[FloorSource.PREVIOUS] == 3
+    assert report.unaligned_frames == 3
+    assert sum(len(values) for values in report.previous_because.values()) == 0
+    assert "fits refused on frames with gravity, previous floor kept:" in format_floor_report("walk", report, "defaults")
+
+
+def test_frames_the_scene_refused_are_counted_in_the_total(tmp_path: Path) -> None:
+    # No floor and no earlier floor to keep, so the scene refuses the first two outright.
+    frames = [_frame(index, floor=False) for index in range(2)] + [_frame(index) for index in range(2, 6)]
+    log_dir = _write(tmp_path / "none_then_floor", frames)
+
+    report = _report(log_dir)
+
+    assert report.refused_frames == 2
+    assert report.by_source[FloorSource.FITTED] == 4
+    assert report.frames == 6
+
+
+def test_refusal_reasons_print_by_count_then_by_text() -> None:
+    report = FloorReport(
+        frames=7,
+        by_source={source: 0 for source in FloorSource},
+        unaligned_frames=0,
+        refused_frames=7,
+        refusal_reasons={"b reason": 1, "z reason": 3, "a reason": 3},
+        heights_meters=np.zeros(0),
+        previous_because={cause: [] for cause in FloorRefusalCause},
+    )
+
+    text = format_floor_report("walk", report, "defaults")
+
+    assert text.index("a reason") < text.index("z reason") < text.index("b reason")
+
+
+def test_the_floor_command_processes_a_log_with_frames_that_have_no_gravity(tmp_path: Path, capsys) -> None:
+    # The planner figures refuse such a walk. The floor figures count those frames apart instead.
+    frames = [_frame(index) for index in range(5)] + [_frame(index, pose=UNALIGNED) for index in range(5, 8)]
+    log_dir = _write(tmp_path / "imu_gap", frames)
+
+    code, out, err = _run([log_dir, "--scene-defaults"], capsys)
+
+    assert code == EXIT_PRINTED
+    assert "frames not gravity aligned: 3" in out
+    assert "scene cache" in err

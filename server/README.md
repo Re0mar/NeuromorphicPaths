@@ -26,7 +26,7 @@ To run the real depth estimator, which the glasses and any plain camera need:
 .venv/Scripts/python -m pip install -e ".[dev,glasses]"
 ```
 
-That adds torch, Depth Anything 3, the Pupil Labs client and its recording reader. The torch that pip picks is the CPU
+That adds torch, Depth Anything 3, and Pupil Labs' real-time client and recording reader. The torch that pip picks is the CPU
 build, which is fine for a recording and too slow for a live walk. For live use install the CUDA
 build that matches your driver from pytorch.org first, then run the line above. The first run
 downloads the metric depth checkpoint, 1.3 GB.
@@ -77,7 +77,6 @@ is the whole configuration, and `--verbose` prints per-stage timings.
 | `neon_live` | the Pupil Labs Neon over the network, through the depth estimator | `--neon-address` only if discovery is blocked |
 | `arcore_tcp` | the Pixel app's depth frames over TCP | `--arcore-port` (9000), `--arcore-accept-timeout` (30), `--reconnect` |
 | `neon_recording` | a native Neon recording, straightened with its own calibration, through the depth estimator | `--recording-dir`, `--recording-rate` (2 frames a second of recording) |
-| `neon_plugin` | a Neon recording the Neon Player depth plugin has run over | `--recording-dir`, `--plugin-model` |
 | `logged` | a frame log this pipeline recorded earlier | `--log-dir`, `--realtime` |
 
 `--reconnect` keeps the same listener open after the phone disconnects, so a walk recorded with
@@ -302,8 +301,9 @@ force-stop and restart the Companion app. Recording on the phone is unaffected.
 `--neon-replay <capture>` runs the same check on a capture folder. `check_neon.py` and the
 `neon_live` command with `--neon-address` were run on 2026-10-05 with the glasses worn, on a school
 network where discovery was not tried. The figures from that day are under *Measured on the
-glasses* below. The `neon_plugin` command has not been run, because there was no plugin recording
-on hand. The Pixel runs on 2026-10-02 used the
+glasses* below. The `neon_recording` command was run on 2026-10-08 on two Companion recordings,
+and replays a walk to within 0.02 m of the live route's camera height
+(`../docs/evaluation/neon_recording_routes.md`). The Pixel runs on 2026-10-02 used the
 `web` sink over wifi and USB. The `phone_app` sink has been run against the suite's fake phone,
 through the same entry point, and not yet with the Pixel. Everything else was run as shown.
 

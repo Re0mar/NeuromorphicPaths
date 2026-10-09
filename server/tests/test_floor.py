@@ -478,8 +478,10 @@ def test_a_wall_alone_keeps_the_previous_plane_and_says_it_leans() -> None:
 
 def test_too_few_candidates_keeps_the_previous_plane_and_gives_the_count() -> None:
     scene = clean_scene()
-    few = _cloud(scene.depth_meters, scene.intrinsics)[: CONFIG.floor_min_candidate_points - 1]
-    few = few[-(few @ CAMERA_UP) > CONFIG.floor_candidate_min_below_camera_meters]
+    cloud = _cloud(scene.depth_meters, scene.intrinsics)
+    # Candidates first, then one short of the minimum, so the count the refusal carries isn't zero.
+    few = cloud[-(cloud @ CAMERA_UP) > CONFIG.floor_candidate_min_below_camera_meters][: CONFIG.floor_min_candidate_points - 1]
+    assert len(few) == CONFIG.floor_min_candidate_points - 1
     previous = Plane(normal=np.array([0.0, -1.0, 0.0]), offset_meters=1.5)
 
     floor, refusal = fit_floor_with_refusal(few, previous=previous, config=CONFIG, up_camera=CAMERA_UP)
@@ -511,3 +513,20 @@ def test_a_fitted_floor_comes_with_no_refusal_and_matches_fit_floor_bit_for_bit(
 def test_every_refusal_cause_has_a_message() -> None:
     for cause in FloorRefusalCause:
         assert str(FloorRefusal(cause, 1.0, 2.0))
+
+
+
+@pytest.mark.parametrize(
+    "plane",
+    [
+        Plane(normal=np.array([0.0, -1.0, 0.0]), offset_meters=float("nan")),
+        Plane(normal=np.array([np.nan, -1.0, 0.0]), offset_meters=1.5),
+        Plane(normal=np.array([0.0, -1.0, 0.0]), offset_meters=float("inf")),
+    ],
+)
+def test_a_plane_that_is_not_finite_is_refused(plane: Plane) -> None:
+    # Every comparison with NaN is False, so without its own rule this passes all three.
+    refusal = plane_is_a_floor(plane, CONFIG, CAMERA_UP)
+
+    assert refusal == FloorRefusal(FloorRefusalCause.NOT_FINITE, None, None)
+    assert str(refusal) == "the plane's normal or offset isn't a finite number"

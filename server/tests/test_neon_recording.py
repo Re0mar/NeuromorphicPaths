@@ -30,6 +30,7 @@ from nav.sources.neon_recording import (
     NeonRecordingRgbSource,
     sample_nearest,
     thinned_indices,
+    xyzw_to_wxyz,
 )
 from stubs import CanonicalDepthEstimator
 
@@ -68,7 +69,7 @@ class FakeRecordingReader:
         self.imu = imu
         self.gaze = gaze
         self.decoded_size = decoded_size if decoded_size is not None else size
-        self.decoded: list[int] = []
+        self.converted: list[int] = []
         self.closed = False
 
     def scene_times_ns(self) -> np.ndarray:
@@ -86,7 +87,7 @@ class FakeRecordingReader:
         return self.distortion
 
     def scene_frame_rgb(self, index: int) -> np.ndarray:
-        self.decoded.append(index)
+        self.converted.append(index)
         height, width = self.decoded_size
         # A different value per frame and a gradient across it, so a mix-up or a missed straightening shows.
         columns = np.tile(np.arange(width, dtype=np.uint8), (height, 1))
@@ -94,9 +95,6 @@ class FakeRecordingReader:
 
     def imu_samples(self) -> tuple[np.ndarray, np.ndarray]:
         return self.imu
-
-    def imu_quaternions_wxyz_at(self, times_ns: np.ndarray, tolerance_ns: int) -> np.ndarray | None:
-        return sample_nearest(self.imu[0], self.imu[1], times_ns, tolerance_ns)
 
     def gaze_points_at(self, times_ns: np.ndarray, tolerance_ns: int) -> np.ndarray | None:
         if self.gaze is None:
@@ -150,9 +148,24 @@ def test_a_gap_gives_one_frame_after_it_not_a_burst() -> None:
 
 
 def test_thinning_is_exact_at_epoch_nanoseconds() -> None:
-    # Uneven gaps, as a real encoder gives, starting at zero.
-    pattern = np.concatenate([[0], np.cumsum(np.array([33_333_333, 33_333_334, 33_333_333] * 40, dtype=np.int64))])
-    assert thinned_indices(FIRST_TIME_NS + pattern, 3.0).tolist() == thinned_indices(pattern + 1, 3.0).tolist()
+    # A float64 holds epoch seconds to about 240 ns, so a frame 1 ns before the tick would round onto
+    # it. In integer nanoseconds it stays before, and the frame on the tick is the one kept.
+    period_ns = 500_000_000
+    times = FIRST_TIME_NS + np.array([0, period_ns - 1, period_ns], dtype=np.int64)
+
+    assert thinned_indices(times, 2.0).tolist() == [0, 2]
+
+
+def test_a_rate_too_high_for_a_whole_nanosecond_keeps_every_frame() -> None:
+    # 1e9 / 3e9 rounds to a 0 ns period. The period is held at 1 ns, so this keeps every frame
+    # rather than dividing by zero.
+    times = FIRST_TIME_NS + np.arange(5, dtype=np.int64) * FRAME_GAP_NS
+
+    assert thinned_indices(times, 3e9).tolist() == [0, 1, 2, 3, 4]
+
+
+def test_a_recording_of_one_frame_keeps_it() -> None:
+    assert thinned_indices(np.array([FIRST_TIME_NS], dtype=np.int64), 2.0).tolist() == [0]
 
 
 @pytest.mark.parametrize("rate", [0.0, -2.0, float("nan")])
@@ -231,13 +244,15 @@ def test_at_the_native_size_the_square_focal_is_the_one_measured_on_the_glasses(
     assert frame.camera_matrix[1, 1] == frame.camera_matrix[0, 0]
 
 
-def test_only_the_kept_frames_are_decoded(tmp_path: Path) -> None:
+def test_only_the_kept_frames_are_converted_to_color(tmp_path: Path) -> None:
+    # The library still decodes the frames in between. Converting a frame to color is the per-frame
+    # cost the source controls, so that's what is limited to the kept frames.
     reader = FakeRecordingReader(frame_count=60)
 
     frames = list(_source(tmp_path, reader, frames_per_second=2.0).frames())
 
-    assert reader.decoded[len(frames):] == []
-    assert reader.decoded == thinned_indices(reader.times, 2.0).tolist()
+    assert reader.converted[len(frames):] == []
+    assert reader.converted == thinned_indices(reader.times, 2.0).tolist()
 
 
 def test_gaze_is_straightened_with_the_picture(tmp_path: Path) -> None:
@@ -368,6 +383,8 @@ def test_closing_the_source_closes_the_recording(tmp_path: Path) -> None:
 def test_the_command_line_source_converts_depth_with_the_straightened_focal(tmp_path: Path) -> None:
     reader = FakeRecordingReader(frame_count=3)
     depth_shape = (12, 16)
+    # The parser takes a folder for a recording only if it has the Companion's info.json.
+    (tmp_path / "info.json").write_text("{}", encoding="utf-8")
     config = build_run_config(["--source", "neon_recording", "--recording-dir", str(tmp_path), "--recording-rate", "1000", "--sink", "none"])
     config = dataclasses.replace(
         config,
@@ -397,6 +414,7 @@ def test_the_native_reader_uses_names_the_installed_library_has() -> None:
     recording_module = pytest.importorskip("pupil_labs.neon_recording", reason="the recording library comes with the glasses extra")
     from pupil_labs.neon_recording.calib import Calibration
     from pupil_labs.neon_recording.timeseries.gaze import GazeTimeseries
+    from pupil_labs.neon_recording.timeseries.av.video import SceneVideoTimeseries
     from pupil_labs.neon_recording.timeseries.imu.imu_timeseries import IMUTimeseries
     from pupil_labs.video.frame import VideoFrame
 
@@ -406,7 +424,12 @@ def test_the_native_reader_uses_names_the_installed_library_has() -> None:
         assert hasattr(recording, name), name
     # The library's fields are descriptors that read a record, so asking one on the class would fail.
     # getattr_static finds the name without calling it.
-    for owner, names in ((Calibration, ("scene_camera_matrix", "scene_distortion_coefficients")), (IMUTimeseries, ("time", "rotation")), (GazeTimeseries, ("time", "point"))):
+    for owner, names in (
+        (Calibration, ("scene_camera_matrix", "scene_distortion_coefficients")),
+        (SceneVideoTimeseries, ("time", "width", "height", "__getitem__")),
+        (IMUTimeseries, ("time", "rotation")),
+        (GazeTimeseries, ("time", "point")),
+    ):
         for name in names:
             assert inspect.getattr_static(owner, name, None) is not None, f"{owner.__name__}.{name}"
     assert hasattr(VideoFrame, "rgb")
@@ -416,3 +439,16 @@ def test_the_native_reader_uses_names_the_installed_library_has() -> None:
 def test_sampling_refuses_times_and_values_that_do_not_pair() -> None:
     with pytest.raises(ValueError, match="3 sample times for 2 values"):
         sample_nearest(np.array([0, 100, 200]), np.zeros((2, 1)), np.array([50]), 10)
+
+
+def test_quaternion_columns_are_reordered_from_the_recordings_xyzw() -> None:
+    # The recording stores x, y, z, w. Getting this wrong flips pitch and breaks the floor fit
+    # with no error anywhere.
+    xyzw = np.array([[0.1, 0.2, 0.3, 0.9], [0.0, 0.0, 0.0, 1.0]])
+
+    assert xyzw_to_wxyz(xyzw) == pytest.approx(np.array([[0.9, 0.1, 0.2, 0.3], [1.0, 0.0, 0.0, 0.0]]))
+
+
+def test_quaternion_reorder_refuses_the_wrong_shape() -> None:
+    with pytest.raises(ValueError, match=r"\(N, 4\)"):
+        xyzw_to_wxyz(np.zeros((3, 3)))

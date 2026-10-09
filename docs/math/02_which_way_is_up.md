@@ -39,8 +39,9 @@ Every quantity here lives in one of these frames.
 >   laptop 155 ms after capture at the median and the head keeps turning. A zero reading is never
 >   used, and a frame with no usable reading that near has no orientation at all
 >   (`server/nav/pose/imu_orientation.py`, `server/nav/sources/neon_stream.py`).
-> - **Neon, recorded.** The recording's IMU sample nearest in time, within 0.05 s, reordered from
->   $`(x, y, z, w)`$ (`server/nav/sources/neon_plugin.py`).
+> - **Neon, recorded.** The same rule as live, applied to the recording's IMU: the usable reading
+>   nearest each frame's own timestamp, within 0.05 s, or no orientation at all. The recording stores
+>   it as $`(x, y, z, w)`$, reordered on reading (`server/nav/sources/neon_recording.py`).
 > - **Mount angles.** Two fixed turns from Pupil Labs' documentation, not measured on our glasses
 >   (`server/nav/pose/neon_mount.py`).
 > - **Plain video.** Nothing. The code falls back to the picture's own up.
@@ -228,8 +229,9 @@ the wearer. Section 3 uses this vector.
 
 > [!WARNING]
 > The picture's own up is right only for a level camera. It's used for plain video files, for live
-> Neon frames that arrive before the first usable IMU reading, and on the Neon Player plugin route
-> until a usable IMU sample turns up, which for a recording with no IMU data is every frame. That's the one place the code
+> Neon frames with no usable IMU reading within 0.05 s of their capture, and for a recorded Neon frame
+> with no usable IMU reading within 0.05 s of it, which for a recording with no IMU data is every frame.
+> That's the one place the code
 > assumes a level camera on purpose. Section 1's fallback camera shows what a pitched camera then
 > gets wrong.
 
