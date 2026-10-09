@@ -19,8 +19,9 @@ recording tap and replays them through the real scene, and about 30 seconds is t
 below. `pytest -rs` is already in
 `pyproject.toml`, so a skipped test prints its reason in the summary. With only the `dev` extra,
 the Neon tests that need PyAV, the Pupil Labs client or its recording reader skip, because those
-come with the `glasses` extra. With both extras installed, nothing skips: 1505 passed on 2026-10-08.
-With only the `dev` extra, those 16 Neon tests skip.
+come with the `glasses` extra. With `dev` and `glasses` installed, 1708 passed on 2026-10-09 and only
+the 47 browser tests skipped, which need the `browser` extra below. With only the `dev` extra, 23
+Neon tests skip as well.
 
 ## Adding a test
 

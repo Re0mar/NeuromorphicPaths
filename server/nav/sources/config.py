@@ -51,33 +51,6 @@ class ArCoreConfig:
     accept_timeout_seconds: float = 30.0  # Long enough to launch the app, short enough to notice it never came.
 
 
-class NeonPluginModel(Enum):
-    """The models the Neon Player depth plugin offers, spelled as it spells its cache file names."""
-
-    METRIC_LARGE = "DA3Metric-Large"
-    SMALL = "DA3-Small"
-    BASE = "DA3-Base"
-
-    @property
-    def is_metric(self) -> bool:
-        # Only the metric model's values are meters. The others cache relative inverse depth that
-        # the plugin scales to 0 to 255 for display, which the planner cannot use for clearance.
-        return self is NeonPluginModel.METRIC_LARGE
-
-    @property
-    def cache_stem(self) -> str:
-        return self.value.replace(" ", "_")
-
-
-@dataclass(frozen=True)
-class NeonPluginConfig:
-    """A Neon recording folder that the Neon Player depth plugin has already run over."""
-
-    recording_dir: str
-    model: NeonPluginModel = NeonPluginModel.METRIC_LARGE
-    sample_tolerance_seconds: float = 0.05  # How far an IMU or gaze sample may sit from a scene frame.
-
-
 @dataclass(frozen=True)
 class NeonRecordingConfig:
     """A native Neon recording, replayed through the straightened camera and the depth estimator."""
@@ -158,7 +131,7 @@ def require_metric(checkpoint: DepthCheckpoint) -> DepthCheckpoint:
     Refuse a checkpoint whose depth is not meters.
 
     The planner's clearance is meters. Relative depth would put every surprise value off by an
-    unknown scale, which is the same reason the plugin route refuses its relative models.
+    unknown scale.
 
     :param checkpoint: The checkpoint asked for.
     :return: The same checkpoint, when its depth is meters or converts to them.

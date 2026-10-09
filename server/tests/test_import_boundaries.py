@@ -21,10 +21,10 @@ from conftest import MINIMUM_FILE_COUNT, NAV_ROOT
 ALLOWED_IMPORTERS = {
     "torch": {Path("sources/estimator.py")},
     "depth_anything_3": {Path("sources/estimator.py")},
-    # The live client and the recording reader are one distribution with two entry points. The
+    # The live client and the recording reader are two Pupil Labs packages under one namespace. The
     # live client runs in a child process, and neon_stream.py is the receiver inside it. The file
     # that starts the process, neon_device.py, reaches the client only through neon_stream.py.
-    # neon_recording.py reads recordings, for both recording sources.
+    # neon_recording.py reads native recordings.
     "pupil_labs": {Path("sources/neon_stream.py"), Path("sources/neon_recording.py")},
     "aiohttp": {Path("sinks/web.py")},
 }

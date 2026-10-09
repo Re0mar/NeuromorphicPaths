@@ -59,7 +59,9 @@ def floor_report(scene: ScenePass) -> FloorReport:
             # A previous floor repeats an earlier frame's height. Counting it would weight the median
             # toward whatever floor stood before each run of refusals.
             heights.append(row.camera_height_meters)
-        if row.floor_source is FloorSource.PREVIOUS and row.floor_refusal is not None:
+        # Only frames with gravity: a lean measured against the picture's up isn't the same
+        # quantity as one measured against gravity, so the two never share a median.
+        if row.gravity_aligned and row.floor_source is FloorSource.PREVIOUS and row.floor_refusal is not None:
             previous_because[row.floor_refusal.cause].append(row.floor_refusal.measured)
     return FloorReport(
         frames=len(scene.planned) + scene.refused_frames,
@@ -81,7 +83,7 @@ def measured_unit(cause: FloorRefusalCause) -> str:
             return "m"
         case FloorRefusalCause.TOO_FEW_CANDIDATES | FloorRefusalCause.NO_LEVEL_SURFACE:
             return "points"
-        case FloorRefusalCause.NO_PLANE:
+        case FloorRefusalCause.NO_PLANE | FloorRefusalCause.NOT_FINITE:
             return ""
         case _:
             # Unreachable while every member is handled. Loud, so a new cause is never printed unitless.
@@ -98,7 +100,8 @@ def format_floor_report(name: str, report: FloorReport, scene_source: str) -> st
     One plain-text block for one walk.
 
     Every source and cause is printed, zero or not, in enum order. Refusal reasons go by count and
-    then by text. Nothing depends on which frame came first, so the same pass prints the same text.
+    then by text. So the same pass prints the same text, byte for byte. Which refusal reasons get a
+    line of their own is still the scene pass's first few, so that part does follow frame order.
 
     :param name: The walk's name.
     :param report: Its figures.
@@ -122,7 +125,7 @@ def format_floor_report(name: str, report: FloorReport, scene_source: str) -> st
     else:
         lines.append("camera above the floor: no fitted or supplied aligned frame, so no height")
 
-    lines.append("fits refused, previous floor kept:")
+    lines.append("fits refused on frames with gravity, previous floor kept:")
     for cause in FloorRefusalCause:
         measured = [value for value in report.previous_because[cause] if value is not None]
         median_text = f", median {float(np.median(measured)):.2f} {measured_unit(cause)}" if measured else ""

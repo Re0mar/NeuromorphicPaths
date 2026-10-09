@@ -32,7 +32,6 @@ from nav.sources.config import (
     EstimatorConfig,
     LoggedConfig,
     NeonConfig,
-    NeonPluginConfig,
     NeonRecordingConfig,
     TapConfig,
     VideoConfig,
@@ -101,7 +100,6 @@ def test_defaults_land_where_they_belong() -> None:
     ("argv", "expected_in_message"),
     [
         (["--source", "video_file", "--sink", "none"], "--path"),
-        (["--source", "neon_plugin", "--sink", "none"], "--recording-dir"),
         (["--source", "neon_recording", "--sink", "none"], "--recording-dir"),
         (["--source", "logged", "--sink", "none"], "--log-dir"),
     ],
@@ -128,7 +126,6 @@ def test_a_video_path_that_is_not_a_file_is_refused_before_anything_loads(tmp_pa
     ("flag", "argv"),
     [
         ("--log-dir", ["--source", "logged", "--log-dir", "no_such_log", "--sink", "none"]),
-        ("--recording-dir", ["--source", "neon_plugin", "--recording-dir", "no_such_recording", "--sink", "none"]),
         ("--recording-dir", ["--source", "neon_recording", "--recording-dir", "no_such_recording", "--sink", "none"]),
     ],
 )
@@ -177,7 +174,6 @@ BUILT_SOURCE_KINDS = {
     SourceKind.NEON_LIVE: {"neon": NeonConfig()},
     SourceKind.LOGGED: {"logged": LoggedConfig(log_dir="a_log")},
     SourceKind.ARCORE_TCP: {"arcore": ArCoreConfig(port=0)},
-    SourceKind.NEON_PLUGIN: {"neon_plugin": NeonPluginConfig(recording_dir="a_recording")},
     SourceKind.NEON_RECORDING: {"neon_recording": NeonRecordingConfig(recording_dir="a_recording")},
 }
 
@@ -398,7 +394,7 @@ def test_the_floor_tilt_and_fallback_fov_defaults_match_their_configs() -> None:
     assert config.estimator.fallback_half_field_of_view_degrees == EstimatorConfig.fallback_half_field_of_view_degrees
 
 
-def test_every_parsed_default_is_the_dataclass_default() -> None:
+def test_every_parsed_default_is_the_dataclass_default(tmp_path) -> None:
     # Each knob has one home, its layer's dataclass. The parser reads from there rather than
     # restating the number, so this is what catches a copy that drifted.
     config = build_run_config(MINIMAL_VIDEO_ARGV)
@@ -416,7 +412,7 @@ def test_every_parsed_default_is_the_dataclass_default() -> None:
     assert arcore is not None and arcore.port == ArCoreConfig.port
     assert arcore.accept_timeout_seconds == ArCoreConfig.accept_timeout_seconds
 
-    recording = build_run_config(["--source", "neon_recording", "--recording-dir", ".", "--sink", "none"]).neon_recording
+    recording = build_run_config(["--source", "neon_recording", "--recording-dir", _recording_dir(tmp_path), "--sink", "none"]).neon_recording
     assert recording is not None and recording.frames_per_second == NeonRecordingConfig.frames_per_second
 
 
@@ -793,15 +789,21 @@ def test_a_demo_recording_without_the_web_sink_is_refused(tmp_path, capsys: pyte
 # *******************************************
 
 
+def _recording_dir(folder) -> str:
+    """A folder the parser takes for a recording. The Companion app writes info.json into every export."""
+    (folder / "info.json").write_text("{}", encoding="utf-8")
+    return str(folder)
+
+
 def test_the_recording_rate_reaches_the_recording_source(tmp_path) -> None:
-    config = build_run_config(["--source", "neon_recording", "--recording-dir", str(tmp_path), "--recording-rate", "3.5", "--sink", "none"])
+    config = build_run_config(["--source", "neon_recording", "--recording-dir", _recording_dir(tmp_path), "--recording-rate", "3.5", "--sink", "none"])
 
     assert config.neon_recording == NeonRecordingConfig(recording_dir=str(tmp_path), frames_per_second=3.5)
     # A recording goes through the estimator like the live glasses, so it gets an estimator config.
     assert config.estimator is not None
 
 
-@pytest.mark.parametrize("source", ["neon_live", "video_file", "logged", "neon_plugin"])
+@pytest.mark.parametrize("source", ["neon_live", "video_file", "logged"])
 def test_a_recording_rate_given_to_another_source_is_refused(source: str, capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit):
         build_run_config(["--source", source, "--recording-rate", "2", "--sink", "none"])
@@ -812,6 +814,45 @@ def test_a_recording_rate_given_to_another_source_is_refused(source: str, capsys
 @pytest.mark.parametrize("rate", ["0", "-1"])
 def test_a_recording_rate_at_or_below_zero_is_refused(rate: str, tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit):
-        build_run_config(["--source", "neon_recording", "--recording-dir", str(tmp_path), "--recording-rate", rate, "--sink", "none"])
+        build_run_config(["--source", "neon_recording", "--recording-dir", _recording_dir(tmp_path), "--recording-rate", rate, "--sink", "none"])
 
     assert "--recording-rate" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("rate", ["nan", "inf"])
+def test_a_recording_rate_that_is_not_a_finite_number_is_refused(rate: str, tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    # float() reads both, and nan passes a "<= 0" check. Without the parser's refusal, inf thins to
+    # nothing and nan raises from inside the source, after the model has loaded.
+    with pytest.raises(SystemExit):
+        build_run_config(["--source", "neon_recording", "--recording-dir", _recording_dir(tmp_path), "--recording-rate", rate, "--sink", "none"])
+
+    message = capsys.readouterr().err
+    assert "--recording-rate" in message
+    assert "must be a finite number" in message
+
+
+def test_a_folder_that_is_not_a_recording_is_refused_before_the_model_loads(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    # A capture folder or a parent folder, given by mistake. The reader would only say so after the
+    # depth model had loaded.
+    with pytest.raises(SystemExit):
+        build_run_config(["--source", "neon_recording", "--recording-dir", str(tmp_path), "--sink", "none"])
+
+    message = capsys.readouterr().err
+    assert str(tmp_path) in message
+    assert "is not a Neon recording, it has no info.json" in message
+
+
+def test_the_retired_plugin_source_is_refused_naming_the_recording_source(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        build_run_config(["--source", "neon_plugin", "--recording-dir", ".", "--sink", "none"])
+
+    message = capsys.readouterr().err
+    assert "invalid choice: 'neon_plugin'" in message
+    assert "neon_recording" in message
+
+
+def test_the_retired_plugin_model_flag_is_refused(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        build_run_config(["--source", "neon_recording", "--recording-dir", ".", "--plugin-model", "DA3Metric-Large", "--sink", "none"])
+
+    assert "unrecognized arguments: --plugin-model" in capsys.readouterr().err
