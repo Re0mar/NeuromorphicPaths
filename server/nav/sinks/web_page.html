@@ -31,6 +31,9 @@
     --space-4: 28px;
     --radius: 10px;
     --control-height: 32px;
+    /* The left column. Wide enough for the ear display, 180 px, inside the card's padding. */
+    --sidebar-width: 220px;
+    --info-size: 24px;
   }
   html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--fg); font-family: system-ui, sans-serif; font-size: var(--text-m); }
   body.alarm { background: var(--alarm-bg); }
@@ -48,18 +51,50 @@
     max-width: 1800px;
     margin: 0 auto;
   }
+  /* The left column's wrapper is no box at all on a phone, so its two cards sit in the single
+     column in the walker's order like every other card. */
+  #side { display: contents; }
   @media (min-width: 900px) {
+    /* A left column with Sound over Heading, the video beside it, From above top right, and Depth
+       under From above across the same width. */
     main {
-      grid-template-columns: 2fr 2fr 1fr 1fr;
+      grid-template-columns: var(--sidebar-width) 2fr 2fr 1fr 1fr;
       grid-template-areas:
-        "video video plan plan"
-        "video video heading depth"
-        "sound sound sound sound";
-      align-items: start;
-      min-height: 100vh;
+        "side video video plan plan"
+        "side video video depth depth";
+      align-items: stretch;
     }
+    #side { grid-area: side; display: flex; flex-direction: column; gap: var(--space-3); min-height: 0; }
+    /* Sound stacks its readouts and controls top to bottom, each control as wide as the column. */
+    /* Scoped under #side so it outranks the shared control-row rule further down, which centers. */
+    #side #sound-panel { flex-direction: column; flex-wrap: nowrap; align-items: stretch; }
+    #sound-panel > label, #sound-panel .toggle-field { display: flex; flex-direction: column; align-items: stretch; gap: var(--space-1); }
+    #sound-panel .toggle { flex-direction: column; }
+    #sound-panel .toggle label + label { border-left: none; border-top: 1px solid var(--panel-edge); }
+    #sound-panel input[type="file"] { width: 100%; box-sizing: border-box; }
+    #ears { align-self: center; }
+    #nc { align-self: center; }
   }
-  .card { background: var(--panel); border: 1px solid var(--panel-edge); border-radius: var(--radius); padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; box-sizing: border-box; }
+  /* One screen, no scrolling, for a laptop or a projector in full screen, tuned on 1650 by 1080.
+     From above takes what its contents need, and the second row takes the rest of the screen,
+     never less than the floor that keeps the picture readable. Sound and Heading split the left
+     column in half. Video, Heading and Depth are size-contained, so their contents fit the space
+     they are given rather than set it, and their pictures shrink to fit. That is also what makes
+     every card end at the same line. Under 700 px tall, a phone on its side, nothing fits one
+     screen, so the cards keep their natural heights and the page scrolls. */
+  @media (min-width: 900px) and (min-height: 700px) {
+    main {
+      grid-template-rows: auto minmax(180px, 1fr);
+      height: 100vh;
+    }
+    #sound-card, #heading-card { flex: 1 1 0; }
+    #video-card, #heading-card, #depth-card { contain: size; }
+    #live, #recording { flex: 1 1 0; min-height: 0; object-fit: contain; }
+    #arrow { flex: 1 1 0; min-height: 0; object-fit: contain; }
+    #depth-frame { flex: 1 1 0; min-height: 0; }
+    #depth { width: 100%; height: 100%; object-fit: contain; object-position: 50% 0; }
+  }
+  .card { position: relative; background: var(--panel); border: 1px solid var(--panel-edge); border-radius: var(--radius); padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; box-sizing: border-box; }
   .card h2 { margin: 0; font-size: var(--text-s); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
   #heading-card { grid-area: heading; align-items: center; }
   #video-card { grid-area: video; }
@@ -68,17 +103,34 @@
   #sound-card { grid-area: sound; }
   canvas, img, video { max-width: 100%; height: auto; }
   .placeholder { font-size: var(--text-s); color: var(--muted); }
-  .placeholder[hidden], #depth[hidden], #rings[hidden], #risk-legend[hidden], #plan-panel[hidden], #music-label[hidden], #live[hidden], #recording[hidden] { display: none; }
+  .placeholder[hidden], #depth[hidden], #rings[hidden], .help[hidden], #plan-panel[hidden], #music-label[hidden], #music-controls[hidden], #live[hidden], #recording[hidden] { display: none; }
+  /* Where the track is, and a slider to jump anywhere in it. */
+  #music-controls { display: flex; flex-direction: column; gap: var(--space-1); font-size: var(--text-s); color: var(--muted); }
+  #music-seek { width: 100%; margin: 0; accent-color: var(--accent); }
   /* The rings sit on a canvas laid exactly over the picture, placed by script to the picture's box. */
   #depth-frame { position: relative; }
   #depth { display: block; }
   #rings { position: absolute; pointer-events: none; }
-  #risk-legend { font-size: var(--text-s); color: var(--muted); }
   #arrow { width: 100%; max-width: 320px; }
   #status { font-size: var(--text-l); }
   #link { font-size: var(--text-s); color: var(--muted); }
-  select, input[type="file"] { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--panel-edge); border-radius: var(--space-1); min-height: var(--control-height); padding: 0 var(--space-2); }
+  /* The music picker. Its built-in button is styled too, or it keeps the browser's own size and
+     spills out of the box drawn around it. */
+  input[type="file"] { font: inherit; font-size: var(--text-s); color: var(--fg); background: var(--bg); border: 1px solid var(--panel-edge); border-radius: var(--space-1); min-height: var(--control-height); padding: var(--space-1); box-sizing: border-box; max-width: 100%; }
+  input[type="file"]::file-selector-button { font: inherit; color: var(--fg); background: var(--panel-edge); border: none; border-radius: var(--space-1); padding: 2px var(--space-2); margin-right: var(--space-2); cursor: pointer; }
   #sound-panel, #video-controls, #layers, #depth-controls { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center; }
+  /* A radio group drawn as one segmented control. The radios stay in the page for the keyboard and
+     screen readers, shrunk out of sight, and the chosen segment is filled. */
+  .toggle-field { display: flex; align-items: center; gap: var(--space-1); }
+  .toggle { display: inline-flex; border: 1px solid var(--panel-edge); border-radius: var(--space-1); overflow: hidden; }
+  .toggle label { display: flex; align-items: center; min-height: var(--control-height); padding: 0 var(--space-2); background: var(--bg); cursor: pointer; }
+  .toggle label + label { border-left: 1px solid var(--panel-edge); }
+  .toggle input { position: absolute; width: 1px; height: 1px; opacity: 0; margin: 0; }
+  .toggle label:has(input:checked) { background: var(--accent); color: var(--black); font-weight: 600; }
+  .toggle label:has(input:disabled) { color: var(--dim); cursor: not-allowed; }
+  /* Chosen but unavailable, as Live is on a run with no video: marked, but not in the accent. */
+  .toggle label:has(input:checked:disabled) { background: var(--panel-edge); color: var(--muted); }
+  .toggle label:has(input:focus-visible) { outline: 2px solid var(--fg); outline-offset: -2px; }
   #layers label { display: flex; align-items: center; gap: var(--space-1); }
   #nc { padding: var(--space-1) var(--space-2); border-radius: var(--space-1); border: 2px solid currentColor; font-weight: bold; }
   #nc.on { color: var(--accent); }
@@ -91,48 +143,117 @@
   #ears .arc.lit { stroke: var(--accent); }
   /* The video panel: the live canvas or the recording, one shown at a time, filling the card. */
   #live, #recording { width: 100%; background: var(--black); border-radius: var(--space-1); }
-  #video-status, #legend, #information { font-size: var(--text-s); color: var(--muted); }
-  /* The plan fills its card up to a sensible width. A percentage width in a grid cell is definite,
-     so the canvas keeps its height, which it would not inside a shrink-to-fit parent. About as tall
-     as the map it holds: 6.5 m across by 6.1 m ahead, margins included. */
-  #plan-panel { width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: var(--space-2); }
-  #plan { width: 100%; aspect-ratio: 20 / 19; background: var(--bg); border-radius: var(--space-1); }
-  /* The legend folds away, one branch at a time, so the card stays about as tall as the map. */
-  #legend summary { cursor: pointer; }
-  #legend ul { margin: var(--space-1) 0 0; padding-left: var(--space-3); }
-  #legend li { margin-top: var(--space-1); }
+  #video-status, #information { font-size: var(--text-s); color: var(--muted); }
+  /* The two numbers on one line, apart, with a dim bar between. Each number keeps its label with it,
+     so a card too narrow for both puts the second on its own line rather than breaking one. */
+  #information { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--space-1) var(--space-2); }
+  #information > span { white-space: nowrap; }
+  #information b, .help b { color: var(--fg); font-weight: 600; }
+  .separator { color: var(--dim); }
+  /* The panel takes the card's whole width, so the numbers get all of it, and the map is capped at a
+     sensible width inside it. A percentage width in a grid cell is definite, so the canvas keeps its
+     height, which it would not inside a shrink-to-fit parent. About as tall as the map it holds:
+     6.5 m across by 6.1 m ahead, margins included. */
+  #plan-panel { width: 100%; display: flex; flex-direction: column; align-items: center; gap: var(--space-2); }
+  #plan { width: 100%; max-width: 420px; aspect-ratio: 20 / 19; background: var(--bg); border-radius: var(--space-1); }
+  /* A card's title row: the title, and a round ? button at the right end that opens how to read
+     the card. From above's title stays centered over the map, padded by the button's width. */
+  .card-head { align-self: stretch; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: var(--space-1); }
+  #plan-card .card-head h2 { text-align: center; padding-left: var(--info-size); }
+  .info { width: var(--info-size); height: var(--info-size); padding: 0; border-radius: 50%; border: 1px solid var(--panel-edge); background: var(--bg); color: var(--muted); font: inherit; font-size: var(--text-s); font-weight: 700; line-height: 1; cursor: pointer; }
+  .info[aria-expanded="true"] { background: var(--accent); border-color: var(--accent); color: var(--black); }
+  /* How to read a card, laid over that card under its title row, scrolling if it runs long. */
+  .help { position: absolute; top: calc(var(--space-3) + var(--info-size) + var(--space-1)); left: var(--space-2); right: var(--space-2); max-height: calc(100% - var(--info-size) - 2 * var(--space-3)); overflow: auto; z-index: 10; box-sizing: border-box; padding: var(--space-2) var(--space-3); background: var(--bg); border: 1px solid var(--panel-edge); border-radius: var(--radius); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5); font-size: var(--text-s); color: var(--fg); }
+  .help ul { margin: 0; padding-left: var(--space-3); }
+  .help li { margin-top: var(--space-1); }
   /* A finger needs more than a pointer. */
   @media (pointer: coarse) {
-    :root { --control-height: 44px; }
-    select, input[type="file"] { font-size: var(--text-l); }
+    :root { --control-height: 44px; --info-size: 44px; }
+    input[type="file"] { font-size: var(--text-m); }
     #layers label, #sound-panel label, #video-controls label, #depth-controls label { min-height: 44px; }
-    #legend summary { line-height: 44px; }
     input[type="checkbox"] { width: 24px; height: 24px; }
   }
 </style>
 </head>
 <body>
 <main>
-  <section class="card" id="heading-card">
-    <h2>Heading</h2>
-    <canvas id="arrow" width="320" height="320" aria-label="The arrow the planner chose"></canvas>
-    <div id="status">Waiting for the laptop.</div>
-    <div id="link">Not connected.</div>
-  </section>
+  <!-- The left column on a laptop, Sound over Heading. On a phone it steps aside and both cards take
+       their own places in the single column. -->
+  <div id="side">
+    <section class="card" id="sound-card">
+      <h2>Sound</h2>
+      <div id="sound-panel">
+        <svg id="ears" viewBox="0 0 200 100" role="img" aria-label="How loud each ear is: five arcs a side, one lit per 20 percent of that ear's volume">
+          <circle class="head" cx="100" cy="50" r="18"></circle>
+          <path class="head" d="M93 34 L100 24 L107 34 Z"></path>
+        </svg>
+        <span id="nc" class="unknown">NC ?</span>
+        <div class="toggle-field">
+          <span class="toggle-name" id="mode-name">Sound</span>
+          <div id="mode" class="toggle" role="radiogroup" aria-labelledby="mode-name">
+            <label><input type="radio" name="mode" value="off" checked> Off</label>
+            <label><input type="radio" name="mode" value="alarm"> Alarm</label>
+            <label><input type="radio" name="mode" value="cancel"> Noise cancellation</label>
+          </div>
+        </div>
+        <label id="music-label" hidden>Music <input type="file" id="music" accept="audio/*"></label>
+        <div id="music-controls" hidden>
+          <input type="range" id="music-seek" min="0" max="0" step="1" value="0" aria-label="Where in the track to play from">
+          <span id="music-time">0:00 / 0:00</span>
+        </div>
+        <!-- Plays the picked file in pieces as it goes, so an hour-long track starts at once and
+             never sits in memory decoded. Its sound goes through the page's ear gains, not out directly. -->
+        <audio id="music-player" loop preload="auto"></audio>
+      </div>
+    </section>
+    <section class="card" id="heading-card">
+      <h2>Heading</h2>
+      <canvas id="arrow" width="320" height="320" aria-label="The arrow the planner chose"></canvas>
+      <div id="status">Waiting for the laptop.</div>
+      <div id="link">Not connected.</div>
+    </section>
+  </div>
   <section class="card" id="video-card">
     <h2>Video</h2>
     <div id="video-controls">
-      <label>Video <select id="video-mode">
-        <option value="live">Live</option>
-        <option value="recording">Recording</option>
-      </select></label>
+      <div class="toggle-field">
+        <span class="toggle-name" id="video-mode-name">Video</span>
+        <div id="video-mode" class="toggle" role="radiogroup" aria-labelledby="video-mode-name">
+          <label><input type="radio" name="video-mode" value="live" checked> Live</label>
+          <label><input type="radio" name="video-mode" value="recording"> Recording</label>
+        </div>
+      </div>
       <span id="video-status">Waiting for video.</span>
     </div>
     <canvas id="live" width="640" height="480" aria-label="What the glasses see, decoded in this browser"></canvas>
     <video id="recording" loop muted playsinline hidden aria-label="A recording of what the glasses saw"></video>
   </section>
   <section class="card" id="plan-card">
-    <h2>From above</h2>
+    <div class="card-head">
+      <h2>From above</h2>
+      <button type="button" class="info" id="plan-info" aria-expanded="false" aria-controls="plan-help" aria-label="How to read From above">?</button>
+    </div>
+    <div class="help" id="plan-help" role="dialog" aria-label="How to read From above" hidden>
+      <ul>
+        <li><b>View.</b> Seen from above, walking up the screen.</li>
+        <li><b>Cells.</b> Brighter costs more to walk through.
+          <ul>
+            <li>Light gray is floor outside the camera's view.</li>
+            <li>Dark gray is in view, but the camera didn't see floor there. Something stands in front of it or the depth has no reading.</li>
+            <li>The planner treats both grays as empty floor.</li>
+          </ul>
+        </li>
+        <li><b>Band.</b> The planned path, as wide as the body.
+          <ul>
+            <li>More solid the more the scene shaped it.</li>
+            <li>Redder the sooner something is in the way.</li>
+          </ul>
+        </li>
+        <li><b>Dots and squares.</b> Dots are obstacles, squares are walls.</li>
+        <li><b>Scene vs Shape Metric.</b> How far what the camera saw moved the plan away from the plan for an empty scene, in bits. An empty corridor gives 0.</li>
+        <li><b>Est. Time to Collision.</b> How long until the body reaches the nearest thing in its path at walking speed. "clear" when nothing is in its path.</li>
+      </ul>
+    </div>
     <div class="placeholder" id="plan-placeholder">Waiting for the planner's first view.</div>
     <section id="plan-panel" hidden>
       <div id="layers">
@@ -142,70 +263,40 @@
       </div>
       <canvas id="plan" aria-label="The planner's view from above: the cost of every spot ahead, the planned path, and the obstacles"></canvas>
       <div id="information">
-        <div>Scene vs Shape Metric: <span id="scene-bits"></span></div>
-        <div>Est. Time to Collision: <span id="contact-time"></span></div>
+        <span><b>Scene vs Shape Metric:</b> <span id="scene-bits"></span></span>
+        <span class="separator" aria-hidden="true">|</span>
+        <span><b>Est. Time to Collision:</b> <span id="contact-time"></span></span>
       </div>
-      <details id="legend">
-        <summary>Legend</summary>
-        <ul>
-          <li>Seen from above, walking up the screen.</li>
-          <li><details><summary>Cells</summary>
-            <ul>
-              <li>Brighter costs more to walk through.</li>
-              <li>Light gray is floor outside the camera's view.</li>
-              <li>Dark gray is in view, but the camera didn't see floor there. Something stands in front of it or the depth has no reading.</li>
-              <li>The planner treats both grays as empty floor.</li>
-            </ul>
-          </details></li>
-          <li><details><summary>Band</summary>
-            <ul>
-              <li>The planned path, as wide as the body.</li>
-              <li>More solid the more the scene shaped it.</li>
-              <li>Redder the sooner something is in the way.</li>
-            </ul>
-          </details></li>
-          <li>Dots are obstacles, squares are walls.</li>
-          <li><details><summary>The two numbers</summary>
-            <ul>
-              <li>Scene vs Shape Metric is how far what the camera saw moved the plan away from the plan for an empty scene, in bits. An empty corridor gives 0.</li>
-              <li>Est. Time to Collision is how long until the body reaches the nearest thing in its path at walking speed. "nothing ahead" when the path is clear.</li>
-            </ul>
-          </details></li>
-        </ul>
-      </details>
     </section>
   </section>
   <section class="card" id="depth-card">
-    <h2>Depth</h2>
+    <div class="card-head">
+      <h2 id="depth-title">Depth</h2>
+      <button type="button" class="info" id="depth-info" aria-expanded="false" aria-controls="depth-help" aria-label="How to read Depth and Risk">?</button>
+    </div>
+    <div class="help" id="depth-help" role="dialog" aria-label="How to read Depth and Risk" hidden>
+      <ul>
+        <li><b>Depth.</b> The depth image the planner saw. Near is bright and far is dark. Dim brown has no reading.</li>
+        <li><b>Risk.</b> What the planner thinks each spot costs, at the moment you'd reach it. Blue is cheap and red is costly. Gray is past the plan, off to the side, or overhead.</li>
+        <li><b>Path.</b> The planned path laid on the floor, blue to red as something gets closer. Risk shows only its borders.</li>
+        <li><b>Rings.</b> One on each obstacle group, amber for a group and magenta for a wall, bigger the more room it leaves.</li>
+        <li><b>Top line.</b> Groups in view, the nearest clearance, where the floor came from, and ALARM when it is up.</li>
+      </ul>
+    </div>
     <div id="depth-controls">
-      <label>Picture <select id="picture-mode">
-        <option value="depth">Depth</option>
-        <option value="risk">Risk</option>
-      </select></label>
+      <div class="toggle-field">
+        <span class="toggle-name" id="picture-mode-name">Picture</span>
+        <div id="picture-mode" class="toggle" role="radiogroup" aria-labelledby="picture-mode-name">
+          <label><input type="radio" name="picture-mode" value="depth" checked> Depth</label>
+          <label><input type="radio" name="picture-mode" value="risk"> Risk</label>
+        </div>
+      </div>
       <label><input type="checkbox" id="show-rings" checked> Rings</label>
     </div>
     <div class="placeholder" id="depth-placeholder">Waiting for the first depth picture.</div>
     <div id="depth-frame">
       <img id="depth" alt="The depth image the planner saw, with the chosen path drawn on it" hidden>
       <canvas id="rings" aria-label="A ring on each obstacle group, sized by how much room it leaves" hidden></canvas>
-    </div>
-    <div id="risk-legend" hidden>Risk is what the planner thinks each spot costs, at the moment you'd
-      reach it. Blue is cheap and red is costly. Gray is past the plan, off to the side, or overhead.</div>
-  </section>
-  <section class="card" id="sound-card">
-    <h2>Sound</h2>
-    <div id="sound-panel">
-      <label>Sound <select id="mode">
-        <option value="off">Off</option>
-        <option value="alarm">Alarm</option>
-        <option value="cancel">Noise cancellation</option>
-      </select></label>
-      <label id="music-label" hidden>Music <input type="file" id="music" accept="audio/*"></label>
-      <svg id="ears" viewBox="0 0 200 100" role="img" aria-label="How loud each ear is: five arcs a side, one lit per 20 percent of that ear's volume">
-        <circle class="head" cx="100" cy="50" r="18"></circle>
-        <path class="head" d="M93 34 L100 24 L107 34 Z"></path>
-      </svg>
-      <span id="nc" class="unknown">NC ?</span>
     </div>
   </section>
 </main>
@@ -237,9 +328,13 @@
   const depth = document.getElementById("depth");
   const status = document.getElementById("status");
   const link = document.getElementById("link");
-  const modeSelect = document.getElementById("mode");
+  const soundMode = document.getElementById("mode");
   const musicLabel = document.getElementById("music-label");
   const musicInput = document.getElementById("music");
+  const musicControls = document.getElementById("music-controls");
+  const musicSeek = document.getElementById("music-seek");
+  const musicTime = document.getElementById("music-time");
+  const musicPlayer = document.getElementById("music-player");
   const ncLabel = document.getElementById("nc");
   const ears = document.getElementById("ears");
   const liveCanvas = document.getElementById("live");
@@ -261,7 +356,7 @@
   const pictureMode = document.getElementById("picture-mode");
   const showRings = document.getElementById("show-rings");
   const ringCanvas = document.getElementById("rings");
-  const riskLegend = document.getElementById("risk-legend");
+  const depthTitle = document.getElementById("depth-title");
   let depthUrl = null;
   // The newest plan view, kept so a toggle can redraw it without asking the laptop for anything.
   let latestPlanView = null;
@@ -310,7 +405,7 @@
 
   let audio = null;  // Built on the first mode change, because browsers refuse sound before a gesture.
   let mode = "off";
-  let musicBuffer = null;  // A decoded file, once one is picked. Null plays the built-in bed.
+  let musicUrl = null;  // The picked file, as the player's source. Null plays the built-in bed.
   let latest = { heading: 0, alarm: false, alarmPan: null, earGainLeft: 1, earGainRight: 1, receivedAt: -Infinity };
   // When the alarm last went from up to down, for the 2 s return. Never while it has not.
   let alarmClearedAt = -Infinity;
@@ -341,6 +436,18 @@
     bedRight.gain.value = 0;
     bedLeft.connect(merger, 0, 0);
     bedRight.connect(merger, 0, 1);
+    // The player joins the graph once, since an element can be wired to one source node only. The
+    // gain in front of the splitter spreads a mono file to both ears and leaves stereo as it is.
+    const musicSource = audioContext.createMediaElementSource(musicPlayer);
+    const twoChannels = audioContext.createGain();
+    twoChannels.channelCount = 2;
+    twoChannels.channelCountMode = "explicit";
+    twoChannels.channelInterpretation = "speakers";
+    const splitter = audioContext.createChannelSplitter(2);
+    musicSource.connect(twoChannels);
+    twoChannels.connect(splitter);
+    splitter.connect(bedLeft, 0);
+    splitter.connect(bedRight, 1);
     return { audioContext, envelope, beepLeft, beepRight, bedLeft, bedRight, bedNodes: [], timer: null };
   }
 
@@ -472,17 +579,10 @@
     // Whatever was playing stops first, so picking a file mid-run swaps the sound cleanly.
     stopBed();
     const { audioContext, bedLeft, bedRight } = audio;
-    if (musicBuffer !== null) {
-      const source = audioContext.createBufferSource();
-      source.buffer = musicBuffer;
-      source.loop = true;
-      const splitter = audioContext.createChannelSplitter(2);
-      source.connect(splitter);
-      splitter.connect(bedLeft, 0);
-      // A mono file has one channel, which the splitter leaves silent on the right. Feed it both.
-      splitter.connect(bedRight, musicBuffer.numberOfChannels > 1 ? 1 : 0);
-      source.start();
-      audio.bedNodes = [source];
+    if (musicUrl !== null) {
+      // Carries on from where it was paused, so leaving noise cancellation and coming back does
+      // not restart the track.
+      musicPlayer.play().catch((error) => { musicTime.textContent = "Can't play this file: " + error.message; });
       return;
     }
     // The built-in bed: a soft fifth, low enough to sit under the beeps and read as "music".
@@ -507,6 +607,7 @@
     if (!audio) return;
     for (const node of audio.bedNodes) node.stop();
     audio.bedNodes = [];
+    musicPlayer.pause();
   }
 
   async function setMode(next) {
@@ -517,6 +618,7 @@
       stopBed();
     }
     musicLabel.hidden = next !== "cancel";
+    musicControls.hidden = next !== "cancel" || musicUrl === null;
     if (next === "off") {
       if (audio) audio.audioContext.suspend();
       return;
@@ -530,15 +632,57 @@
     tick();
   }
 
-  modeSelect.onchange = () => { setMode(modeSelect.value); };
+  soundMode.onchange = () => { setMode(chosen(soundMode)); };
 
-  musicInput.onchange = async () => {
+  musicInput.onchange = () => {
     const file = musicInput.files[0];
     if (!file) return;
     if (!audio) audio = buildAudio();
-    musicBuffer = await audio.audioContext.decodeAudioData(await file.arrayBuffer());
+    // The player reads the file straight from disk as it plays. Only the previous file's URL is
+    // let go, so the browser can drop its handle.
+    if (musicUrl !== null) URL.revokeObjectURL(musicUrl);
+    musicUrl = URL.createObjectURL(file);
+    musicPlayer.src = musicUrl;
+    musicSeek.value = 0;
+    musicControls.hidden = mode !== "cancel";
     if (mode === "cancel") startBed();
   };
+
+  function clockTime(seconds) {
+    // m:ss, or h:mm:ss once a track runs an hour or more.
+    const whole = Math.max(0, Math.floor(seconds || 0));
+    const hours = Math.floor(whole / 3600), minutes = Math.floor((whole % 3600) / 60), rest = whole % 60;
+    const pad = (value) => String(value).padStart(2, "0");
+    return hours > 0 ? hours + ":" + pad(minutes) + ":" + pad(rest) : minutes + ":" + pad(rest);
+  }
+
+  function showMusicTime(position) {
+    musicTime.textContent = clockTime(position) + " / " + clockTime(musicPlayer.duration);
+  }
+
+  // The slider follows the track, except while it is being dragged. A drag shows where it would
+  // land, and the track jumps there when the slider is let go.
+  let musicSeekDragging = false;
+  musicPlayer.addEventListener("loadedmetadata", () => {
+    musicSeek.max = Math.floor(musicPlayer.duration);
+    showMusicTime(musicPlayer.currentTime);
+  });
+  musicPlayer.addEventListener("timeupdate", () => {
+    if (musicSeekDragging) return;
+    musicSeek.value = Math.floor(musicPlayer.currentTime);
+    showMusicTime(musicPlayer.currentTime);
+  });
+  musicPlayer.addEventListener("error", () => {
+    musicTime.textContent = "Can't play this file.";
+  });
+  musicSeek.addEventListener("input", () => {
+    musicSeekDragging = true;
+    showMusicTime(Number(musicSeek.value));
+  });
+  musicSeek.addEventListener("change", () => {
+    musicPlayer.currentTime = Number(musicSeek.value);
+    musicSeekDragging = false;
+  });
 
   // A phone suspends the context when the page is backgrounded or the screen locks.
   document.addEventListener("visibilitychange", () => {
@@ -589,6 +733,11 @@
     if (audio && mode === "alarm") setBeepPan(beepPan());
     if (audio && mode === "cancel") applyEarGains();
     refreshReadouts();
+  }
+
+  // The value of a radio toggle's chosen segment. One is always checked, from the page's own markup.
+  function chosen(toggle) {
+    return toggle.querySelector("input:checked").value;
   }
 
   function rgba(rgb, opacity) {
@@ -714,7 +863,7 @@
     planPanel.hidden = false;
     sceneBits.textContent = view.scene_information_bits.toFixed(2) + " bits";
     // The laptop sends null when nothing is in the walker's path. The bits stay in the title for anyone tuning.
-    contactTime.textContent = view.time_to_contact_seconds === null ? "nothing ahead" : view.time_to_contact_seconds.toFixed(1) + " s";
+    contactTime.textContent = view.time_to_contact_seconds === null ? "clear" : view.time_to_contact_seconds.toFixed(1) + " s";
     contactTime.title = view.avoidance_surprise_bits.toFixed(2) + " bits of avoidance surprise";
     drawPlan(view);
     drawRings();
@@ -740,18 +889,21 @@
   }
 
   // The rings go on a canvas over the picture, at the places the laptop worked out in the picture's
-  // own pixels. The canvas takes the picture's pixel size and its on-screen box, so they line up
-  // however the picture is scaled.
+  // own pixels. The canvas takes the picture's pixel size and the box the picture is shown in, so
+  // they line up however the picture is scaled. On a laptop the picture is fitted into its card,
+  // centered across and at the top, as the CSS says, so the shown box is worked out the same way.
   function drawRings() {
     const rings = latestPlanView ? latestPlanView.group_rings : [];
     ringCanvas.hidden = depth.hidden || !showRings.checked || !depth.naturalWidth;
     if (ringCanvas.hidden) return;
     ringCanvas.width = depth.naturalWidth;
     ringCanvas.height = depth.naturalHeight;
-    ringCanvas.style.left = depth.offsetLeft + "px";
+    const fit = Math.min(depth.offsetWidth / depth.naturalWidth, depth.offsetHeight / depth.naturalHeight);
+    const shownWidth = depth.naturalWidth * fit, shownHeight = depth.naturalHeight * fit;
+    ringCanvas.style.left = depth.offsetLeft + (depth.offsetWidth - shownWidth) / 2 + "px";
     ringCanvas.style.top = depth.offsetTop + "px";
-    ringCanvas.style.width = depth.offsetWidth + "px";
-    ringCanvas.style.height = depth.offsetHeight + "px";
+    ringCanvas.style.width = shownWidth + "px";
+    ringCanvas.style.height = shownHeight + "px";
     const draw = ringCanvas.getContext("2d");
     draw.clearRect(0, 0, ringCanvas.width, ringCanvas.height);
     draw.lineWidth = 2;
@@ -765,16 +917,47 @@
 
   function sendPictureChoice() {
     if (laptopSocket && laptopSocket.readyState === WebSocket.OPEN) {
-      laptopSocket.send(JSON.stringify({ kind: "picture", picture: pictureMode.value }));
+      laptopSocket.send(JSON.stringify({ kind: "picture", picture: chosen(pictureMode) }));
     }
   }
 
   pictureMode.addEventListener("change", () => {
-    riskLegend.hidden = pictureMode.value !== "risk";
+    depthTitle.textContent = pictureMode.querySelector("input:checked").parentElement.textContent.trim();
     sendPictureChoice();
   });
   showRings.addEventListener("change", drawRings);
   window.addEventListener("resize", drawRings);
+
+  // A card's ? button opens how to read that card, over the card. One panel is open at a time, and
+  // Escape, a click anywhere outside the panel, or the button again closes it.
+  const helpButtons = Array.from(document.querySelectorAll("button.info"));
+  const helpPanelOf = (button) => document.getElementById(button.getAttribute("aria-controls"));
+
+  function closeHelp(button) {
+    helpPanelOf(button).hidden = true;
+    button.setAttribute("aria-expanded", "false");
+  }
+
+  for (const button of helpButtons) {
+    button.addEventListener("click", (event) => {
+      // Kept from the document's listener below, which would close the panel straight away.
+      event.stopPropagation();
+      const opening = helpPanelOf(button).hidden;
+      helpButtons.forEach(closeHelp);
+      if (opening) {
+        helpPanelOf(button).hidden = false;
+        button.setAttribute("aria-expanded", "true");
+      }
+    });
+  }
+  document.addEventListener("click", (event) => {
+    for (const button of helpButtons) {
+      if (!helpPanelOf(button).hidden && !helpPanelOf(button).contains(event.target)) closeHelp(button);
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") helpButtons.forEach(closeHelp);
+  });
 
   function connect() {
     const protocol = location.protocol === "https:" ? "wss" : "ws";
@@ -784,7 +967,7 @@
     socket.onopen = () => {
       link.textContent = "Connected to " + location.host + ".";
       // The laptop starts every browser on the depth picture, so only a different choice needs saying.
-      if (pictureMode.value !== "depth") sendPictureChoice();
+      if (chosen(pictureMode) !== "depth") sendPictureChoice();
       connectVideo();
     };
     socket.onmessage = (event) => {
@@ -830,7 +1013,7 @@
   let liveReason = typeof VideoDecoder === "function" && window.isSecureContext ? null : VIDEO_UNSUPPORTED_HERE;
 
   function liveOption() {
-    return videoMode.querySelector('option[value="live"]');
+    return videoMode.querySelector('input[value="live"]');
   }
 
   function setVideoStatus(text) {
@@ -838,7 +1021,7 @@
   }
 
   function showLiveState() {
-    if (videoMode.value !== "live") return;
+    if (chosen(videoMode) !== "live") return;
     liveOption().disabled = liveReason !== null;
     if (liveReason !== null) setVideoStatus("No live video: " + liveReason + ".");
     else if (streamDescription === null) setVideoStatus("Live. Waiting for the laptop to describe the stream.");
@@ -969,7 +1152,7 @@
     showLiveState();
   }
 
-  videoMode.onchange = () => { setVideoMode(videoMode.value); };
+  videoMode.onchange = () => { setVideoMode(chosen(videoMode)); };
 
   setInterval(() => {
     // The decode rate, read once a second. The frames themselves are counted as they are drawn.
