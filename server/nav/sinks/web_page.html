@@ -43,7 +43,9 @@
     <canvas id="plan" aria-label="The planner's view from above: the cost of every spot ahead, the planned path, and the obstacles"></canvas>
     <div id="information"></div>
     <div id="legend">Seen from above, walking up the screen. Brighter cells cost more to walk through.
-      Gray cells are floor the camera could not see, which the planner treats as empty. The band is the planned path, as wide as the body, more solid the more the scene shaped it, and
+      Light gray cells are floor outside the camera's view. Dark gray cells are in view, but the camera
+      didn't see floor there, because something stands in front of it or the depth has no reading.
+      The planner treats both as empty floor. The band is the planned path, as wide as the body, more solid the more the scene shaped it, and
       redder the sooner something is in the way. Dots are obstacles, squares are walls.</div>
   </section>
   <img id="depth" alt="The depth image the planner saw, with the obstacle groups and the chosen path drawn on it" hidden>
@@ -64,8 +66,10 @@
   // sends them. Text frames say what they are in their kind: "path" for the arrow, "plan_view" for
   // the view from above. A binary frame is the depth PNG. A page served by a sink that sends only
   // paths keeps working with the arrow alone. Reconnects on its own, because the laptop restarts
-  // more often than the page reloads. Everything drawn here was computed on the laptop. The page
-  // never decides a color, an opacity or a path.
+  // more often than the page reloads. Everything drawn here was computed on the laptop: the page
+  // never decides a path, an opacity, or a color that means something about the walk. Its only
+  // colors of its own are the field's ramp, the black under the path's border, and the two floor
+  // grays, each defined once below.
   // Sound, in two modes, both from numbers the laptop sends. Alarm mode beeps toward the side the
   // arrow points to, and while the alarm is up the beep moves to the danger's side and quickens.
   // Noise-cancellation mode plays music, a built-in bed or a file, with each ear at the gain the
@@ -95,6 +99,11 @@
   // A dark-to-bright sequential ramp for the field, in the spirit of viridis. The field's own colors,
   // not the path's: the path's colors come from the laptop.
   const FIELD_RAMP = [[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37]];
+  // Floor the planner treats as empty without the camera having seen it. Light gray is outside the
+  // camera's view. Dark gray is in view, with something standing in front of it or no depth reading.
+  // Only this page draws them, so they're defined here rather than sent by the laptop.
+  const UNSEEN_FLOOR_GRAY = "rgb(110, 110, 110)";
+  const HIDDEN_FLOOR_GRAY = "rgb(55, 55, 55)";
   const SIDE_MARGIN_METERS = 0.2;
   const AHEAD_MARGIN_METERS = 0.3;
   const BEHIND_MARGIN_METERS = 0.3;
@@ -393,8 +402,12 @@
       const ceiling = Math.max(percentile(values, 0.98), 1e-9);
       for (let step = 0; step < forward.length; step++) {
         for (let cell = 0; cell < grid.length; cell++) {
+          // A message without a mask draws every cell as seen, so an older laptop's view still draws.
           const seen = !view.floor_seen || view.floor_seen[step][cell];
-          draw.fillStyle = seen ? rgba(fieldColor(view.field[step][cell] / ceiling), 1) : "rgb(110, 110, 110)";
+          const hidden = seen && view.floor_hidden !== undefined && view.floor_hidden[step][cell];
+          if (!seen) draw.fillStyle = UNSEEN_FLOOR_GRAY;
+          else if (hidden) draw.fillStyle = HIDDEN_FLOOR_GRAY;
+          else draw.fillStyle = rgba(fieldColor(view.field[step][cell] / ceiling), 1);
           const left = toX(grid[cell] - cellWidth / 2), top = toY(forward[step] + rowDepth / 2);
           draw.fillRect(left, top, cellWidth * pixelsPerMeter + 0.5, rowDepth * pixelsPerMeter + 0.5);
         }

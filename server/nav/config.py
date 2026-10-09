@@ -547,7 +547,7 @@ def _build_one_sink(sink_kind: SinkKind, config: RunConfig, on_path_sent: Callab
         case SinkKind.WEB:
             if config.web is None:
                 raise ValueError("web needs a web config and none was built")
-            return WebSink(config.web)
+            return WebSink(config.web, config.scene)
         case SinkKind.PHONE_APP:
             if config.phone_app is None:
                 raise ValueError("phone_app needs a phone_app config and none was built")

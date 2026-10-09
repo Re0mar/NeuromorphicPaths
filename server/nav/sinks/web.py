@@ -30,6 +30,7 @@ from pathlib import Path
 import numpy as np
 
 # Local package imports
+from nav.scene.config import SceneConfig
 from nav.sinks.config import WebConfig
 from nav.sinks.rendering import encode_png, render_depth_view
 from nav.sinks.web_messages import WebMessageKind, plan_view_message, web_text_message
@@ -41,8 +42,8 @@ log = logging.getLogger(__name__)
 PAGE_PATH = Path(__file__).parent / "web_page.html"
 STARTUP_TIMEOUT_SECONDS = 5.0
 SHUTDOWN_TIMEOUT_SECONDS = 2.0
-# How many messages may wait for the browsers. A depth view is about 128 KB and a plan view up to
-# about 60 KB, so this is a few megabytes at worst. The queue has to be bounded: the pipeline hands
+# How many messages may wait for the browsers. A depth view is about 128 KB and a plan view about
+# 100 KB on a cluttered room, so this is a few megabytes at worst. The queue has to be bounded: the pipeline hands
 # over a path, a plan view and a picture per planned frame and never waits, while one browser that
 # stops reading suspends the send loop for every browser, so an unbounded queue grows for as long as
 # that lasts.
@@ -73,8 +74,11 @@ class _Slot(Enum):
 class WebSink:
     """Serves the page and pushes every published path, and the depth view when given one, to every connected browser."""
 
-    def __init__(self, config: WebConfig) -> None:
+    def __init__(self, config: WebConfig, scene: SceneConfig) -> None:
         self._config = config
+        # The run's own, so the plan view judges hidden floor with the inlier distance and depth
+        # range the scene used on this run.
+        self._scene = scene
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._outgoing: asyncio.Queue | None = None
@@ -205,7 +209,7 @@ class WebSink:
         The path itself has already gone out.
         """
         try:
-            plan_view = web_text_message(WebMessageKind.PLAN_VIEW, plan_view_message(picture.path, picture.field, picture.grid, picture.view))
+            plan_view = web_text_message(WebMessageKind.PLAN_VIEW, plan_view_message(picture.path, picture.field, picture.grid, picture.view, self._scene))
         except ValueError as unbuildable:
             log.warning("plan view not sent (caught %s, expected): %s", type(unbuildable).__name__, unbuildable)
         else:

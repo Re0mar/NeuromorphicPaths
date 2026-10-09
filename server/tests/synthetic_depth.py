@@ -179,6 +179,47 @@ def two_level_scene(
     )
 
 
+def level_floor_depth(heights_meters: np.ndarray | None = None) -> np.ndarray:
+    """
+    The floor seen by a level camera, CAMERA_HEIGHT_METERS up with intrinsics(), optionally lifted.
+
+    No pitch, so a floor pixel's depth has a closed form a test can check by hand: row v reads the
+    floor at FOCAL_PIXELS * CAMERA_HEIGHT_METERS / (v - HEIGHT / 2). Rows at and above the horizon
+    see no floor and read NaN. With the defaults the bottom row is floor 3.40 m out.
+
+    :param heights_meters: (HEIGHT, WIDTH) height to lift each pixel's reading off the floor, or None.
+    :return: (HEIGHT, WIDTH) float32 depth.
+    :rtype: np.ndarray
+    """
+    horizon = HEIGHT / 2.0
+    rows = np.arange(HEIGHT, dtype=np.float64)[:, None]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        depth = np.where(rows > horizon, FOCAL_PIXELS * CAMERA_HEIGHT_METERS / (rows - horizon), np.nan) * np.ones((1, WIDTH))
+    if heights_meters is not None:
+        # On a pixel's own ray, height above the floor is camera height * (1 - reading / floor
+        # depth), so a reading this much nearer stands that much higher.
+        depth = depth * (1.0 - heights_meters / CAMERA_HEIGHT_METERS)
+    return depth.astype(np.float32)
+
+
+def with_box_on_level_floor(depth: np.ndarray, bottom_meters: float = 0.0) -> np.ndarray:
+    """
+    A box face painted over level_floor_depth: 3.6 m out, 0.6 m wide, from bottom_meters to 0.8 m up.
+
+    With the defaults it covers columns 64 +- 100 * 0.3 / 3.6, so 56 to 72. Its top, 0.8 m up, is
+    row 48 + 100 * 0.8 / 3.6 = 70.2. Standing on the floor its foot is row 48 + 160 / 3.6 = 92.4.
+    So rows 71 to 92, fewer when it starts above the floor.
+    """
+    distance, half_width, top = 3.6, 0.3, 0.8
+    first_column = int(np.ceil(WIDTH / 2.0 - FOCAL_PIXELS * half_width / distance))
+    last_column = int(np.floor(WIDTH / 2.0 + FOCAL_PIXELS * half_width / distance))
+    first_row = int(np.ceil(HEIGHT / 2.0 + FOCAL_PIXELS * (CAMERA_HEIGHT_METERS - top) / distance))
+    last_row = int(np.floor(HEIGHT / 2.0 + FOCAL_PIXELS * (CAMERA_HEIGHT_METERS - bottom_meters) / distance))
+    boxed = depth.copy()
+    boxed[first_row : last_row + 1, first_column : last_column + 1] = distance
+    return boxed
+
+
 def degrade_with_holes(depth: np.ndarray, fraction: float, seed: int = 0) -> np.ndarray:
     """Set a random fraction of pixels to NaN, the way a confidence filter would."""
     generator = np.random.default_rng(seed)

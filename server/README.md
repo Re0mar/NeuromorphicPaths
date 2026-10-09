@@ -143,7 +143,9 @@ The browser also draws the planner's view from above, walking up the screen, abo
 
 - **Field.** What every spot ahead costs to walk through, at the moment the walker would reach it.
   Brighter costs more. It is clipped at the frame's 98th percentile, so one costly point does not
-  leave the rest dark.
+  leave the rest dark. Light gray cells are floor outside the camera's view. Dark gray cells are in
+  view, but the camera didn't see floor there, because something stands in front of it or the depth
+  has no reading. The planner treats both as empty floor.
 - **Path.** The planned path as a band the body's width, from a dot at the walker to an arrowhead
   where the plan ends. Its color runs blue to red as something in the way gets closer, fully red
   from the moment the alarm raises, 0.7 s to contact by default. Its fill is more solid the more the scene shaped the plan, and its borders
