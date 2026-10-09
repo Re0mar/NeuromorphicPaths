@@ -124,8 +124,8 @@ per browser per device. The key protects nothing, since the page is on a local n
 and GitHub's secret scanning will say a private key is in the repository. The README beside the
 certificate says why that is accepted and how to remake the pair.
 
-The page is five cards. On a laptop or a projector, Video takes the left two thirds, Heading sits
-top right with the arrow, From above and Depth sit under it, and Sound runs along the bottom. On a
+The page is five cards. On a laptop or a projector, Video takes the left two thirds, From above sits
+top right, Heading with the arrow and Depth sit under it, and Sound runs along the bottom. On a
 phone the same cards stack in one column with Heading first, since the phone page is the walker's.
 The page picks by its own width, at 900 pixels, so a phone turned sideways gets the laptop layout,
 and controls grow under a finger. Sound holds the selector, the music picker in noise-cancellation
@@ -182,12 +182,15 @@ The browser also draws the planner's view from above, walking up the screen, abo
 - **Obstacles.** Each group's nearest point, amber dots for groups and magenta squares for walls,
   the same colors the depth view uses.
 
-Under it are two numbers. *How much the scene shaped the plan* is how far what the camera saw moved
-the plan from what the planner would do with nothing in view, in bits, measured where the arrow
-reads the path. It is not a confidence: an empty corridor gives a plan the planner is sure of and
-0 bits. *How soon something is in the way* is the course's avoidance surprise for the nearest group
-in the walker's path, in bits, 0.72 at one second to contact. The laptop computes every color,
-opacity and number on the page. The page only draws them. To see it on a recorded walk:
+Under it are two lines. *Scene vs Shape Metric* is how far what the camera saw moved the plan from
+what the planner would do with nothing in view, in bits, measured where the arrow reads the path.
+It is not a confidence: an empty corridor gives a plan the planner is sure of and 0 bits.
+*Est. Time to Collision* is the seconds until the body reaches the nearest group in the walker's
+path at walking speed, or `nothing ahead` when the path is clear. The laptop reads it back from the
+course's avoidance surprise, 0.72 bits at one second to contact, and the bits show when the
+pointer rests on the time. Under the two lines is a legend, folded shut, whose branches open one at
+a time. The laptop computes every color, opacity and number on the page. The page only draws them.
+To see it on a recorded walk:
 
 ```
 .venv/Scripts/python -m nav --source logged --log-dir frame_logs/walk --sink web --realtime

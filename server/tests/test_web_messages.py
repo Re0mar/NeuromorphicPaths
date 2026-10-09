@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 # Local package imports
+from nav.planner.alarm import avoidance_surprise_bits_at
 from nav.scene.config import SceneConfig
 from nav.sinks.floor_geometry import floor_hidden_mask, floor_seen_mask
 from nav.sinks.path_style import BORDER_OPACITY, GROUP_RGB, SURPRISE_HIGH_RGB, WALL_RGB, path_color_rgb, path_fill_opacity
@@ -93,6 +94,19 @@ def test_the_plan_view_color_and_opacity_come_from_path_style() -> None:
     assert message["path_border_opacity"] == pytest.approx(BORDER_OPACITY)
     assert message["group_color_rgb"] == list(GROUP_RGB)
     assert message["wall_color_rgb"] == list(WALL_RGB)
+
+
+def test_the_plan_view_carries_the_time_to_contact_the_surprise_stands_for() -> None:
+    # 0.7213 bits is one second to contact, the figure the alarm's tests pin.
+    message = plan_view_message(_path(avoidance=avoidance_surprise_bits_at(1.0)), _field(), GRID, _view(), SCENE)
+
+    assert message["time_to_contact_seconds"] == pytest.approx(1.0)
+
+
+def test_an_empty_corridor_sends_no_time_to_contact() -> None:
+    text = web_text_message(WebMessageKind.PLAN_VIEW, plan_view_message(_path(avoidance=0.0), _field(), GRID, _view(), SCENE))
+
+    assert json.loads(text)["time_to_contact_seconds"] is None
 
 
 def test_the_path_width_is_the_bodys_width() -> None:

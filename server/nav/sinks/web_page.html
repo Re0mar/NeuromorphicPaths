@@ -52,8 +52,8 @@
     main {
       grid-template-columns: 2fr 2fr 1fr 1fr;
       grid-template-areas:
-        "video video heading heading"
-        "video video plan depth"
+        "video video plan plan"
+        "video video heading depth"
         "sound sound sound sound";
       align-items: start;
       min-height: 100vh;
@@ -63,7 +63,7 @@
   .card h2 { margin: 0; font-size: var(--text-s); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
   #heading-card { grid-area: heading; align-items: center; }
   #video-card { grid-area: video; }
-  #plan-card { grid-area: plan; }
+  #plan-card { grid-area: plan; align-items: center; }
   #depth-card { grid-area: depth; }
   #sound-card { grid-area: sound; }
   canvas, img, video { max-width: 100%; height: auto; }
@@ -92,11 +92,16 @@
      as the map it holds: 6.5 m across by 6.1 m ahead, margins included. */
   #plan-panel { width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: var(--space-2); }
   #plan { width: 100%; aspect-ratio: 20 / 19; background: var(--bg); border-radius: var(--space-1); }
+  /* The legend folds away, one branch at a time, so the card stays about as tall as the map. */
+  #legend summary { cursor: pointer; }
+  #legend ul { margin: var(--space-1) 0 0; padding-left: var(--space-3); }
+  #legend li { margin-top: var(--space-1); }
   /* A finger needs more than a pointer. */
   @media (pointer: coarse) {
     :root { --control-height: 44px; }
     select, input[type="file"] { font-size: var(--text-l); }
     #layers label, #sound-panel label, #video-controls label { min-height: 44px; }
+    #legend summary { line-height: 44px; }
     input[type="checkbox"] { width: 24px; height: 24px; }
   }
 </style>
@@ -131,12 +136,38 @@
         <label><input type="checkbox" id="show-obstacles" checked> Obstacles</label>
       </div>
       <canvas id="plan" aria-label="The planner's view from above: the cost of every spot ahead, the planned path, and the obstacles"></canvas>
-      <div id="information"></div>
-      <div id="legend">Seen from above, walking up the screen. Brighter cells cost more to walk through.
-        Light gray cells are floor outside the camera's view. Dark gray cells are in view, but the camera
-        didn't see floor there, because something stands in front of it or the depth has no reading.
-        The planner treats both as empty floor. The band is the planned path, as wide as the body, more solid the more the scene shaped it, and
-        redder the sooner something is in the way. Dots are obstacles, squares are walls.</div>
+      <div id="information">
+        <div>Scene vs Shape Metric: <span id="scene-bits"></span></div>
+        <div>Est. Time to Collision: <span id="contact-time"></span></div>
+      </div>
+      <details id="legend">
+        <summary>Legend</summary>
+        <ul>
+          <li>Seen from above, walking up the screen.</li>
+          <li><details><summary>Cells</summary>
+            <ul>
+              <li>Brighter costs more to walk through.</li>
+              <li>Light gray is floor outside the camera's view.</li>
+              <li>Dark gray is in view, but the camera didn't see floor there. Something stands in front of it or the depth has no reading.</li>
+              <li>The planner treats both grays as empty floor.</li>
+            </ul>
+          </details></li>
+          <li><details><summary>Band</summary>
+            <ul>
+              <li>The planned path, as wide as the body.</li>
+              <li>More solid the more the scene shaped it.</li>
+              <li>Redder the sooner something is in the way.</li>
+            </ul>
+          </details></li>
+          <li>Dots are obstacles, squares are walls.</li>
+          <li><details><summary>The two numbers</summary>
+            <ul>
+              <li>Scene vs Shape Metric is how far what the camera saw moved the plan away from the plan for an empty scene, in bits. An empty corridor gives 0.</li>
+              <li>Est. Time to Collision is how long until the body reaches the nearest thing in its path at walking speed. "nothing ahead" when the path is clear.</li>
+            </ul>
+          </details></li>
+        </ul>
+      </details>
     </section>
   </section>
   <section class="card" id="depth-card">
@@ -201,7 +232,8 @@
   const planPlaceholder = document.getElementById("plan-placeholder");
   const depthPlaceholder = document.getElementById("depth-placeholder");
   const plan = document.getElementById("plan");
-  const information = document.getElementById("information");
+  const sceneBits = document.getElementById("scene-bits");
+  const contactTime = document.getElementById("contact-time");
   const toggles = {
     field: document.getElementById("show-field"),
     path: document.getElementById("show-path"),
@@ -655,8 +687,10 @@
     latestPlanView = view;
     planPlaceholder.hidden = true;
     planPanel.hidden = false;
-    information.textContent = "How much the scene shaped the plan: " + view.scene_information_bits.toFixed(2) + " bits. "
-      + "How soon something is in the way: " + view.avoidance_surprise_bits.toFixed(2) + " bits.";
+    sceneBits.textContent = view.scene_information_bits.toFixed(2) + " bits";
+    // The laptop sends null when nothing is in the walker's path. The bits stay in the title for anyone tuning.
+    contactTime.textContent = view.time_to_contact_seconds === null ? "nothing ahead" : view.time_to_contact_seconds.toFixed(1) + " s";
+    contactTime.title = view.avoidance_surprise_bits.toFixed(2) + " bits of avoidance surprise";
     drawPlan(view);
   }
 

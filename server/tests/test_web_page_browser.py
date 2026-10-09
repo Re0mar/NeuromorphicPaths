@@ -8,6 +8,7 @@ a browser.
 """
 
 # Standard library imports
+import dataclasses
 import json
 import re
 
@@ -25,6 +26,7 @@ from browser_harness import (
     send_text,
     snapshot,
 )
+from nav.planner.alarm import avoidance_surprise_bits_at
 from nav.scene.config import SceneConfig
 from nav.sinks.config import WebConfig
 from nav.sinks.web import WebSink
@@ -109,9 +111,32 @@ def test_a_plan_view_shows_the_panel_with_its_two_numbers(browser_page: PageSess
 
     page.wait_for_selector("#plan-panel", state="visible", timeout=ELEMENT_TIMEOUT_MS)
     _wait_for_text(page, "information", "bits")
-    information = page.text_content("#information")
-    assert information.count("bits") == 2, information
+    assert page.text_content("#scene-bits").endswith(" bits")
+    # The sample path has nothing in its corridor.
+    assert page.text_content("#contact-time") == "nothing ahead"
     assert canvas_pixels(page, "plan") > 0
+
+
+def test_the_time_to_collision_is_shown_in_seconds(browser_page: PageSession, sink: WebSink) -> None:
+    page = browser_page.page
+    field, grid = sample_field()
+    one_second_away = dataclasses.replace(sample_path(), avoidance_surprise_bits=avoidance_surprise_bits_at(1.0))
+
+    sink.publish_debug(one_second_away, field, grid, sample_view())
+
+    _wait_for_text(page, "contact-time", " s")
+    assert page.text_content("#contact-time") == "1.0 s"
+
+
+def test_the_legend_starts_folded_and_the_panel_stays_short(browser_page: PageSession, sink: WebSink) -> None:
+    page = browser_page.page
+    _publish_everything(sink)
+    page.wait_for_selector("#plan-panel", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+    folded_height = _box(page, "legend")["height"]
+
+    assert not page.evaluate("() => document.getElementById('legend').open")
+    page.click("#legend > summary")
+    assert _box(page, "legend")["height"] > folded_height, "opening the legend shows its branches"
 
 
 def test_unticking_field_changes_the_plan_drawing(browser_page: PageSession, sink: WebSink) -> None:
@@ -655,9 +680,10 @@ def test_the_desktop_layout_puts_the_video_left_and_the_sound_bar_along_the_bott
         assert page.evaluate("() => getComputedStyle(document.querySelector('main')).display") == "grid"
         video, heading, plan, depth, sound = (_box(page, card) for card in ("video-card", "heading-card", "plan-card", "depth-card", "sound-card"))
 
-        assert video["x"] + video["width"] <= heading["x"] + 1, "the video sits left of the heading"
-        assert video["y"] <= heading["y"] + 1 and video["y"] + video["height"] >= plan["y"], "the video spans the heading's row and the next"
-        assert plan["x"] + plan["width"] <= depth["x"] + 1, "from above sits left of depth, both under the heading"
+        assert video["x"] + video["width"] <= plan["x"] + 1, "the video sits left of from above"
+        assert video["y"] <= plan["y"] + 1 and video["y"] + video["height"] >= heading["y"], "the video spans from above's row and the next"
+        assert heading["y"] >= plan["y"] + plan["height"] - 1 and depth["y"] >= plan["y"] + plan["height"] - 1, "heading and depth sit under from above"
+        assert heading["x"] + heading["width"] <= depth["x"] + 1, "heading sits left of depth"
         assert sound["y"] >= max(card["y"] + card["height"] for card in (video, heading, plan, depth)) - 1, "the sound bar is along the bottom"
         snapshot(page, f"design_desktop_{width}")
     finally:
