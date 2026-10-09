@@ -11,6 +11,7 @@ a browser.
 import dataclasses
 import json
 import re
+import wave
 
 # Third party imports
 import numpy as np
@@ -72,6 +73,11 @@ def _wait_for_text(page, element_id: str, fragment: str) -> None:
     )
 
 
+def _choose(page, toggle_id: str, value: str) -> None:
+    """Click the segment of a radio toggle that holds this value, the way a person picks it."""
+    page.locator(f"#{toggle_id} label:has(input[value='{value}'])").click()
+
+
 def _publish_everything(sink: WebSink) -> None:
     field, grid = sample_field()
     sink.publish_debug(sample_path(heading=0.3), field, grid, sample_view())
@@ -115,7 +121,7 @@ def test_a_plan_view_shows_the_panel_with_its_two_numbers(browser_page: PageSess
     _wait_for_text(page, "information", "bits")
     assert page.text_content("#scene-bits").endswith(" bits")
     # The sample path has nothing in its corridor.
-    assert page.text_content("#contact-time") == "nothing ahead"
+    assert page.text_content("#contact-time") == "clear"
     assert canvas_pixels(page, "plan") > 0
 
 
@@ -130,15 +136,53 @@ def test_the_time_to_collision_is_shown_in_seconds(browser_page: PageSession, si
     assert page.text_content("#contact-time") == "1.0 s"
 
 
-def test_the_legend_starts_folded_and_the_panel_stays_short(browser_page: PageSession, sink: WebSink) -> None:
+def _help_open(page, panel_id: str) -> bool:
+    return page.is_visible(f"#{panel_id}")
+
+
+def test_a_cards_help_opens_from_its_button_over_the_card_and_closes_every_way(browser_page: PageSession, sink: WebSink) -> None:
     page = browser_page.page
     _publish_everything(sink)
     page.wait_for_selector("#plan-panel", state="visible", timeout=ELEMENT_TIMEOUT_MS)
-    folded_height = _box(page, "legend")["height"]
+    assert not _help_open(page, "plan-help") and not _help_open(page, "depth-help"), "both start closed"
 
-    assert not page.evaluate("() => document.getElementById('legend').open")
-    page.click("#legend > summary")
-    assert _box(page, "legend")["height"] > folded_height, "opening the legend shows its branches"
+    page.click("#plan-info")
+    assert _help_open(page, "plan-help") and page.get_attribute("#plan-info", "aria-expanded") == "true"
+    panel, card = _box(page, "plan-help"), _box(page, "plan-card")
+    assert card["x"] <= panel["x"] and panel["x"] + panel["width"] <= card["x"] + card["width"], "the panel stays over its card"
+    page.click("#plan-help li")
+    assert _help_open(page, "plan-help"), "a click inside the panel keeps it open"
+
+    page.keyboard.press("Escape")
+    assert not _help_open(page, "plan-help") and page.get_attribute("#plan-info", "aria-expanded") == "false"
+
+    page.click("#plan-info")
+    page.click("#arrow")
+    assert not _help_open(page, "plan-help"), "a click outside closes it"
+
+    page.click("#plan-info")
+    page.click("#plan-info")
+    assert not _help_open(page, "plan-help"), "the button again closes it"
+
+    page.click("#plan-info")
+    page.click("#depth-info")
+    assert _help_open(page, "depth-help") and not _help_open(page, "plan-help"), "one panel at a time"
+
+
+def test_the_two_numbers_sit_on_one_line_at_the_demo_laptops_size(browser, sink: WebSink) -> None:
+    # The sample path has an empty corridor, so the time reads "clear", as wide as a two-digit time.
+    session = _open_with_everything(browser, sink, *DESKTOP_VIEWPORTS[0])
+    try:
+        page = session.page
+        _wait_for_text(page, "contact-time", "clear")
+
+        scene, contact = _box(page, "scene-bits"), _box(page, "contact-time")
+
+        assert abs(scene["y"] - contact["y"]) <= 2, "the metrics share a line"
+        assert scene["x"] < contact["x"]
+    finally:
+        session.close()
+    assert session.errors == [], session.errors
 
 
 def test_unticking_field_changes_the_plan_drawing(browser_page: PageSession, sink: WebSink) -> None:
@@ -170,7 +214,7 @@ def test_a_depth_picture_appears_when_sent(browser_page: PageSession, sink: WebS
     assert page.get_attribute("#depth", "src").startswith("blob:")
 
 
-def test_choosing_risk_brings_the_risk_picture_and_its_reading_line(browser_page: PageSession, sink: WebSink, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_choosing_risk_brings_the_risk_picture_and_its_title(browser_page: PageSession, sink: WebSink, monkeypatch: pytest.MonkeyPatch) -> None:
     import nav.sinks.web as web_module
 
     drawn = []
@@ -185,13 +229,13 @@ def test_choosing_risk_brings_the_risk_picture_and_its_reading_line(browser_page
     _publish_everything(sink)
     page.wait_for_selector("#depth", state="visible", timeout=ELEMENT_TIMEOUT_MS)
     depth_source = page.get_attribute("#depth", "src")
-    assert not page.is_visible("#risk-legend")
+    assert page.text_content("#depth-title") == "Depth"
 
     # Nothing more is published, so the risk picture can only come from the laptop redrawing the last view.
-    page.select_option("#picture-mode", "risk")
+    _choose(page, "picture-mode", "risk")
 
     page.wait_for_function("(before) => document.getElementById('depth').src !== before", arg=depth_source, timeout=ELEMENT_TIMEOUT_MS)
-    assert page.is_visible("#risk-legend")
+    assert page.text_content("#depth-title") == "Risk", "the card is named for what it shows"
     assert len(drawn) == 1
 
 
@@ -210,8 +254,15 @@ def test_the_rings_are_drawn_over_the_picture_and_hide_with_their_box(browser_pa
     page.wait_for_function("() => document.getElementById('rings').width > 0", timeout=ELEMENT_TIMEOUT_MS)
 
     assert canvas_pixels(page, "rings") > 0
+    # The picture is fitted into its box, centered across and at the top, so the rings must cover
+    # exactly the part of the box the picture fills: its shape, the box's top, centered between its sides.
     ring_box, picture_box = _box(page, "rings"), _box(page, "depth")
-    assert all(abs(ring_box[side] - picture_box[side]) <= 1 for side in ("x", "y", "width", "height")), "the rings lie exactly over the picture"
+    natural_width, natural_height = page.evaluate("() => [document.getElementById('depth').naturalWidth, document.getElementById('depth').naturalHeight]")
+    assert abs(ring_box["width"] / ring_box["height"] - natural_width / natural_height) < 0.02, "the rings keep the picture's shape"
+    assert abs(ring_box["y"] - picture_box["y"]) <= 1, "at the top of the box"
+    assert abs((ring_box["x"] - picture_box["x"]) - (picture_box["x"] + picture_box["width"] - ring_box["x"] - ring_box["width"])) <= 1, "centered across it"
+    assert ring_box["width"] <= picture_box["width"] + 1 and ring_box["height"] <= picture_box["height"] + 1, "inside it"
+    assert ring_box["width"] >= picture_box["width"] - 1 or ring_box["height"] >= picture_box["height"] - 1, "filling it one way"
 
     page.uncheck("#show-rings")
     assert not page.is_visible("#rings")
@@ -223,16 +274,67 @@ def test_switching_sound_modes_throws_nothing_and_shows_the_picker_only_in_cance
     page = browser_page.page
 
     for mode in ("alarm", "cancel", "off", "cancel"):
-        page.select_option("#mode", mode)
+        _choose(page, "mode", mode)
         page.wait_for_timeout(100)
         assert page.is_visible("#music-label") == (mode == "cancel"), f"the music picker in mode {mode}"
+
+
+MUSIC_SECONDS = 6
+MUSIC_SAMPLE_RATE = 8000
+
+
+def _write_music(path) -> None:
+    """A short stereo tone as a WAV file, a different pitch in each ear, enough for the player to stream."""
+    seconds = np.arange(MUSIC_SECONDS * MUSIC_SAMPLE_RATE) / MUSIC_SAMPLE_RATE
+    channels = np.stack((np.sin(2 * np.pi * 330 * seconds), np.sin(2 * np.pi * 440 * seconds)), axis=1)
+    samples = (channels * 0.2 * 32767).astype("<i2")
+    with wave.open(str(path), "wb") as music:
+        music.setnchannels(2)
+        music.setsampwidth(2)
+        music.setframerate(MUSIC_SAMPLE_RATE)
+        music.writeframes(samples.tobytes())
+
+
+def _player(page, field: str):
+    return page.evaluate(f"() => document.getElementById('music-player').{field}")
+
+
+def test_a_picked_track_streams_jumps_where_the_slider_says_and_pauses_with_the_mode(browser_page: PageSession, tmp_path) -> None:
+    page = browser_page.page
+    music = tmp_path / "walk.wav"
+    _write_music(music)
+    _choose(page, "mode", "cancel")
+    assert not page.is_visible("#music-controls"), "no slider before there is a track"
+
+    page.set_input_files("#music", str(music))
+
+    page.wait_for_selector("#music-controls", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+    _wait_for_text(page, "music-time", f"/ 0:0{MUSIC_SECONDS}")
+    page.wait_for_function("() => !document.getElementById('music-player').paused", timeout=ELEMENT_TIMEOUT_MS)
+    assert page.get_attribute("#music-seek", "max") == str(MUSIC_SECONDS)
+
+    # A slider let go at 4 s, the way a drag ends: input while moving, change on release.
+    page.evaluate("""() => {
+        const seek = document.getElementById("music-seek");
+        seek.value = 4;
+        seek.dispatchEvent(new Event("input"));
+        seek.dispatchEvent(new Event("change"));
+    }""")
+    assert _player(page, "currentTime") == pytest.approx(4, abs=0.5), "the track jumped to the slider"
+
+    _choose(page, "mode", "off")
+    assert _player(page, "paused"), "leaving noise cancellation pauses the track"
+    paused_at = _player(page, "currentTime")
+    _choose(page, "mode", "cancel")
+    page.wait_for_function("() => !document.getElementById('music-player').paused", timeout=ELEMENT_TIMEOUT_MS)
+    assert _player(page, "currentTime") >= paused_at - 0.1, "coming back carries on rather than restarting"
 
 
 def test_the_cue_goes_stale_after_1500_ms(browser, sink: WebSink) -> None:
     session = open_page(browser, sink, fake_clock=True)
     try:
         page = session.page
-        page.select_option("#mode", "cancel")
+        _choose(page, "mode", "cancel")
         sink.publish(sample_path())
         _wait_for_text(page, "nc", "NC ON")
 
@@ -397,7 +499,7 @@ def video_sink(feed: SceneVideoFeed):
 
 
 def _live_option_disabled(page) -> bool:
-    return page.evaluate("() => document.querySelector('#video-mode option[value=\"live\"]').disabled")
+    return page.evaluate("() => document.querySelector('#video-mode input[value=\"live\"]').disabled")
 
 
 def _decoded_count(page) -> int:
@@ -477,7 +579,7 @@ def test_switching_to_recording_plays_the_file_and_back_to_live_keeps_decoding(b
             feed.offer(unit)
         _wait_for_decoded(page, 3)
 
-        page.select_option("#video-mode", "recording")
+        _choose(page, "video-mode", "recording")
         page.wait_for_selector("#recording", state="visible", timeout=ELEMENT_TIMEOUT_MS)
         _wait_for_text(page, "video-status", "Recording")
         page.wait_for_function("() => document.getElementById('recording').currentTime > 0.2", timeout=ELEMENT_TIMEOUT_MS)
@@ -485,7 +587,7 @@ def test_switching_to_recording_plays_the_file_and_back_to_live_keeps_decoding(b
         for unit in units[4:8]:
             feed.offer(unit)
 
-        page.select_option("#video-mode", "live")
+        _choose(page, "video-mode", "live")
         page.wait_for_selector("#live", state="visible", timeout=ELEMENT_TIMEOUT_MS)
         assert page.is_hidden("#recording")
         _wait_for_decoded(page, 7)
@@ -498,7 +600,7 @@ def test_switching_to_recording_plays_the_file_and_back_to_live_keeps_decoding(b
 def test_without_a_recording_the_option_says_so(browser_page: PageSession) -> None:
     page = browser_page.page
 
-    page.select_option("#video-mode", "recording")
+    _choose(page, "video-mode", "recording")
 
     _wait_for_text(page, "video-status", "No recording configured")
     assert page.is_visible("#live") and page.is_hidden("#recording"), "the canvas stays rather than a blank panel"
@@ -512,7 +614,7 @@ def test_a_run_without_scene_video_says_so_in_live_mode(browser_page: PageSessio
 @pytest.mark.parametrize("sound_mode", ["off", "alarm", "cancel"])
 def test_the_arcs_light_by_the_laptops_gains_in_every_mode(browser_page: PageSession, sink: WebSink, sound_mode: str) -> None:
     page = browser_page.page
-    page.select_option("#mode", sound_mode)
+    _choose(page, "mode", sound_mode)
 
     def lit(side: str) -> int:
         return page.evaluate("(side) => document.querySelectorAll('[id^=\"ear-' + side + '-\"].lit').length", side)
@@ -580,7 +682,7 @@ def test_the_indicator_is_visible_in_every_sound_mode(browser_page: PageSession)
     page = browser_page.page
 
     for sound_mode in ("off", "alarm", "cancel"):
-        page.select_option("#mode", sound_mode)
+        _choose(page, "mode", sound_mode)
         assert page.is_visible("#nc"), f"the indicator in mode {sound_mode}"
 
 
@@ -689,17 +791,18 @@ def test_a_decoder_that_falls_behind_drops_to_a_keyframe_rather_than_growing_its
 # *******************************************
 
 CARDS_IN_PHONE_ORDER = ["heading-card", "video-card", "plan-card", "depth-card", "sound-card"]
-# Every feature the page had before the design pass and gained in it, by the element that shows it.
+# Every display and control element on the page, by the id that shows it.
 FEATURE_ELEMENTS = [
     "arrow", "status", "link",
     "video-mode", "video-status", "live",
-    "show-field", "show-path", "show-obstacles", "plan", "information", "legend",
-    "picture-mode", "show-rings", "depth",
+    "show-field", "show-path", "show-obstacles", "plan", "information", "plan-info",
+    "picture-mode", "show-rings", "depth-info", "depth",
     "mode", "ears", "nc",
 ]
 PHONE_VIEWPORT = (412, 915)
 PHONE_LANDSCAPE_VIEWPORT = (915, 412)
-DESKTOP_VIEWPORTS = [(1920, 1080), (1536, 960)]
+# The first is the one the page is tuned for: the demo laptop, full screen.
+DESKTOP_VIEWPORTS = [(1650, 1080), (1920, 1080), (1536, 960)]
 BREAKPOINT = 900
 # A finger needs about this much. Apple and Android both say 44 to 48 CSS pixels.
 TOUCH_TARGET_PX = 44
@@ -724,18 +827,28 @@ def _open_with_everything(browser, sink: WebSink, width: int, height: int, **opt
 
 
 @pytest.mark.parametrize(("width", "height"), DESKTOP_VIEWPORTS)
-def test_the_desktop_layout_puts_the_video_left_and_the_sound_bar_along_the_bottom(browser, sink: WebSink, width: int, height: int) -> None:
+def test_the_desktop_layout_puts_sound_over_heading_on_the_left_then_the_video_then_the_rest(browser, sink: WebSink, width: int, height: int) -> None:
     session = _open_with_everything(browser, sink, width, height)
     try:
         page = session.page
         assert page.evaluate("() => getComputedStyle(document.querySelector('main')).display") == "grid"
         video, heading, plan, depth, sound = (_box(page, card) for card in ("video-card", "heading-card", "plan-card", "depth-card", "sound-card"))
+        video_bottom = video["y"] + video["height"]
 
+        # The left column: Sound on top, Heading under it, half each, together the video's height.
+        assert sound["x"] + sound["width"] <= video["x"] + 1 and abs(heading["x"] - sound["x"]) <= 1, "sound and heading share the column left of the video"
+        assert abs(sound["y"] - video["y"]) <= 1, "sound starts level with the video"
+        assert heading["y"] >= sound["y"] + sound["height"] - 1, "heading sits under sound"
+        assert abs(heading["y"] + heading["height"] - video_bottom) <= 1, "heading ends where the video does"
+        assert abs(sound["height"] - heading["height"]) <= 2, "the two halves are even"
+        # The right side: From above, then Depth under it at the same width.
         assert video["x"] + video["width"] <= plan["x"] + 1, "the video sits left of from above"
-        assert video["y"] <= plan["y"] + 1 and video["y"] + video["height"] >= heading["y"], "the video spans from above's row and the next"
-        assert heading["y"] >= plan["y"] + plan["height"] - 1 and depth["y"] >= plan["y"] + plan["height"] - 1, "heading and depth sit under from above"
-        assert heading["x"] + heading["width"] <= depth["x"] + 1, "heading sits left of depth"
-        assert sound["y"] >= max(card["y"] + card["height"] for card in (video, heading, plan, depth)) - 1, "the sound bar is along the bottom"
+        assert depth["y"] >= plan["y"] + plan["height"] - 1, "depth sits under from above"
+        assert abs(depth["x"] - plan["x"]) <= 1 and abs(depth["width"] - plan["width"]) <= 1, "depth takes from above's full width"
+        assert abs(depth["y"] + depth["height"] - video_bottom) <= 1, "depth ends where the video does"
+        # Top to bottom in the Sound card: the ear arcs, the noise cancelling readout, then the sound mode.
+        ears, nc, mode = (_box(page, element) for element in ("ears", "nc", "mode"))
+        assert ears["y"] + ears["height"] <= nc["y"] + 1 and nc["y"] + nc["height"] <= mode["y"] + 1, "ears, then NC, then the mode"
         snapshot(page, f"design_desktop_{width}")
     finally:
         session.close()
@@ -773,7 +886,7 @@ def test_every_feature_is_visible_at_both_viewports(browser, sink: WebSink, widt
     try:
         page = session.page
         missing = [element_id for element_id in FEATURE_ELEMENTS if not page.is_visible(f"#{element_id}")]
-        page.select_option("#mode", "cancel")
+        _choose(page, "mode", "cancel")
         if not page.is_visible("#music-label"):
             missing.append("music-label")
 
@@ -806,6 +919,20 @@ def test_nothing_scrolls_sideways_at_either_viewport(browser, sink: WebSink, wid
     try:
         page = session.page
         assert page.evaluate("() => document.documentElement.scrollWidth <= window.innerWidth")
+    finally:
+        session.close()
+    assert session.errors == [], session.errors
+
+
+@pytest.mark.parametrize(("width", "height"), DESKTOP_VIEWPORTS[:2])
+def test_the_desktop_layout_fits_one_screen_and_from_above_keeps_its_own_height(browser, sink: WebSink, width: int, height: int) -> None:
+    session = _open_with_everything(browser, sink, width, height)
+    try:
+        page = session.page
+        assert page.evaluate("() => document.documentElement.scrollHeight <= window.innerHeight"), "the page scrolls"
+        # The card ends just under its line of numbers, not wherever the video happens to end.
+        plan, numbers = _box(page, "plan-card"), _box(page, "information")
+        assert plan["y"] + plan["height"] - (numbers["y"] + numbers["height"]) < 40, "from above is stretched past its contents"
     finally:
         session.close()
     assert session.errors == [], session.errors
@@ -857,7 +984,7 @@ def test_the_live_status_says_the_stream_is_undescribed_until_the_laptop_describ
     try:
         page = session.page
         _wait_for_text(page, "video-status", "Waiting for the laptop to describe the stream")
-        assert not page.evaluate("() => document.querySelector('#video-mode option[value=live]').disabled")
+        assert not page.evaluate("() => document.querySelector('#video-mode input[value=live]').disabled")
 
         feed.describe(description)
 

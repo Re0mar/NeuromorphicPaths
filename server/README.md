@@ -109,9 +109,12 @@ alarm is up the beep quickens, rises in pitch and moves to the danger's side, wh
 as `alarm_pan`. **Noise cancellation** plays music instead, a built-in bed or a file picked on the
 page, with each ear at the gain the laptop sends: the ear away from the heading goes quieter by the
 course's surprise of the heading error, and the danger's ear drops to a floor while the alarm is up.
-A label beside it says what noise cancellation would do, "ANC on" or "ANC disabled", because no page
+A picked file plays from disk a piece at a time, so an hour-long track starts at once, about 0.05 s
+in Chrome against 18.5 s when the page used to decode the whole file first. A slider under the
+picker shows where the track is and jumps anywhere in it, and leaving the mode pauses the track
+where it is. A label says what noise cancellation would do, `NC ON` or `NC OFF`, because no page
 can switch it. When no path has arrived for 1.5 s the beeps stop, the music plays on at full in
-both ears, which is no cue, and the label reads "unknown". Browsers refuse sound before a tap, so
+both ears, which is no cue, and the label reads `NC ?`. Browsers refuse sound before a tap, so
 the control has to be touched once on the page that should play. The formula is in
 `docs/math/09_arrow_and_alarm.md`.
 
@@ -124,15 +127,22 @@ per browser per device. The key protects nothing, since the page is on a local n
 and GitHub's secret scanning will say a private key is in the repository. The README beside the
 certificate says why that is accepted and how to remake the pair.
 
-The page is five cards. On a laptop or a projector, Video takes the left two thirds, From above sits
-top right, Heading with the arrow and Depth sit under it, and Sound runs along the bottom. On a
-phone the same cards stack in one column with Heading first, since the phone page is the walker's.
-The page picks by its own width, at 900 pixels, so a phone turned sideways gets the laptop layout,
-and controls grow under a finger. Sound holds the selector, the music picker in noise-cancellation
-mode, and two readouts that follow every path in every mode: a head with five arcs an ear, one lit
-per 20 % of that ear's gain as the laptop sent it, and `NC ON` or `NC OFF`, the driving guide's
-rule, off while the alarm is up and back on 2 s after it clears, both reading unknown after 1.5 s
-without a path. The alarm still turns the whole page red.
+The page is five cards. On a laptop or a projector, a narrow left column holds Sound over Heading
+with the arrow, Video takes most of the width beside it, From above sits top right, and Depth sits
+under From above at its full width. On a screen at least 700 pixels tall the page fills exactly one
+screen, tuned on a 1650 by 1080 laptop in full screen (F11). Sound and Heading split the left
+column in half. From above keeps its own height, and Video, Depth and the left column end on the
+same line, their pictures scaled to fit. Video mode, Sound mode and Depth's Picture are radio
+toggles. On a phone the same cards stack
+in one column with Heading first, since the phone page is the walker's. The page picks by its own
+width, at 900 pixels, so a phone turned sideways gets the laptop layout at natural heights, and
+controls grow under a finger. Sound holds, from the top, two readouts that follow every path in
+every mode, then the mode toggle and the music picker in noise-cancellation mode. The readouts are
+a head with five arcs an ear, one lit per 20 % of that ear's gain as the laptop sent it, and
+`NC ON` or `NC OFF`, the driving guide's rule, off while the alarm is up and back on 2 s after it
+clears, both reading unknown after 1.5 s without a path. The alarm still turns the whole page red.
+A page tab open across a laptop restart keeps the HTML it loaded, so a page change shows only
+after a reload.
 
 The page's video panel has two modes. **Live** is the glasses' own stream passed through: the
 laptop forwards the compressed frames as they arrive, on a second websocket at `/video`, and the
@@ -167,8 +177,8 @@ nearest clearance, where the floor came from (`supplied` by the source, `fitted`
 or the `previous` frame's), and `ALARM` when set. It is what a person tuning the planner looks at, and the window
 and the browser draw it from the same code. The phone never gets it.
 
-In the browser the Depth card has a **Picture** selector and a **Rings** checkbox. Picture
-switches to the risk view: the same picture, with every reading the planner's field reaches
+In the browser the Depth card has a **Picture** toggle and a **Rings** checkbox, and its title
+names the picture shown. Picture switches to the risk view: the same picture, with every reading the planner's field reaches
 recolored by what the field costs there, at the moment the walker would get there, on OpenCV's
 TURBO scale from blue for cheap to red for costly. It is the view from above's field seen through
 the camera, clipped at the same 98th percentile. Readings past the plan, behind the feet, off the
@@ -195,14 +205,14 @@ The browser also draws the planner's view from above, walking up the screen, abo
 - **Obstacles.** Each group's nearest point, amber dots for groups and magenta squares for walls,
   the same colors the depth view uses.
 
-Under it are two lines. *Scene vs Shape Metric* is how far what the camera saw moved the plan from
+Under it are two numbers on one line. *Scene vs Shape Metric* is how far what the camera saw moved the plan from
 what the planner would do with nothing in view, in bits, measured where the arrow reads the path.
 It is not a confidence: an empty corridor gives a plan the planner is sure of and 0 bits.
 *Est. Time to Collision* is the seconds until the body reaches the nearest group in the walker's
-path at walking speed, or `nothing ahead` when the path is clear. The laptop reads it back from the
+path at walking speed, or `clear` when nothing is in its path. The laptop reads it back from the
 course's avoidance surprise, 0.72 bits at one second to contact, and the bits show when the
-pointer rests on the time. Under the two lines is a legend, folded shut, whose branches open one at
-a time. The laptop computes every color, opacity and number on the page. The page only draws them.
+pointer rests on the time. The **?** by the card's title opens how to read it, laid over the card,
+and the Depth card has one too. Escape, a click outside, or the button again closes it. The laptop computes every color, opacity and number on the page. The page only draws them.
 To see it on a recorded walk:
 
 ```
