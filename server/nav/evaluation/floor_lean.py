@@ -107,6 +107,10 @@ def floor_lean(log_dir: Path, capture_dir: Path, replay_shift_seconds: float, sc
         recorded = None
 
     walker = WalkerConfig()
+    # One plane fitted without trusting the pose, because the pose is what's being measured. The
+    # level-surface choice refuses a floor leaning from the pose's up, so a wrong pose would show
+    # as no floor instead of as a lean.
+    scene_config = dataclasses.replace(scene_config, floor_from_level_surfaces=False)
     logged = _Side(ScenePipeline(scene_config, walker))
     capture = _Side(ScenePipeline(scene_config, walker))
     frames = 0

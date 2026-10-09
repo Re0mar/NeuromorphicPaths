@@ -3,11 +3,19 @@
 # 3. Finding the floor
 
 Clearance is measured along the floor, and an obstacle is only an obstacle if it sticks up from
-the floor. So every frame, the code looks for the floor among the points from section 1. It takes
-the biggest flat surface below the camera that's roughly level. The method is to guess a plane
-through three random points, count how many points lie close to it, repeat, keep the best guess,
-and then fit it properly to all the points that were close. That method is called **RANSAC**,
-short for random sample consensus. The points close to a guess are its **inliers**.
+the floor. So every frame, the code looks for the floor among the points from section 1, in one
+of two ways.
+
+With gravity, it lists the level surfaces below the camera, such as the floor, tier platforms,
+stair treads and seats, and takes the deepest, because everything else stands on the floor. That's
+[With gravity, the deepest level surface](#with-gravity-the-deepest-level-surface) below.
+
+Without gravity, "level" can't be measured, so it takes the biggest flat surface below the camera
+that's roughly level. The method is to guess a plane through three random points, count how many
+points lie close to it, repeat, keep the best guess, and then fit it properly to all the points
+that were close. That method is called **RANSAC**, short for random sample consensus. The points
+close to a guess are its **inliers**. Most of this page is about RANSAC, because the level surfaces
+reuse its last two steps.
 
 Picture finding a table top in a cluttered room by laying a sheet of glass on three random spots
 and counting how many things touch the glass. Try enough times and the table top wins, because it
@@ -27,6 +35,9 @@ it to sit as close as it can to everything that touched it.
 A plane is written $`\mathbf{n}\cdot\mathbf{p} + d = 0`$. $`\mathbf{n}`$ is the direction straight out
 of the plane, length 1, and $`d`$ is the offset. Everything in this section is in the camera frame,
 unless the Pixel's position moves it into the world as in section 2.
+
+The chart is the RANSAC route. The level route shares its first three boxes, and the refit, the
+flip and the check at the end.
 
 ```mermaid
 flowchart TD
@@ -73,6 +84,100 @@ The search runs only with at least 200 candidates. With fewer, last frame's floo
 2. A point straight down the lens axis, $`(0, 0, 3)`$: $`b = 3 \times 0.207912 = 0.624`$ m. Also a
    candidate, because the camera looks 12 degrees down. Any point on the axis further than
    $`0.5 / 0.2079 = 2.40`$ m qualifies.
+
+## With gravity, the deepest level surface
+
+A tiered lecture room broke the single plane. Standing at the front, a plane through the side
+stairs' step edges held more points than the floor did, and RANSAC took it on 27 percent of frames,
+leaning 12 to 20 degrees. With gravity the code knows which way is level, so it doesn't have to
+guess a plane at all. It lists the surfaces that are level and picks among them. This runs on every
+frame whose pose is gravity-aligned, the Neon's and the Pixel's alike, unless
+`floor_from_level_surfaces` is false (`server/nav/scene/pipeline.py`).
+
+Think of pouring sand over the room from above and weighing how much lands at each height. The
+floor, each tier and each row of seats is a heap at its own height. A sloping plane spreads its
+sand thinly over many heights, so it never makes a heap. Tiers and seats stand on the floor, so the
+deepest heap is the floor.
+
+1. Count the candidates' drops $`b_i`$ in 2 cm bins, and smooth each bin with its two neighbors.
+2. A smoothed bin at least as full as the one above it and fuller than the one below is a **peak**.
+3. A peak is a **level surface** when at least 8 percent of the candidates, and at least 200 points,
+   lie within 5 cm of its height.
+4. Each surface is refit by least squares as in [the final fit](#the-final-fit), flipped toward up,
+   and checked as in [Is it really the floor?](#is-it-really-the-floor), with a tilt limit of 8
+   degrees in place of 35.
+5. The deepest surface that passes is the floor, with one exception for continuity, below.
+6. If none passes, last frame's floor stays. The reason given is the deepest surface's refusal, or
+   "no level surface" when no height held enough points.
+
+```math
+\bar H_k = \tfrac13\,(H_{k-1} + H_k + H_{k+1}),\qquad m_k = \#\{\, i : \lvert b_i - c_k\rvert < 0.05 \,\},\qquad \text{a surface when } m_k \ge \max\!\big(200,\ \lceil 0.08\, m_{\text{cand}} \rceil\big)
+```
+
+| Symbol | Plain English | Units | Frame | Where in the code |
+|---|---|---|---|---|
+| $`H_k`$ | Candidates whose drop falls in bin $`k`$, 2 cm wide from 0.5 m down | count | none | `server/nav/scene/floor.py` |
+| $`\bar H_k`$ | The same, averaged with the bins either side | count | none | `server/nav/scene/floor.py` |
+| $`c_k`$ | The middle of bin $`k`$ | m | camera | `server/nav/scene/floor.py` |
+| $`m_k`$ | Points within 5 cm of that height | count | none | `server/nav/scene/floor.py` |
+| $`m_{\text{cand}}`$ | All candidates | count | none | `server/nav/scene/floor.py` |
+| 0.02, 0.08, 8 | Bin width, share a surface needs, tilt limit | m, fraction, degrees | none | `server/nav/scene/config.py` |
+
+**Continuity.** From a higher tier, the lower tiers are deeper than the walker's own floor. So the
+code keeps the camera heights of the last 10 floors it accepted, supplied ones included, and calls
+their median $`r`$ the recent floor. When the deepest surface sits more than 0.25 m from $`r`$ and
+another surface sits within 0.25 m of it, the other one is taken. A frame with nothing near $`r`$
+takes the deepest and leaves the history alone, so one frame looking only at a lower tier can't
+move $`r`$. A frame without gravity empties the history.
+
+The camera rides at eye height above whatever level the walker stands on, so $`r`$ is really about
+eye height. A walker who steps down a tier finds the new floor near $`r`$ again, and continuity
+follows them without help. What continuity can't fix alone is an $`r`$ that settled on the wrong
+surface, a seat row or a tread. So if the deepest is passed over on 4 frames running, the fifth
+takes it and the history starts again from it. On the recorded walks that happened once, on the
+stairs: $`r`$ had settled at 1.14 m and the fifth frame took 1.67 m.
+
+| Symbol | Plain English | Units | Frame | Where in the code |
+|---|---|---|---|---|
+| $`r`$ | Median camera height over the last 10 accepted floors | m | camera | `server/nav/scene/floor.py` |
+| 0.25 | How close to $`r`$ counts as the same level | m | none | `server/nav/scene/config.py` |
+| 5 | Frames in a row a deeper surface stands, taken on the last | count | none | `server/nav/scene/config.py` |
+
+**Worked example: standing at the front of the tiered room,** frame 408 of the 2026-10-08 tiers
+walk on the Neon. 6038 of 9571 points are candidates, so a surface needs
+$`\lceil 0.08 \times 6038 \rceil = 484`$ points.
+1. RANSAC's plane is 1.50 m below the camera and leans 12.2 degrees. It runs along the step edges.
+2. The level surfaces are 0.69, 0.83, 0.92, 1.03, 1.30 and 1.37 m down, each holding 9 to 20 percent
+   of the candidates and leaning at most 1.1 degrees. The shallow ones are seat rows and stair treads.
+3. The deepest, 1.37 m, is the floor the walker stands on. A hand label read off that frame's scene
+   video puts the floor at 1.37 m too.
+
+**Worked example: continuity, on the top tier.** Say the last 10 floors have a median of 1.65 m and a
+frame shows the walker's tier at 1.68 m and a lower tier at 2.05 m with enough points.
+1. The deepest is 2.05 m, and $`\lvert 2.05 - 1.65\rvert = 0.40`$, more than 0.25.
+2. 1.68 m is within it, $`\lvert 1.68 - 1.65\rvert = 0.03`$, so 1.68 m is taken.
+3. If 2.05 m stays deepest for 5 frames in a row, the fifth takes 2.05 m and $`r`$ restarts there.
+   Here that's wrong, since the walker hasn't moved, and the lower tier stays the floor while it's in
+   view. On the recorded top tier a lower tier never held 8 percent of the points for that long. At 5
+   percent it did, and 17.8 percent of those frames went wrong against 7.3 percent with no reset.
+
+> [!WARNING]
+> The depth model's scale drifts on the Neon, so one flat hallway floor read 1.28 to 1.64 m below the
+> camera across nine labeled frames. Against a recent floor in the middle of that, the 0.25 m
+> tolerance covers the drift, and it stays under the 0.37 m between this room's tiers. A far stretch of floor can also read about 0.1 m deeper than the near part, and
+> deepest-wins then takes the far part. A step down under 0.25 m reads as the same level.
+
+> [!TIP]
+> **Ours.** The six numbers were set on 49 frames of a tiered lecture room and its hallway, each
+> hand-labeled from the frame's surfaces and the scene video. At these values 48 of the 49 come out
+> on the labeled floor, against 31 for RANSAC, and no chosen floor leans past 8 degrees. The share
+> matters most. At 5 percent the lower tiers count as surfaces and 18 percent of the top-tier frames
+> go wrong. Nothing here is random, so a replay picks the same floor every run.
+
+> [!NOTE]
+> `check_planner floor-lean` always fits by RANSAC. It measures a pose's error by how far the floor
+> leans from that pose's up, and this route would refuse such a floor rather than measure it
+> (`server/nav/evaluation/floor_lean.py`).
 
 ## A guess through three points
 
@@ -245,7 +350,7 @@ The checks run in this order, and the first one broken is the reason given:
 | Symbol | Plain English | Units | Frame | Where in the code |
 |---|---|---|---|---|
 | $`\varphi`$ | How far the floor's direction leans from up, its **tilt** | degrees | camera | `server/nav/scene/floor.py` |
-| $`\varphi_{\max}`$ | The most lean allowed, 35 by default, `--floor-max-tilt` | degrees | none | `server/nav/scene/config.py` |
+| $`\varphi_{\max}`$ | The most lean allowed, 35 by default, `--floor-max-tilt`. 8 on the level route | degrees | none | `server/nav/scene/config.py` |
 | $`d`$ | The camera's height above the plane | m | camera | `server/nav/scene/floor.py` |
 | 0.3, 2.2 | Lowest and highest camera height allowed, the second set by `--floor-max-height` | m | none | `server/nav/scene/config.py` |
 
