@@ -21,7 +21,7 @@ import numpy as np
 
 # Local package imports
 from nav.planner.config import PlannerConfig
-from nav.planner.units import bits_from_nats
+from nav.planner.units import NATS_PER_BIT, bits_from_nats
 from nav.types import ObstaclePoint, ObstacleSet
 
 # His dt in the avoidance form. The surprise compares time to contact against one second.
@@ -133,6 +133,27 @@ def avoidance_surprise_bits_at(time_to_contact_seconds: float) -> float:
     if not np.isfinite(time_to_contact_seconds) or time_to_contact_seconds <= 0:
         raise ValueError(f"time to contact must be above zero, got {time_to_contact_seconds}")
     return float(bits_from_nats(0.5 * (AVOIDANCE_REFERENCE_SECONDS / time_to_contact_seconds) ** 2))
+
+
+def time_to_contact_from_avoidance_bits(avoidance_bits: float) -> float | None:
+    """
+    The time to contact an avoidance surprise stands for. The inverse of avoidance_surprise_bits_at.
+
+    The planned path carries the surprise, not the time, so a display that shows the time reads it
+    back from the surprise here, next to the formula it undoes.
+
+    example: 0.72 bits -> about 1.0 s
+
+    :param avoidance_bits: From the planned path, zero or more.
+    :return: Seconds, or None at 0 bits, which is an empty corridor and so no contact ahead.
+    :rtype: float | None
+    :raises ValueError: When the surprise is negative or not a finite number.
+    """
+    if not np.isfinite(avoidance_bits) or avoidance_bits < 0:
+        raise ValueError(f"avoidance surprise must be finite and zero or more, got {avoidance_bits}")
+    if avoidance_bits == 0:
+        return None
+    return float(AVOIDANCE_REFERENCE_SECONDS / np.sqrt(2.0 * avoidance_bits * NATS_PER_BIT))
 
 
 def path_red_from_bits(config: PlannerConfig) -> float:

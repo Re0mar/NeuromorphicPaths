@@ -8,10 +8,12 @@ a browser.
 """
 
 # Standard library imports
+import dataclasses
 import json
 import re
 
 # Third party imports
+import numpy as np
 import pytest
 
 # Local package imports
@@ -25,11 +27,13 @@ from browser_harness import (
     send_text,
     snapshot,
 )
+from nav.planner.alarm import avoidance_surprise_bits_at
 from nav.scene.config import SceneConfig
 from nav.sinks.config import WebConfig
 from nav.sinks.web import WebSink
 from nav.sinks.web_messages import WebMessageKind
 from nav.sources.scene_video import AccessUnit, AccessUnitAssembler, SceneVideoFeed, VideoDescription
+from nav.types import DebugView, ObstaclePoint, ObstacleSet
 from web_samples import sample_field, sample_path, sample_view
 
 ELEMENT_TIMEOUT_MS = 4000
@@ -109,9 +113,32 @@ def test_a_plan_view_shows_the_panel_with_its_two_numbers(browser_page: PageSess
 
     page.wait_for_selector("#plan-panel", state="visible", timeout=ELEMENT_TIMEOUT_MS)
     _wait_for_text(page, "information", "bits")
-    information = page.text_content("#information")
-    assert information.count("bits") == 2, information
+    assert page.text_content("#scene-bits").endswith(" bits")
+    # The sample path has nothing in its corridor.
+    assert page.text_content("#contact-time") == "nothing ahead"
     assert canvas_pixels(page, "plan") > 0
+
+
+def test_the_time_to_collision_is_shown_in_seconds(browser_page: PageSession, sink: WebSink) -> None:
+    page = browser_page.page
+    field, grid = sample_field()
+    one_second_away = dataclasses.replace(sample_path(), avoidance_surprise_bits=avoidance_surprise_bits_at(1.0))
+
+    sink.publish_debug(one_second_away, field, grid, sample_view())
+
+    _wait_for_text(page, "contact-time", " s")
+    assert page.text_content("#contact-time") == "1.0 s"
+
+
+def test_the_legend_starts_folded_and_the_panel_stays_short(browser_page: PageSession, sink: WebSink) -> None:
+    page = browser_page.page
+    _publish_everything(sink)
+    page.wait_for_selector("#plan-panel", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+    folded_height = _box(page, "legend")["height"]
+
+    assert not page.evaluate("() => document.getElementById('legend').open")
+    page.click("#legend > summary")
+    assert _box(page, "legend")["height"] > folded_height, "opening the legend shows its branches"
 
 
 def test_unticking_field_changes_the_plan_drawing(browser_page: PageSession, sink: WebSink) -> None:
@@ -141,6 +168,55 @@ def test_a_depth_picture_appears_when_sent(browser_page: PageSession, sink: WebS
 
     page.wait_for_selector("#depth", state="visible", timeout=ELEMENT_TIMEOUT_MS)
     assert page.get_attribute("#depth", "src").startswith("blob:")
+
+
+def test_choosing_risk_brings_the_risk_picture_and_its_reading_line(browser_page: PageSession, sink: WebSink, monkeypatch: pytest.MonkeyPatch) -> None:
+    import nav.sinks.web as web_module
+
+    drawn = []
+    real_render = web_module.render_risk_view
+
+    def counting_render(*arguments):
+        drawn.append(arguments)
+        return real_render(*arguments)
+
+    monkeypatch.setattr(web_module, "render_risk_view", counting_render)
+    page = browser_page.page
+    _publish_everything(sink)
+    page.wait_for_selector("#depth", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+    depth_source = page.get_attribute("#depth", "src")
+    assert not page.is_visible("#risk-legend")
+
+    # Nothing more is published, so the risk picture can only come from the laptop redrawing the last view.
+    page.select_option("#picture-mode", "risk")
+
+    page.wait_for_function("(before) => document.getElementById('depth').src !== before", arg=depth_source, timeout=ELEMENT_TIMEOUT_MS)
+    assert page.is_visible("#risk-legend")
+    assert len(drawn) == 1
+
+
+def _view_with_a_group() -> DebugView:
+    # The 4 by 4 sample frame, f = 2 and center (2, 2). A group 2 m straight ahead lands on pixel
+    # (2, 2), which the 160 times scale-up puts at (320, 320), and the level floor turns nothing.
+    group = ObstaclePoint(0.0, 2.0, 1, 1.0, 0.01, None, None, False, np.array([0.0, 0.0, 2.0]))
+    return dataclasses.replace(sample_view(), obstacles=ObstacleSet(1.0, (group,), 1))
+
+
+def test_the_rings_are_drawn_over_the_picture_and_hide_with_their_box(browser_page: PageSession, sink: WebSink) -> None:
+    page = browser_page.page
+    field, grid = sample_field()
+    sink.publish_debug(sample_path(), field, grid, _view_with_a_group())
+    page.wait_for_selector("#rings", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+    page.wait_for_function("() => document.getElementById('rings').width > 0", timeout=ELEMENT_TIMEOUT_MS)
+
+    assert canvas_pixels(page, "rings") > 0
+    ring_box, picture_box = _box(page, "rings"), _box(page, "depth")
+    assert all(abs(ring_box[side] - picture_box[side]) <= 1 for side in ("x", "y", "width", "height")), "the rings lie exactly over the picture"
+
+    page.uncheck("#show-rings")
+    assert not page.is_visible("#rings")
+    page.check("#show-rings")
+    assert page.is_visible("#rings")
 
 
 def test_switching_sound_modes_throws_nothing_and_shows_the_picker_only_in_cancellation(browser_page: PageSession) -> None:
@@ -618,7 +694,7 @@ FEATURE_ELEMENTS = [
     "arrow", "status", "link",
     "video-mode", "video-status", "live",
     "show-field", "show-path", "show-obstacles", "plan", "information", "legend",
-    "depth",
+    "picture-mode", "show-rings", "depth",
     "mode", "ears", "nc",
 ]
 PHONE_VIEWPORT = (412, 915)
@@ -655,9 +731,10 @@ def test_the_desktop_layout_puts_the_video_left_and_the_sound_bar_along_the_bott
         assert page.evaluate("() => getComputedStyle(document.querySelector('main')).display") == "grid"
         video, heading, plan, depth, sound = (_box(page, card) for card in ("video-card", "heading-card", "plan-card", "depth-card", "sound-card"))
 
-        assert video["x"] + video["width"] <= heading["x"] + 1, "the video sits left of the heading"
-        assert video["y"] <= heading["y"] + 1 and video["y"] + video["height"] >= plan["y"], "the video spans the heading's row and the next"
-        assert plan["x"] + plan["width"] <= depth["x"] + 1, "from above sits left of depth, both under the heading"
+        assert video["x"] + video["width"] <= plan["x"] + 1, "the video sits left of from above"
+        assert video["y"] <= plan["y"] + 1 and video["y"] + video["height"] >= heading["y"], "the video spans from above's row and the next"
+        assert heading["y"] >= plan["y"] + plan["height"] - 1 and depth["y"] >= plan["y"] + plan["height"] - 1, "heading and depth sit under from above"
+        assert heading["x"] + heading["width"] <= depth["x"] + 1, "heading sits left of depth"
         assert sound["y"] >= max(card["y"] + card["height"] for card in (video, heading, plan, depth)) - 1, "the sound bar is along the bottom"
         snapshot(page, f"design_desktop_{width}")
     finally:
@@ -764,7 +841,7 @@ def test_coarse_pointer_controls_are_at_least_44_px(browser, sink: WebSink) -> N
         page = session.page
         if not page.evaluate("() => matchMedia('(pointer: coarse)').matches"):
             pytest.skip("headless Chrome does not emulate a coarse pointer here, so the touch sizes cannot be checked")
-        for control in ("mode", "video-mode"):
+        for control in ("mode", "video-mode", "picture-mode"):
             box = _box(page, control)
             assert box["height"] >= TOUCH_TARGET_PX, f"#{control} is {box['height']} px tall under a finger"
     finally:

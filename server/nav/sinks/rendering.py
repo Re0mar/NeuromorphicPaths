@@ -1,5 +1,5 @@
 """
-The pictures the debug sinks draw: the arrow, the surprise field, and the depth view.
+The pictures the debug sinks draw: the arrow, the surprise field, the depth view and the risk view.
 
 One module so the OpenCV window and the browser show the same thing. The depth view is the one a
 person tuning the planner needs: the depth image the planner saw, each obstacle group's nearest
@@ -18,15 +18,20 @@ import cv2
 import numpy as np
 
 # Local package imports
+from nav.scene.config import SceneConfig
 from nav.sinks.floor_geometry import (
     NEAR_PLANE_METERS,
     clip_segment_to_near_plane,
     clip_to_near_plane,
+    field_cells_at_pixels,
     floor_point,
+    group_rings,
+    picture_scale,
     project_points,
+    upright_quarter_turns,
 )
 from nav.sinks.path_style import BORDER_OPACITY, GROUP_RGB, WALL_RGB, path_color_rgb, path_fill_opacity
-from nav.types import DebugView, Plane, PlannedPath
+from nav.types import DebugView, PlannedPath
 
 log = logging.getLogger(__name__)
 
@@ -45,22 +50,12 @@ COLOR_WALL = WALL_RGB[::-1]
 # A separate hue means a missing reading never looks like far depth.
 COLOR_INVALID_DEPTH = (20, 40, 70)
 FIELD_INSET_SCALE = 3
-# The depth view is scaled up by a whole number so the Pixel's 160 by 90 is legible at 640 by
-# 360 and a 640-wide estimated frame stays as it is. A fixed factor would make the estimator's
-# frames four times too wide.
-DEPTH_VIEW_TARGET_WIDTH = 640
 DEPTH_PERCENTILES = (2.0, 98.0)
-GROUP_RING_MIN_RADIUS = 5
-GROUP_RING_PIXELS_PER_METER = 8
-GROUP_RING_MAX_RADIUS = 40
-# Below this share of the floor normal lying in the image plane, the camera is looking at the floor
-# and the picture has no up to turn toward. A camera pitched 72 degrees down sits right at it.
-UPRIGHT_MIN_IMAGE_COMPONENT = 0.3
 
 
 def render_arrow(heading_radians: float, path: PlannedPath) -> np.ndarray:
     """
-    The arrow canvas: heading as an arrow from the bottom centre, red on alarm, a line of text.
+    The arrow canvas: heading as an arrow from the bottom center, red on alarm, a line of text.
 
     :param heading_radians: Where to point. Positive is right.
     :param path: For the alarm and the cost text.
@@ -115,30 +110,7 @@ def render_field(field: np.ndarray, grid: np.ndarray, path: PlannedPath) -> np.n
     return cv2.resize(image, None, fx=FIELD_INSET_SCALE, fy=FIELD_INSET_SCALE, interpolation=cv2.INTER_NEAREST)
 
 
-def upright_quarter_turns(floor: Plane) -> int:
-    """
-    How many counter-clockwise quarter turns bring the floor's down to the bottom of the picture.
-
-    Reads the floor the scene handed over, whose normal already points up: against gravity when the
-    pose knows gravity, against the image's own up otherwise. It is the plane the planner used, so
-    the picture turns with the plan rather than with a second reading of the pose.
-
-    :param floor: The floor, camera frame, normal pointing up.
-    :return: 0 to 3, for np.rot90. 0 when the camera looks at the floor and the picture has no up.
-    :rtype: int
-    """
-    normal = np.asarray(floor.normal, dtype=np.float64)
-    # Down in the image, x right and y down.
-    down_x, down_y = -normal[0], -normal[1]
-    if np.hypot(down_x, down_y) < UPRIGHT_MIN_IMAGE_COMPONENT * np.linalg.norm(normal):
-        return 0
-    if abs(down_y) >= abs(down_x):
-        return 0 if down_y > 0 else 2
-    # A counter-clockwise turn carries the left edge to the bottom, three carry the right edge there.
-    return 1 if down_x < 0 else 3
-
-
-def render_depth_view(view: DebugView, path: PlannedPath) -> np.ndarray:
+def render_depth_view(view: DebugView, path: PlannedPath, *, rings: bool = True) -> np.ndarray:
     """
     The depth image the planner saw, with the obstacle groups and the chosen path drawn on it.
 
@@ -155,13 +127,51 @@ def render_depth_view(view: DebugView, path: PlannedPath) -> np.ndarray:
 
     :param view: The frame, the obstacles, the floor and where it came from.
     :param path: The path the planner chose for that frame.
+    :param rings: False leaves the group rings off, for a display that draws group_rings itself.
     :return: A BGR image, the depth image scaled up by a whole number and turned upright.
     :rtype: np.ndarray
     """
+    return _draw_over_and_turn(_gray_depth(view), view, path, ribbon_fill=True, rings=rings, label="")
+
+
+def render_risk_view(view: DebugView, path: PlannedPath, field: np.ndarray, grid: np.ndarray, scene: SceneConfig) -> np.ndarray:
+    """
+    The depth view recolored by the planner's field: what each spot the camera sees costs the planner.
+
+    Each pixel stands over one cell of the field, at the step the walker reaches it, and takes that
+    cell's cost on the TURBO scale, cool for cheap and hot for costly. The scale is clipped at the
+    field's 98th percentile, as the page's view from above is, so the two read the same. Pixels the
+    field does not reach keep the depth view's gray: beyond the plan, behind the feet, off to the
+    side, and above head height, where the walker passes under. The path keeps only its borders, so
+    its blue to red stays readable over the colors. No group rings, since only the page shows this
+    view and it draws group_rings over either picture. The text is the depth view's.
+
+    :param view: The frame, the obstacles, the floor and where it came from.
+    :param path: The path the planner chose. Its step times are the field's rows.
+    :param field: (steps, cells) the field it planned through.
+    :param grid: (cells,) the lateral position of each field column.
+    :param scene: The usable depth range and the head height.
+    :return: A BGR image the depth view's size.
+    :rtype: np.ndarray
+    :raises ValueError: When the field is not one row per path step by one column per grid cell.
+    """
+    expected = (len(path.times_seconds), len(grid))
+    if field.shape != expected:
+        raise ValueError(f"field is {field.shape}, the path and grid need {expected}")
+    image = _gray_depth(view)
+    step, cell, covered = field_cells_at_pixels(view, path.times_seconds, grid, scene)
+    if covered.any():
+        ceiling = max(float(np.percentile(field, 98)), 1e-9)
+        share = np.clip(field[step[covered], cell[covered]] / ceiling, 0.0, 1.0)
+        levels = np.round(share * 255).astype(np.uint8).reshape(-1, 1)
+        image[covered] = cv2.applyColorMap(levels, cv2.COLORMAP_TURBO).reshape(-1, 3)
+    return _draw_over_and_turn(image, view, path, ribbon_fill=False, rings=False, label="  risk")
+
+
+def _gray_depth(view: DebugView) -> np.ndarray:
+    """The depth image at its own size, valid depth in gray with near bright, a missing reading dim brown."""
     depth = np.asarray(view.frame.depth_meters, dtype=np.float32)
     rows, columns = depth.shape
-    scale = max(1, DEPTH_VIEW_TARGET_WIDTH // columns)
-
     with np.errstate(invalid="ignore"):
         valid = np.isfinite(depth) & (depth > 0.0)
     image = np.full((rows, columns, 3), COLOR_INVALID_DEPTH, dtype=np.uint8)
@@ -174,25 +184,34 @@ def render_depth_view(view: DebugView, path: PlannedPath) -> np.ndarray:
         # Near is bright. Gray rather than a colormap, so the path's blue to red is never lost in it.
         gray = ((1.0 - normalized) * 255).astype(np.uint8)
         image[valid] = np.repeat(gray[valid][:, None], 3, axis=1)
+    return image
+
+
+def _draw_over_and_turn(image: np.ndarray, view: DebugView, path: PlannedPath, *, ribbon_fill: bool, rings: bool, label: str) -> np.ndarray:
+    """
+    Scale a depth-sized picture up, draw the path and the groups on it, turn it upright and caption it.
+
+    :param image: BGR, the depth image's size.
+    :param ribbon_fill: False draws the path's borders alone.
+    :param rings: False leaves the group rings off.
+    :param label: Added to the end of the caption.
+    """
+    rows, columns = image.shape[:2]
+    scale = picture_scale(columns)
     image = cv2.resize(image, (columns * scale, rows * scale), interpolation=cv2.INTER_NEAREST)
+    _draw_path_ribbon(image, view, path, scale, fill=ribbon_fill)
 
-    # The ribbon first, so a group ring on the path stays visible on top of it.
-    _draw_path_ribbon(image, view, path, scale)
-
-    intrinsics = view.frame.intrinsics
-    for point in view.obstacles.points:
-        pixel = _project(point.camera_point, intrinsics, scale, image.shape)
-        if pixel is None:
-            continue
-        radius = int(np.clip(GROUP_RING_MIN_RADIUS + GROUP_RING_PIXELS_PER_METER * point.clearance_meters, GROUP_RING_MIN_RADIUS, GROUP_RING_MAX_RADIUS))
-        cv2.circle(image, pixel, radius, COLOR_WALL if point.is_wall else COLOR_GROUP, 2)
-
-    # Everything above is drawn where the sensor put it. Turned now, so the text below reads upright.
+    # The ribbon is drawn where the sensor put it. Turned now, so the text below reads upright.
     image = np.ascontiguousarray(np.rot90(image, upright_quarter_turns(view.floor)))
+
+    # Rings after the ribbon, so a group on the path stays visible on top of it. They are placed in
+    # the turned picture, the same places the page draws them.
+    for ring in group_rings(view) if rings else []:
+        cv2.circle(image, (ring.column_pixels, ring.row_pixels), ring.radius_pixels, COLOR_WALL if ring.is_wall else COLOR_GROUP, 2)
 
     nearest = min((point.clearance_meters for point in view.obstacles.points), default=None)
     nearest_text = "nearest -" if nearest is None else f"nearest {nearest:.2f} m"
-    text = f"{view.obstacles.groups_in_view} groups  {nearest_text}  floor {view.floor_source.value}{'  ALARM' if path.alarm else ''}"
+    text = f"{view.obstacles.groups_in_view} groups  {nearest_text}  floor {view.floor_source.value}{'  ALARM' if path.alarm else ''}{label}"
     cv2.putText(image, text, (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, COLOR_OUTLINE, 3)
     cv2.putText(image, text, (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, COLOR_TEXT, 1)
     return image
@@ -218,28 +237,17 @@ def encode_png(image: np.ndarray) -> bytes:
     return buffer.tobytes()
 
 
-def _project(point_camera: np.ndarray, intrinsics: np.ndarray, scale: int, image_shape: tuple) -> tuple[int, int] | None:
-    """The scaled pixel a camera-frame point lands on, or None when it is behind the camera or outside the image."""
-    column, row, in_front = project_points(np.asarray(point_camera, dtype=np.float64), intrinsics)
-    if not bool(in_front):
-        return None
-    column, row = float(column) * scale, float(row) * scale
-    if not (0 <= column < image_shape[1] and 0 <= row < image_shape[0]):
-        return None
-    return int(column), int(row)
-
-
 def _scaled_pixels(points_camera: np.ndarray, intrinsics: np.ndarray, scale: int) -> np.ndarray:
     """Pixels for points already known to be in front of the camera, shaped for cv2.fillPoly and cv2.polylines."""
     column, row, _ = project_points(points_camera, intrinsics)
     return np.round(np.column_stack((column * scale, row * scale))).astype(np.int32).reshape(-1, 1, 2)
 
 
-def _draw_path_ribbon(image: np.ndarray, view: DebugView, path: PlannedPath, scale: int) -> None:
+def _draw_path_ribbon(image: np.ndarray, view: DebugView, path: PlannedPath, scale: int, *, fill: bool = True) -> None:
     """
     The path as a ribbon on the floor, the body's width, drawn onto the image in place.
 
-    The fill is one quadrilateral per step, faded linearly by the time at its far end, so the last
+    With fill off only the borders are drawn. The fill is one quadrilateral per step, faded linearly by the time at its far end, so the last
     one is clear and the ribbon is always seen running out. Its opacity is also scaled by how much
     the scene shaped the plan. The two borders are drawn at one opacity along their whole length,
     with a dark outline under each, so the direction stays readable after the fill has gone.
@@ -268,7 +276,7 @@ def _draw_path_ribbon(image: np.ndarray, view: DebugView, path: PlannedPath, sca
     # One alpha mask for the whole fill, blended once. Segments that share an edge overwrite rather
     # than stack, so no stripe shows where two of them meet.
     fill_alpha = np.zeros(image.shape[:2], dtype=np.float32)
-    for step in range(len(times) - 1):
+    for step in range(len(times) - 1 if fill else 0):
         corners = [left_beyond[step], left_beyond[step + 1], right_beyond[step + 1], right_beyond[step]]
         if all(corners):
             polygon = np.array([left_pixels[step], left_pixels[step + 1], right_pixels[step + 1], right_pixels[step]]).reshape(-1, 1, 2)

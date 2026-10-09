@@ -52,8 +52,8 @@
     main {
       grid-template-columns: 2fr 2fr 1fr 1fr;
       grid-template-areas:
-        "video video heading heading"
-        "video video plan depth"
+        "video video plan plan"
+        "video video heading depth"
         "sound sound sound sound";
       align-items: start;
       min-height: 100vh;
@@ -63,17 +63,22 @@
   .card h2 { margin: 0; font-size: var(--text-s); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
   #heading-card { grid-area: heading; align-items: center; }
   #video-card { grid-area: video; }
-  #plan-card { grid-area: plan; }
+  #plan-card { grid-area: plan; align-items: center; }
   #depth-card { grid-area: depth; }
   #sound-card { grid-area: sound; }
   canvas, img, video { max-width: 100%; height: auto; }
   .placeholder { font-size: var(--text-s); color: var(--muted); }
-  .placeholder[hidden], #depth[hidden], #plan-panel[hidden], #music-label[hidden], #live[hidden], #recording[hidden] { display: none; }
+  .placeholder[hidden], #depth[hidden], #rings[hidden], #risk-legend[hidden], #plan-panel[hidden], #music-label[hidden], #live[hidden], #recording[hidden] { display: none; }
+  /* The rings sit on a canvas laid exactly over the picture, placed by script to the picture's box. */
+  #depth-frame { position: relative; }
+  #depth { display: block; }
+  #rings { position: absolute; pointer-events: none; }
+  #risk-legend { font-size: var(--text-s); color: var(--muted); }
   #arrow { width: 100%; max-width: 320px; }
   #status { font-size: var(--text-l); }
   #link { font-size: var(--text-s); color: var(--muted); }
   select, input[type="file"] { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--panel-edge); border-radius: var(--space-1); min-height: var(--control-height); padding: 0 var(--space-2); }
-  #sound-panel, #video-controls, #layers { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center; }
+  #sound-panel, #video-controls, #layers, #depth-controls { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center; }
   #layers label { display: flex; align-items: center; gap: var(--space-1); }
   #nc { padding: var(--space-1) var(--space-2); border-radius: var(--space-1); border: 2px solid currentColor; font-weight: bold; }
   #nc.on { color: var(--accent); }
@@ -92,11 +97,16 @@
      as the map it holds: 6.5 m across by 6.1 m ahead, margins included. */
   #plan-panel { width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: var(--space-2); }
   #plan { width: 100%; aspect-ratio: 20 / 19; background: var(--bg); border-radius: var(--space-1); }
+  /* The legend folds away, one branch at a time, so the card stays about as tall as the map. */
+  #legend summary { cursor: pointer; }
+  #legend ul { margin: var(--space-1) 0 0; padding-left: var(--space-3); }
+  #legend li { margin-top: var(--space-1); }
   /* A finger needs more than a pointer. */
   @media (pointer: coarse) {
     :root { --control-height: 44px; }
     select, input[type="file"] { font-size: var(--text-l); }
-    #layers label, #sound-panel label, #video-controls label { min-height: 44px; }
+    #layers label, #sound-panel label, #video-controls label, #depth-controls label { min-height: 44px; }
+    #legend summary { line-height: 44px; }
     input[type="checkbox"] { width: 24px; height: 24px; }
   }
 </style>
@@ -131,18 +141,56 @@
         <label><input type="checkbox" id="show-obstacles" checked> Obstacles</label>
       </div>
       <canvas id="plan" aria-label="The planner's view from above: the cost of every spot ahead, the planned path, and the obstacles"></canvas>
-      <div id="information"></div>
-      <div id="legend">Seen from above, walking up the screen. Brighter cells cost more to walk through.
-        Light gray cells are floor outside the camera's view. Dark gray cells are in view, but the camera
-        didn't see floor there, because something stands in front of it or the depth has no reading.
-        The planner treats both as empty floor. The band is the planned path, as wide as the body, more solid the more the scene shaped it, and
-        redder the sooner something is in the way. Dots are obstacles, squares are walls.</div>
+      <div id="information">
+        <div>Scene vs Shape Metric: <span id="scene-bits"></span></div>
+        <div>Est. Time to Collision: <span id="contact-time"></span></div>
+      </div>
+      <details id="legend">
+        <summary>Legend</summary>
+        <ul>
+          <li>Seen from above, walking up the screen.</li>
+          <li><details><summary>Cells</summary>
+            <ul>
+              <li>Brighter costs more to walk through.</li>
+              <li>Light gray is floor outside the camera's view.</li>
+              <li>Dark gray is in view, but the camera didn't see floor there. Something stands in front of it or the depth has no reading.</li>
+              <li>The planner treats both grays as empty floor.</li>
+            </ul>
+          </details></li>
+          <li><details><summary>Band</summary>
+            <ul>
+              <li>The planned path, as wide as the body.</li>
+              <li>More solid the more the scene shaped it.</li>
+              <li>Redder the sooner something is in the way.</li>
+            </ul>
+          </details></li>
+          <li>Dots are obstacles, squares are walls.</li>
+          <li><details><summary>The two numbers</summary>
+            <ul>
+              <li>Scene vs Shape Metric is how far what the camera saw moved the plan away from the plan for an empty scene, in bits. An empty corridor gives 0.</li>
+              <li>Est. Time to Collision is how long until the body reaches the nearest thing in its path at walking speed. "nothing ahead" when the path is clear.</li>
+            </ul>
+          </details></li>
+        </ul>
+      </details>
     </section>
   </section>
   <section class="card" id="depth-card">
     <h2>Depth</h2>
+    <div id="depth-controls">
+      <label>Picture <select id="picture-mode">
+        <option value="depth">Depth</option>
+        <option value="risk">Risk</option>
+      </select></label>
+      <label><input type="checkbox" id="show-rings" checked> Rings</label>
+    </div>
     <div class="placeholder" id="depth-placeholder">Waiting for the first depth picture.</div>
-    <img id="depth" alt="The depth image the planner saw, with the obstacle groups and the chosen path drawn on it" hidden>
+    <div id="depth-frame">
+      <img id="depth" alt="The depth image the planner saw, with the chosen path drawn on it" hidden>
+      <canvas id="rings" aria-label="A ring on each obstacle group, sized by how much room it leaves" hidden></canvas>
+    </div>
+    <div id="risk-legend" hidden>Risk is what the planner thinks each spot costs, at the moment you'd
+      reach it. Blue is cheap and red is costly. Gray is past the plan, off to the side, or overhead.</div>
   </section>
   <section class="card" id="sound-card">
     <h2>Sound</h2>
@@ -165,7 +213,9 @@
   // Draws the arrow the planner chose. Red background when something in the walker's way is close.
   // Under it, the planner's view from above and the depth image the planner saw, when the laptop
   // sends them. Text frames say what they are in their kind: "path" for the arrow, "plan_view" for
-  // the view from above. A binary frame is the depth PNG. A page served by a sink that sends only
+  // the view from above. A binary frame is the picture this page chose, the depth PNG or the risk
+  // PNG, and the choice is the one message the page sends back. The group rings are drawn here, over
+  // either picture, at the places the plan view gives. A page served by a sink that sends only
   // paths keeps working with the arrow alone. Reconnects on its own, because the laptop restarts
   // more often than the page reloads. Everything drawn here was computed on the laptop: the page
   // never decides a path, an opacity, or a color that means something about the walk. Its only
@@ -201,15 +251,22 @@
   const planPlaceholder = document.getElementById("plan-placeholder");
   const depthPlaceholder = document.getElementById("depth-placeholder");
   const plan = document.getElementById("plan");
-  const information = document.getElementById("information");
+  const sceneBits = document.getElementById("scene-bits");
+  const contactTime = document.getElementById("contact-time");
   const toggles = {
     field: document.getElementById("show-field"),
     path: document.getElementById("show-path"),
     obstacles: document.getElementById("show-obstacles"),
   };
+  const pictureMode = document.getElementById("picture-mode");
+  const showRings = document.getElementById("show-rings");
+  const ringCanvas = document.getElementById("rings");
+  const riskLegend = document.getElementById("risk-legend");
   let depthUrl = null;
   // The newest plan view, kept so a toggle can redraw it without asking the laptop for anything.
   let latestPlanView = null;
+  // The socket the picture choice goes out on. Null between a close and the reconnect.
+  let laptopSocket = null;
 
   // A dark-to-bright sequential ramp for the field, in the spirit of viridis. The field's own colors,
   // not the path's: the path's colors come from the laptop.
@@ -655,9 +712,12 @@
     latestPlanView = view;
     planPlaceholder.hidden = true;
     planPanel.hidden = false;
-    information.textContent = "How much the scene shaped the plan: " + view.scene_information_bits.toFixed(2) + " bits. "
-      + "How soon something is in the way: " + view.avoidance_surprise_bits.toFixed(2) + " bits.";
+    sceneBits.textContent = view.scene_information_bits.toFixed(2) + " bits";
+    // The laptop sends null when nothing is in the walker's path. The bits stay in the title for anyone tuning.
+    contactTime.textContent = view.time_to_contact_seconds === null ? "nothing ahead" : view.time_to_contact_seconds.toFixed(1) + " s";
+    contactTime.title = view.avoidance_surprise_bits.toFixed(2) + " bits of avoidance surprise";
     drawPlan(view);
+    drawRings();
   }
 
   for (const toggle of Object.values(toggles)) {
@@ -670,18 +730,61 @@
     // keeps the browser from holding every frame the laptop ever sent.
     const previous = depthUrl;
     depthUrl = URL.createObjectURL(blob);
-    depth.onload = () => { if (previous) URL.revokeObjectURL(previous); };
+    depth.onload = () => {
+      if (previous) URL.revokeObjectURL(previous);
+      drawRings();
+    };
     depth.src = depthUrl;
     depthPlaceholder.hidden = true;
     depth.hidden = false;
   }
 
+  // The rings go on a canvas over the picture, at the places the laptop worked out in the picture's
+  // own pixels. The canvas takes the picture's pixel size and its on-screen box, so they line up
+  // however the picture is scaled.
+  function drawRings() {
+    const rings = latestPlanView ? latestPlanView.group_rings : [];
+    ringCanvas.hidden = depth.hidden || !showRings.checked || !depth.naturalWidth;
+    if (ringCanvas.hidden) return;
+    ringCanvas.width = depth.naturalWidth;
+    ringCanvas.height = depth.naturalHeight;
+    ringCanvas.style.left = depth.offsetLeft + "px";
+    ringCanvas.style.top = depth.offsetTop + "px";
+    ringCanvas.style.width = depth.offsetWidth + "px";
+    ringCanvas.style.height = depth.offsetHeight + "px";
+    const draw = ringCanvas.getContext("2d");
+    draw.clearRect(0, 0, ringCanvas.width, ringCanvas.height);
+    draw.lineWidth = 2;
+    for (const ring of rings) {
+      draw.strokeStyle = rgba(ring.is_wall ? latestPlanView.wall_color_rgb : latestPlanView.group_color_rgb, 1);
+      draw.beginPath();
+      draw.arc(ring.column_pixels, ring.row_pixels, ring.radius_pixels, 0, 2 * Math.PI);
+      draw.stroke();
+    }
+  }
+
+  function sendPictureChoice() {
+    if (laptopSocket && laptopSocket.readyState === WebSocket.OPEN) {
+      laptopSocket.send(JSON.stringify({ kind: "picture", picture: pictureMode.value }));
+    }
+  }
+
+  pictureMode.addEventListener("change", () => {
+    riskLegend.hidden = pictureMode.value !== "risk";
+    sendPictureChoice();
+  });
+  showRings.addEventListener("change", drawRings);
+  window.addEventListener("resize", drawRings);
+
   function connect() {
     const protocol = location.protocol === "https:" ? "wss" : "ws";
     const socket = new WebSocket(protocol + "://" + location.host + "/ws");
     socket.binaryType = "blob";
+    laptopSocket = socket;
     socket.onopen = () => {
       link.textContent = "Connected to " + location.host + ".";
+      // The laptop starts every browser on the depth picture, so only a different choice needs saying.
+      if (pictureMode.value !== "depth") sendPictureChoice();
       connectVideo();
     };
     socket.onmessage = (event) => {

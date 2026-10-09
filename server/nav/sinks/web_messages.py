@@ -7,7 +7,8 @@ the path through it, the obstacles, and how the path should look. Everything the
 computed here, on the laptop. The page only draws.
 
 The video socket's two text messages are here too: the stream's description, which the page's
-decoder needs before the first unit, and the word that this run has no video to send.
+decoder needs before the first unit, and the word that this run has no video to send. So is the one
+message a page sends back, saying which picture it wants in its Depth card.
 """
 
 # Standard library imports
@@ -19,8 +20,9 @@ from enum import Enum
 import numpy as np
 
 # Local package imports
+from nav.planner.alarm import time_to_contact_from_avoidance_bits
 from nav.scene.config import SceneConfig
-from nav.sinks.floor_geometry import floor_hidden_mask, floor_seen_mask
+from nav.sinks.floor_geometry import floor_hidden_mask, floor_seen_mask, group_rings
 from nav.sinks.path_style import BORDER_OPACITY, GROUP_RGB, WALL_RGB, path_color_rgb, path_fill_opacity
 from nav.sources.scene_video import VideoDescription
 from nav.types import DebugView, PlannedPath
@@ -49,6 +51,7 @@ PLAN_VIEW_KEYS = (
     "obstacles",
     "scene_information_bits",
     "avoidance_surprise_bits",
+    "time_to_contact_seconds",
     "path_color_rgb",
     "path_fill_opacity",
     "path_border_opacity",
@@ -56,8 +59,25 @@ PLAN_VIEW_KEYS = (
     "wall_color_rgb",
     "floor_seen",
     "floor_hidden",
+    "group_rings",
 )
 OBSTACLE_KEYS = ("lateral_meters", "forward_meters", "is_wall")
+# Each ring the page draws over the depth or risk picture, in that picture's own pixels.
+RING_KEYS = ("column_pixels", "row_pixels", "radius_pixels", "is_wall")
+
+
+class PictureKind(Enum):
+    """Which picture a browser shows in its Depth card. Values are the strings the page sends."""
+
+    DEPTH = "depth"
+    RISK = "risk"
+
+
+class BrowserMessageKind(Enum):
+    """The kinds of text message a page sends the laptop. Values are the strings on the wire."""
+
+    # Which picture this browser wants from now on, in a "picture" field.
+    PICTURE = "picture"
 
 
 def plan_view_message(path: PlannedPath, field: np.ndarray, grid: np.ndarray, view: DebugView, scene: SceneConfig) -> dict:
@@ -96,6 +116,8 @@ def plan_view_message(path: PlannedPath, field: np.ndarray, grid: np.ndarray, vi
         ],
         "scene_information_bits": float(path.scene_information_bits),
         "avoidance_surprise_bits": float(path.avoidance_surprise_bits),
+        # None when the corridor is empty, which JSON carries as null.
+        "time_to_contact_seconds": time_to_contact_from_avoidance_bits(path.avoidance_surprise_bits),
         "path_color_rgb": list(path_color_rgb(path.avoidance_surprise_bits, view.path_red_from_bits)),
         "path_fill_opacity": path_fill_opacity(path.scene_information_bits),
         "path_border_opacity": BORDER_OPACITY,
@@ -103,8 +125,38 @@ def plan_view_message(path: PlannedPath, field: np.ndarray, grid: np.ndarray, vi
         "wall_color_rgb": list(WALL_RGB),
         "floor_seen": floor_seen_mask(view, path.times_seconds, grid).tolist(),
         "floor_hidden": floor_hidden_mask(view, path.times_seconds, grid, scene).tolist(),
+        "group_rings": [
+            {
+                "column_pixels": ring.column_pixels,
+                "row_pixels": ring.row_pixels,
+                "radius_pixels": ring.radius_pixels,
+                "is_wall": ring.is_wall,
+            }
+            for ring in group_rings(view)
+        ],
     }
     return message
+
+
+def picture_choice(text: str) -> PictureKind:
+    """
+    The picture a page asked for, read from one text frame it sent.
+
+    :param text: The frame, JSON with a kind of "picture" and a "picture" field.
+    :return: The picture asked for.
+    :rtype: PictureKind
+    :raises ValueError: When the frame is not JSON, not a picture message, or names no picture this laptop draws.
+    """
+    try:
+        message = json.loads(text)
+    except json.JSONDecodeError as not_json:
+        raise ValueError(f"the page sent a frame that is not JSON: {not_json}") from not_json
+    if not isinstance(message, dict) or message.get("kind") != BrowserMessageKind.PICTURE.value:
+        raise ValueError(f"the page sent a message this laptop does not read: {text[:80]!r}")
+    try:
+        return PictureKind(message.get("picture"))
+    except ValueError as unknown:
+        raise ValueError(f"the page asked for a picture this laptop does not draw: {message.get('picture')!r}") from unknown
 
 
 def video_stream_message(description: VideoDescription) -> dict:

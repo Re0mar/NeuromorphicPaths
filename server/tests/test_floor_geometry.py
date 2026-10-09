@@ -1,6 +1,6 @@
 """
-Covers the floor points, their projection, and which floor cells the camera saw, on a level floor
-with known intrinsics.
+Covers the floor points, their projection, which floor cells the camera saw, which cell each pixel
+stands over, and where the group rings go, on a level floor with known intrinsics.
 
 Expected pixels are worked out by hand in each test's comment, never by calling the function under
 test, so a wrong axis or a swapped sign shows as a wrong number rather than as agreement with itself.
@@ -15,15 +15,18 @@ from nav.scene.config import SceneConfig
 from nav.sinks.floor_geometry import (
     MIN_FLOOR_SCATTER_METERS,
     NEAR_PLANE_METERS,
+    GroupRing,
     clip_segment_to_near_plane,
     clip_to_near_plane,
+    field_cells_at_pixels,
     floor_hidden_mask,
     floor_point,
     floor_scatter_meters,
     floor_seen_mask,
+    group_rings,
     project_points,
 )
-from nav.types import DebugView, DepthFrame, FloorSource, ObstacleSet, Plane, Pose
+from nav.types import DebugView, DepthFrame, FloorSource, ObstaclePoint, ObstacleSet, Plane, Pose
 from synthetic_depth import clean_scene, level_floor_depth, with_box_on_level_floor
 
 # Camera 1.6 m above a level floor. y points down in the camera frame, so the floor is y = 1.6.
@@ -350,3 +353,96 @@ def test_a_cell_at_the_image_edge_reads_the_last_pixel() -> None:
 
     assert floor_seen_mask(view, times, grid)[0, 0]
     assert not floor_hidden_mask(view, times, grid, SCENE)[0, 0]
+
+
+# The risk view's half: each pixel down to the field cell it stands over, on the same level floor.
+# Walking speed is 1.4 m/s and the steps are 0.1 s apart, so step k is 0.14 * k m out, and the
+# grid's columns are 0.1 m apart from -3 m, so column j is -3 + 0.1 * j m to the side.
+
+
+def test_a_floor_pixel_lands_on_the_cell_under_it() -> None:
+    # Row 88 reads floor at 160 / 40 = 4.0 m. Nearest step is 29 (4.06 m), not 28 (3.92 m).
+    # Column 64 is straight ahead, grid column 30. Column 89 is 25 * 4.0 / 100 = 1.0 m right, column 40.
+    step, cell, covered = field_cells_at_pixels(_depth_view(level_floor_depth()), TIMES, GRID, SCENE)
+
+    assert covered[88, 64] and covered[88, 89]
+    assert (step[88, 64], cell[88, 64]) == (29, 30)
+    assert (step[88, 89], cell[88, 89]) == (29, 40)
+
+
+def test_a_pixel_with_no_reading_is_not_covered() -> None:
+    # Rows above the horizon see no floor and read NaN.
+    _, _, covered = field_cells_at_pixels(_depth_view(level_floor_depth()), TIMES, GRID, SCENE)
+
+    assert not covered[:48].any()
+
+
+def test_floor_past_the_last_step_is_not_covered() -> None:
+    # The last step is 5.32 m out, so the field ends at 5.39 m. Row 75 reads 160 / 27 = 5.93 m.
+    # Row 80 reads 160 / 32 = 5.0 m, step 36 (5.04 m).
+    step, _, covered = field_cells_at_pixels(_depth_view(level_floor_depth()), TIMES, GRID, SCENE)
+
+    assert not covered[75, 64]
+    assert covered[80, 64] and step[80, 64] == 36
+
+
+def test_a_reading_above_head_height_is_not_covered_and_one_below_it_is() -> None:
+    # A reading of 2.0 m at row 10 is 38 * 2 / 100 = 0.76 m above the camera, 2.36 m off the floor,
+    # over the 2.0 m head height. At row 30 it is 0.36 m above the camera, 1.96 m up, so it counts,
+    # and stands over the floor 2.0 m out, step 14 (1.96 m).
+    depth = level_floor_depth()
+    depth[10, 64] = 2.0
+    depth[30, 64] = 2.0
+
+    step, _, covered = field_cells_at_pixels(_depth_view(depth), TIMES, GRID, SCENE)
+
+    assert not covered[10, 64]
+    assert covered[30, 64] and step[30, 64] == 14
+
+
+def test_a_reading_nearer_than_the_usable_range_is_not_covered() -> None:
+    depth = level_floor_depth()
+    depth[88, 64] = SCENE.min_depth_meters / 2
+
+    _, _, covered = field_cells_at_pixels(_depth_view(depth), TIMES, GRID, SCENE)
+
+    assert not covered[88, 64]
+
+
+def test_a_field_of_one_step_covers_nothing() -> None:
+    _, _, covered = field_cells_at_pixels(_depth_view(level_floor_depth()), TIMES[:1], GRID, SCENE)
+
+    assert not covered.any()
+
+
+def _group_view(camera_point: np.ndarray, floor: Plane = LEVEL_FLOOR, clearance: float = 1.0) -> DebugView:
+    group = ObstaclePoint(0.0, 2.0, 1, clearance, 0.01, None, None, True, camera_point)
+    frame = DepthFrame(0.0, level_floor_depth(), INTRINSICS, Pose(np.array([1.0, 0.0, 0.0, 0.0]), None, False), None, None)
+    return DebugView(frame, ObstacleSet(0.0, (group,), 1), floor, FloorSource.FITTED, 1.4, 0.3, 1.47)
+
+
+def test_a_ring_sits_at_its_group_scaled_and_sized_by_clearance() -> None:
+    # 128 columns scale by 640 // 128 = 5. (0.5, 0.2, 2.0) lands at column 100 * 0.25 + 64 = 89 and
+    # row 100 * 0.1 + 48 = 58, so 445 and 290 scaled. 1 m of clearance is 5 + 8 = 13 pixels.
+    rings = group_rings(_group_view(np.array([0.5, 0.2, 2.0])))
+
+    assert rings == [GroupRing(445, 290, 13, True)]
+
+
+def test_a_ring_turns_with_the_picture() -> None:
+    # A floor whose normal points along x has its down at the image's left, so the picture turns
+    # once counter-clockwise. That carries (column 445, row 290) of a 640-wide picture to
+    # (column 290, row 639 - 445 = 194). Checked against np.rot90 itself below.
+    sideways_floor = Plane(np.array([1.0, 0.0, 0.0]), 1.6)
+    rings = group_rings(_group_view(np.array([0.5, 0.2, 2.0]), floor=sideways_floor))
+
+    marked = np.zeros((96 * 5, 128 * 5), dtype=bool)
+    marked[290, 445] = True
+    turned_rows, turned_columns = np.nonzero(np.rot90(marked, 1))
+    assert (rings[0].column_pixels, rings[0].row_pixels) == (290, 194) == (int(turned_columns[0]), int(turned_rows[0]))
+
+
+def test_a_group_behind_the_camera_or_off_the_image_has_no_ring() -> None:
+    assert group_rings(_group_view(np.array([0.5, 0.2, -1.0]))) == []
+    # Column 100 * 5 / 2 + 64 = 314, past the 128 columns.
+    assert group_rings(_group_view(np.array([5.0, 0.2, 2.0]))) == []

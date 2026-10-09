@@ -16,6 +16,7 @@ from nav.planner.alarm import (
     corridor_points,
     corridor_time_to_contact,
     path_red_from_bits,
+    time_to_contact_from_avoidance_bits,
 )
 from nav.planner.config import PlannerConfig
 from nav.planner.pipeline import PlannerPipeline
@@ -254,6 +255,21 @@ def test_avoidance_surprise_refuses_a_walking_speed_of_zero() -> None:
 def test_the_avoidance_formula_is_0_72_bits_at_one_second() -> None:
     # Half of (1 s over 1 s) squared is 0.5 nats, and 0.5 / ln 2 is 0.7213 bits.
     assert avoidance_surprise_bits_at(1.0) == pytest.approx(0.7213, abs=1e-4)
+
+
+@pytest.mark.parametrize("seconds", [0.05, 0.7, 1.0, 3.2, 40.0])
+def test_the_time_to_contact_reads_back_from_the_surprise(seconds: float) -> None:
+    assert time_to_contact_from_avoidance_bits(avoidance_surprise_bits_at(seconds)) == pytest.approx(seconds, rel=1e-12)
+
+
+def test_no_surprise_reads_back_as_no_contact_ahead() -> None:
+    assert time_to_contact_from_avoidance_bits(0.0) is None
+
+
+@pytest.mark.parametrize("bits", [-0.1, float("nan"), float("inf")])
+def test_a_surprise_that_no_time_gives_is_refused(bits: float) -> None:
+    with pytest.raises(ValueError, match="avoidance surprise must be finite and zero or more"):
+        time_to_contact_from_avoidance_bits(bits)
 
 
 def test_the_path_turns_red_at_the_alarms_own_threshold() -> None:
