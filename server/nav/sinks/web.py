@@ -3,7 +3,11 @@ A browser as the display: one static page and one websocket, served from a threa
 
 The only file in the package allowed to import aiohttp. The server runs its own asyncio loop in
 its own thread, and the pipeline's publisher thread hands it messages through
-call_soon_threadsafe, so the two never share a loop. No video is sent.
+call_soon_threadsafe, so the two never share a loop.
+
+Served over TLS with the self-signed certificate committed under tls/. The browser's own video
+decoder, WebCodecs, only exists on a secure origin, and a phone opens the page by the laptop's
+address, which plain http never makes secure. Each browser accepts the certificate warning once.
 
 Each planned path goes out as a text frame, the path's JSON with a kind of "path". When the loop
 hands this sink a debug view, two more frames follow: a second kind of text message, the plan view,
@@ -15,14 +19,24 @@ picture when one arrives.
 The plan view and the picture are built on a render thread of their own, from the newest debug view
 only, and at most `max_pictures_per_second` times a second. Building them takes about 50 ms. On the
 publisher thread that held up the phone's next path, and at every frame it took planning time too.
+
+A second websocket, /video, carries the glasses' compressed video for the page's browser to decode
+on its own: the stream's description as a text frame, then one access unit per frame as a binary
+frame, from the scene video feed the composition root gave this sink. Each browser has a bounded
+queue of its own and starts at a keyframe. A browser that falls behind by more than its queue
+loses units up to the next keyframe, so it never gets a delta whose reference it missed, and one
+slow browser never holds up another. A run whose source has no video says so on that socket and
+closes it. /recording serves the file --demo-recording named, for the page's Recording mode.
 """
 
 # Standard library imports
 import asyncio
 import logging
+import ssl
 import threading
 import time
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
@@ -33,11 +47,21 @@ import numpy as np
 from nav.scene.config import SceneConfig
 from nav.sinks.config import WebConfig
 from nav.sinks.rendering import encode_png, render_depth_view
-from nav.sinks.web_messages import WebMessageKind, plan_view_message, web_text_message
+from nav.sinks.web_messages import (
+    WebMessageKind,
+    plan_view_message,
+    video_stream_message,
+    video_unavailable_message,
+    web_text_message,
+)
 from nav.sources.framecodec import path_message
+from nav.sources.scene_video import AccessUnit, SceneVideoFeed, VideoDescription, pack_unit
 from nav.types import DebugView, PlannedPath
 
 log = logging.getLogger(__name__)
+
+# What the page shows in Live mode on a run whose source cannot offer video.
+NO_SCENE_VIDEO_REASON = "this run's source has no scene video"
 
 PAGE_PATH = Path(__file__).parent / "web_page.html"
 STARTUP_TIMEOUT_SECONDS = 5.0
@@ -71,14 +95,47 @@ class _Slot(Enum):
     DEPTH_PNG = 3
 
 
+@dataclass
+class _VideoClient:
+    """One browser on the video socket: its own queue, and whether it still waits for a keyframe to start on."""
+
+    queue: asyncio.Queue
+    waiting_for_keyframe: bool = True
+
+
+class _LoopVideoListener:
+    """
+    The sink's end of the scene video feed. Hands everything to the server's loop and does nothing else.
+
+    It runs on the device process's reader thread, which also feeds every other listener, so a
+    slow call here would hold the video for them all.
+    """
+
+    def __init__(self, sink: "WebSink") -> None:
+        self._sink = sink
+
+    def describe(self, description: VideoDescription) -> None:
+        self._sink._call_on_loop(self._sink._offer_description, description)
+
+    def offer(self, unit: AccessUnit) -> None:
+        self._sink._call_on_loop(self._sink._offer_unit, unit)
+
+
 class WebSink:
     """Serves the page and pushes every published path, and the depth view when given one, to every connected browser."""
 
-    def __init__(self, config: WebConfig, scene: SceneConfig) -> None:
+    def __init__(self, config: WebConfig, scene: SceneConfig, *, video_feed: SceneVideoFeed | None) -> None:
+        """
+        :param config: The port and the certificate.
+        :param scene: The run's own scene settings, so the plan view judges hidden floor with the
+            inlier distance and depth range the scene used on this run.
+        :param video_feed: Where the glasses' compressed video arrives for the page's browser to
+            decode. None when the run's source has no video to offer, which the page is told.
+            Keyword-only and without a default, so every caller says which it is.
+        """
         self._config = config
-        # The run's own, so the plan view judges hidden floor with the inlier distance and depth
-        # range the scene used on this run.
         self._scene = scene
+        self._video_feed = video_feed
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._outgoing: asyncio.Queue | None = None
@@ -94,6 +151,13 @@ class WebSink:
         # Set by close() for good. A publisher still inside a display at shutdown can call in after
         # it, and publish() would otherwise start a second server for nobody.
         self._closed = False
+        # The video socket's state. The clients and the description text are loop-thread state,
+        # written and read on the server's loop only. The counter is read at close.
+        self._video_clients: dict[object, _VideoClient] = {}
+        self._video_description_text: str | None = None
+        self._video_dropped = 0
+        self._unsubscribe_video: Callable[[], None] | None = None
+        self._recording_missing_logged = False
 
     @property
     def dropped(self) -> int:
@@ -104,6 +168,11 @@ class WebSink:
     def port(self) -> int | None:
         """The port actually bound, once started. Differs from the config's when that was 0."""
         return self._bound_port
+
+    @property
+    def video_feed(self) -> SceneVideoFeed | None:
+        """The feed this sink was given for the page's video, or None when the source has none."""
+        return self._video_feed
 
     def start(self) -> None:
         """Start the server thread and wait until it is listening, or raise what stopped it."""
@@ -119,6 +188,9 @@ class WebSink:
         self._render_stopping = False
         self._render_thread = threading.Thread(target=self._render_pictures, name="web-render", daemon=True)
         self._render_thread.start()
+        if self._video_feed is not None:
+            # Once the loop exists, so the listener always has somewhere to hand units to.
+            self._unsubscribe_video = self._video_feed.subscribe(_LoopVideoListener(self))
 
     def publish(self, path: PlannedPath) -> None:
         """Queue the path for every browser. Starts the server on the first call, and does nothing once closed."""
@@ -147,6 +219,10 @@ class WebSink:
 
     def close(self) -> None:
         self._closed = True
+        if self._unsubscribe_video is not None:
+            # First, so no unit is handed to a loop that is about to stop.
+            self._unsubscribe_video()
+            self._unsubscribe_video = None
         if self._thread is None:
             return
         # The render thread stops first, so nothing it builds is offered to a server that has gone.
@@ -169,6 +245,8 @@ class WebSink:
             log.info("%d messages were dropped because the browsers were not keeping up", self._dropped)
         if self._pictures_replaced:
             log.info("%d debug views were replaced by a newer one before they were drawn", self._pictures_replaced)
+        if self._video_dropped:
+            log.info("%d video units were dropped for browsers that were not keeping up", self._video_dropped)
 
     def _render_pictures(self) -> None:
         """The render thread. Draws the newest debug view, then waits out the rest of its interval."""
@@ -220,6 +298,46 @@ class WebSink:
             log.warning("depth view not sent (caught %s, expected): %s", type(unrenderable).__name__, unrenderable)
             return
         self._enqueue(_Slot.DEPTH_PNG, png)
+
+    def _call_on_loop(self, callback: Callable[..., None], *arguments: object) -> None:
+        """Run a callback on the server's loop from any thread, or drop it when the server is gone."""
+        loop = self._loop
+        if loop is None:
+            return
+        try:
+            loop.call_soon_threadsafe(callback, *arguments)
+        except RuntimeError as closed_loop:
+            # The server already stopped. Nothing to hand it to.
+            log.debug("video not sent, the server had stopped (caught RuntimeError, expected): %s", closed_loop)
+
+    def _offer_description(self, description: VideoDescription) -> None:
+        """Loop thread. Remember the stream's description and send it to every video browser."""
+        self._video_description_text = web_text_message(WebMessageKind.VIDEO_STREAM, video_stream_message(description))
+        for client in list(self._video_clients.values()):
+            self._put_for_client(client, self._video_description_text)
+
+    def _offer_unit(self, unit: AccessUnit) -> None:
+        """Loop thread. One unit to every video browser's queue, resyncing a browser whose queue is full."""
+        for client in list(self._video_clients.values()):
+            self._put_for_client(client, unit)
+
+    def _put_for_client(self, client: _VideoClient, item: str | AccessUnit) -> None:
+        try:
+            client.queue.put_nowait(item)
+        except asyncio.QueueFull:
+            # This browser is further behind than one keyframe gap. Everything waiting for it is
+            # dropped and it starts again at the next keyframe, so it never sees a delta whose
+            # reference frame it missed. The description stays, since a decoder needs it first.
+            while not client.queue.empty():
+                if not isinstance(client.queue.get_nowait(), str):
+                    self._video_dropped += 1
+            if not isinstance(item, str):
+                self._video_dropped += 1
+            client.waiting_for_keyframe = True
+            if self._video_description_text is not None:
+                client.queue.put_nowait(self._video_description_text)
+            if isinstance(item, str):
+                client.queue.put_nowait(item)
 
     def _enqueue(self, slot: _Slot | None, message: str | bytes | None) -> None:
         # publish runs on the publisher's thread. The queue belongs to the server's loop, so the
@@ -274,6 +392,25 @@ class WebSink:
             self._startup_error = bind_error
             self._ready.set()
 
+    def _tls_context(self) -> ssl.SSLContext:
+        """
+        The server-side TLS context over the committed certificate.
+
+        :raises OSError: When the certificate or the key cannot be loaded, naming both files. Raised
+            as an OSError so it reaches start() through the same route as a port that cannot bind.
+        """
+        # CLIENT_AUTH is the purpose that builds a context for a server. The other one builds a
+        # client context, and the handshake then fails in a way that reads as a bad certificate.
+        context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        try:
+            context.load_cert_chain(self._config.certificate_path, self._config.key_path)
+        except ssl.SSLError as unloadable:
+            raise OSError(
+                f"the page's certificate {self._config.certificate_path} or key {self._config.key_path} "
+                f"could not be loaded ({unloadable})"
+            ) from unloadable
+        return context
+
     async def _run(self, web) -> None:
         self._loop = asyncio.get_running_loop()
         self._loop.set_exception_handler(_quiet_client_resets)
@@ -314,16 +451,79 @@ class WebSink:
                 log.info("browser disconnected, %d open", len(sockets))
             return socket
 
+        async def send_video(socket, client: _VideoClient) -> None:
+            """One browser's sender: its queue to its socket, deltas skipped until its first keyframe."""
+            try:
+                while True:
+                    item = await client.queue.get()
+                    if isinstance(item, str):
+                        await socket.send_str(item)
+                        continue
+                    if client.waiting_for_keyframe and not item.keyframe:
+                        continue
+                    client.waiting_for_keyframe = False
+                    await socket.send_bytes(pack_unit(item))
+            except (ConnectionResetError, RuntimeError) as gone:
+                # The browser went away mid-send. Its handler below sees the close and cleans up.
+                log.info("dropping a video browser (caught %s, expected): %s", type(gone).__name__, gone)
+
+        async def serve_video(request):
+            socket = web.WebSocketResponse()
+            await socket.prepare(request)
+            if self._video_feed is None:
+                await socket.send_str(web_text_message(WebMessageKind.VIDEO_UNAVAILABLE, video_unavailable_message(NO_SCENE_VIDEO_REASON)))
+                await socket.close()
+                return socket
+            client = _VideoClient(queue=asyncio.Queue(maxsize=self._config.video_queue_limit))
+            self._video_clients[socket] = client
+            if self._video_description_text is not None:
+                client.queue.put_nowait(self._video_description_text)
+            sender = asyncio.ensure_future(send_video(socket, client))
+            log.info("browser connected for video, %d open", len(self._video_clients))
+            try:
+                async for _ in socket:
+                    # The browser sends nothing we act on. Reading notices when it closes.
+                    pass
+            finally:
+                sender.cancel()
+                self._video_clients.pop(socket, None)
+                log.info("browser disconnected from video, %d open", len(self._video_clients))
+            return socket
+
+        def recording_available() -> bool:
+            recording = self._config.recording_path
+            if recording is not None and Path(recording).is_file():
+                return True
+            if recording is not None and not self._recording_missing_logged:
+                # Was there when the run started and is gone now. Said once, then answered like none.
+                self._recording_missing_logged = True
+                log.warning("the demo recording %s is gone, the page's Recording mode has nothing to play", recording)
+            return False
+
+        async def serve_recording(request):
+            if recording_available():
+                # FileResponse answers Range requests and HEAD, which a <video> needs to seek and loop.
+                return web.FileResponse(self._config.recording_path)
+            return web.json_response({"error": "no recording configured"}, status=404)
+
+        async def serve_recording_status(request):
+            # Always 200, so the page can ask whether a recording exists without the browser logging
+            # a failed request. The page is judged by its console, and an expected 404 would be noise.
+            return web.json_response({"available": recording_available()})
+
         app = web.Application()
         app.router.add_get("/", serve_page)
         app.router.add_get("/ws", serve_socket)
+        app.router.add_get("/video", serve_video)
+        app.router.add_get("/recording", serve_recording)
+        app.router.add_get("/recording/status", serve_recording_status)
         runner = web.AppRunner(app, access_log=None)
         await runner.setup()
-        site = web.TCPSite(runner, "0.0.0.0", self._config.port)
+        site = web.TCPSite(runner, "0.0.0.0", self._config.port, ssl_context=self._tls_context())
         await site.start()
 
         self._bound_port = runner.addresses[0][1] if runner.addresses else self._config.port
-        log.info("open http://localhost:%d in a browser", self._bound_port)
+        log.info("open https://localhost:%d in a browser. Each browser accepts the certificate warning once", self._bound_port)
         self._ready.set()
 
         try:
@@ -343,6 +543,8 @@ class WebSink:
                         sockets.discard(socket)
         finally:
             for socket in list(sockets):
+                await socket.close()
+            for socket in list(self._video_clients):
                 await socket.close()
             await runner.cleanup()
 

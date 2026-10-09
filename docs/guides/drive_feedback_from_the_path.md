@@ -31,9 +31,10 @@ There are two ways to get the message:
   then that many bytes of JSON. The framing and every field are in
   [`server/docs/arcore_wire_format.md`](../../server/docs/arcore_wire_format.md), under *What the
   laptop sends back*.
-- **The web page's websocket, `ws://<laptop>:8765/ws`.** The same JSON, with one extra key,
+- **The web page's websocket, `wss://<laptop>:8765/ws`.** The same JSON, with one extra key,
   `"kind": "path"`. Skip the other kinds on that socket, which are the page's plan views and depth
-  pictures.
+  pictures. The page is served over HTTPS with a self-signed certificate, so a client of its own
+  has to accept that certificate, the way a browser does once.
 
 A path message looks like this:
 
@@ -109,9 +110,12 @@ loud each ear should be, and `alarm_pan`, where the danger is while the alarm is
 right. The laptop works them out, the ear away from the heading going quieter by the course's
 surprise of the heading error and the danger's ear dropping to a floor, so a display applies them
 and decides nothing. The laptop's own web page does exactly that in its noise-cancellation mode, and
-the formula is in `docs/math/09_arrow_and_alarm.md`. A path from a laptop older than these keys has
-none of them, which reads as no cue: both ears at full. The recipes below are for a cue built from
-the other values, and the page's alarm mode still uses the first of them for its guidance beep.
+the formula is in `docs/math/09_arrow_and_alarm.md`. The page also shows the two gains as five
+arcs an ear, one lit per 20 %, and the noise-cancelling rule below as `NC ON` or `NC OFF`, so a
+teammate building the headphone side can watch the page to see what the numbers do on a walk.
+A path from a laptop older than these keys has none of them, which reads as no cue: both ears
+at full. The recipes below are for a cue built from the other values, and the page's alarm
+mode still uses the first of them for its guidance beep.
 
 **Stereo balance from the heading.** Play the cue panned toward the side the path goes. Take
 `pan = lookahead_heading_radians / 0.62`, clamped to -1 to 1. Equal-power panning keeps the loudness

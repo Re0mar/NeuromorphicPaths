@@ -1,6 +1,7 @@
 """Covers the web sink's messages as plain functions: the plan view's contents and the kind envelope."""
 
 # Standard library imports
+import base64
 import dataclasses
 import json
 
@@ -158,6 +159,19 @@ def test_the_path_is_fully_red_at_the_views_red_point_and_not_before() -> None:
 
     assert np.abs(np.array(at_red["path_color_rgb"]) - np.array(SURPRISE_HIGH_RGB)).max() <= 1
     assert np.abs(np.array(below_red["path_color_rgb"]) - np.array(SURPRISE_HIGH_RGB)).max() > 1
+
+
+def test_the_video_stream_message_carries_the_codec_and_base64_parameter_sets() -> None:
+    from nav.sinks.web_messages import video_stream_message, video_unavailable_message
+    from nav.sources.scene_video import VideoDescription
+
+    sps, pps = b"\x00\x00\x00\x01\x67\x42\x80\x1f", b"\x00\x00\x00\x01\x68\xce\x06\xf2"
+    message = json.loads(web_text_message(WebMessageKind.VIDEO_STREAM, video_stream_message(VideoDescription("avc1.42801f", (sps, pps)))))
+
+    assert message["kind"] == "video_stream"
+    assert message["codec"] == "avc1.42801f"
+    assert [base64.b64decode(item) for item in message["parameter_sets"]] == [sps, pps]
+    assert json.loads(web_text_message(WebMessageKind.VIDEO_UNAVAILABLE, video_unavailable_message("no video"))) == {"kind": "video_unavailable", "reason": "no video"}
 
 
 # The hidden-floor key needs cells that land in the image, which the 4 by 4 view above has none of.

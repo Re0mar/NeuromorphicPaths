@@ -3,6 +3,10 @@ a page. The whole guide has about 1,450. -->
 
 # The math, from the camera to the arrow
 
+**Short on time? Start with [The planner on one page](00_the_planner_on_one_page.md).** It has the
+whole chain from the scene's points to the arrow and the alarm, every formula the planner runs and
+one worked example, on one screen. Each step there links to the section below with the full story.
+
 Every piece of math the laptop runs between a camera frame and the arrow on the walker's screen,
 explained for a teammate who has never opened `server/nav/`. Each section starts with the idea in
 plain words, then gives the formula, what every symbol means, where it lives in the code, and a
@@ -21,6 +25,7 @@ constants quoted here may have too, and the file named in each table is where to
 
 | # | Section | What it answers |
 |---|---|---|
+| 0 | [The planner on one page](00_the_planner_on_one_page.md) | The whole planner, sections 6 to 9, with its formulas and one worked example |
 | 1 | [Seeing in meters](01_seeing_in_meters.md) | How a picture becomes points in meters |
 | 2 | [Which way is up](02_which_way_is_up.md) | How the camera knows where gravity points |
 | 3 | [Finding the floor](03_finding_the_floor.md) | How the floor is found, and what counts as above it |

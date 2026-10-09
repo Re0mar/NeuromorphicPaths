@@ -39,7 +39,7 @@ cd server && .venv/Scripts/python -m nav --source arcore_tcp --arcore-accept-tim
 ```
 
 - keep `--sink phone_app` before `--sink web`. the phone's path goes out first that way
-- the page is at `http://<laptop address>:8765`
+- the page is at `https://<laptop address>:8765`. accept the certificate warning the first time
 - on the phone: open the app, allow the camera and local network access (Android 17 asks), type the
   laptop's address, tap Connect
 

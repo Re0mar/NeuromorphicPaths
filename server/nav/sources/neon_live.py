@@ -15,6 +15,10 @@ capture has no pose, rather than an older one.
 Every frame is undistorted with the device's own calibration before it leaves here, and carries the
 undistorted camera matrix. The scene camera's lens is wide enough that guessing a field of view
 instead puts obstacles at the edges of the image in the wrong place sideways.
+
+Given a scene video feed, the source also asks the device process for the compressed video as it
+arrives, one access unit per frame, and offers it to the feed for a display that decodes on its
+own. The depth frames above never see it.
 """
 
 # Standard library imports
@@ -42,6 +46,7 @@ from nav.sources.neon_device import (
     NeonUnexpectedFailure,
 )
 from nav.sources.rgb import RgbFrame
+from nav.sources.scene_video import SceneVideoFeed
 from nav.types import FrameTiming, Pose
 
 log = logging.getLogger(__name__)
@@ -69,8 +74,14 @@ class NeonCalibrationError(ValueError):
 class NeonLiveRgbSource:
     """Yields undistorted RGB frames, gaze and a mounted pose from a Neon on the network."""
 
-    def __init__(self, config: NeonConfig) -> None:
+    def __init__(self, config: NeonConfig, video_feed: SceneVideoFeed | None = None) -> None:
+        """
+        :param config: Where the glasses are, or which capture to play back.
+        :param video_feed: Where the compressed video goes for a display that decodes on its own.
+            None when no display wants it, and the device process then sends none.
+        """
         self._config = config
+        self._video_feed = video_feed
         self._device: NeonDeviceProcess | None = None
         self._calibration_matrix: np.ndarray | None = None
         self._distortion_coefficients: np.ndarray | None = None
@@ -102,6 +113,11 @@ class NeonLiveRgbSource:
         """Laptop clock minus Neon clock as measured at connect, or None when it could not be."""
         return self._clock_offset_seconds
 
+    @property
+    def video_feed(self) -> SceneVideoFeed | None:
+        """The feed the compressed video goes to, or None when no display asked for it."""
+        return self._video_feed
+
     def _connect(self) -> NeonDeviceProcess:
         if self._device is not None:
             return self._device
@@ -109,6 +125,11 @@ class NeonLiveRgbSource:
         device = NeonDeviceProcess(self._config)
         try:
             device.start()
+            if self._video_feed is not None:
+                # The feed is a listener itself, so the description and the units both land in it.
+                # A ValueError here is this file's own wiring, since the device it builds provides
+                # video, and is left to propagate.
+                device.subscribe_video(self._video_feed)
         except BaseException:
             # A child that started and then failed to connect is still a process. Leave none behind.
             device.close()

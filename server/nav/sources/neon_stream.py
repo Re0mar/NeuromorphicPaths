@@ -16,6 +16,11 @@ measure this laptop the same way they would live.
 
 NeonStreamDevice answers the same calls the client's simple Device does, so the device process
 serves either one.
+
+The same packets also feed an assembler on the decode thread, which gathers each frame's packets
+into one access unit for a display that decodes on its own, such as the web page's browser. A
+listener subscribed through `subscribe_video` gets the stream's description and then every unit.
+Without a listener the units are dropped as they finish.
 """
 
 # Standard library imports
@@ -40,6 +45,7 @@ import numpy as np
 # Local package imports
 from nav.pose.imu_orientation import is_usable_orientation, orientation_at
 from nav.sources.config import NeonConfig
+from nav.sources.scene_video import AccessUnit, AccessUnitAssembler, SceneVideoListener
 
 log = logging.getLogger(__name__)
 
@@ -261,6 +267,10 @@ class NeonStreamDevice:
         self._last_backlog_warning = 0.0
         self._corrupt_packets = 0
         self._last_corrupt_warning: float | None = None
+        # The tee for a display that decodes on its own. Both under _condition, since the decode
+        # thread reads them and the pipeline's thread sets them.
+        self._video_listener: SceneVideoListener | None = None
+        self._assembler: AccessUnitAssembler | None = None
         self._decode_thread = threading.Thread(target=self._decode, name="neon-decode", daemon=True)
 
     def start(self) -> None:
@@ -332,6 +342,39 @@ class NeonStreamDevice:
                 frames_without_orientation=self._frames_without_orientation,
             )
 
+    def subscribe_video(self, listener: SceneVideoListener) -> None:
+        """
+        Hand every finished access unit to the listener, after the stream's description.
+
+        A listener that arrives before the stream is described gets the description when the
+        first packets bring it. One that arrives later gets it at once, and its first unit is the
+        next one to finish, so it starts clean at the next keyframe.
+        """
+        with self._condition:
+            self._video_listener = listener
+            assembler = self._assembler
+        if assembler is not None:
+            listener.describe(assembler.description)
+
+    def _build_assembler(self, parameter_sets: list[bytes]) -> None:
+        """
+        Start assembling units from the stream's parameter sets, and describe the stream to a listener already waiting.
+
+        A stream whose parameter sets hold no usable sequence parameter set gets no tee: the
+        decoder may still make sense of it, and the depth frames matter more than the page's
+        video, so the run goes on and the page is told nothing rather than something wrong.
+        """
+        try:
+            assembler = AccessUnitAssembler(parameter_sets)
+        except ValueError as unusable:
+            log.warning("no scene video for a display that decodes on its own (caught ValueError, expected): %s", unusable)
+            return
+        with self._condition:
+            self._assembler = assembler
+            listener = self._video_listener
+        if listener is not None:
+            listener.describe(assembler.description)
+
     def close(self) -> None:
         self._stopping.set()
         # A device that was never started has no threads to wait for, and joining one raises.
@@ -400,6 +443,7 @@ class NeonStreamDevice:
                             log.debug("waiting for the stream description (%s)", not_yet)
                             continue
                         decoder = self._decoder_factory(parameter_sets)
+                        self._build_assembler(parameter_sets)
                     self._on_packet(decoder, bytes(data.raw), data.timestamp_unix_seconds)
                     if self._stopping.is_set():
                         return
@@ -443,6 +487,7 @@ class NeonStreamDevice:
         calibration, self._time_offset, parameter_sets = _read_meta(capture)
         self._calibration = calibration
         decoder = self._decoder_factory(parameter_sets)
+        self._build_assembler(parameter_sets)
 
         packets = list(read_capture_packets(capture / SCENE_PACKETS_FILENAME))
         gaze = read_capture_samples(capture / GAZE_FILENAME, GAZE_FIELDS)
@@ -549,12 +594,34 @@ class NeonStreamDevice:
                 return
             finally:
                 self._packets.task_done()
+            self._tee_packet(raw, timestamp)
             if decoded is None:
                 continue
             with self._condition:
                 self._newest_frame = decoded
                 self._frames_decoded += 1
                 self._condition.notify_all()
+
+    def _tee_packet(self, raw: bytes | None, timestamp: float) -> None:
+        """
+        The same packet to the assembler, after the decoder has had it, and a finished unit to the listener.
+
+        Its own try, apart from the decoder's, so a packet the assembler refuses costs the display
+        one packet and never the decoded frame. No packet is the end of the stream, and flushes.
+        """
+        with self._condition:
+            assembler = self._assembler
+            listener = self._video_listener
+        if assembler is None:
+            return
+        try:
+            unit = assembler.flush() if raw is None else assembler.feed(raw, timestamp)
+        except ValueError as corrupt:
+            # The same damaged packet the decoder skipped, or one only the assembler minds.
+            self._report_corrupt_packet(corrupt)
+            return
+        if unit is not None and listener is not None:
+            listener.offer(unit)
 
     def _report_corrupt_packet(self, corrupt: Exception) -> None:
         self._corrupt_packets += 1

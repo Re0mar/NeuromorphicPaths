@@ -19,7 +19,7 @@ import pytest
 # Local package imports
 import nav.runtime.loop as loop_module
 from nav.clock import laptop_time_seconds
-from nav.config import build_run_config
+from nav.config import build_run_config, build_sink
 from nav.runtime.loop import FrameResult, PublisherThread, run
 from nav.runtime.worker import NewestFrameWorker
 from nav.sinks.fan_out import FanOutSink
@@ -91,8 +91,7 @@ def test_a_result_is_published_without_another_frame_arriving(monkeypatch: pytes
         plan_done_stamps.append(laptop_time_seconds())
         return plan_done_stamps[-1]
 
-    monkeypatch.setattr(loop_module, "build_sink", lambda config, **hooks: sink)
-    monkeypatch.setattr(loop_module, "build_source", lambda config: source)
+    monkeypatch.setattr(loop_module, "build_source_and_sink", lambda config, **hooks: (source, sink))
     monkeypatch.setattr(loop_module, "laptop_time_seconds", stamp_plan_done)
     thread, exit_codes = _run_in_thread(build_run_config(["--source", "arcore_tcp", "--sink", "none"]))
     try:
@@ -157,8 +156,7 @@ def test_the_last_frame_of_a_source_is_published_before_the_loop_waits_for_recon
         def close(self) -> None:
             pass
 
-    monkeypatch.setattr(loop_module, "build_sink", lambda config, **hooks: sink)
-    monkeypatch.setattr(loop_module, "build_source", lambda config: OneFrameThenNobodyComesBack())
+    monkeypatch.setattr(loop_module, "build_source_and_sink", lambda config, **hooks: (OneFrameThenNobodyComesBack(), sink))
 
     assert run(build_run_config(["--source", "arcore_tcp", "--sink", "none", "--reconnect"])) == 0
 
@@ -236,8 +234,7 @@ def test_a_worker_failure_ends_the_run_with_exit_1(monkeypatch: pytest.MonkeyPat
             self.stopped.set()
 
     source = EndlessFrames()
-    monkeypatch.setattr(loop_module, "build_sink", lambda config, **hooks: RecordingSink())
-    monkeypatch.setattr(loop_module, "build_source", lambda config: source)
+    monkeypatch.setattr(loop_module, "build_source_and_sink", lambda config, **hooks: (source, RecordingSink()))
     monkeypatch.setattr(loop_module, "gaze_on_the_ground", _raise_runtime_error)
 
     with caplog.at_level(logging.ERROR):
@@ -262,8 +259,7 @@ def test_a_failure_on_the_last_frame_of_a_finite_source_still_exits_1(monkeypatc
         def close(self) -> None:
             pass
 
-    monkeypatch.setattr(loop_module, "build_sink", lambda config, **hooks: RecordingSink())
-    monkeypatch.setattr(loop_module, "build_source", lambda config: OneFrame())
+    monkeypatch.setattr(loop_module, "build_source_and_sink", lambda config, **hooks: (OneFrame(), RecordingSink()))
     monkeypatch.setattr(loop_module, "gaze_on_the_ground", _raise_runtime_error)
 
     with caplog.at_level(logging.ERROR):
@@ -297,8 +293,7 @@ def test_a_failing_sink_is_dropped_and_publishing_continues_on_the_publisher_thr
             pass
 
     working = RecordingSink()
-    monkeypatch.setattr(loop_module, "build_sink", lambda config, **hooks: FanOutSink([BrokenSink(), working]))
-    monkeypatch.setattr(loop_module, "build_source", lambda config: SomeFrames())
+    monkeypatch.setattr(loop_module, "build_source_and_sink", lambda config, **hooks: (SomeFrames(), FanOutSink([BrokenSink(), working])))
 
     assert run(build_run_config(["--source", "arcore_tcp", "--sink", "none"])) == 0
 
@@ -308,7 +303,7 @@ def test_a_failing_sink_is_dropped_and_publishing_continues_on_the_publisher_thr
 
 def test_phone_sink_is_called_before_web_for_the_same_result() -> None:
     """The phone's write is on the walker's path. The web page's picture is drawn after it."""
-    sink = loop_module.build_sink(build_run_config(["--source", "arcore_tcp", "--sink", "phone_app", "--sink", "web"]))
+    sink = build_sink(build_run_config(["--source", "arcore_tcp", "--sink", "phone_app", "--sink", "web"]))
 
     assert [type(display).__name__ for display in sink.sinks] == ["PhoneAppSink", "WebSink"]
 
@@ -362,8 +357,7 @@ def test_a_single_display_failing_mid_stream_ends_the_run_with_exit_1(monkeypatc
             self.stopped.set()
 
     source = EndlessFrames()
-    monkeypatch.setattr(loop_module, "build_sink", lambda config, **hooks: RaisingSink())
-    monkeypatch.setattr(loop_module, "build_source", lambda config: source)
+    monkeypatch.setattr(loop_module, "build_source_and_sink", lambda config, **hooks: (source, RaisingSink()))
 
     with caplog.at_level(logging.ERROR):
         thread, exit_codes = _run_in_thread(build_run_config(["--source", "arcore_tcp", "--sink", "none"]))
@@ -387,8 +381,7 @@ def test_a_single_display_failing_on_the_last_frame_exits_1_without_waiting_out_
         def close(self) -> None:
             pass
 
-    monkeypatch.setattr(loop_module, "build_sink", lambda config, **hooks: RaisingSink())
-    monkeypatch.setattr(loop_module, "build_source", lambda config: OneFrame())
+    monkeypatch.setattr(loop_module, "build_source_and_sink", lambda config, **hooks: (OneFrame(), RaisingSink()))
 
     started = time.perf_counter()
     exit_code = run(build_run_config(["--source", "arcore_tcp", "--sink", "none"]))
@@ -416,8 +409,7 @@ def test_a_display_failure_then_ctrl_c_still_exits_1(monkeypatch: pytest.MonkeyP
         def close(self) -> None:
             pass
 
-    monkeypatch.setattr(loop_module, "build_sink", lambda config, **hooks: RaisingSink())
-    monkeypatch.setattr(loop_module, "build_source", lambda config: OneFrameThenInterrupt())
+    monkeypatch.setattr(loop_module, "build_source_and_sink", lambda config, **hooks: (OneFrameThenInterrupt(), RaisingSink()))
 
     with caplog.at_level(logging.INFO):
         assert run(build_run_config(["--source", "arcore_tcp", "--sink", "none"])) == 1
@@ -433,8 +425,7 @@ def test_a_worker_failure_is_logged_as_the_workers_not_the_publishers(monkeypatc
         def close(self) -> None:
             pass
 
-    monkeypatch.setattr(loop_module, "build_sink", lambda config, **hooks: RecordingSink())
-    monkeypatch.setattr(loop_module, "build_source", lambda config: OneFrame())
+    monkeypatch.setattr(loop_module, "build_source_and_sink", lambda config, **hooks: (OneFrame(), RecordingSink()))
     monkeypatch.setattr(loop_module, "gaze_on_the_ground", _raise_runtime_error)
 
     with caplog.at_level(logging.INFO):
@@ -465,8 +456,7 @@ def test_the_publisher_stops_before_the_displays_close(monkeypatch: pytest.Monke
             pass
 
     monkeypatch.setattr(PublisherThread, "stop", recorded_stop)
-    monkeypatch.setattr(loop_module, "build_sink", lambda config, **hooks: OrderedSink())
-    monkeypatch.setattr(loop_module, "build_source", lambda config: OneFrame())
+    monkeypatch.setattr(loop_module, "build_source_and_sink", lambda config, **hooks: (OneFrame(), OrderedSink()))
 
     assert run(build_run_config(["--source", "arcore_tcp", "--sink", "none"])) == 0
 
@@ -489,8 +479,7 @@ def test_a_display_too_slow_for_the_bounds_is_said_out_loud(monkeypatch: pytest.
 
     monkeypatch.setattr(loop_module, "PUBLISHER_FLUSH_SECONDS", 0.3)
     monkeypatch.setattr(PublisherThread.stop, "__defaults__", (0.3,))
-    monkeypatch.setattr(loop_module, "build_sink", lambda config, **hooks: StuckSink())
-    monkeypatch.setattr(loop_module, "build_source", lambda config: OneFrame())
+    monkeypatch.setattr(loop_module, "build_source_and_sink", lambda config, **hooks: (OneFrame(), StuckSink()))
     try:
         with caplog.at_level(logging.WARNING):
             assert run(build_run_config(["--source", "arcore_tcp", "--sink", "none"])) == 0
