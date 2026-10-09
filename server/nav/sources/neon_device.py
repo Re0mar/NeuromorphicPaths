@@ -15,6 +15,11 @@ to pickle.
 
 This file does not import the Pupil Labs client. neon_stream.py does, inside the child, and
 test_import_boundaries.py keeps the import to that file and neon_plugin.py.
+
+The video for a display that decodes on its own crosses on a second, one-way pipe, and only once
+the parent has asked for it with a VIDEO request. The child sends the stream's description first,
+then one access unit per frame, as bytes. A parent thread reads them into the listener the
+parent gave. A run without such a display never asks, and the pipe carries nothing.
 """
 
 # Standard library imports
@@ -23,9 +28,11 @@ import ctypes.wintypes
 import itertools
 import logging
 import multiprocessing
+import queue
 import signal
 import sys
 import threading
+import time
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -40,6 +47,7 @@ import numpy as np
 # Local package imports
 from nav.sources.config import NeonConfig
 from nav.sources.neon_stream import NeonStreamDevice, client_failure_types
+from nav.sources.scene_video import AccessUnit, SceneVideoListener, SceneVideoProvider, VideoDescription, pack_unit, unpack_unit
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +59,11 @@ RESPONSE_GRACE_SECONDS = 5.0
 # seconds on this laptop, so this is generous on purpose.
 START_GRACE_SECONDS = 30.0
 CLOSE_JOIN_SECONDS = 5.0
+# One keyframe gap of units at the scene camera's 30 a second. A parent that reads the video pipe
+# more slowly than that for longer gets the units up to the next keyframe dropped instead.
+VIDEO_SEND_QUEUE_LIMIT = 60
+VIDEO_DROP_WARNING_SECONDS = 5.0
+VIDEO_SEND_CLOSE_SECONDS = 1.0
 # Windows' priority class one step above normal. Not high or realtime, which can starve the desktop.
 ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000
 
@@ -63,6 +76,8 @@ class DeviceRequest(Enum):
     TIME_OFFSET = "time_offset"
     MATCHED = "matched"
     IMU_STATUS = "imu_status"
+    # Switch the video tee on. Asked once, by a parent with a display that decodes on its own.
+    VIDEO = "video"
     CLOSE = "close"
 
 
@@ -167,6 +182,110 @@ def apply_opencv_pyav_import_workaround() -> None:
     cv2.destroyAllWindows()
 
 
+class _PipeVideoListener:
+    """
+    The child's end of the video tee: the description pickled, then each unit as bytes.
+
+    A one-way pipe's send blocks until the parent has read what went before it: a probe measured a
+    25 KB send holding its caller 167 ms at the median with a reader that paused 200 ms between
+    reads. The parent's reader thread shares its interpreter lock with the depth model and the
+    planner, so it can pause like that. So the decode thread only queues here, and a thread of
+    this listener's own does the sends. A full queue means the parent is further behind than one
+    keyframe gap: what waits is dropped and sending starts again at the next keyframe, the same
+    resync the web sink does for a slow browser.
+    """
+
+    def __init__(self, connection: Connection, queue_limit: int = VIDEO_SEND_QUEUE_LIMIT) -> None:
+        self._connection = connection
+        self._queue: queue.Queue[VideoDescription | AccessUnit | None] = queue.Queue(maxsize=queue_limit)
+        self._waiting_for_keyframe = False
+        self._dropped = 0
+        self._last_drop_warning = -VIDEO_DROP_WARNING_SECONDS
+        self._gone = False
+        self._thread = threading.Thread(target=self._send_queued, name="neon-video-send", daemon=True)
+        self._thread.start()
+
+    @property
+    def dropped(self) -> int:
+        """How many units never reached the pipe because the parent read it too slowly."""
+        return self._dropped
+
+    def describe(self, description: VideoDescription) -> None:
+        self._put(description)
+
+    def offer(self, unit: AccessUnit) -> None:
+        # After a drop, the deltas up to the next keyframe would reference a frame the parent
+        # never got, so they are dropped too.
+        if self._waiting_for_keyframe:
+            if not unit.keyframe:
+                self._dropped += 1
+                return
+            self._waiting_for_keyframe = False
+        self._put(unit)
+
+    def close(self) -> None:
+        """Stop the sender and say how much was dropped. Whatever is still queued is not sent."""
+        self._drain()
+        self._queue.put_nowait(None)
+        # A sender blocked in a write to a parent that stopped reading only returns once the pipe
+        # closes, which serve() does right after this. So the wait here is short.
+        self._thread.join(VIDEO_SEND_CLOSE_SECONDS)
+        if self._dropped:
+            log.info("%d video units were dropped in the Neon process, the pipeline read them slowly", self._dropped)
+
+    def _put(self, item: VideoDescription | AccessUnit) -> None:
+        if self._gone:
+            return
+        try:
+            self._queue.put_nowait(item)
+        except queue.Full:
+            self._drain()
+            if isinstance(item, VideoDescription):
+                self._queue.put_nowait(item)
+            else:
+                self._dropped += 1
+                self._waiting_for_keyframe = True
+            now = time.monotonic()
+            if now - self._last_drop_warning >= VIDEO_DROP_WARNING_SECONDS:
+                self._last_drop_warning = now
+                log.warning("the pipeline is reading the video slowly, %d units dropped so far", self._dropped)
+
+    def _drain(self) -> None:
+        # The description stays, since the parent's decoder needs it before any unit.
+        description: VideoDescription | None = None
+        while True:
+            try:
+                waiting = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            if isinstance(waiting, VideoDescription):
+                description = waiting
+            elif waiting is not None:
+                self._dropped += 1
+        if description is not None:
+            self._queue.put_nowait(description)
+
+    def _send_queued(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is None or self._gone:
+                return
+            try:
+                if isinstance(item, VideoDescription):
+                    self._connection.send(item)
+                else:
+                    self._connection.send_bytes(pack_unit(item))
+            except (BrokenPipeError, OSError) as parent_gone:
+                # The parent has closed its end or died. The request loop ends this process on its own
+                # when the request pipe says the same, so this only stops the writes, once. The unit
+                # in hand never arrived, so it counts with the dropped.
+                self._gone = True
+                if not isinstance(item, VideoDescription):
+                    self._dropped += 1
+                log.info("the video pipe's reader is gone (caught %s, expected), no more units are sent", type(parent_gone).__name__)
+                return
+
+
 class NeonDeviceProcess:
     """A Neon connection held by a child process, with the calls the client's simple Device has."""
 
@@ -191,6 +310,9 @@ class NeonDeviceProcess:
         self._lock = threading.RLock()
         # The child's frame block, opened on the first frame and reopened if the child replaces it.
         self._frame_memory: shared_memory.SharedMemory | None = None
+        # The parent's end of the video tee, silent until subscribe_video asks the child to use it.
+        self._video_connection: Connection | None = None
+        self._video_thread: threading.Thread | None = None
 
     def start(self) -> None:
         """
@@ -200,17 +322,54 @@ class NeonDeviceProcess:
         """
         context = multiprocessing.get_context("spawn")
         parent_end, child_end = context.Pipe()
+        video_parent_end, video_child_end = context.Pipe(duplex=False)
         self._process = context.Process(
             target=run_device_process,
-            args=(child_end, self._config, self._device_factory, logging.getLogger("nav").getEffectiveLevel()),
+            args=(child_end, self._config, self._device_factory, logging.getLogger("nav").getEffectiveLevel(), video_child_end),
             name="neon-device",
             # Ends with the pipeline even if the pipeline dies without closing it.
             daemon=True,
         )
         self._process.start()
         child_end.close()
+        video_child_end.close()
         self._connection = parent_end
+        self._video_connection = video_parent_end
         self._request(DeviceRequest.CONNECT, wait_seconds=self._config.discovery_timeout_seconds + START_GRACE_SECONDS)
+
+    def subscribe_video(self, listener: SceneVideoListener) -> None:
+        """
+        Ask the child to send its video, and read it into the listener on a thread of this process.
+
+        :raises ValueError: When the child's device provides no scene video, naming its type.
+        :raises NeonDeviceError: When the child has stopped answering.
+        """
+        if self._video_connection is None:
+            raise NeonDeviceError("the Neon process is not running")
+        self._request(DeviceRequest.VIDEO, wait_seconds=RESPONSE_GRACE_SECONDS)
+        self._video_thread = threading.Thread(target=self._read_video, args=(listener,), name="neon-video", daemon=True)
+        self._video_thread.start()
+
+    def _read_video(self, listener: SceneVideoListener) -> None:
+        """The video thread: the description, then units, each straight into the listener."""
+        connection = self._video_connection
+        if connection is None:
+            return
+        try:
+            listener.describe(connection.recv())
+            while True:
+                payload = connection.recv_bytes()
+                try:
+                    unit = unpack_unit(payload)
+                except ValueError as malformed:
+                    # The pipe is between two halves of this program, so this is a bug, not the
+                    # network. Said once per unit and skipped, rather than ending the video.
+                    log.warning("skipped a malformed unit from the Neon process (caught ValueError, expected): %s", malformed)
+                    continue
+                listener.offer(unit)
+        except (EOFError, OSError) as ended:
+            # The child closed its end, or close() closed this one. Either is the end of the video.
+            log.info("the video pipe closed (caught %s, expected)", type(ended).__name__)
 
     def get_calibration(self) -> DeviceCalibration:
         camera_matrix, distortion = self._request(DeviceRequest.CALIBRATION, wait_seconds=RESPONSE_GRACE_SECONDS)
@@ -275,9 +434,18 @@ class NeonDeviceProcess:
             self._process.join(CLOSE_JOIN_SECONDS)
         if self._connection is not None:
             self._connection.close()
+        if self._video_connection is not None:
+            # Closing this end ends the reader thread's recv with an OSError, which it treats as the end.
+            self._video_connection.close()
+        if self._video_thread is not None:
+            self._video_thread.join(CLOSE_JOIN_SECONDS)
+            if self._video_thread.is_alive():
+                log.warning("the Neon video thread did not stop within %.0f s", CLOSE_JOIN_SECONDS)
+            self._video_thread = None
         self._close_frame_memory()
         self._process = None
         self._connection = None
+        self._video_connection = None
 
     def _copy_frame(self, block_name: str, shape: tuple[int, ...], dtype: str) -> np.ndarray:
         if self._frame_memory is None or self._frame_memory.name != block_name:
@@ -342,11 +510,14 @@ def run_device_process(
     config: NeonConfig,
     device_factory: Callable[[NeonConfig], object] | None,
     log_level: int,
+    video_connection: Connection | None = None,
 ) -> None:
     """
     The child's whole life: connect, answer requests until told to close, then close the device.
 
     Module level, because a spawned process finds its target by import.
+
+    :param video_connection: The child's end of the video tee, written to only after a VIDEO request.
     """
     # Ctrl+C reaches every process in the console. The parent decides when this one ends, through
     # close, so the device is shut down in order rather than torn out from under a read.
@@ -370,7 +541,7 @@ def run_device_process(
     connection.send((first_request_id, ReplyStatus.OK, None))
 
     try:
-        serve(connection, device, known_failures)
+        serve(connection, device, known_failures, video_connection)
     finally:
         device.close()
 
@@ -413,17 +584,28 @@ class SharedFrameBuffer:
         self._memory = None
 
 
-def serve(connection: Connection, device: object, known_failures: tuple[type[BaseException], ...]) -> None:
+def serve(
+    connection: Connection,
+    device: object,
+    known_failures: tuple[type[BaseException], ...],
+    video_connection: Connection | None = None,
+) -> None:
     """
     Answer requests on the pipe until a close request or until the parent goes away.
 
     Split out from the process function so the protocol can be tested over a pipe in one process.
+    The video pipe's end is closed on the way out, so a parent still reading it sees the end.
     """
     frames = SharedFrameBuffer()
+    video = _PipeVideoListener(video_connection) if video_connection is not None else None
     try:
-        _serve_until_closed(connection, device, known_failures, frames)
+        _serve_until_closed(connection, device, known_failures, frames, video)
     finally:
         frames.close()
+        if video is not None:
+            video.close()
+        if video_connection is not None:
+            video_connection.close()
 
 
 def _serve_until_closed(
@@ -431,6 +613,7 @@ def _serve_until_closed(
     device: object,
     known_failures: tuple[type[BaseException], ...],
     frames: SharedFrameBuffer,
+    video: _PipeVideoListener | None,
 ) -> None:
     while True:
         try:
@@ -442,7 +625,7 @@ def _serve_until_closed(
             connection.send((request_id, ReplyStatus.OK, None))
             return
         try:
-            payload = answer(device, name, arguments, frames)
+            payload = answer(device, name, arguments, frames, video)
         except known_failures as failure:
             connection.send((request_id, ReplyStatus.ERROR, _describe_failure(failure)))
             continue
@@ -453,13 +636,28 @@ def _serve_until_closed(
         connection.send((request_id, ReplyStatus.OK, payload))
 
 
-def answer(device: object, name: DeviceRequest, arguments: tuple, frames: SharedFrameBuffer) -> object:
+def answer(
+    device: object,
+    name: DeviceRequest,
+    arguments: tuple,
+    frames: SharedFrameBuffer,
+    video: _PipeVideoListener | None = None,
+) -> object:
     """
     One request, answered from the device, as plain values that cross a pipe.
 
-    :raises ValueError: For a request this function does not answer, such as a close.
+    :param video: The listener a VIDEO request subscribes to the device. None refuses the request.
+    :raises ValueError: For a request this function does not answer, such as a close, and for a
+        VIDEO request on a device that provides no scene video, naming the device's type.
     """
     match name:
+        case DeviceRequest.VIDEO:
+            if video is None:
+                raise ValueError("this device process was started without a video pipe")
+            if not isinstance(device, SceneVideoProvider):
+                raise ValueError(f"{type(device).__name__} provides no scene video")
+            device.subscribe_video(video)
+            return None
         case DeviceRequest.CALIBRATION:
             calibration = device.get_calibration()
             return (

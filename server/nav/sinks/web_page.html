@@ -3,60 +3,163 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- An empty icon, so the browser does not ask the laptop for one it does not serve and log a 404. -->
+<link rel="icon" href="data:,">
 <title>Walking path</title>
 <style>
-  :root { --bg: #181818; --fg: #eeeeee; --arrow: #3fdf5f; --alarm-bg: #7a1010; --panel: #222222; }
-  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font-family: system-ui, sans-serif; }
+  /* Every color, size and space on the page comes from here. The alarm swaps the page's background
+     and the cards' edges to the alarm colors, which is the one effect meant to be seen across a room. */
+  :root {
+    --bg: #141618;
+    --panel: #1f2326;
+    --panel-edge: #2c3236;
+    --fg: #eceff1;
+    --muted: #9aa3ab;
+    --accent: #3fdf5f;
+    --arrow: #3fdf5f;
+    --alarm-bg: #7a1010;
+    --alarm-fg: #ff5050;
+    --dim: #555555;
+    --head: #777777;
+    --black: #000000;
+    --text-s: 0.85rem;
+    --text-m: 1rem;
+    --text-l: 1.15rem;
+    --space-1: 6px;
+    --space-2: 12px;
+    --space-3: 18px;
+    --space-4: 28px;
+    --radius: 10px;
+    --control-height: 32px;
+  }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--fg); font-family: system-ui, sans-serif; font-size: var(--text-m); }
   body.alarm { background: var(--alarm-bg); }
-  main { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100%; gap: 16px; padding: 16px; box-sizing: border-box; }
-  canvas, img { max-width: 100%; }
-  #depth[hidden] { display: none; }
-  #status { font-size: 1.1rem; }
-  #link { font-size: 0.9rem; opacity: 0.7; }
-  #sound-panel { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; font-size: 0.95rem; }
-  #sound-panel select, #sound-panel input { font: inherit; }
-  #music-label[hidden], #anc[hidden] { display: none; }
-  #anc { padding: 4px 10px; border-radius: 6px; border: 2px solid currentColor; }
-  #anc.on { color: #3fdf5f; }
-  #anc.off { color: #ff5050; }
-  #anc.unknown { opacity: 0.6; }
-  /* A fixed size, so the canvas never collapses inside the flex column, shrunk only on a narrow phone. */
-  #plan-panel { width: min(360px, 100%); display: flex; flex-direction: column; gap: 8px; }
-  /* About as tall as the map it holds: 6.5 m across by 6.1 m ahead, margins included. */
-  #plan { width: 100%; aspect-ratio: 20 / 19; background: var(--panel); border-radius: 4px; }
-  #plan-panel[hidden] { display: none; }
-  #layers { display: flex; gap: 16px; font-size: 0.95rem; }
-  #layers label { display: flex; align-items: center; gap: 4px; }
-  #legend, #information { font-size: 0.85rem; opacity: 0.8; }
+  body.alarm .card { border-color: var(--alarm-fg); }
+  /* One column on a phone, in the walker's order: the arrow first. The desktop grid below is for
+     a laptop or a projector, where the video is what the room looks at. The breakpoint is 900 px,
+     written twice because a custom property cannot be used inside a media query. */
+  main {
+    display: grid;
+    grid-template-columns: 1fr;
+    grid-template-areas: "heading" "video" "plan" "depth" "sound";
+    gap: var(--space-3);
+    padding: var(--space-3);
+    box-sizing: border-box;
+    max-width: 1800px;
+    margin: 0 auto;
+  }
+  @media (min-width: 900px) {
+    main {
+      grid-template-columns: 2fr 2fr 1fr 1fr;
+      grid-template-areas:
+        "video video heading heading"
+        "video video plan depth"
+        "sound sound sound sound";
+      align-items: start;
+      min-height: 100vh;
+    }
+  }
+  .card { background: var(--panel); border: 1px solid var(--panel-edge); border-radius: var(--radius); padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; box-sizing: border-box; }
+  .card h2 { margin: 0; font-size: var(--text-s); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+  #heading-card { grid-area: heading; align-items: center; }
+  #video-card { grid-area: video; }
+  #plan-card { grid-area: plan; }
+  #depth-card { grid-area: depth; }
+  #sound-card { grid-area: sound; }
+  canvas, img, video { max-width: 100%; height: auto; }
+  .placeholder { font-size: var(--text-s); color: var(--muted); }
+  .placeholder[hidden], #depth[hidden], #plan-panel[hidden], #music-label[hidden], #live[hidden], #recording[hidden] { display: none; }
+  #arrow { width: 100%; max-width: 320px; }
+  #status { font-size: var(--text-l); }
+  #link { font-size: var(--text-s); color: var(--muted); }
+  select, input[type="file"] { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--panel-edge); border-radius: var(--space-1); min-height: var(--control-height); padding: 0 var(--space-2); }
+  #sound-panel, #video-controls, #layers { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center; }
+  #layers label { display: flex; align-items: center; gap: var(--space-1); }
+  #nc { padding: var(--space-1) var(--space-2); border-radius: var(--space-1); border: 2px solid currentColor; font-weight: bold; }
+  #nc.on { color: var(--accent); }
+  #nc.off { color: var(--alarm-fg); }
+  #nc.unknown { color: var(--muted); }
+  /* The ear-volume display: a head from above, five arcs a side, one lit per 20 % of that ear's gain. */
+  #ears { width: 180px; height: 90px; }
+  #ears .head { fill: var(--head); }
+  #ears .arc { fill: none; stroke: var(--dim); stroke-width: 4; stroke-linecap: round; }
+  #ears .arc.lit { stroke: var(--accent); }
+  /* The video panel: the live canvas or the recording, one shown at a time, filling the card. */
+  #live, #recording { width: 100%; background: var(--black); border-radius: var(--space-1); }
+  #video-status, #legend, #information { font-size: var(--text-s); color: var(--muted); }
+  /* The plan fills its card up to a sensible width. A percentage width in a grid cell is definite,
+     so the canvas keeps its height, which it would not inside a shrink-to-fit parent. About as tall
+     as the map it holds: 6.5 m across by 6.1 m ahead, margins included. */
+  #plan-panel { width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: var(--space-2); }
+  #plan { width: 100%; aspect-ratio: 20 / 19; background: var(--bg); border-radius: var(--space-1); }
+  /* A finger needs more than a pointer. */
+  @media (pointer: coarse) {
+    :root { --control-height: 44px; }
+    select, input[type="file"] { font-size: var(--text-l); }
+    #layers label, #sound-panel label, #video-controls label { min-height: 44px; }
+    input[type="checkbox"] { width: 24px; height: 24px; }
+  }
 </style>
 </head>
 <body>
 <main>
-  <canvas id="arrow" width="320" height="320"></canvas>
-  <div id="status">Waiting for the laptop.</div>
-  <section id="plan-panel" hidden>
-    <div id="layers">
-      <label><input type="checkbox" id="show-field" checked> Field</label>
-      <label><input type="checkbox" id="show-path" checked> Path</label>
-      <label><input type="checkbox" id="show-obstacles" checked> Obstacles</label>
-    </div>
-    <canvas id="plan" aria-label="The planner's view from above: the cost of every spot ahead, the planned path, and the obstacles"></canvas>
-    <div id="information"></div>
-    <div id="legend">Seen from above, walking up the screen. Brighter cells cost more to walk through.
-      Gray cells are floor the camera could not see, which the planner treats as empty. The band is the planned path, as wide as the body, more solid the more the scene shaped it, and
-      redder the sooner something is in the way. Dots are obstacles, squares are walls.</div>
+  <section class="card" id="heading-card">
+    <h2>Heading</h2>
+    <canvas id="arrow" width="320" height="320" aria-label="The arrow the planner chose"></canvas>
+    <div id="status">Waiting for the laptop.</div>
+    <div id="link">Not connected.</div>
   </section>
-  <img id="depth" alt="The depth image the planner saw, with the obstacle groups and the chosen path drawn on it" hidden>
-  <div id="link">Not connected.</div>
-  <div id="sound-panel">
-    <label>Sound <select id="mode">
-      <option value="off">Off</option>
-      <option value="alarm">Alarm</option>
-      <option value="cancel">Noise cancellation</option>
-    </select></label>
-    <label id="music-label" hidden>Music <input type="file" id="music" accept="audio/*"></label>
-    <span id="anc" class="unknown" hidden>ANC unknown</span>
-  </div>
+  <section class="card" id="video-card">
+    <h2>Video</h2>
+    <div id="video-controls">
+      <label>Video <select id="video-mode">
+        <option value="live">Live</option>
+        <option value="recording">Recording</option>
+      </select></label>
+      <span id="video-status">Waiting for video.</span>
+    </div>
+    <canvas id="live" width="640" height="480" aria-label="What the glasses see, decoded in this browser"></canvas>
+    <video id="recording" loop muted playsinline hidden aria-label="A recording of what the glasses saw"></video>
+  </section>
+  <section class="card" id="plan-card">
+    <h2>From above</h2>
+    <div class="placeholder" id="plan-placeholder">Waiting for the planner's first view.</div>
+    <section id="plan-panel" hidden>
+      <div id="layers">
+        <label><input type="checkbox" id="show-field" checked> Field</label>
+        <label><input type="checkbox" id="show-path" checked> Path</label>
+        <label><input type="checkbox" id="show-obstacles" checked> Obstacles</label>
+      </div>
+      <canvas id="plan" aria-label="The planner's view from above: the cost of every spot ahead, the planned path, and the obstacles"></canvas>
+      <div id="information"></div>
+      <div id="legend">Seen from above, walking up the screen. Brighter cells cost more to walk through.
+        Light gray cells are floor outside the camera's view. Dark gray cells are in view, but the camera
+        didn't see floor there, because something stands in front of it or the depth has no reading.
+        The planner treats both as empty floor. The band is the planned path, as wide as the body, more solid the more the scene shaped it, and
+        redder the sooner something is in the way. Dots are obstacles, squares are walls.</div>
+    </section>
+  </section>
+  <section class="card" id="depth-card">
+    <h2>Depth</h2>
+    <div class="placeholder" id="depth-placeholder">Waiting for the first depth picture.</div>
+    <img id="depth" alt="The depth image the planner saw, with the obstacle groups and the chosen path drawn on it" hidden>
+  </section>
+  <section class="card" id="sound-card">
+    <h2>Sound</h2>
+    <div id="sound-panel">
+      <label>Sound <select id="mode">
+        <option value="off">Off</option>
+        <option value="alarm">Alarm</option>
+        <option value="cancel">Noise cancellation</option>
+      </select></label>
+      <label id="music-label" hidden>Music <input type="file" id="music" accept="audio/*"></label>
+      <svg id="ears" viewBox="0 0 200 100" role="img" aria-label="How loud each ear is: five arcs a side, one lit per 20 percent of that ear's volume">
+        <circle class="head" cx="100" cy="50" r="18"></circle>
+        <path class="head" d="M93 34 L100 24 L107 34 Z"></path>
+      </svg>
+      <span id="nc" class="unknown">NC ?</span>
+    </div>
+  </section>
 </main>
 <script>
   // Draws the arrow the planner chose. Red background when something in the walker's way is close.
@@ -64,13 +167,21 @@
   // sends them. Text frames say what they are in their kind: "path" for the arrow, "plan_view" for
   // the view from above. A binary frame is the depth PNG. A page served by a sink that sends only
   // paths keeps working with the arrow alone. Reconnects on its own, because the laptop restarts
-  // more often than the page reloads. Everything drawn here was computed on the laptop. The page
-  // never decides a color, an opacity or a path.
+  // more often than the page reloads. Everything drawn here was computed on the laptop: the page
+  // never decides a path, an opacity, or a color that means something about the walk. Its only
+  // colors of its own are the field's ramp, the black under the path's border, and the two floor
+  // grays, each defined once below.
   // Sound, in two modes, both from numbers the laptop sends. Alarm mode beeps toward the side the
   // arrow points to, and while the alarm is up the beep moves to the danger's side and quickens.
   // Noise-cancellation mode plays music, a built-in bed or a file, with each ear at the gain the
   // laptop gives it: the ear away from the heading goes quieter, and the danger's ear drops to the
-  // floor. It also shows what noise cancellation would do, since no page can switch it.
+  // floor. Two readouts show the same numbers in every mode: a head with five arcs an ear, one lit
+  // per 20 % of that ear's gain, and whether noise cancelling would be on, which goes off with the
+  // alarm and comes back 2 s after it clears, since no page can switch it.
+  // The video panel shows what the glasses see. Live is the glasses' own stream: the laptop
+  // forwards the compressed frames on a second socket and this browser decodes them with
+  // WebCodecs, which is why the page is HTTPS. Recording is a file the laptop serves, played here,
+  // for when the glasses fail. It is the one thing on the page not in step with the arrow.
   const canvas = document.getElementById("arrow");
   const context = canvas.getContext("2d");
   const depth = document.getElementById("depth");
@@ -79,8 +190,16 @@
   const modeSelect = document.getElementById("mode");
   const musicLabel = document.getElementById("music-label");
   const musicInput = document.getElementById("music");
-  const ancLabel = document.getElementById("anc");
+  const ncLabel = document.getElementById("nc");
+  const ears = document.getElementById("ears");
+  const liveCanvas = document.getElementById("live");
+  const liveContext = liveCanvas.getContext("2d");
+  const recordingVideo = document.getElementById("recording");
+  const videoMode = document.getElementById("video-mode");
+  const videoStatus = document.getElementById("video-status");
   const planPanel = document.getElementById("plan-panel");
+  const planPlaceholder = document.getElementById("plan-placeholder");
+  const depthPlaceholder = document.getElementById("depth-placeholder");
   const plan = document.getElementById("plan");
   const information = document.getElementById("information");
   const toggles = {
@@ -95,6 +214,11 @@
   // A dark-to-bright sequential ramp for the field, in the spirit of viridis. The field's own colors,
   // not the path's: the path's colors come from the laptop.
   const FIELD_RAMP = [[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37]];
+  // Floor the planner treats as empty without the camera having seen it. Light gray is outside the
+  // camera's view. Dark gray is in view, with something standing in front of it or no depth reading.
+  // Only this page draws them, so they're defined here rather than sent by the laptop.
+  const UNSEEN_FLOOR_GRAY = "rgb(110, 110, 110)";
+  const HIDDEN_FLOOR_GRAY = "rgb(55, 55, 55)";
   const SIDE_MARGIN_METERS = 0.2;
   const AHEAD_MARGIN_METERS = 0.3;
   const BEHIND_MARGIN_METERS = 0.3;
@@ -119,11 +243,20 @@
   // somewhere would be stale guidance. Silence is the honest signal. The music then plays in both
   // ears at full, which is no cue, and the label says the state is unknown.
   const STALE_MS = 1500;
+  // The driving guide's rule: noise cancelling goes off while the alarm is up, and comes back
+  // once the alarm has been down this long, so a flicker of the alarm does not flicker the ears.
+  const NC_RETURN_MS = 2000;
+  const ARCS_PER_EAR = 5;
+  // How often the two readouts are re-read without a path, so the stale state and the 2 s return
+  // show up on time rather than on the next frame.
+  const READOUT_TICK_MS = 250;
 
   let audio = null;  // Built on the first mode change, because browsers refuse sound before a gesture.
   let mode = "off";
   let musicBuffer = null;  // A decoded file, once one is picked. Null plays the built-in bed.
   let latest = { heading: 0, alarm: false, alarmPan: null, earGainLeft: 1, earGainRight: 1, receivedAt: -Infinity };
+  // When the alarm last went from up to down, for the 2 s return. Never while it has not.
+  let alarmClearedAt = -Infinity;
 
   function buildAudio() {
     const audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -184,17 +317,68 @@
     const now = audio.audioContext.currentTime;
     audio.bedLeft.gain.setTargetAtTime(left * BED_VOLUME, now, GAIN_RAMP_SECONDS);
     audio.bedRight.gain.setTargetAtTime(right * BED_VOLUME, now, GAIN_RAMP_SECONDS);
-    ancLabel.hidden = false;
-    if (stale) {
-      ancLabel.textContent = "ANC unknown";
-      ancLabel.className = "unknown";
-    } else if (latest.alarm) {
-      ancLabel.textContent = "ANC disabled";
-      ancLabel.className = "off";
-    } else {
-      ancLabel.textContent = "ANC on";
-      ancLabel.className = "on";
+  }
+
+  // ---- The two readouts ------------------------------------------------------------------
+  function isStale() {
+    return performance.now() - latest.receivedAt >= STALE_MS;
+  }
+
+  function buildEars() {
+    // Five arcs a side, the smallest nearest the head, the way the usual audio symbol is drawn.
+    // Left arcs sweep through the left of the head, right arcs through the right.
+    const radii = [30, 38, 46, 54, 62];
+    const spread = Math.SQRT1_2;  // cos and sin of 45 degrees, the arcs' end angles.
+    for (const [side, direction] of [["left", -1], ["right", 1]]) {
+      radii.forEach((radius, index) => {
+        const arc = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        const x = 100 + direction * radius * spread;
+        const top = 50 - radius * spread, bottom = 50 + radius * spread;
+        const [startY, endY] = direction < 0 ? [bottom, top] : [top, bottom];
+        arc.setAttribute("d", "M" + x + " " + startY + " A" + radius + " " + radius + " 0 0 1 " + x + " " + endY);
+        arc.setAttribute("class", "arc");
+        arc.id = "ear-" + side + "-" + (index + 1);
+        ears.appendChild(arc);
+      });
     }
+  }
+
+  function litArcs(gain) {
+    // Each arc is 20 % of the ear's gain, rounded to the nearest. The laptop's floor of 0.10 lights
+    // one arc, so an ear held at the floor still reads as present rather than muted.
+    return Math.min(ARCS_PER_EAR, Math.max(0, Math.round(gain * ARCS_PER_EAR)));
+  }
+
+  function showEarGains() {
+    // The laptop's numbers, shown in every sound mode: this is what the laptop decided, whether
+    // or not this browser plays it. Stale means all gray.
+    const stale = isStale();
+    for (const [side, gain] of [["left", latest.earGainLeft], ["right", latest.earGainRight]]) {
+      const lit = stale ? 0 : litArcs(gain);
+      for (let index = 1; index <= ARCS_PER_EAR; index++) {
+        document.getElementById("ear-" + side + "-" + index).classList.toggle("lit", index <= lit);
+      }
+    }
+  }
+
+  function showNoiseCancellation() {
+    // Off while the alarm is up, and for NC_RETURN_MS after it clears. Unknown when the laptop
+    // has gone quiet. The page can switch no headphones, so this says what the rule would do.
+    if (isStale()) {
+      ncLabel.textContent = "NC ?";
+      ncLabel.className = "unknown";
+    } else if (latest.alarm || performance.now() - alarmClearedAt < NC_RETURN_MS) {
+      ncLabel.textContent = "NC OFF";
+      ncLabel.className = "off";
+    } else {
+      ncLabel.textContent = "NC ON";
+      ncLabel.className = "on";
+    }
+  }
+
+  function refreshReadouts() {
+    showEarGains();
+    showNoiseCancellation();
   }
 
   function beep() {
@@ -276,7 +460,6 @@
       stopBed();
     }
     musicLabel.hidden = next !== "cancel";
-    ancLabel.hidden = next !== "cancel";
     if (next === "off") {
       if (audio) audio.audioContext.suspend();
       return;
@@ -316,7 +499,7 @@
     context.lineCap = "round";
     // trim(): the custom property comes back with its leading space, and a canvas ignores a color
     // it cannot parse and keeps drawing in the previous one, which is black on this background.
-    context.strokeStyle = alarm ? "#ff5050" : getComputedStyle(document.documentElement).getPropertyValue("--arrow").trim();
+    context.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue(alarm ? "--alarm-fg" : "--arrow").trim();
     context.beginPath();
     context.moveTo(centerX, centerY);
     context.lineTo(tipX, tipY);
@@ -335,6 +518,7 @@
     document.body.classList.toggle("alarm", Boolean(message.alarm));
     drawArrow(message.lookahead_heading_radians, message.alarm);
     status.textContent = (message.alarm ? "Obstacle close. " : "") + "Heading " + (degrees >= 0 ? "+" : "") + degrees + " degrees.";
+    if (latest.alarm && !message.alarm) alarmClearedAt = performance.now();
     latest = {
       heading: message.lookahead_heading_radians,
       alarm: Boolean(message.alarm),
@@ -347,6 +531,7 @@
     };
     if (audio && mode === "alarm") setBeepPan(beepPan());
     if (audio && mode === "cancel") applyEarGains();
+    refreshReadouts();
   }
 
   function rgba(rgb, opacity) {
@@ -393,8 +578,12 @@
       const ceiling = Math.max(percentile(values, 0.98), 1e-9);
       for (let step = 0; step < forward.length; step++) {
         for (let cell = 0; cell < grid.length; cell++) {
+          // A message without a mask draws every cell as seen, so an older laptop's view still draws.
           const seen = !view.floor_seen || view.floor_seen[step][cell];
-          draw.fillStyle = seen ? rgba(fieldColor(view.field[step][cell] / ceiling), 1) : "rgb(110, 110, 110)";
+          const hidden = seen && view.floor_hidden !== undefined && view.floor_hidden[step][cell];
+          if (!seen) draw.fillStyle = UNSEEN_FLOOR_GRAY;
+          else if (hidden) draw.fillStyle = HIDDEN_FLOOR_GRAY;
+          else draw.fillStyle = rgba(fieldColor(view.field[step][cell] / ceiling), 1);
           const left = toX(grid[cell] - cellWidth / 2), top = toY(forward[step] + rowDepth / 2);
           draw.fillRect(left, top, cellWidth * pixelsPerMeter + 0.5, rowDepth * pixelsPerMeter + 0.5);
         }
@@ -464,6 +653,7 @@
 
   function showPlanView(view) {
     latestPlanView = view;
+    planPlaceholder.hidden = true;
     planPanel.hidden = false;
     information.textContent = "How much the scene shaped the plan: " + view.scene_information_bits.toFixed(2) + " bits. "
       + "How soon something is in the way: " + view.avoidance_surprise_bits.toFixed(2) + " bits.";
@@ -482,6 +672,7 @@
     depthUrl = URL.createObjectURL(blob);
     depth.onload = () => { if (previous) URL.revokeObjectURL(previous); };
     depth.src = depthUrl;
+    depthPlaceholder.hidden = true;
     depth.hidden = false;
   }
 
@@ -489,7 +680,10 @@
     const protocol = location.protocol === "https:" ? "wss" : "ws";
     const socket = new WebSocket(protocol + "://" + location.host + "/ws");
     socket.binaryType = "blob";
-    socket.onopen = () => { link.textContent = "Connected to " + location.host + "."; };
+    socket.onopen = () => {
+      link.textContent = "Connected to " + location.host + ".";
+      connectVideo();
+    };
     socket.onmessage = (event) => {
       if (typeof event.data === "string") {
         let message;
@@ -511,7 +705,180 @@
     socket.onerror = () => { socket.close(); };
   }
 
+  // ---- Video -------------------------------------------------------------------------------
+  // The laptop forwards the glasses' H.264 as it arrives, one access unit a frame, over /video.
+  // This browser decodes it with WebCodecs and draws each frame on the live canvas. The laptop
+  // never decodes it for the page, so the panel costs the planner nothing but a copy.
+  const VIDEO_UNIT_HEADER_BYTES = 9;  // One flags byte, then the capture stamp as a little-endian float64.
+  const KEYFRAME_FLAG = 1;
+  // Frames the decoder may hold before this page stops feeding it deltas and waits for the next
+  // keyframe. A decoder that falls behind would otherwise show video from a minute ago by the end.
+  const MAX_DECODE_QUEUE = 8;
+  const VIDEO_UNSUPPORTED_HERE = "this browser can't decode the live video";
+
+  let decoder = null;
+  let videoSocket = null;
+  let streamDescription = null;  // The laptop's video_stream message, kept to rebuild the decoder on an error.
+  let waitingForKeyframe = true;
+  let framesDecoded = 0;
+  let framesThisSecond = 0;
+  let firstUnitSeconds = null;
+  // Why there is no live video, from this browser or from the laptop. Null while there is.
+  let liveReason = typeof VideoDecoder === "function" && window.isSecureContext ? null : VIDEO_UNSUPPORTED_HERE;
+
+  function liveOption() {
+    return videoMode.querySelector('option[value="live"]');
+  }
+
+  function setVideoStatus(text) {
+    videoStatus.textContent = text;
+  }
+
+  function showLiveState() {
+    if (videoMode.value !== "live") return;
+    liveOption().disabled = liveReason !== null;
+    if (liveReason !== null) setVideoStatus("No live video: " + liveReason + ".");
+    else if (streamDescription === null) setVideoStatus("Live. Waiting for the laptop to describe the stream.");
+    else if (framesDecoded === 0) setVideoStatus("Live. Waiting for the next keyframe.");
+    else setVideoStatus("Live. " + framesThisSecond + " frames a second, " + framesDecoded + " decoded.");
+  }
+
+  function drawFrame(frame) {
+    try {
+      if (liveCanvas.width !== frame.displayWidth || liveCanvas.height !== frame.displayHeight) {
+        liveCanvas.width = frame.displayWidth;
+        liveCanvas.height = frame.displayHeight;
+      }
+      liveContext.drawImage(frame, 0, 0);
+      framesDecoded++;
+      framesThisSecond++;
+    } finally {
+      // A frame left open holds a decoder surface, and Chrome stalls the decoder after a few.
+      frame.close();
+    }
+  }
+
+  function onDecoderError(error) {
+    // One bad unit, or a decoder that gave up. Rebuilt from the same description and started again
+    // at the next keyframe, and the error is said once per rebuild.
+    setVideoStatus("Decoder error: " + error.message + ". Waiting for the next keyframe.");
+    if (streamDescription !== null) configureDecoder(streamDescription);
+  }
+
+  function configureDecoder(message) {
+    if (decoder !== null && decoder.state !== "closed") decoder.close();
+    decoder = new VideoDecoder({ output: drawFrame, error: onDecoderError });
+    waitingForKeyframe = true;
+    try {
+      // No description field, so the units arrive in Annex B form with their start codes, as the
+      // laptop sends them, and every keyframe carries the parameter sets in front of it.
+      decoder.configure({ codec: message.codec, optimizeForLatency: true });
+    } catch (error) {
+      // Some browsers throw here rather than report through the error callback.
+      decoder = null;
+      liveReason = "this browser refuses the codec " + message.codec;
+      showLiveState();
+    }
+  }
+
+  function feedUnit(buffer) {
+    if (buffer.byteLength < VIDEO_UNIT_HEADER_BYTES) return;  // Not a unit. Ignored, never an error.
+    if (decoder === null || decoder.state !== "configured") return;
+    const header = new DataView(buffer);
+    const keyframe = (header.getUint8(0) & KEYFRAME_FLAG) !== 0;
+    const seconds = header.getFloat64(1, true);
+    if (firstUnitSeconds === null) firstUnitSeconds = seconds;
+    if (waitingForKeyframe && !keyframe) return;
+    if (decoder.decodeQueueSize > MAX_DECODE_QUEUE) {
+      // Behind. Drop until the next keyframe rather than queue a backlog that only grows.
+      waitingForKeyframe = true;
+      return;
+    }
+    waitingForKeyframe = false;
+    try {
+      decoder.decode(new EncodedVideoChunk({
+        type: keyframe ? "key" : "delta",
+        // Microseconds from the first unit, so the numbers stay small and readable.
+        timestamp: Math.round((seconds - firstUnitSeconds) * 1e6),
+        data: new Uint8Array(buffer, VIDEO_UNIT_HEADER_BYTES),
+      }));
+    } catch (error) {
+      onDecoderError(error);
+    }
+  }
+
+  function connectVideo() {
+    // Opened by the path socket's own connect, so a laptop that comes back brings the video back
+    // with it, and a laptop with no video to send is asked once per connection, not once a second.
+    if (liveReason === VIDEO_UNSUPPORTED_HERE) { showLiveState(); return; }
+    if (videoSocket !== null && videoSocket.readyState <= WebSocket.OPEN) return;
+    const protocol = location.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(protocol + "://" + location.host + "/video");
+    socket.binaryType = "arraybuffer";
+    videoSocket = socket;
+    socket.onmessage = (event) => {
+      if (typeof event.data === "string") {
+        let message;
+        try { message = JSON.parse(event.data); }
+        catch (error) { setVideoStatus("Bad video message from the laptop."); return; }
+        if (message.kind === "video_stream") {
+          streamDescription = message;
+          liveReason = null;
+          configureDecoder(message);
+        } else if (message.kind === "video_unavailable") {
+          liveReason = message.reason;
+        }
+        showLiveState();
+        return;
+      }
+      feedUnit(event.data);
+    };
+    socket.onclose = () => { if (videoSocket === socket) videoSocket = null; waitingForKeyframe = true; };
+    socket.onerror = () => { socket.close(); };
+  }
+
+  async function setVideoMode(next) {
+    if (next === "recording") {
+      // Asked of a route that always answers, rather than of the file, so a laptop without a
+      // recording costs no failed request in the console.
+      let available = false;
+      try {
+        const answer = await fetch("/recording/status");
+        available = answer.ok && (await answer.json()).available === true;
+      } catch (error) {
+        available = false;
+      }
+      if (!available) {
+        // The canvas stays, so the panel is never blank for want of a file.
+        setVideoStatus("No recording configured on the laptop.");
+        return;
+      }
+      if (!recordingVideo.getAttribute("src")) recordingVideo.src = "/recording";
+      liveCanvas.hidden = true;
+      recordingVideo.hidden = false;
+      recordingVideo.play().catch(() => {});
+      setVideoStatus("Recording. Not in step with the arrow.");
+      return;
+    }
+    recordingVideo.pause();
+    recordingVideo.hidden = true;
+    liveCanvas.hidden = false;
+    showLiveState();
+  }
+
+  videoMode.onchange = () => { setVideoMode(videoMode.value); };
+
+  setInterval(() => {
+    // The decode rate, read once a second. The frames themselves are counted as they are drawn.
+    showLiveState();
+    framesThisSecond = 0;
+  }, 1000);
+
+  buildEars();
+  refreshReadouts();
+  setInterval(refreshReadouts, READOUT_TICK_MS);
   drawArrow(0, false);
+  showLiveState();
   connect();
 </script>
 </body>

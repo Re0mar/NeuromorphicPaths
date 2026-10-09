@@ -36,6 +36,7 @@ from nav.sources.config import (
     NeonConfig,
     NeonPluginConfig,
     NeonPluginModel,
+    NeonRecordingConfig,
     TapConfig,
     VideoConfig,
     depth_checkpoint_from_name,
@@ -43,8 +44,11 @@ from nav.sources.config import (
 from nav.sources.estimated_depth import EstimatedDepthSource
 from nav.sources.estimator import DepthEstimator, DepthEstimatorProtocol
 from nav.sources.logged import LoggedDepthFrameSource
-from nav.sources.neon_plugin import NativeNeonRecordingReader, NeonPluginDepthFrameSource
+from nav.sources.neon_plugin import NeonPluginDepthFrameSource
+# Module scope, like neon_plugin: pupil_labs is imported inside the reader, not by importing this.
+from nav.sources.neon_recording import NativeNeonRecordingReader, NeonRecordingReader, NeonRecordingRgbSource
 from nav.sources.rgb import RgbSource
+from nav.sources.scene_video import SceneVideoFeed
 from nav.sources.video_file import URL_MARKER, VideoFileRgbSource
 from nav.types import DepthFrameSource, PathSink
 from nav.usermodel.config import UserModelConfig
@@ -60,6 +64,7 @@ class SourceKind(Enum):
     NEON_LIVE = "neon_live"
     ARCORE_TCP = "arcore_tcp"
     NEON_PLUGIN = "neon_plugin"
+    NEON_RECORDING = "neon_recording"
     LOGGED = "logged"
 
 
@@ -72,9 +77,9 @@ class SinkKind(Enum):
     NONE = "none"
 
 
-# These two sources carry RGB only, so they need the depth estimator composed in behind them.
-# The other three already deliver depth, so asking them for a model name would be meaningless.
-ESTIMATOR_BACKED_SOURCES = frozenset({SourceKind.VIDEO_FILE, SourceKind.NEON_LIVE})
+# These sources carry RGB only, so they need the depth estimator composed in behind them. The
+# rest already deliver depth, so asking them for a model name would be meaningless.
+ESTIMATOR_BACKED_SOURCES = frozenset({SourceKind.VIDEO_FILE, SourceKind.NEON_LIVE, SourceKind.NEON_RECORDING})
 # Of those, the ones a person walks with while the estimator runs, where a CPU estimator is worth a
 # warning. A recording on the CPU is only slow to process.
 LIVE_ESTIMATOR_SOURCES = frozenset({SourceKind.NEON_LIVE})
@@ -99,6 +104,7 @@ class RunConfig:
     neon: NeonConfig | None = None
     arcore: ArCoreConfig | None = None
     neon_plugin: NeonPluginConfig | None = None
+    neon_recording: NeonRecordingConfig | None = None
     logged: LoggedConfig | None = None
     estimator: EstimatorConfig | None = None
     web: WebConfig | None = None
@@ -112,6 +118,12 @@ class RunConfig:
 
     Deliberately has no command line flag. A run started from the command line always gets the
     real estimator, so a flag here could only ever make a live run quietly fake.
+    """
+    recording_reader_factory: Callable[[Path], NeonRecordingReader] | None = None
+    """Composition-root hook, set by tests to read a fake recording instead of a native one.
+
+    No command line flag, for the same reason as estimator_factory. The native format can't be
+    built by a test, so without this the neon_recording source could only be tested in pieces.
     """
 
 
@@ -198,9 +210,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="seconds to wait for the phone to connect. Launching the app by hand takes longer than the default",
     )
 
-    neon_plugin = parser.add_argument_group("neon_plugin source")
-    neon_plugin.add_argument("--recording-dir", help="a Neon recording the depth plugin has run over")
-    neon_plugin.add_argument(
+    recordings = parser.add_argument_group("neon_recording and neon_plugin sources")
+    recordings.add_argument("--recording-dir", help="a native Neon recording folder. For neon_plugin, one the depth plugin has run over")
+    # None rather than the dataclass default, so a rate given to another source can be told apart
+    # from no rate given at all. The default is filled in from NeonRecordingConfig below.
+    recordings.add_argument(
+        "--recording-rate",
+        type=_positive_float,
+        default=None,
+        help=f"neon_recording frames per second of recording to replay, {NeonRecordingConfig.frames_per_second:g} by default",
+    )
+    recordings.add_argument(
         "--plugin-model",
         choices=[model.value for model in NeonPluginModel],
         default=NeonPluginModel.METRIC_LARGE.value,
@@ -228,7 +248,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=2 * EstimatorConfig.fallback_half_field_of_view_degrees,
         help=(
             "horizontal field of view in degrees, used when the camera has no calibration and the model "
-            "returns no intrinsics. A phone is about 75. Ignored by neon_live, which uses the device's own calibration"
+            "returns no intrinsics. A phone is about 75. Ignored by neon_live and neon_recording, which use the glasses' own calibration"
         ),
     )
 
@@ -258,6 +278,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     web = parser.add_argument_group("web sink")
     web.add_argument("--web-port", type=_port_number, default=WebConfig.port)
+    web.add_argument(
+        "--demo-recording",
+        help="a video file the page's Recording mode plays, served at /recording. Without it the page says no recording is configured",
+    )
 
     phone = parser.add_argument_group("phone_app sink")
     phone.add_argument(
@@ -306,6 +330,8 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
         parser.error(f"--realtime only applies to {SourceKind.LOGGED.value}, not {source_kind.value}")
     if arguments.neon_replay is not None and source_kind is not SourceKind.NEON_LIVE:
         parser.error(f"--neon-replay only applies to {SourceKind.NEON_LIVE.value}, not {source_kind.value}")
+    if arguments.recording_rate is not None and source_kind is not SourceKind.NEON_RECORDING:
+        parser.error(f"--recording-rate only applies to {SourceKind.NEON_RECORDING.value}, not {source_kind.value}")
     if arguments.neon_replay is not None and arguments.neon_address is not None:
         parser.error("--neon-address and --neon-replay cannot be used together, a replay plays a capture in place of the glasses")
     # One log, one place. With both, a reader would have to guess which file the run wrote.
@@ -319,11 +345,18 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
         parser.error(f"--timing-log {arguments.timing_log} is a directory. It names a file, such as frame_logs/replays/run_1.jsonl")
     if arguments.timing_log is not None and not Path(arguments.timing_log).parent.is_dir():
         parser.error(f"--timing-log {arguments.timing_log} is in a folder that doesn't exist: {Path(arguments.timing_log).parent}")
+    # A recording nobody serves is a flag the run silently ignores, and a missing file would be
+    # found by the first browser rather than before the model loads.
+    if arguments.demo_recording is not None and SinkKind.WEB not in sink_kinds:
+        parser.error(f"--demo-recording only applies with --sink {SinkKind.WEB.value}, which serves it")
+    if arguments.demo_recording is not None and not Path(arguments.demo_recording).is_file():
+        parser.error(f"--demo-recording {arguments.demo_recording} is not a file")
 
     video = None
     neon = None
     arcore = None
     neon_plugin = None
+    neon_recording = None
     logged = None
 
     match source_kind:
@@ -349,6 +382,12 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
                 recording_dir=arguments.recording_dir,
                 model=NeonPluginModel(arguments.plugin_model),
             )
+        case SourceKind.NEON_RECORDING:
+            _require(parser, arguments.recording_dir, "--recording-dir", source_kind)
+            if not Path(arguments.recording_dir).is_dir():
+                parser.error(f"--recording-dir {arguments.recording_dir} is not a directory")
+            rate = NeonRecordingConfig.frames_per_second if arguments.recording_rate is None else arguments.recording_rate
+            neon_recording = NeonRecordingConfig(recording_dir=arguments.recording_dir, frames_per_second=rate)
         case SourceKind.LOGGED:
             _require(parser, arguments.log_dir, "--log-dir", source_kind)
             if not Path(arguments.log_dir).is_dir():
@@ -374,7 +413,7 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
     for sink_kind in sink_kinds:
         match sink_kind:
             case SinkKind.WEB:
-                web = WebConfig(port=arguments.web_port)
+                web = WebConfig(port=arguments.web_port, recording_path=arguments.demo_recording)
             case SinkKind.PHONE_APP:
                 phone_app = PhoneAppConfig(port=arguments.phone_port)
             case SinkKind.DEBUG_WINDOW | SinkKind.NONE:
@@ -394,6 +433,7 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
         neon=neon,
         arcore=arcore,
         neon_plugin=neon_plugin,
+        neon_recording=neon_recording,
         logged=logged,
         estimator=estimator,
         web=web,
@@ -433,7 +473,32 @@ def build_estimated_depth_source(rgb_source: RgbSource, config: RunConfig) -> Es
     return EstimatedDepthSource(rgb_source, estimator, config.estimator)
 
 
-def build_source(config: RunConfig) -> DepthFrameSource:
+# The sources whose device hands over its compressed video for a display that decodes on its own.
+# The glasses' live route, and its capture replay, which goes through the same receiver. A
+# source that reads a Companion recording through a path of its own is not here until someone
+# gives it a feed.
+SOURCES_WITH_SCENE_VIDEO = frozenset({SourceKind.NEON_LIVE})
+
+
+def build_source_and_sink(config: RunConfig, on_path_sent: Callable[[float], None] | None = None) -> tuple[DepthFrameSource, PathSink]:
+    """
+    Build the run's source and its sink together, sharing what only both can use.
+
+    The scene video feed is the one such thing: the source's device offers compressed video into
+    it, and the web sink reads it out. Built here, once, so neither end has to find the other,
+    and only for a source that has video to offer. The loop calls this rather than the two
+    factories, and a caller that needs one end alone still has them.
+
+    :param config: The run configuration.
+    :param on_path_sent: As for build_sink.
+    :return: The source and the sink, in that order.
+    :rtype: tuple[DepthFrameSource, PathSink]
+    """
+    video_feed = SceneVideoFeed() if config.source_kind in SOURCES_WITH_SCENE_VIDEO else None
+    return build_source(config, video_feed=video_feed), build_sink(config, on_path_sent=on_path_sent, video_feed=video_feed)
+
+
+def build_source(config: RunConfig, video_feed: SceneVideoFeed | None = None) -> DepthFrameSource:
     """
     Turn the chosen source kind into a source, wrapped in the recording tap when asked for.
 
@@ -441,16 +506,17 @@ def build_source(config: RunConfig) -> DepthFrameSource:
     one format back.
 
     :param config: The run configuration.
+    :param video_feed: Where a source with compressed video offers it. None when no display wants it.
     :return: A source yielding DepthFrame objects.
     :rtype: DepthFrameSource
     """
-    source = _build_inner_source(config)
+    source = _build_inner_source(config, video_feed)
     if config.tap.log_dir is None:
         return source
     return RecordingTap(source, Path(config.tap.log_dir))
 
 
-def _build_inner_source(config: RunConfig) -> DepthFrameSource:
+def _build_inner_source(config: RunConfig, video_feed: SceneVideoFeed | None) -> DepthFrameSource:
     match config.source_kind:
         case SourceKind.VIDEO_FILE:
             if config.video is None:
@@ -463,7 +529,7 @@ def _build_inner_source(config: RunConfig) -> DepthFrameSource:
             # the Pupil Labs client. That is the lazy-import rule's optional-dependency case.
             from nav.sources.neon_live import NeonLiveRgbSource
 
-            return build_estimated_depth_source(NeonLiveRgbSource(config.neon), config)
+            return build_estimated_depth_source(NeonLiveRgbSource(config.neon, video_feed=video_feed), config)
         case SourceKind.LOGGED:
             if config.logged is None:
                 raise ValueError("logged needs a logged config and none was built")
@@ -472,6 +538,16 @@ def _build_inner_source(config: RunConfig) -> DepthFrameSource:
             if config.arcore is None:
                 raise ValueError("arcore_tcp needs an arcore config and none was built")
             return ArCoreTcpSource(config.arcore)
+        case SourceKind.NEON_RECORDING:
+            if config.neon_recording is None:
+                raise ValueError("neon_recording needs a neon_recording config and none was built")
+            return build_estimated_depth_source(
+                NeonRecordingRgbSource(
+                    config.neon_recording,
+                    reader_factory=config.recording_reader_factory if config.recording_reader_factory is not None else NativeNeonRecordingReader,
+                ),
+                config,
+            )
         case SourceKind.NEON_PLUGIN:
             if config.neon_plugin is None:
                 raise ValueError("neon_plugin needs a neon_plugin config and none was built")
@@ -482,7 +558,11 @@ def _build_inner_source(config: RunConfig) -> DepthFrameSource:
             raise ValueError(f"no source constructor for {config.source_kind}")
 
 
-def build_sink(config: RunConfig, on_path_sent: Callable[[float], None] | None = None) -> PathSink:
+def build_sink(
+    config: RunConfig,
+    on_path_sent: Callable[[float], None] | None = None,
+    video_feed: SceneVideoFeed | None = None,
+) -> PathSink:
     """
     Turn the chosen sink kinds into one sink.
 
@@ -492,23 +572,30 @@ def build_sink(config: RunConfig, on_path_sent: Callable[[float], None] | None =
     :param config: The run configuration.
     :param on_path_sent: Given to the phone sink, the one display on the walker's path, and called
         with a path's `timestamp_seconds` once it is on the phone's socket. The timing log's hook.
+    :param video_feed: Given to the web sink, the one display that decodes video on its own. None
+        when the source has no video to offer, and the page then says so.
     :return: A sink accepting PlannedPath objects.
     :rtype: PathSink
     """
-    sinks = [_build_one_sink(kind, config, on_path_sent) for kind in config.sink_kinds]
+    sinks = [_build_one_sink(kind, config, on_path_sent, video_feed) for kind in config.sink_kinds]
     if len(sinks) == 1:
         return sinks[0]
     return FanOutSink(sinks)
 
 
-def _build_one_sink(sink_kind: SinkKind, config: RunConfig, on_path_sent: Callable[[float], None] | None) -> PathSink:
+def _build_one_sink(
+    sink_kind: SinkKind,
+    config: RunConfig,
+    on_path_sent: Callable[[float], None] | None,
+    video_feed: SceneVideoFeed | None,
+) -> PathSink:
     match sink_kind:
         case SinkKind.DEBUG_WINDOW:
             return DebugWindowSink(config.debug_window)
         case SinkKind.WEB:
             if config.web is None:
                 raise ValueError("web needs a web config and none was built")
-            return WebSink(config.web)
+            return WebSink(config.web, config.scene, video_feed=video_feed)
         case SinkKind.PHONE_APP:
             if config.phone_app is None:
                 raise ValueError("phone_app needs a phone_app config and none was built")

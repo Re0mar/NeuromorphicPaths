@@ -6,6 +6,7 @@ a layer reading one it did not expect is reading a mistake rather than a stale d
 """
 
 # Standard library imports
+import math
 from dataclasses import dataclass
 from enum import Enum, auto
 
@@ -75,6 +76,21 @@ class NeonPluginConfig:
     recording_dir: str
     model: NeonPluginModel = NeonPluginModel.METRIC_LARGE
     sample_tolerance_seconds: float = 0.05  # How far an IMU or gaze sample may sit from a scene frame.
+
+
+@dataclass(frozen=True)
+class NeonRecordingConfig:
+    """A native Neon recording, replayed through the straightened camera and the depth estimator."""
+
+    recording_dir: str
+    # The first glasses walk planned 1.68 frames a second live (E68), so 2 replays a recording at
+    # about the rate a live walk is planned. The recording's own 30 doesn't set it, and replaying
+    # every frame would take hours at the estimator's measured speed.
+    frames_per_second: float = 2.0
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.frames_per_second) or self.frames_per_second <= 0.0:
+            raise ValueError(f"frames_per_second must be a finite positive number, got {self.frames_per_second}")
 
 
 @dataclass(frozen=True)

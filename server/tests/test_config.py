@@ -23,6 +23,7 @@ from nav.config import (
     build_run_config,
     build_sink,
     build_source,
+    build_source_and_sink,
 )
 from nav.sources.config import (
     ArCoreConfig,
@@ -32,12 +33,14 @@ from nav.sources.config import (
     LoggedConfig,
     NeonConfig,
     NeonPluginConfig,
+    NeonRecordingConfig,
     TapConfig,
     VideoConfig,
 )
 from nav.runtime.tap import RecordingTap
 from nav.scene.config import SceneConfig
 from nav.sinks.config import PhoneAppConfig, WebConfig
+from nav.sources.scene_video import SceneVideoFeed
 from nav.types import DepthFrame, PlannedPath, Pose
 from nav.walker import WalkerConfig
 
@@ -99,6 +102,7 @@ def test_defaults_land_where_they_belong() -> None:
     [
         (["--source", "video_file", "--sink", "none"], "--path"),
         (["--source", "neon_plugin", "--sink", "none"], "--recording-dir"),
+        (["--source", "neon_recording", "--sink", "none"], "--recording-dir"),
         (["--source", "logged", "--sink", "none"], "--log-dir"),
     ],
 )
@@ -125,6 +129,7 @@ def test_a_video_path_that_is_not_a_file_is_refused_before_anything_loads(tmp_pa
     [
         ("--log-dir", ["--source", "logged", "--log-dir", "no_such_log", "--sink", "none"]),
         ("--recording-dir", ["--source", "neon_plugin", "--recording-dir", "no_such_recording", "--sink", "none"]),
+        ("--recording-dir", ["--source", "neon_recording", "--recording-dir", "no_such_recording", "--sink", "none"]),
     ],
 )
 def test_a_directory_argument_that_is_not_a_directory_is_refused(flag: str, argv: list[str], capsys: pytest.CaptureFixture[str]) -> None:
@@ -173,6 +178,7 @@ BUILT_SOURCE_KINDS = {
     SourceKind.LOGGED: {"logged": LoggedConfig(log_dir="a_log")},
     SourceKind.ARCORE_TCP: {"arcore": ArCoreConfig(port=0)},
     SourceKind.NEON_PLUGIN: {"neon_plugin": NeonPluginConfig(recording_dir="a_recording")},
+    SourceKind.NEON_RECORDING: {"neon_recording": NeonRecordingConfig(recording_dir="a_recording")},
 }
 
 
@@ -409,6 +415,9 @@ def test_every_parsed_default_is_the_dataclass_default() -> None:
     arcore = build_run_config(["--source", "arcore_tcp", "--sink", "none"]).arcore
     assert arcore is not None and arcore.port == ArCoreConfig.port
     assert arcore.accept_timeout_seconds == ArCoreConfig.accept_timeout_seconds
+
+    recording = build_run_config(["--source", "neon_recording", "--recording-dir", ".", "--sink", "none"]).neon_recording
+    assert recording is not None and recording.frames_per_second == NeonRecordingConfig.frames_per_second
 
 
 def test_the_accept_timeout_flag_reaches_the_phone_source() -> None:
@@ -697,3 +706,112 @@ def test_a_timing_log_that_is_a_directory_or_in_a_missing_folder_is_refused(wher
 
     message = capsys.readouterr().err
     assert ("is a directory" in message) if where == "a directory" else ("in a folder that doesn't exist" in message)
+
+
+# *******************************************
+# Building both ends together
+# *******************************************
+
+
+def test_build_source_and_sink_gives_the_neon_source_and_the_web_sink_one_feed() -> None:
+    # The glasses' video goes from the source's device to the web sink without the loop seeing it,
+    # which only works if both ends were handed the same feed by the one place that builds them.
+    config = RunConfig(
+        source_kind=SourceKind.NEON_LIVE,
+        sink_kinds=(SinkKind.WEB,),
+        goal_mode=GoalMode.AHEAD,
+        neon=NeonConfig(),
+        estimator=EstimatorConfig(),
+        estimator_factory=lambda estimator_config: StubDepthEstimator(),
+        web=WebConfig(port=0),
+    )
+
+    source, sink = build_source_and_sink(config)
+    try:
+        assert isinstance(sink.video_feed, SceneVideoFeed)
+        assert source.rgb_source.video_feed is sink.video_feed
+    finally:
+        sink.close()
+
+
+def test_a_source_without_scene_video_leaves_the_web_sink_without_a_feed() -> None:
+    config = RunConfig(
+        source_kind=SourceKind.VIDEO_FILE,
+        sink_kinds=(SinkKind.WEB,),
+        goal_mode=GoalMode.AHEAD,
+        video=VideoConfig(path=STREAM_URL),
+        estimator=EstimatorConfig(),
+        estimator_factory=lambda estimator_config: StubDepthEstimator(),
+        web=WebConfig(port=0),
+    )
+
+    source, sink = build_source_and_sink(config)
+    try:
+        assert sink.video_feed is None
+        assert not hasattr(source.rgb_source, "video_feed"), "a plain camera has no feed to offer"
+    finally:
+        sink.close()
+
+
+# *******************************************
+# The demo recording
+# *******************************************
+
+
+def test_the_demo_recording_flag_reaches_the_web_config(tmp_path) -> None:
+    recording = tmp_path / "demo.mp4"
+    recording.write_bytes(b"\x00" * 16)
+
+    config = build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "web", "--demo-recording", str(recording)])
+
+    assert config.web is not None and config.web.recording_path == str(recording)
+
+
+def test_a_demo_recording_that_is_not_a_file_is_refused_before_anything_loads(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    missing = tmp_path / "nowhere.mp4"
+
+    with pytest.raises(SystemExit):
+        build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "web", "--demo-recording", str(missing)])
+
+    message = capsys.readouterr().err
+    assert "--demo-recording" in message and str(missing) in message and "not a file" in message
+
+
+def test_a_demo_recording_without_the_web_sink_is_refused(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    recording = tmp_path / "demo.mp4"
+    recording.write_bytes(b"\x00" * 16)
+
+    with pytest.raises(SystemExit):
+        build_run_config([*MINIMAL_VIDEO_ARGV, "--demo-recording", str(recording)])
+
+    message = capsys.readouterr().err
+    assert "--demo-recording" in message and "--sink web" in message
+
+
+# *******************************************
+# The neon_recording source's flags
+# *******************************************
+
+
+def test_the_recording_rate_reaches_the_recording_source(tmp_path) -> None:
+    config = build_run_config(["--source", "neon_recording", "--recording-dir", str(tmp_path), "--recording-rate", "3.5", "--sink", "none"])
+
+    assert config.neon_recording == NeonRecordingConfig(recording_dir=str(tmp_path), frames_per_second=3.5)
+    # A recording goes through the estimator like the live glasses, so it gets an estimator config.
+    assert config.estimator is not None
+
+
+@pytest.mark.parametrize("source", ["neon_live", "video_file", "logged", "neon_plugin"])
+def test_a_recording_rate_given_to_another_source_is_refused(source: str, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        build_run_config(["--source", source, "--recording-rate", "2", "--sink", "none"])
+
+    assert "--recording-rate only applies to neon_recording" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("rate", ["0", "-1"])
+def test_a_recording_rate_at_or_below_zero_is_refused(rate: str, tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        build_run_config(["--source", "neon_recording", "--recording-dir", str(tmp_path), "--recording-rate", rate, "--sink", "none"])
+
+    assert "--recording-rate" in capsys.readouterr().err

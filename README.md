@@ -121,7 +121,8 @@ it for the folder. These are the ones the docs and the evaluation refer to:
 The two golden recordings the tests replay are the exception. They're cut down to a few hundred KB
 and committed under `server/tests/fixtures/`, so the suite needs no recording at all.
 
-**Replay a recorded walk.** Then open `http://localhost:8765` in a browser:
+**Replay a recorded walk.** Then open `https://localhost:8765` in a browser, and accept the
+certificate warning once:
 
 ```
 .venv/Scripts/python -m nav --source logged --log-dir frame_logs/<walk> --sink web --realtime

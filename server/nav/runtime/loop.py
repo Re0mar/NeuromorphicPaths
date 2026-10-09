@@ -22,7 +22,7 @@ import numpy as np
 
 # Local package imports
 from nav.clock import laptop_time_seconds
-from nav.config import RunConfig, build_sink, build_source
+from nav.config import RunConfig, build_source_and_sink
 from nav.planner.alarm import path_red_from_bits
 from nav.planner.pipeline import PlannerPipeline
 from nav.runtime.textio import append_text_lf, write_text_lf
@@ -212,8 +212,9 @@ def run(config: RunConfig) -> int:
         )
         return result, plan_done_seconds, stages
 
-    sink = build_sink(config, on_path_sent=timing.path_sent)
-    source = build_source(config)
+    # Built together, because the glasses' video goes from the source's device to the web sink
+    # without passing through here.
+    source, sink = build_source_and_sink(config, on_path_sent=timing.path_sent)
     worker: NewestFrameWorker[FrameResult] = NewestFrameWorker(process, on_dropped=timing.frame_dropped)
     worker.start()
     publisher = PublisherThread(sink, worker, on_published=timing.path_published)

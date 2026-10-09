@@ -13,7 +13,17 @@ import pytest
 # Local package imports
 from nav.scene import floor as floor_module
 from nav.scene.config import SceneConfig
-from nav.scene.floor import CAMERA_UP, fit_floor, ground_axes, height_above_floor, normalize_plane, plane_is_a_floor
+from nav.scene.floor import (
+    CAMERA_UP,
+    FloorRefusal,
+    FloorRefusalCause,
+    fit_floor,
+    fit_floor_with_refusal,
+    ground_axes,
+    height_above_floor,
+    normalize_plane,
+    plane_is_a_floor,
+)
 from nav.scene.unproject import unproject_depth
 from nav.types import Plane
 from synthetic_depth import CAMERA_HEIGHT_METERS, clean_scene, degrade_without_floor, floor_plane_in_camera
@@ -163,7 +173,9 @@ def test_a_supplied_plane_leaning_past_the_tilt_gate_is_refused_naming_the_limit
     refusal = plane_is_a_floor(leaning, CONFIG, CAMERA_UP)
 
     assert refusal is not None
-    assert "leans 40.0 deg" in refusal and f"limit {CONFIG.floor_max_tilt_degrees:.1f}" in refusal
+    assert refusal.cause is FloorRefusalCause.LEANS
+    assert refusal.measured == pytest.approx(40.0) and refusal.limit == CONFIG.floor_max_tilt_degrees
+    assert str(refusal) == f"leans 40.0 deg from up, limit {CONFIG.floor_max_tilt_degrees:.1f}"
 
 
 def test_a_supplied_plane_too_close_to_the_camera_is_refused_naming_the_minimum() -> None:
@@ -172,7 +184,9 @@ def test_a_supplied_plane_too_close_to_the_camera_is_refused_naming_the_minimum(
     refusal = plane_is_a_floor(close, CONFIG, CAMERA_UP)
 
     assert refusal is not None
-    assert "0.25 m above it" in refusal and f"under the minimum {CONFIG.floor_min_offset_meters:.2f}" in refusal
+    assert refusal.cause is FloorRefusalCause.TOO_CLOSE
+    assert refusal.measured == pytest.approx(0.25) and refusal.limit == CONFIG.floor_min_offset_meters
+    assert str(refusal) == f"camera 0.25 m above it, under the minimum {CONFIG.floor_min_offset_meters:.2f}"
 
 
 def test_a_supplied_plane_over_the_maximum_height_is_refused_naming_the_maximum() -> None:
@@ -182,7 +196,9 @@ def test_a_supplied_plane_over_the_maximum_height_is_refused_naming_the_maximum(
     refusal = plane_is_a_floor(far, CONFIG, CAMERA_UP)
 
     assert refusal is not None
-    assert "2.30 m above it" in refusal and f"over the maximum {CONFIG.floor_max_offset_meters:.2f}" in refusal
+    assert refusal.cause is FloorRefusalCause.TOO_FAR
+    assert refusal.measured == pytest.approx(2.3) and refusal.limit == CONFIG.floor_max_offset_meters
+    assert str(refusal) == f"camera 2.30 m above it, over the maximum {CONFIG.floor_max_offset_meters:.2f}"
 
 
 def test_normalize_plane_flips_a_downward_normal_and_scales_the_offset() -> None:
@@ -439,3 +455,59 @@ def test_a_cloud_with_only_degenerate_triples_keeps_the_previous_plane() -> None
     previous = Plane(normal=np.array([0.0, -1.0, 0.0]), offset_meters=1.5)
 
     assert fit_floor(cloud, previous=previous, config=CONFIG, up_camera=CAMERA_UP) is previous
+
+
+# *******************************************
+# Why a fit gave nothing
+# *******************************************
+
+
+def test_a_wall_alone_keeps_the_previous_plane_and_says_it_leans() -> None:
+    # A wall 2 m ahead, reaching from above the camera to well below it, so plenty of its points
+    # are candidates. The best plane through them is the wall, which stands 90 degrees from up.
+    rows, columns = np.mgrid[0:40, 0:40]
+    wall = np.column_stack((columns.ravel() * 0.05 - 1.0, rows.ravel() * 0.05 - 0.5, np.full(1600, 2.0)))
+    previous = Plane(normal=np.array([0.0, -1.0, 0.0]), offset_meters=1.5)
+
+    floor, refusal = fit_floor_with_refusal(wall, previous=previous, config=CONFIG, up_camera=CAMERA_UP)
+
+    assert floor is previous
+    assert refusal.cause is FloorRefusalCause.LEANS
+    assert refusal.measured == pytest.approx(90.0, abs=1.0)
+
+
+def test_too_few_candidates_keeps_the_previous_plane_and_gives_the_count() -> None:
+    scene = clean_scene()
+    few = _cloud(scene.depth_meters, scene.intrinsics)[: CONFIG.floor_min_candidate_points - 1]
+    few = few[-(few @ CAMERA_UP) > CONFIG.floor_candidate_min_below_camera_meters]
+    previous = Plane(normal=np.array([0.0, -1.0, 0.0]), offset_meters=1.5)
+
+    floor, refusal = fit_floor_with_refusal(few, previous=previous, config=CONFIG, up_camera=CAMERA_UP)
+
+    assert floor is previous
+    assert refusal == FloorRefusal(FloorRefusalCause.TOO_FEW_CANDIDATES, float(len(few)), float(CONFIG.floor_min_candidate_points))
+
+
+def test_only_degenerate_triples_say_there_was_no_plane() -> None:
+    previous = Plane(normal=np.array([0.0, -1.0, 0.0]), offset_meters=1.5)
+
+    floor, refusal = fit_floor_with_refusal(_one_point_many_times(CONFIG.floor_min_candidate_points + 50), previous, CONFIG, CAMERA_UP)
+
+    assert floor is previous
+    assert refusal == FloorRefusal(FloorRefusalCause.NO_PLANE, None, None)
+    assert str(refusal) == "every drawn triple was degenerate, so there was no plane to judge"
+
+
+def test_a_fitted_floor_comes_with_no_refusal_and_matches_fit_floor_bit_for_bit() -> None:
+    scene = clean_scene()
+    cloud = _cloud(scene.depth_meters, scene.intrinsics)
+
+    floor, refusal = fit_floor_with_refusal(cloud, previous=None, config=CONFIG, up_camera=CAMERA_UP)
+
+    assert refusal is None
+    assert _identical(floor, fit_floor(cloud, previous=None, config=CONFIG, up_camera=CAMERA_UP))
+
+
+def test_every_refusal_cause_has_a_message() -> None:
+    for cause in FloorRefusalCause:
+        assert str(FloorRefusal(cause, 1.0, 2.0))

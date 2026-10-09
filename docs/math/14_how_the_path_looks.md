@@ -96,7 +96,8 @@ So the fill is solid more often than it was. On every planned frame of `pixel_wa
 | Walls | magenta (255, 0, 255) | `server/nav/sinks/path_style.py` |
 | Path border | the path's color at opacity 0.6 | `server/nav/sinks/path_style.py` |
 | Path width | twice the body half-width, $`2 \times 0.30 = 0.60`$ m | `server/nav/sinks/web_messages.py` |
-| Field cells marked as seen | cells whose floor spot projects inside the depth image | `server/nav/sinks/floor_geometry.py` |
+| Field cells out of view, light gray (110, 110, 110) | cells whose floor spot projects outside the depth image | which cells: `server/nav/sinks/floor_geometry.py`. The gray: `server/nav/sinks/web_page.html` |
+| Field cells hidden, dark gray (55, 55, 55) | in view, but the depth at the cell's pixel has no reading or stands more than 4 scatters above the floor | which cells: `server/nav/sinks/floor_geometry.py`. The gray: `server/nav/sinks/web_page.html` |
 
 The depth view and the web page call the same style functions, so they always agree.
 
@@ -109,8 +110,13 @@ The depth view and the web page call the same style functions, so they always ag
 >   From 1.40 m down to 0.98 m of clearance the path was fully red with the alarm still off.
 > - **Drawn narrower than it's planned.** The path is drawn 0.60 m wide, but the clearance it keeps is
 >   measured from the 0.35 m footprint radius, 0.70 m across.
-> - **Seen means in view.** A cell behind an obstacle still counts as seen, because only the field of
->   view is checked.
+> - **Hidden needs more than a small step.** The scatter is how far this frame's floor readings
+>   spread around the floor, as an RMS height, never under 1 cm. A cell goes dark gray only when the
+>   reading at its pixel stands more than 4 scatters up. At a scatter of 2 cm that line is 8 cm, so a
+>   curb or a doorstep lower than that hides nothing. At 3 scatters the Pixel grayed 5.8 % of open
+>   floor in a classroom, mostly readings just in front of furniture, which is why it's 4.
+> - **A hole never grays a cell.** A reading farther than the floor is a drop, and only readings
+>   nearer than the floor count as hidden floor.
 
 > [!TIP]
 > Ours. The ramps, their end points and the fixed colors are project choices. The inputs aren't: the

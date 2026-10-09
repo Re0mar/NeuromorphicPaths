@@ -28,6 +28,9 @@ SHARED_LAYERS = (
     # because the torch import is inside DepthEstimator.__init__ and nothing else may need it.
     "nav.sources.estimated_depth",
     "nav.sources.estimator",
+    # The scene video feed is built in nav.config and read by the web sink, so it imports with
+    # the client, PyAV and aiohttp all gone.
+    "nav.sources.scene_video",
     # The evaluation replays recordings through the scene and planner, so it is held to the same rule.
     "nav.evaluation",
     "nav.evaluation.replay",
@@ -50,6 +53,7 @@ EVALUATION_MODULES = (
     "nav.evaluation.config",
     "nav.evaluation.fixture",
     "nav.evaluation.floor_lean",
+    "nav.evaluation.floor_report",
     "nav.evaluation.frames",
     "nav.evaluation.overrides",
     "nav.evaluation.planner_numbers",

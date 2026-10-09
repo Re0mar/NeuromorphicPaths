@@ -41,6 +41,11 @@ class EstimatedDepthSource:
         self._warned_about_fallback_intrinsics = False
         self._told_confidence_filter_is_off = False
 
+    @property
+    def rgb_source(self) -> RgbSource:
+        """The camera underneath, for a caller that needs what only the camera knows, such as its video feed."""
+        return self._rgb_source
+
     def frames(self) -> Iterator[DepthFrame]:
         # Before the first real frame is even asked for, so the walker's first arrow and the first
         # latency figure do not carry the model's start-up cost.

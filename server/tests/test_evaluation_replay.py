@@ -10,6 +10,7 @@ import ast
 import dataclasses
 import json
 import os
+import pickle
 import re
 import shutil
 import subprocess
@@ -28,6 +29,7 @@ from nav.evaluation.config import EvaluationConfig
 from nav.evaluation.overrides import OverrideRefused, apply_overrides
 from nav.evaluation.replay import (
     DEFAULT_CACHE_DIR,
+    UnalignedFrames,
     refusal_reason,
     NAV_DIR,
     cache_key,
@@ -42,9 +44,11 @@ from nav.evaluation.turns import TurnTag
 from nav.planner.config import GoalMode, PlannerConfig
 from nav.planner.pipeline import PlannerPipeline
 from nav.scene.config import SceneConfig
+from nav.types import FloorSource
 from nav.scene.pipeline import CAMERA_FORWARD
 from nav.scene.transform import rotation_matrix_from_quaternion_wxyz
 from nav.walker import WalkerConfig
+from synthetic_depth import CAMERA_HEIGHT_METERS
 from synthetic_walks import landscape_camera_rotation, quaternion_wxyz, ramp, walking_pose, write_recording
 
 TWO_TURNS = lambda time: ramp(6.0, 2.0, 90.0)(time) + ramp(14.0, 2.0, -90.0)(time)
@@ -472,3 +476,43 @@ def test_refusals_that_differ_only_in_counts_share_a_reason() -> None:
     assert first == second == "no floor found in N points, N below the camera, and no previous plane"
     assert refusal_reason(ValueError("plane tilted 61.5 deg")) != first
     assert refusal_reason(ValueError()) == "ValueError"
+
+
+# *******************************************
+# What a row says about its floor
+# *******************************************
+
+
+def test_every_row_carries_its_floor_source_camera_height_and_gravity(recording: Path) -> None:
+    scene = scene_pass(recording, SceneConfig(), WalkerConfig(), None)
+
+    # The synthetic walk supplies its floor on every frame, at the camera height it was cast from.
+    assert {row.floor_source for row in scene.planned} == {FloorSource.SUPPLIED}
+    assert {row.floor_refusal for row in scene.planned} == {None}
+    assert all(row.gravity_aligned for row in scene.planned)
+    assert np.median([row.camera_height_meters for row in scene.planned]) == pytest.approx(CAMERA_HEIGHT_METERS, abs=0.01)
+
+
+def test_processing_and_refusing_unaligned_frames_never_share_a_cache_entry(recording: Path) -> None:
+    refusing = cache_key(recording, SceneConfig(), WalkerConfig(), UnalignedFrames.REFUSE)
+    processing = cache_key(recording, SceneConfig(), WalkerConfig(), UnalignedFrames.PROCESS)
+
+    assert refusing != processing
+    assert refusing == cache_key(recording, SceneConfig(), WalkerConfig())
+
+
+def test_a_cache_entry_in_the_old_row_shape_is_rebuilt_not_misread(recording: Path, tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    fresh = scene_pass(recording, SceneConfig(), WalkerConfig(), cache)
+    entry = cache / f"{cache_key(recording, SceneConfig(), WalkerConfig())}.pkl"
+    with open(entry, "rb") as handle:
+        times, positions, rows, refused, reasons = pickle.load(handle)
+    # The rows as cache-format-3 wrote them, before the four floor fields existed.
+    old_rows = [row[:-4] for row in rows]
+    with open(entry, "wb") as handle:
+        pickle.dump((times, positions, old_rows, refused, reasons), handle)
+
+    rebuilt = scene_pass(recording, SceneConfig(), WalkerConfig(), cache)
+
+    assert rebuilt.cache_state.startswith("miss") and "unreadable entry (TypeError)" in rebuilt.cache_state
+    assert [row.camera_height_meters for row in rebuilt.planned] == [row.camera_height_meters for row in fresh.planned]

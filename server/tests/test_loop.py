@@ -22,7 +22,7 @@ import numpy as np
 import pytest
 
 # Local package imports
-from nav.config import GoalMode, RunConfig, SinkKind, SourceKind, build_run_config
+from nav.config import GoalMode, RunConfig, SinkKind, SourceKind, build_run_config, build_sink, build_source
 from nav.main import main
 from nav.planner.config import PlannerConfig
 from nav.runtime.loop import EPISODES_FILENAME, RUN_CONFIG_FILENAME, FrameResult, PublisherThread, _latency_shares, _report, run
@@ -88,8 +88,7 @@ def test_the_sink_is_started_before_the_source_yields_a_frame(monkeypatch: pytes
 
     import nav.runtime.loop as loop_module
 
-    monkeypatch.setattr(loop_module, "build_sink", lambda config, **hooks: RecordingSink())
-    monkeypatch.setattr(loop_module, "build_source", lambda config: OneFrameSource())
+    monkeypatch.setattr(loop_module, "build_source_and_sink", lambda config, **hooks: (OneFrameSource(), RecordingSink()))
 
     assert run(build_run_config(["--source", "arcore_tcp", "--sink", "none"])) == 0
     assert "sink started" in order and "first frame yielded" in order
@@ -131,17 +130,17 @@ def test_a_sink_that_raises_an_unexpected_error_ends_the_run_with_exit_one_and_a
     config = RunConfig(source_kind=SourceKind.LOGGED, sink_kinds=(SinkKind.NONE,), goal_mode=GoalMode.AHEAD, logged=LoggedConfig(log_dir=str(log_dir)))
 
     # The sink is swapped under the factory by building the config the loop would build, then
-    # running with a sink the factory cannot produce. The loop takes what build_sink returns, so
-    # the swap goes through the module's factory name.
+    # running with a sink the factory cannot produce. The loop takes what build_source_and_sink
+    # returns, so the swap goes through the module's factory name, with the real source beside it.
     import nav.runtime.loop as loop_module
 
-    original = loop_module.build_sink
-    loop_module.build_sink = lambda run_config, **hooks: BrokenSink()
+    original = loop_module.build_source_and_sink
+    loop_module.build_source_and_sink = lambda run_config, **hooks: (build_source(run_config), BrokenSink())
     try:
         with caplog.at_level("ERROR"):
             exit_code = run(config)
     finally:
-        loop_module.build_sink = original
+        loop_module.build_source_and_sink = original
 
     assert exit_code == 1
     errors = [record for record in caplog.records if record.levelname == "ERROR"]
@@ -246,7 +245,7 @@ def test_the_views_red_point_is_the_runs_alarm_threshold_in_bits(tmp_path: Path,
         def close(self) -> None:
             pass
 
-    monkeypatch.setattr(loop_module, "build_sink", lambda config, **hooks: CapturingDebugSink())
+    monkeypatch.setattr(loop_module, "build_source_and_sink", lambda config, **hooks: (build_source(config), CapturingDebugSink()))
     log_dir = tmp_path / "log"
     _record_synthetic_log(log_dir, count=6)
     planner = dataclasses.replace(PlannerConfig(), alarm_time_to_contact_seconds=0.9)
@@ -392,7 +391,7 @@ def test_the_verbose_line_carries_the_observed_heading(caplog: pytest.LogCapture
         def close(self) -> None:
             pass
 
-    monkeypatch.setattr(loop_module, "build_source", lambda config: OneFrameAtATimeSource())
+    monkeypatch.setattr(loop_module, "build_source_and_sink", lambda config, **hooks: (OneFrameAtATimeSource(), build_sink(config, **hooks)))
     with caplog.at_level(logging.DEBUG, logger="nav.runtime.loop"):
         assert run(build_run_config(["--source", "arcore_tcp", "--sink", "none"])) == 0
 

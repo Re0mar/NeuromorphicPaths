@@ -26,7 +26,7 @@ To run the real depth estimator, which the glasses and any plain camera need:
 .venv/Scripts/python -m pip install -e ".[dev,glasses]"
 ```
 
-That adds torch, Depth Anything 3 and the Pupil Labs client. The torch that pip picks is the CPU
+That adds torch, Depth Anything 3, the Pupil Labs client and its recording reader. The torch that pip picks is the CPU
 build, which is fine for a recording and too slow for a live walk. For live use install the CUDA
 build that matches your driver from pytorch.org first, then run the line above. The first run
 downloads the metric depth checkpoint, 1.3 GB.
@@ -76,6 +76,7 @@ is the whole configuration, and `--verbose` prints per-stage timings.
 | `video_file` | a recording, or an IP camera app's stream URL, through the depth estimator | `--path`, checked before the model loads |
 | `neon_live` | the Pupil Labs Neon over the network, through the depth estimator | `--neon-address` only if discovery is blocked |
 | `arcore_tcp` | the Pixel app's depth frames over TCP | `--arcore-port` (9000), `--arcore-accept-timeout` (30), `--reconnect` |
+| `neon_recording` | a native Neon recording, straightened with its own calibration, through the depth estimator | `--recording-dir`, `--recording-rate` (2 frames a second of recording) |
 | `neon_plugin` | a Neon recording the Neon Player depth plugin has run over | `--recording-dir`, `--plugin-model` |
 | `logged` | a frame log this pipeline recorded earlier | `--log-dir`, `--realtime` |
 
@@ -90,7 +91,7 @@ run ends when the phone disconnects. Launching the app by hand takes longer than
 | Sink | Where the path goes | Flags |
 |---|---|---|
 | `debug_window` | an OpenCV window with the arrow, the alarm, the surprise field and the depth view | |
-| `web` | a page in any browser on the network: the arrow, the alarm, the planner's view from above, and the depth view | `--web-port` (8765) |
+| `web` | a page in any browser on the network, over HTTPS: the arrow, the alarm, the planner's view from above, the depth view, and the glasses' video | `--web-port` (8765), `--demo-recording` |
 | `phone_app` | the Pixel app over TCP. The phone connects to the laptop, on this port | `--phone-port` (9100) |
 | `none` | nowhere. For recording and for tests | |
 
@@ -114,6 +115,36 @@ can switch it. When no path has arrived for 1.5 s the beeps stop, the music play
 both ears, which is no cue, and the label reads "unknown". Browsers refuse sound before a tap, so
 the control has to be touched once on the page that should play. The formula is in
 `docs/math/09_arrow_and_alarm.md`.
+
+The page is at `https://<laptop>:8765`, and `http://` no longer answers on that port. It is HTTPS
+because the browser's own video decoder only exists on a secure origin, and a phone opens the page
+by the laptop's address, which plain http never makes secure. The certificate is self-signed and
+committed under `nav/sinks/tls/`, so every laptop serves the same one. The first time a browser
+opens the page it shows a warning, "your connection is not private": Advanced, then proceed, once
+per browser per device. The key protects nothing, since the page is on a local network either way,
+and GitHub's secret scanning will say a private key is in the repository. The README beside the
+certificate says why that is accepted and how to remake the pair.
+
+The page is five cards. On a laptop or a projector, Video takes the left two thirds, Heading sits
+top right with the arrow, From above and Depth sit under it, and Sound runs along the bottom. On a
+phone the same cards stack in one column with Heading first, since the phone page is the walker's.
+The page picks by its own width, at 900 pixels, so a phone turned sideways gets the laptop layout,
+and controls grow under a finger. Sound holds the selector, the music picker in noise-cancellation
+mode, and two readouts that follow every path in every mode: a head with five arcs an ear, one lit
+per 20 % of that ear's gain as the laptop sent it, and `NC ON` or `NC OFF`, the driving guide's
+rule, off while the alarm is up and back on 2 s after it clears, both reading unknown after 1.5 s
+without a path. The alarm still turns the whole page red.
+
+The page's video panel has two modes. **Live** is the glasses' own stream passed through: the
+laptop forwards the compressed frames as they arrive, on a second websocket at `/video`, and the
+browser decodes them, so the panel costs the laptop a copy and nothing else. On a `--neon-replay`
+run it is the capture's video, in step with the arrow, the view from above and the sound, which is
+the fallback to start the laptop with if the glasses are in doubt. A browser that opens the page
+mid-run waits for the next keyframe, up to 2 s on the glasses. A source with no video, the Pixel
+or a frame log, makes the panel say so. **Recording** plays a file the laptop serves at
+`/recording`, named with `--demo-recording`, for when the glasses fail in the room. The file is
+the Companion app's scene video of a demo-room recording, supplied by hand, kept under
+`frame_logs/`, which git ignores. Without the flag the panel says no recording is configured.
 
 **`--sink` can be repeated, and a walk usually repeats it.** The arrow belongs on the phone, where
 the walker is looking, and the depth view belongs in a browser, where whoever is watching the
@@ -142,7 +173,9 @@ The browser also draws the planner's view from above, walking up the screen, abo
 
 - **Field.** What every spot ahead costs to walk through, at the moment the walker would reach it.
   Brighter costs more. It is clipped at the frame's 98th percentile, so one costly point does not
-  leave the rest dark.
+  leave the rest dark. Light gray cells are floor outside the camera's view. Dark gray cells are in
+  view, but the camera didn't see floor there, because something stands in front of it or the depth
+  has no reading. The planner treats both as empty floor.
 - **Path.** The planned path as a band the body's width, from a dot at the walker to an arrowhead
   where the plan ends. Its color runs blue to red as something in the way gets closer, fully red
   from the moment the alarm raises, 0.7 s to contact by default. Its fill is more solid the more the scene shaped the plan, and its borders
@@ -226,7 +259,7 @@ The Pixel over wifi, the arrow on the phone and the depth view in a browser, rec
 .venv/Scripts/python -m nav --source arcore_tcp --arcore-accept-timeout 600 --reconnect --sink phone_app --sink web --floor-max-tilt 50 --record-to frame_logs/walk --verbose
 ```
 
-The page is at `http://<laptop>:8765` and serves from the moment the run starts, before the phone
+The page is at `https://<laptop>:8765` and serves from the moment the run starts, before the phone
 has connected. All three ports the laptop listens on, 9000 for depth, 9100 for paths and 8765 for
 the page, need an
 inbound rule in the Windows firewall, and the rule has to name the Python that owns the socket.
@@ -397,7 +430,7 @@ laptop runs exactly what it runs on a live walk and stamps arrival itself. Three
 .venv/Scripts/python tests/fake_arcore_sender.py --port 9000 --log-dir frame_logs/wifi_run_2 --realtime --wait 30
 ```
 
-The page is at `http://127.0.0.1:8765` while it runs. The reader stands in for the phone on the
+The page is at `https://127.0.0.1:8765` while it runs. The reader stands in for the phone on the
 path port, so each published path gets a send time. Use the recording's own `--floor-max-tilt`,
 from its `run_config.json`. Each run needs a new `--timing-log` file.
 

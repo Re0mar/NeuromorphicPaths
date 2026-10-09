@@ -15,6 +15,10 @@ capture has no pose, rather than an older one.
 Every frame is undistorted with the device's own calibration before it leaves here, and carries the
 undistorted camera matrix. The scene camera's lens is wide enough that guessing a field of view
 instead puts obstacles at the edges of the image in the wrong place sideways.
+
+Given a scene video feed, the source also asks the device process for the compressed video as it
+arrives, one access unit per frame, and offers it to the feed for a display that decodes on its
+own. The depth frames above never see it.
 """
 
 # Standard library imports
@@ -30,8 +34,9 @@ import numpy as np
 from nav.clock import laptop_time_seconds
 from nav.pose.imu_orientation import IMU_MATCH_TOLERANCE_SECONDS, pose_from_imu
 from nav.pose.neon_mount import NEON_IMU_MOUNT
-from nav.sources.camera_model import CameraCalibration, CameraModelError, Undistorter, scale_intrinsics
+from nav.sources.camera_model import CameraModelError, Undistorter, undistorter_for
 from nav.sources.config import NeonConfig
+from nav.sources.neon_camera import NEON_SCENE_SIZE
 from nav.sources.neon_device import (
     DeviceImuStatus,
     DeviceMatched,
@@ -41,6 +46,7 @@ from nav.sources.neon_device import (
     NeonUnexpectedFailure,
 )
 from nav.sources.rgb import RgbFrame
+from nav.sources.scene_video import SceneVideoFeed
 from nav.types import FrameTiming, Pose
 
 log = logging.getLogger(__name__)
@@ -56,9 +62,6 @@ MISSING_ORIENTATION_LOG_INTERVAL_SECONDS = 10.0
 # How long one receive may block. Short, so Ctrl+C lands within a quarter of a second even when
 # the stream has stopped, which a receive with no timeout does not allow.
 RECEIVE_POLL_SECONDS = 0.25
-# The scene camera's native size, which the device's calibration describes. The calibration buffer
-# does not carry a size of its own.
-NEON_SCENE_SIZE = (1200, 1600)  # height, width
 # The failures a request to the device can end in. NeonDeviceError is a ConnectionError, named
 # anyway so the tuple says what it means.
 DEVICE_FAILURES: tuple[type[BaseException], ...] = (NeonDeviceError, OSError, ValueError)
@@ -71,8 +74,14 @@ class NeonCalibrationError(ValueError):
 class NeonLiveRgbSource:
     """Yields undistorted RGB frames, gaze and a mounted pose from a Neon on the network."""
 
-    def __init__(self, config: NeonConfig) -> None:
+    def __init__(self, config: NeonConfig, video_feed: SceneVideoFeed | None = None) -> None:
+        """
+        :param config: Where the glasses are, or which capture to play back.
+        :param video_feed: Where the compressed video goes for a display that decodes on its own.
+            None when no display wants it, and the device process then sends none.
+        """
         self._config = config
+        self._video_feed = video_feed
         self._device: NeonDeviceProcess | None = None
         self._calibration_matrix: np.ndarray | None = None
         self._distortion_coefficients: np.ndarray | None = None
@@ -104,6 +113,11 @@ class NeonLiveRgbSource:
         """Laptop clock minus Neon clock as measured at connect, or None when it could not be."""
         return self._clock_offset_seconds
 
+    @property
+    def video_feed(self) -> SceneVideoFeed | None:
+        """The feed the compressed video goes to, or None when no display asked for it."""
+        return self._video_feed
+
     def _connect(self) -> NeonDeviceProcess:
         if self._device is not None:
             return self._device
@@ -111,6 +125,11 @@ class NeonLiveRgbSource:
         device = NeonDeviceProcess(self._config)
         try:
             device.start()
+            if self._video_feed is not None:
+                # The feed is a listener itself, so the description and the units both land in it.
+                # A ValueError here is this file's own wiring, since the device it builds provides
+                # video, and is left to propagate.
+                device.subscribe_video(self._video_feed)
         except BaseException:
             # A child that started and then failed to connect is still a process. Leave none behind.
             device.close()
@@ -140,21 +159,14 @@ class NeonLiveRgbSource:
         if self._calibration_matrix is None or self._distortion_coefficients is None:
             raise NeonCalibrationError("no calibration was read before the first frame")
 
-        camera_matrix = self._calibration_matrix
         if image_shape != NEON_SCENE_SIZE:
             # A different streaming resolution. Distortion coefficients are unitless and stay.
             log.info("scene frames are %dx%d, scaling the %dx%d calibration to match", image_shape[1], image_shape[0], NEON_SCENE_SIZE[1], NEON_SCENE_SIZE[0])
-            camera_matrix = scale_intrinsics(camera_matrix, NEON_SCENE_SIZE, image_shape)
         try:
-            calibration = CameraCalibration(
-                camera_matrix=camera_matrix,
-                distortion_coefficients=self._distortion_coefficients,
-                image_size=image_shape,
-            )
+            self._undistorter = undistorter_for(self._calibration_matrix, self._distortion_coefficients, NEON_SCENE_SIZE, image_shape)
         except CameraModelError as unusable:
             raise NeonCalibrationError(f"the Neon's calibration cannot describe a camera: {unusable}") from unusable
 
-        self._undistorter = Undistorter(calibration)
         log.info(
             "undistorting with the device calibration: %.1f deg wide before, %.1f deg after the crop",
             self._undistorter.field_of_view_before_degrees,

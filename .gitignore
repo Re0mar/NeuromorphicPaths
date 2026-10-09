@@ -19,6 +19,8 @@ build/
 server/frame_logs/
 # Scene passes cached by python -m nav.evaluation --cached.
 server/.replay_cache/
+# Screenshots the browser tests write. Copied into a task's records by hand when they are wanted.
+server/tests/screenshots/
 
 # Android Studio writes the SDK path here per machine.
 local.properties

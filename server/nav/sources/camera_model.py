@@ -48,6 +48,36 @@ def scale_intrinsics(camera_matrix: np.ndarray, from_size: tuple[int, int], to_s
     return scaled
 
 
+def undistorter_for(
+    camera_matrix: np.ndarray,
+    distortion_coefficients: np.ndarray,
+    calibrated_size: tuple[int, int],
+    image_size: tuple[int, int],
+) -> "Undistorter":
+    """
+    The straightener for images of one size, from a calibration made at another.
+
+    Every camera that straightens builds it this way, so two routes reading the same camera can't
+    straighten it differently.
+
+    :param camera_matrix: (3, 3) at calibrated_size.
+    :param distortion_coefficients: The calibration's coefficients. Unitless, so they don't scale.
+    :param calibrated_size: (height, width) the matrix describes.
+    :param image_size: (height, width) of the images to straighten.
+    :return: The straightener, its maps built at image_size.
+    :rtype: Undistorter
+    :raises CameraModelError: When the calibration can't describe a camera of that size.
+    """
+    if image_size != calibrated_size:
+        camera_matrix = scale_intrinsics(camera_matrix, calibrated_size, image_size)
+    calibration = CameraCalibration(
+        camera_matrix=camera_matrix,
+        distortion_coefficients=distortion_coefficients,
+        image_size=image_size,
+    )
+    return Undistorter(calibration)
+
+
 def horizontal_field_of_view_degrees(camera_matrix: np.ndarray, image_width: int) -> float:
     """
     The horizontal angle a pinhole camera matrix covers across an image of the given width.

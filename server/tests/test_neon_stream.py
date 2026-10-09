@@ -777,3 +777,118 @@ def test_a_time_echo_that_answers_returns_the_phones_medians(monkeypatch: pytest
 
     assert offset.time_offset_ms.median == pytest.approx(1287.0)
     assert offset.roundtrip_duration_ms.median == pytest.approx(9.0)
+
+
+# The video tee: the same packets, assembled into one unit per frame for a listener.
+
+# The capture's own parameter sets, read off neon_walk_2 on 2026-10-08.
+_CAPTURE_SPS = bytes.fromhex("000000016742801fda0190092c") + b"\x00" * 6
+_CAPTURE_PPS = bytes.fromhex("0000000168ce06f2")
+_IDR_PAYLOAD = bytes((0x65,)) + b"k"  # A whole IDR slice as an RTP payload. 0x65 is also the fake decoder's frame number.
+_SLICE_PAYLOAD = bytes((0x61,)) + b"s"
+
+
+class _VideoCollector:
+    def __init__(self) -> None:
+        self.descriptions = []
+        self.units = []
+
+    def describe(self, description) -> None:
+        self.descriptions.append(description)
+
+    def offer(self, unit) -> None:
+        self.units.append(unit)
+
+
+def _wait_for_units(collector: _VideoCollector, count: int, timeout_seconds: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while len(collector.units) < count and time.monotonic() < deadline:
+        time.sleep(0.02)
+
+
+def test_a_replayed_capture_hands_every_frame_to_the_video_listener_with_the_description_first(tmp_path: Path) -> None:
+    packets = [(10.0, _SLICE_PAYLOAD), (10.0, _SLICE_PAYLOAD), (10.033, _IDR_PAYLOAD), (10.066, _SLICE_PAYLOAD)]
+    capture = write_capture(tmp_path / "capture", packets, parameter_sets=[_CAPTURE_SPS, _CAPTURE_PPS])
+    collector = _VideoCollector()
+    device = NeonStreamDevice(NeonConfig(replay_dir=str(capture)), decoder_factory=FakeDecoder)
+    device.subscribe_video(collector)
+    device.start()
+    try:
+        _frames_until_the_end(device)
+        _wait_for_units(collector, 3)
+    finally:
+        device.close()
+
+    assert [description.codec for description in collector.descriptions] == ["avc1.42801f"]
+    assert collector.descriptions[0].parameter_sets == (_CAPTURE_SPS, _CAPTURE_PPS)
+    assert [unit.keyframe for unit in collector.units] == [False, True, False], "one unit per stamp, the IDR's marked"
+    assert collector.units[1].data.startswith(_CAPTURE_SPS + _CAPTURE_PPS), "the keyframe carries the parameter sets"
+    # Stamps are shifted to now on a replay, so only their spacing is the capture's.
+    assert collector.units[1].timestamp_seconds - collector.units[0].timestamp_seconds == pytest.approx(0.033)
+    assert collector.units[2].timestamp_seconds - collector.units[0].timestamp_seconds == pytest.approx(0.066)
+
+
+def test_a_listener_subscribed_after_the_stream_started_is_described_at_once(tmp_path: Path) -> None:
+    capture = write_capture(tmp_path / "capture", [(10.0, _SLICE_PAYLOAD), (11.0, _SLICE_PAYLOAD)], parameter_sets=[_CAPTURE_SPS, _CAPTURE_PPS])
+    device = _started(capture)
+    try:
+        collector = _VideoCollector()
+        device.subscribe_video(collector)
+        assert [description.codec for description in collector.descriptions] == ["avc1.42801f"]
+    finally:
+        device.close()
+
+
+def test_a_corrupt_packet_is_skipped_by_the_assembler_as_it_is_by_the_decoder(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """One packet with the forbidden bit set costs the display that packet and never the frame around it."""
+    forbidden = b"\x81x"
+    packets = [(10.0, _SLICE_PAYLOAD), (10.033, forbidden), (10.033, _SLICE_PAYLOAD), (10.066, _SLICE_PAYLOAD)]
+    capture = write_capture(tmp_path / "capture", packets, parameter_sets=[_CAPTURE_SPS, _CAPTURE_PPS])
+    collector = _VideoCollector()
+    # The decoder refuses the same packet, as the real one does.
+    device = NeonStreamDevice(
+        NeonConfig(replay_dir=str(capture)),
+        decoder_factory=lambda sprop: FakeDecoder(sprop, failures={0x81: ValueError("First bit must be zero (forbidden_zero_bit)")}),
+    )
+    device.subscribe_video(collector)
+    with caplog.at_level(logging.WARNING, logger="nav.sources.neon_stream"):
+        device.start()
+        try:
+            _frames_until_the_end(device)
+            _wait_for_units(collector, 3)
+        finally:
+            device.close()
+
+    assert [unit.timestamp_seconds - collector.units[0].timestamp_seconds for unit in collector.units] == pytest.approx([0.0, 0.033, 0.066])
+    assert collector.units[1].data == b"\x00\x00\x00\x01" + _SLICE_PAYLOAD, "the good packet of that frame, and nothing of the bad one"
+    assert any("could not read" in record.getMessage() for record in caplog.records)
+
+
+def test_without_a_listener_the_replay_runs_as_before(tmp_path: Path) -> None:
+    capture = write_capture(tmp_path / "capture", [(10.0, _SLICE_PAYLOAD), (10.033, _IDR_PAYLOAD)], parameter_sets=[_CAPTURE_SPS, _CAPTURE_PPS])
+    device = _started(capture)
+    try:
+        numbers = _frames_until_the_end(device)
+    finally:
+        device.close()
+
+    assert numbers[-1] == 0x65
+
+
+def test_a_capture_without_a_sequence_parameter_set_still_replays_and_leaves_the_tee_off(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    # The decoder may still make sense of the stream, so the frames come. The display gets no
+    # description and no unit, and the log says why, since the page can only say it is waiting.
+    capture = write_capture(tmp_path / "capture", [(10.0, _SLICE_PAYLOAD), (10.033, _IDR_PAYLOAD)], parameter_sets=[_CAPTURE_PPS])
+    collector = _VideoCollector()
+    device = NeonStreamDevice(NeonConfig(replay_dir=str(capture)), decoder_factory=FakeDecoder)
+    device.subscribe_video(collector)
+    with caplog.at_level(logging.WARNING, logger="nav.sources.neon_stream"):
+        device.start()
+        try:
+            numbers = _frames_until_the_end(device)
+        finally:
+            device.close()
+
+    assert numbers[-1] == 0x65, "the depth frames still come"
+    assert collector.descriptions == [] and collector.units == []
+    assert any("no scene video" in record.getMessage() for record in caplog.records)

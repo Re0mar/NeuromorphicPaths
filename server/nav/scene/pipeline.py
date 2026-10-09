@@ -18,7 +18,15 @@ import numpy as np
 
 # Local package imports
 from nav.scene.config import SceneConfig
-from nav.scene.floor import CAMERA_UP, fit_floor, ground_axes, height_above_floor, normalize_plane, plane_is_a_floor
+from nav.scene.floor import (
+    CAMERA_UP,
+    FloorRefusal,
+    fit_floor_with_refusal,
+    ground_axes,
+    height_above_floor,
+    normalize_plane,
+    plane_is_a_floor,
+)
 from nav.scene.grouping import (
     GroupSummary,
     assign_groups,
@@ -47,6 +55,7 @@ class ScenePipeline:
         self._walker = walker
         self._previous_plane: Plane | None = None
         self._last_floor_source: FloorSource | None = None
+        self._last_floor_refusal: FloorRefusal | None = None
         self._history = ClearanceHistory(
             window_seconds=config.noise_window_seconds,
             min_samples=config.min_history_samples,
@@ -63,6 +72,11 @@ class ScenePipeline:
         """Where this frame's floor came from. None before the first frame, and after a frame the scene refused."""
         return self._last_floor_source
 
+    @property
+    def last_floor_refusal(self) -> FloorRefusal | None:
+        """Why this frame's fit gave nothing, when its floor is the previous one. None otherwise."""
+        return self._last_floor_refusal
+
     def process(self, frame: DepthFrame) -> ObstacleSet:
         """
         Turn one depth frame into the obstacles the planner scores.
@@ -75,6 +89,7 @@ class ScenePipeline:
         # Cleared first, so a frame refused below reads as no floor rather than the last frame's.
         # The runtime's timing log reads this after a failed frame to say whether it had a floor.
         self._last_floor_source = None
+        self._last_floor_refusal = None
 
         points = unproject_depth(frame.depth_meters, frame.intrinsics, config.depth_stride, config)
         points = downsample(points, config.voxel_size_meters)
@@ -199,9 +214,10 @@ class ScenePipeline:
             if refusal is None:
                 return supplied, FloorSource.SUPPLIED
             log.debug("supplied floor refused: %s, fitting instead", refusal)
-        fitted = fit_floor(points, self._previous_plane, self._config, up_camera)
-        # fit_floor hands back the previous object itself when it falls back, so identity is the test.
+        fitted, refusal = fit_floor_with_refusal(points, self._previous_plane, self._config, up_camera)
+        # The fit hands back the previous object itself when it falls back, so identity is the test.
         if fitted is self._previous_plane:
+            self._last_floor_refusal = refusal
             return fitted, FloorSource.PREVIOUS
         return fitted, FloorSource.FITTED
 
