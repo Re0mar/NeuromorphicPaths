@@ -79,7 +79,7 @@ def measured_unit(cause: FloorRefusalCause) -> str:
             return "deg"
         case FloorRefusalCause.TOO_CLOSE | FloorRefusalCause.TOO_FAR:
             return "m"
-        case FloorRefusalCause.TOO_FEW_CANDIDATES:
+        case FloorRefusalCause.TOO_FEW_CANDIDATES | FloorRefusalCause.NO_LEVEL_SURFACE:
             return "points"
         case FloorRefusalCause.NO_PLANE:
             return ""

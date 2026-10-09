@@ -21,7 +21,9 @@ from nav.scene.config import SceneConfig
 from nav.scene.floor import (
     CAMERA_UP,
     FloorRefusal,
+    LevelFloorHistory,
     fit_floor_with_refusal,
+    fit_level_floor,
     ground_axes,
     height_above_floor,
     normalize_plane,
@@ -48,7 +50,7 @@ CAMERA_FORWARD = np.array([0.0, 0.0, 1.0])
 
 
 class ScenePipeline:
-    """Holds the state that carries between frames: the last floor and the clearance history."""
+    """Holds the state that carries between frames: the last floor, the recent floors' heights and the clearance history."""
 
     def __init__(self, config: SceneConfig, walker: WalkerConfig) -> None:
         self._config = config
@@ -56,6 +58,7 @@ class ScenePipeline:
         self._previous_plane: Plane | None = None
         self._last_floor_source: FloorSource | None = None
         self._last_floor_refusal: FloorRefusal | None = None
+        self._level_history = LevelFloorHistory(config.floor_level_history)
         self._history = ClearanceHistory(
             window_seconds=config.noise_window_seconds,
             min_samples=config.min_history_samples,
@@ -208,13 +211,29 @@ class ScenePipeline:
         # Pixel walk sent a plane a meter below the real floor on every frame, and the fit is the
         # second opinion. A refused plane takes the path a frame with no plane takes.
         up_camera = self.up_in_camera_frame(frame)
+        gravity_aligned = frame.pose.orientation_is_gravity_aligned
+        if not gravity_aligned:
+            # The history's heights were measured along gravity, and image-up on a tilted head is not
+            # gravity, so they say nothing about this frame or the next aligned one.
+            self._level_history.clear()
         if frame.ground_plane is not None:
             supplied = normalize_plane(frame.ground_plane, up_camera)
             refusal = plane_is_a_floor(supplied, self._config, up_camera)
             if refusal is None:
+                if gravity_aligned:
+                    self._level_history.record_supplied(supplied)
                 return supplied, FloorSource.SUPPLIED
             log.debug("supplied floor refused: %s, fitting instead", refusal)
-        fitted, refusal = fit_floor_with_refusal(points, self._previous_plane, self._config, up_camera)
+        if gravity_aligned and self._config.floor_from_level_surfaces:
+            # Gravity says which surfaces are level, so the floor is picked among them. A single plane
+            # fit took stair edges for the floor on 27 % of frames standing at the front of a tiered room.
+            choice = fit_level_floor(points, self._previous_plane, self._level_history, self._config, up_camera)
+            self._level_history.record(choice)
+            if choice.reset:
+                log.debug("floor: a deeper surface stood %d frames running, taken on the last", self._config.floor_level_reset_frames)
+            fitted, refusal = choice.floor, choice.refusal
+        else:
+            fitted, refusal = fit_floor_with_refusal(points, self._previous_plane, self._config, up_camera)
         # The fit hands back the previous object itself when it falls back, so identity is the test.
         if fitted is self._previous_plane:
             self._last_floor_refusal = refusal

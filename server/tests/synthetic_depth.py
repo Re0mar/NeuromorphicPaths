@@ -128,6 +128,57 @@ def clean_scene(
     )
 
 
+def two_level_scene(
+    edge_forward_meters: float,
+    far_camera_height: float,
+    camera_height: float = CAMERA_HEIGHT_METERS,
+    pitch_degrees: float = PITCH_DEGREES,
+) -> SyntheticScene:
+    """
+    Ray cast a floor that changes level a set distance ahead, the way a tier does.
+
+    The walker's level is `camera_height` below the camera, and the far level `far_camera_height` below
+    it, from `edge_forward_meters` along the level ground. A far level above the walker's is a raised
+    tier, and the step's face is in view. One below is a lower tier, and the face points away.
+
+    :param edge_forward_meters: Where the level changes, ahead along the level ground.
+    :param far_camera_height: The camera's height above the far level.
+    :return: The scene, with the walker's own floor as its floor plane and no box.
+    :rtype: SyntheticScene
+    """
+    camera_matrix = intrinsics()
+    rows, columns = np.mgrid[0:HEIGHT, 0:WIDTH]
+    rays_camera = np.stack(
+        (
+            (columns - camera_matrix[0, 2]) / camera_matrix[0, 0],
+            (rows - camera_matrix[1, 2]) / camera_matrix[1, 1],
+            np.ones_like(columns, dtype=np.float64),
+        ),
+        axis=-1,
+    )
+    rays_level = rays_camera @ pitch_rotation(pitch_degrees)
+    ray_y, ray_z = rays_level[..., 1], rays_level[..., 2]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        down = ray_y > 1e-6
+        t_near = np.where(down, camera_height / ray_y, np.inf)
+        t_far = np.where(down, far_camera_height / ray_y, np.inf)
+        t_face = np.where(ray_z > 1e-6, edge_forward_meters / ray_z, np.inf)
+    on_near = t_near * ray_z < edge_forward_meters
+    # A ray past the edge still below the raised level's top meets the step's face. Toward a lower
+    # level it never is, so this is all false there.
+    on_face = ~on_near & (t_face * ray_y > far_camera_height)
+    t_hit = np.where(on_near, t_near, np.where(on_face, t_face, t_far))
+    depth = np.where(down & np.isfinite(t_hit), t_hit * rays_camera[..., 2], np.nan)
+    return SyntheticScene(
+        depth_meters=depth.astype(np.float32),
+        intrinsics=camera_matrix,
+        floor_plane_camera=floor_plane_in_camera(camera_height, pitch_degrees),
+        box_lateral_meters=None,
+        box_forward_meters=None,
+        box_height_meters=None,
+    )
+
+
 def degrade_with_holes(depth: np.ndarray, fraction: float, seed: int = 0) -> np.ndarray:
     """Set a random fraction of pixels to NaN, the way a confidence filter would."""
     generator = np.random.default_rng(seed)

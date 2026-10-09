@@ -11,13 +11,17 @@ from the pose is up whenever the source says its orientation is gravity aligned,
 and the Neon both do, the Neon with no position. Image-up, CAMERA_UP, is all a plain video file can
 offer.
 
-The floor fit is a RANSAC seeded from the config, so the same points always give the same floor
-and a replayed recording gives the same numbers every run.
+Two ways to find the floor. With gravity, fit_level_floor picks among the level surfaces below the
+camera: the floor, tier platforms, stair treads, seats. Without it, "level" has nothing to be
+measured against, and fit_floor_with_refusal fits one plane by RANSAC. Neither depends on chance.
+The level choice draws nothing, and the RANSAC is seeded from the config, so a replayed recording
+gives the same floor every run.
 """
 
 # Standard library imports
 import math
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, replace
 from enum import Enum
 
 # Third party imports
@@ -43,6 +47,7 @@ class FloorRefusalCause(Enum):
     TOO_FAR = "too far"  # Camera over the maximum height above it.
     TOO_FEW_CANDIDATES = "too few candidates"  # Not enough points below the camera to search.
     NO_PLANE = "no plane"  # Every drawn triple was degenerate, so there was nothing to judge.
+    NO_LEVEL_SURFACE = "no level surface"  # No height below the camera held enough points to be a surface.
 
 
 @dataclass(frozen=True)
@@ -50,8 +55,8 @@ class FloorRefusal:
     """
     One refusal, with the number that broke the rule and the rule's limit.
 
-    measured is degrees for LEANS, meters for the two height causes and a point count for
-    TOO_FEW_CANDIDATES. NO_PLANE has neither.
+    measured is degrees for LEANS, meters for the two height causes, and a point count for
+    TOO_FEW_CANDIDATES and NO_LEVEL_SURFACE. NO_PLANE has neither.
     """
 
     cause: FloorRefusalCause
@@ -71,6 +76,8 @@ class FloorRefusal:
                 return f"{self.measured:.0f} candidate points below the camera, under the minimum {self.limit:.0f}"
             case FloorRefusalCause.NO_PLANE:
                 return "every drawn triple was degenerate, so there was no plane to judge"
+            case FloorRefusalCause.NO_LEVEL_SURFACE:
+                return f"the most points at one height below the camera was {self.measured:.0f}, under the {self.limit:.0f} a surface needs"
             case _:
                 # Unreachable while every member is handled. Loud, so a new cause can't print nothing.
                 raise ValueError(f"no message for {self.cause}")
@@ -190,6 +197,198 @@ def fit_floor_with_refusal(
     raise ValueError(
         f"no floor found in {len(points_camera)} points, {len(candidates)} below the camera, and no previous plane"
     )
+
+
+@dataclass(frozen=True)
+class LevelFloorChoice:
+    """
+    One frame's floor from the level surfaces, and how it was chosen.
+
+    `refusal` is None when the floor came from this frame. Otherwise `floor` is the previous plane
+    itself and `refusal` says why no surface was taken. `passed_over_deeper` means a deeper surface
+    stood and the one near the recent floor was taken. `reset` means the deeper one had been passed
+    over long enough that it was taken, so the history starts again from it.
+    """
+
+    floor: Plane
+    refusal: FloorRefusal | None
+    passed_over_deeper: bool = False
+    reset: bool = False
+
+
+class LevelFloorHistory:
+    """
+    The camera heights of the last few accepted floors, and how long a deeper surface has been passed over.
+
+    Held by the scene between frames. `fit_level_floor` only reads it. The scene records each frame's
+    choice afterwards, so one frame's choice never depends on its own outcome.
+    """
+
+    def __init__(self, length: int) -> None:
+        if length < 1:
+            raise ValueError(f"floor_level_history must be at least 1, got {length}")
+        self._heights: deque[float] = deque(maxlen=length)
+        self._passed_over_frames = 0
+
+    @property
+    def reference_meters(self) -> float | None:
+        """The median camera height over the recent accepted floors. None with no history yet."""
+        return float(np.median(self._heights)) if self._heights else None
+
+    @property
+    def passed_over_frames(self) -> int:
+        """How many frames in a row a deeper surface stood and the one near the recent floor was taken."""
+        return self._passed_over_frames
+
+    def record(self, choice: LevelFloorChoice) -> None:
+        """
+        Fold one frame's choice in. A frame that kept the previous floor adds nothing.
+
+        :param choice: What `fit_level_floor` returned for the frame.
+        """
+        if choice.refusal is not None:
+            return
+        if choice.reset:
+            self.clear()
+        self._heights.append(choice.floor.offset_meters)
+        self._passed_over_frames = self._passed_over_frames + 1 if choice.passed_over_deeper else 0
+
+    def record_supplied(self, floor: Plane) -> None:
+        """Fold in a floor the source supplied and the scene accepted. It's the walker's floor as much as a chosen one."""
+        self._heights.append(floor.offset_meters)
+        self._passed_over_frames = 0
+
+    def clear(self) -> None:
+        """Forget every height and the passed-over count, as when gravity is lost or a reset took a deeper surface."""
+        self._heights.clear()
+        self._passed_over_frames = 0
+
+
+def fit_level_floor(
+    points_camera: np.ndarray,
+    previous: Plane | None,
+    history: LevelFloorHistory,
+    config: SceneConfig,
+    up_camera: np.ndarray,
+) -> LevelFloorChoice:
+    """
+    Pick the walker's floor among the level surfaces below the camera.
+
+    A level surface is a height below the camera, measured along up, that holds a large share of the
+    points. Each is refit as a plane and has to pass `plane_is_a_floor` with the tighter tilt limit
+    `floor_level_max_tilt_degrees`. A plane through stair edges spreads its points over many heights,
+    so it never forms one.
+
+    The deepest surface is the floor, because tier platforms, stair treads and seats stand on it.
+    The exception is a lower tier seen from a higher one. The camera rides at eye height above
+    whatever level the walker is on, so the recent floors sit about eye height down. When a surface
+    sits within `floor_level_tolerance_meters` of them and the deepest doesn't, the near one is taken.
+    Once the deepest has been passed over like that on `floor_level_reset_frames` - 1 frames in a row,
+    the next frame takes it and the history restarts there. That undoes a recent floor locked onto
+    the wrong surface, a seat row or a tread. It can also lock onto a lower tier that stays in view.
+
+    Use only with up from gravity. Image-up on a tilted head would turn the floor into a slope.
+
+    :param points_camera: (N, 3) camera-frame points.
+    :param previous: Last frame's plane, kept when this frame has no level surface.
+    :param history: The recent floors. Read, never written.
+    :param config: Candidate selection, the surface rules and the floor limits.
+    :param up_camera: Unit vector pointing up, in the camera frame, from gravity.
+    :return: The floor, normal pointing up, and how it was chosen.
+    :rtype: LevelFloorChoice
+    :raises ValueError: When a level-surface setting is out of range, or when no surface is found and
+        there is no previous plane to fall back on.
+    """
+    _check_level_config(config)
+
+    # Same cut as the RANSAC route. Only points clearly below the camera can be floor.
+    drops = -(points_camera @ up_camera)
+    is_candidate = drops > config.floor_candidate_min_below_camera_meters
+    candidates, candidate_drops = points_camera[is_candidate], drops[is_candidate]
+    if len(candidates) < config.floor_min_candidate_points:
+        refusal = FloorRefusal(FloorRefusalCause.TOO_FEW_CANDIDATES, float(len(candidates)), float(config.floor_min_candidate_points))
+        return _keep_previous(previous, refusal, len(points_camera), len(candidates))
+
+    surfaces, refusal = _level_surfaces(candidates, candidate_drops, config, up_camera)
+    if not surfaces:
+        return _keep_previous(previous, refusal, len(points_camera), len(candidates))
+
+    deepest = surfaces[-1]
+    reference = history.reference_meters
+    tolerance = config.floor_level_tolerance_meters
+    if reference is None or abs(deepest.offset_meters - reference) <= tolerance:
+        return LevelFloorChoice(deepest, None)
+    near_recent = [surface for surface in surfaces if abs(surface.offset_meters - reference) <= tolerance]
+    if not near_recent:
+        # Nothing near the recent floor, so this frame can't see the walker's own level. The deepest
+        # is the best guess, and the history isn't cleared, so one such frame can't move the reference.
+        return LevelFloorChoice(deepest, None)
+    if history.passed_over_frames + 1 >= config.floor_level_reset_frames:
+        return LevelFloorChoice(deepest, None, reset=True)
+    return LevelFloorChoice(near_recent[-1], None, passed_over_deeper=True)
+
+
+def _keep_previous(previous: Plane | None, refusal: FloorRefusal, point_count: int, candidate_count: int) -> LevelFloorChoice:
+    if previous is not None:
+        return LevelFloorChoice(previous, refusal)
+    raise ValueError(f"no floor found in {point_count} points, {candidate_count} below the camera, and no previous plane: {refusal}")
+
+
+def _level_surfaces(
+    candidates: np.ndarray,
+    candidate_drops: np.ndarray,
+    config: SceneConfig,
+    up_camera: np.ndarray,
+) -> tuple[list[Plane], FloorRefusal]:
+    # Surfaces that pass, shallowest first, and the refusal to report when none does: the deepest
+    # surface's own, or, when no height held enough points, how many the busiest one held.
+    bin_meters = config.floor_level_bin_meters
+    # Out to the deepest point, not the height limit, so a surface below the limit still forms and
+    # plane_is_a_floor says it's too far, rather than the frame reporting no surface at all.
+    edges = np.arange(config.floor_candidate_min_below_camera_meters, float(candidate_drops.max()) + 2.0 * bin_meters, bin_meters)
+    counts, _ = np.histogram(candidate_drops, bins=edges)
+    # Smoothed over three bins, so a surface whose height straddles a bin edge is one peak, not two.
+    smoothed = np.convolve(counts, np.ones(3) / 3.0, mode="same")
+    padded = np.concatenate(([-1.0], smoothed, [-1.0]))
+    is_peak = (padded[1:-1] >= padded[:-2]) & (padded[1:-1] > padded[2:])
+    centers = edges[:-1] + bin_meters / 2.0
+
+    needed = max(config.floor_min_candidate_points, math.ceil(config.floor_level_min_share * len(candidates)))
+    # The tighter tilt limit goes through the one place the floor rules live, rather than a copy of them.
+    level_config = replace(config, floor_max_tilt_degrees=config.floor_level_max_tilt_degrees)
+    x, y, z = (np.ascontiguousarray(column) for column in candidates.T)
+    surfaces: list[Plane] = []
+    refusal = None
+    most_held = 0
+    for center in centers[is_peak]:
+        # Same width as the RANSAC's inlier distance, so a surface holds what a fit through it would.
+        held = int(np.count_nonzero(np.abs(candidate_drops - center) < config.floor_ransac_distance_meters))
+        most_held = max(most_held, held)
+        if held < needed:
+            continue
+        # A level plane at this height, refit by least squares on the points near it.
+        plane = _refit_on_inliers(candidates, x, y, z, up_camera, float(center), config.floor_ransac_distance_meters)
+        plane = normalize_plane(plane, up_camera)
+        surface_refusal = plane_is_a_floor(plane, level_config, up_camera)
+        if surface_refusal is None:
+            surfaces.append(plane)
+        else:
+            refusal = surface_refusal
+    if refusal is None:
+        refusal = FloorRefusal(FloorRefusalCause.NO_LEVEL_SURFACE, float(most_held), float(needed))
+    surfaces.sort(key=lambda surface: surface.offset_meters)
+    return surfaces, refusal
+
+
+def _check_level_config(config: SceneConfig) -> None:
+    if config.floor_level_bin_meters <= 0.0:
+        raise ValueError(f"floor_level_bin_meters must be above 0, got {config.floor_level_bin_meters}")
+    if not 0.0 <= config.floor_level_min_share <= 1.0:
+        raise ValueError(f"floor_level_min_share must be from 0 to 1, got {config.floor_level_min_share}")
+    if config.floor_level_tolerance_meters < 0.0:
+        raise ValueError(f"floor_level_tolerance_meters must not be negative, got {config.floor_level_tolerance_meters}")
+    if config.floor_level_reset_frames < 1:
+        raise ValueError(f"floor_level_reset_frames must be at least 1, got {config.floor_level_reset_frames}")
 
 
 def _check_ransac_config(config: SceneConfig) -> None:

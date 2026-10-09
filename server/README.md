@@ -179,6 +179,14 @@ with the phone in portrait the image's own up points sideways, and measured agai
 leans 90 degrees. A source that doesn't say, a plain video, gets the image's up. The ceiling came from the first Pixel walk, where ARCore handed over a plane 2.3 m
 down, a meter below the real floor, and nothing refused it.
 
+With gravity, the scene doesn't fit one plane. It lists the level surfaces below the camera and
+takes the deepest, unless a surface near the last few floors' height is there and the deepest
+isn't, which is a lower tier seen from a higher one. A level surface may lean at most 8 degrees,
+so `--floor-max-tilt` reaches only supplied planes and the planes fitted on frames without gravity.
+In a tiered lecture room the single plane ran along the stair edges on 27 % of the frames standing
+at the front, and the level surfaces brought that to 2.7 %. `docs/math/03_finding_the_floor.md`
+has the rule and its six settings, and `floor_from_level_surfaces=false` turns it off.
+
 A phone held in the hand and pointed at the pavement still leans about 40 degrees from gravity,
 so the live runs set `--floor-max-tilt 50`. The metric model returns no camera intrinsics for a
 plain video, so `video_file` assumes `--fallback-fov` degrees of horizontal field of view, 100 by
@@ -318,6 +326,12 @@ A frame log holds depth frames, not the scene settings that were used on them. R
 same `--floor-max-tilt` the recording run had, or the floor fit can refuse every frame the
 recording accepted. The recording run writes its whole configuration to `run_config.json` in the
 log directory, so the flags are there to read back.
+
+A recording made before the level-surface floor names none of its seven settings, and the
+evaluation commands refuse it until each is given with `--scene-set`. To replay what its live run
+did, pass `floor_from_level_surfaces=false` with the six `floor_level_*` settings at their
+defaults. That switch leaves them unread, though `floor_level_history` must still be at least 1. To replay it with today's floor, pass `true` and the six
+defaults from `nav/scene/config.py`.
 
 Completed avoidances are written to `episodes.jsonl` in the same directory, one JSON line each.
 

@@ -26,6 +26,7 @@ from synthetic_depth import (
     degrade_with_zero_rows,
     degrade_without_floor,
     pitch_rotation,
+    two_level_scene,
 )
 
 CONFIG = SceneConfig()
@@ -544,3 +545,71 @@ def test_a_previous_floor_says_why_the_fit_gave_nothing_and_the_next_fitted_fram
     pipeline.process(_frame(scene, timestamp=0.2))
     assert pipeline.last_floor_source is FloorSource.FITTED
     assert pipeline.last_floor_refusal is None
+
+
+def _aligned_orientation_only() -> Pose:
+    # The glasses' kind of pose: gravity aligned, no position.
+    return Pose(orientation=_pitched_pose(np.zeros(3)).orientation, position=None, has_position=False, orientation_is_gravity_aligned=True)
+
+
+def _camera_height_after(pipeline: ScenePipeline, scene, pose: Pose, timestamp: float = 0.0) -> float:
+    pipeline.process(_frame(scene, timestamp=timestamp, pose=pose))
+    return pipeline.previous_plane.offset_meters
+
+
+def test_a_gravity_aligned_frame_takes_the_level_route_and_a_plain_video_frame_does_not() -> None:
+    # A tier 0.4 m up from 3 m ahead outnumbers the walker's floor. Along gravity the level route
+    # keeps the floor at 1.6 m, where one plane fit along the same gravity takes the tier.
+    tiered = two_level_scene(edge_forward_meters=3.0, far_camera_height=1.2)
+    level = _camera_height_after(ScenePipeline(CONFIG, WALKER), tiered, _aligned_orientation_only())
+    ransac = _camera_height_after(ScenePipeline(dataclasses.replace(CONFIG, floor_from_level_surfaces=False), WALKER), tiered, _aligned_orientation_only())
+    assert level == pytest.approx(CAMERA_HEIGHT_METERS, abs=0.01)
+    assert ransac == pytest.approx(1.2, abs=0.01)
+
+    # A plain video has only image-up, and the camera is pitched 20 degrees, so its floor leans 20
+    # from image-up. The level route's 8 degree limit would refuse it. The RANSAC fit takes it.
+    pipeline = ScenePipeline(CONFIG, WALKER)
+    pipeline.process(_frame(clean_scene(box_lateral_meters=None)))
+    assert pipeline.last_floor_source is FloorSource.FITTED
+    lean = np.degrees(np.arccos(np.clip(pipeline.previous_plane.normal @ np.array([0.0, -1.0, 0.0]), -1.0, 1.0)))
+    assert lean == pytest.approx(PITCH_DEGREES, abs=0.5)
+
+
+def _walker_on_a_tier_then(pipeline: ScenePipeline, interruption: Pose | None) -> float:
+    # Three frames on the walker's own floor, one looking down at a lower tier 0.4 m further down,
+    # then optionally a frame with another pose, then the lower tier again.
+    aligned = _aligned_orientation_only()
+    floor_only = clean_scene(box_lateral_meters=None)
+    lower_tier = two_level_scene(edge_forward_meters=3.0, far_camera_height=2.0)
+    for index in range(3):
+        _camera_height_after(pipeline, floor_only, aligned, timestamp=0.1 * index)
+    assert _camera_height_after(pipeline, lower_tier, aligned, timestamp=0.3) == pytest.approx(CAMERA_HEIGHT_METERS, abs=0.01)
+    if interruption is not None:
+        pipeline.process(_frame(floor_only, timestamp=0.4, pose=interruption))
+    return _camera_height_after(pipeline, lower_tier, aligned, timestamp=0.5)
+
+
+def test_the_history_resets_when_the_pose_stops_being_gravity_aligned() -> None:
+    # Heights measured along gravity mean nothing once gravity is lost, so a frame without it clears
+    # them. After that the lower tier is just the deepest surface. Without the interruption, the
+    # recent floor still holds it off.
+    plain = Pose(orientation=IDENTITY, position=None, has_position=False, orientation_is_gravity_aligned=False)
+
+    assert _walker_on_a_tier_then(ScenePipeline(CONFIG, WALKER), interruption=None) == pytest.approx(CAMERA_HEIGHT_METERS, abs=0.01)
+    assert _walker_on_a_tier_then(ScenePipeline(CONFIG, WALKER), interruption=plain) == pytest.approx(2.0, abs=0.01)
+
+
+def test_a_supplied_floor_counts_as_the_recent_floor() -> None:
+    # The Pixel supplies its floor on most frames. Those are the walker's floor too, so a fitted
+    # frame among them is held to the same level rather than dropping to a lower tier.
+    aligned = _aligned_orientation_only()
+    floor_only = clean_scene(box_lateral_meters=None)
+    pipeline = ScenePipeline(CONFIG, WALKER)
+    for index in range(3):
+        pipeline.process(_frame(floor_only, timestamp=0.1 * index, pose=aligned, with_plane=True))
+        assert pipeline.last_floor_source is FloorSource.SUPPLIED
+
+    height = _camera_height_after(pipeline, two_level_scene(edge_forward_meters=3.0, far_camera_height=2.0), aligned, timestamp=0.3)
+
+    assert pipeline.last_floor_source is FloorSource.FITTED
+    assert height == pytest.approx(CAMERA_HEIGHT_METERS, abs=0.01)
