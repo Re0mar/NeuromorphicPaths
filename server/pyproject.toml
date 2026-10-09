@@ -42,6 +42,13 @@ glasses = [
 web = [
     "aiohttp",
 ]
+# The page's test runner: Playwright driving the Chrome or Edge installed on the machine, headless.
+# Kept out of dev so the suite still runs where no browser is installed. The browser tests then skip
+# by name. Working on the page means installing ".[dev,browser]". 1.45 is the first release with
+# the clock API the page's timer tests fast-forward.
+browser = [
+    "playwright>=1.45",
+]
 # No test imports torch, depth_anything_3 or pupil_labs. Every estimator test uses a stub, and the
 # Neon check is a script run by hand. Leaving glasses out keeps those three genuinely absent from
 # the environment the suite runs in, which is the whole reason the layering test exists. web stays
@@ -57,6 +64,10 @@ nav = "nav.main:main"
 
 [tool.setuptools.packages.find]
 include = ["nav*"]
+
+# The web sink reads these beside its module, so a wheel has to carry them too.
+[tool.setuptools.package-data]
+"nav.sinks" = ["web_page.html", "tls/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

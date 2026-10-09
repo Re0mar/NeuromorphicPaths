@@ -23,6 +23,7 @@ from nav.config import (
     build_run_config,
     build_sink,
     build_source,
+    build_source_and_sink,
 )
 from nav.sources.config import (
     ArCoreConfig,
@@ -39,6 +40,7 @@ from nav.sources.config import (
 from nav.runtime.tap import RecordingTap
 from nav.scene.config import SceneConfig
 from nav.sinks.config import PhoneAppConfig, WebConfig
+from nav.sources.scene_video import SceneVideoFeed
 from nav.types import DepthFrame, PlannedPath, Pose
 from nav.walker import WalkerConfig
 
@@ -704,6 +706,86 @@ def test_a_timing_log_that_is_a_directory_or_in_a_missing_folder_is_refused(wher
 
     message = capsys.readouterr().err
     assert ("is a directory" in message) if where == "a directory" else ("in a folder that doesn't exist" in message)
+
+
+# *******************************************
+# Building both ends together
+# *******************************************
+
+
+def test_build_source_and_sink_gives_the_neon_source_and_the_web_sink_one_feed() -> None:
+    # The glasses' video goes from the source's device to the web sink without the loop seeing it,
+    # which only works if both ends were handed the same feed by the one place that builds them.
+    config = RunConfig(
+        source_kind=SourceKind.NEON_LIVE,
+        sink_kinds=(SinkKind.WEB,),
+        goal_mode=GoalMode.AHEAD,
+        neon=NeonConfig(),
+        estimator=EstimatorConfig(),
+        estimator_factory=lambda estimator_config: StubDepthEstimator(),
+        web=WebConfig(port=0),
+    )
+
+    source, sink = build_source_and_sink(config)
+    try:
+        assert isinstance(sink.video_feed, SceneVideoFeed)
+        assert source.rgb_source.video_feed is sink.video_feed
+    finally:
+        sink.close()
+
+
+def test_a_source_without_scene_video_leaves_the_web_sink_without_a_feed() -> None:
+    config = RunConfig(
+        source_kind=SourceKind.VIDEO_FILE,
+        sink_kinds=(SinkKind.WEB,),
+        goal_mode=GoalMode.AHEAD,
+        video=VideoConfig(path=STREAM_URL),
+        estimator=EstimatorConfig(),
+        estimator_factory=lambda estimator_config: StubDepthEstimator(),
+        web=WebConfig(port=0),
+    )
+
+    source, sink = build_source_and_sink(config)
+    try:
+        assert sink.video_feed is None
+        assert not hasattr(source.rgb_source, "video_feed"), "a plain camera has no feed to offer"
+    finally:
+        sink.close()
+
+
+# *******************************************
+# The demo recording
+# *******************************************
+
+
+def test_the_demo_recording_flag_reaches_the_web_config(tmp_path) -> None:
+    recording = tmp_path / "demo.mp4"
+    recording.write_bytes(b"\x00" * 16)
+
+    config = build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "web", "--demo-recording", str(recording)])
+
+    assert config.web is not None and config.web.recording_path == str(recording)
+
+
+def test_a_demo_recording_that_is_not_a_file_is_refused_before_anything_loads(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    missing = tmp_path / "nowhere.mp4"
+
+    with pytest.raises(SystemExit):
+        build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "web", "--demo-recording", str(missing)])
+
+    message = capsys.readouterr().err
+    assert "--demo-recording" in message and str(missing) in message and "not a file" in message
+
+
+def test_a_demo_recording_without_the_web_sink_is_refused(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    recording = tmp_path / "demo.mp4"
+    recording.write_bytes(b"\x00" * 16)
+
+    with pytest.raises(SystemExit):
+        build_run_config([*MINIMAL_VIDEO_ARGV, "--demo-recording", str(recording)])
+
+    message = capsys.readouterr().err
+    assert "--demo-recording" in message and "--sink web" in message
 
 
 # *******************************************

@@ -5,9 +5,13 @@ Every text message carries a kind, and the page dispatches on it. A path message
 the phone gets, plus its kind. A plan view is what the page draws top-down: the planner's field,
 the path through it, the obstacles, and how the path should look. Everything the page draws is
 computed here, on the laptop. The page only draws.
+
+The video socket's two text messages are here too: the stream's description, which the page's
+decoder needs before the first unit, and the word that this run has no video to send.
 """
 
 # Standard library imports
+import base64
 import json
 from enum import Enum
 
@@ -18,6 +22,7 @@ import numpy as np
 from nav.scene.config import SceneConfig
 from nav.sinks.floor_geometry import floor_hidden_mask, floor_seen_mask
 from nav.sinks.path_style import BORDER_OPACITY, GROUP_RGB, WALL_RGB, path_color_rgb, path_fill_opacity
+from nav.sources.scene_video import VideoDescription
 from nav.types import DebugView, PlannedPath
 
 
@@ -26,6 +31,10 @@ class WebMessageKind(Enum):
 
     PATH = "path"
     PLAN_VIEW = "plan_view"
+    # On the video socket. The stream's codec and parameter sets, sent before any unit.
+    VIDEO_STREAM = "video_stream"
+    # On the video socket. This run's source has no video, and the socket closes after it.
+    VIDEO_UNAVAILABLE = "video_unavailable"
 
 
 # Every key a plan view carries, in one place. The page test checks the page reads each of these,
@@ -96,6 +105,25 @@ def plan_view_message(path: PlannedPath, field: np.ndarray, grid: np.ndarray, vi
         "floor_hidden": floor_hidden_mask(view, path.times_seconds, grid, scene).tolist(),
     }
     return message
+
+
+def video_stream_message(description: VideoDescription) -> dict:
+    """
+    What the page's decoder is configured with: the codec string and the parameter sets as base64.
+
+    :param description: The stream as the device process described it.
+    :return: Plain values, ready for web_text_message.
+    :rtype: dict
+    """
+    return {
+        "codec": description.codec,
+        "parameter_sets": [base64.b64encode(parameter_set).decode("ascii") for parameter_set in description.parameter_sets],
+    }
+
+
+def video_unavailable_message(reason: str) -> dict:
+    """The word that there is no video on this run, with the reason the page shows."""
+    return {"reason": reason}
 
 
 def web_text_message(kind: WebMessageKind, body: dict) -> str:

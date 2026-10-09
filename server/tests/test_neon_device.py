@@ -18,6 +18,7 @@ import multiprocessing
 import sys
 import threading
 import time
+import types
 from multiprocessing import shared_memory
 
 # Third party imports
@@ -35,11 +36,13 @@ from nav.sources.neon_device import (
     NeonStreamEnded,
     NeonUnexpectedFailure,
     SharedFrameBuffer,
+    _PipeVideoListener,
     answer,
     known_child_failures,
     serve,
 )
 from nav.sources.neon_stream import NeonStreamDevice
+from nav.sources.scene_video import AccessUnit, VideoDescription, pack_unit, unpack_unit
 
 FRAME_SHAPE = (12, 16, 3)
 
@@ -496,3 +499,347 @@ def test_the_end_of_a_capture_crosses_as_its_own_kind_and_not_as_a_failure() -> 
         proxy.receive_matched_scene_video_frame_and_gaze(timeout_seconds=0.25)
 
     assert not isinstance(ended.value, (OSError, ValueError))
+
+
+# *******************************************
+# The video tee
+# *******************************************
+
+_DESCRIPTION = VideoDescription(codec="avc1.42801f", parameter_sets=(b"\x00\x00\x00\x01\x67sps", b"\x00\x00\x00\x01\x68pps"))
+_KEYFRAME = AccessUnit(timestamp_seconds=100.0, data=b"\x00\x00\x00\x01\x65key", keyframe=True)
+_DELTA = AccessUnit(timestamp_seconds=100.033, data=b"\x00\x00\x00\x01\x61delta", keyframe=False)
+
+
+class ProvidingFakeDevice(ChildFakeDevice):
+    """A device with video to offer. Hands the units it was built with to whoever subscribes."""
+
+    def __init__(self, units: tuple[AccessUnit, ...] = (), stream_until_closed: bool = False) -> None:
+        super().__init__()
+        self._units = units
+        self._stream_until_closed = stream_until_closed
+        self.listener = None
+        self._streamer: threading.Thread | None = None
+
+    def subscribe_video(self, listener) -> None:
+        self.listener = listener
+        listener.describe(_DESCRIPTION)
+        for unit in self._units:
+            listener.offer(unit)
+        if self._stream_until_closed:
+            self._streamer = threading.Thread(target=self._stream, daemon=True)
+            self._streamer.start()
+
+    def _stream(self) -> None:
+        while not self.closed:
+            self.listener.offer(AccessUnit(timestamp_seconds=time.time(), data=b"\x00\x00\x00\x01\x65" + b"x" * 200, keyframe=True))
+            time.sleep(0.005)
+
+    def close(self) -> None:
+        super().close()
+        if self._streamer is not None:
+            self._streamer.join(2.0)
+
+
+def make_providing_device(config: NeonConfig) -> ProvidingFakeDevice:
+    return ProvidingFakeDevice(units=(_KEYFRAME, _DELTA))
+
+
+def make_streaming_device(config: NeonConfig) -> ProvidingFakeDevice:
+    return ProvidingFakeDevice(stream_until_closed=True)
+
+
+class _UnitCollector:
+    def __init__(self) -> None:
+        self.descriptions: list[VideoDescription] = []
+        self.units: list[AccessUnit] = []
+
+    def describe(self, description: VideoDescription) -> None:
+        self.descriptions.append(description)
+
+    def offer(self, unit: AccessUnit) -> None:
+        self.units.append(unit)
+
+
+def _serve_on_thread_with_video(device: ChildFakeDevice) -> NeonDeviceProcess:
+    parent_end, child_end = multiprocessing.Pipe()
+    video_parent_end, video_child_end = multiprocessing.Pipe(duplex=False)
+    thread = threading.Thread(target=serve, args=(child_end, device, known_child_failures(), video_child_end), daemon=True)
+    thread.start()
+    proxy = NeonDeviceProcess(NeonConfig(time_echo_timeout_seconds=0.2))
+    proxy._connection = parent_end
+    proxy._video_connection = video_parent_end
+    return proxy
+
+
+def _wait_for_units(collector: _UnitCollector, count: int, timeout_seconds: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while len(collector.units) < count and time.monotonic() < deadline:
+        time.sleep(0.02)
+
+
+def test_units_cross_the_video_pipe_in_order_with_the_description_first() -> None:
+    device = ProvidingFakeDevice()
+    proxy = _serve_on_thread_with_video(device)
+    collector = _UnitCollector()
+
+    proxy.subscribe_video(collector)
+    device.listener.offer(_KEYFRAME)
+    device.listener.offer(_DELTA)
+    _wait_for_units(collector, 2)
+
+    assert collector.descriptions == [_DESCRIPTION]
+    assert collector.units == [_KEYFRAME, _DELTA]
+
+
+def test_the_child_sends_no_video_until_the_parent_asks() -> None:
+    proxy = _serve_on_thread_with_video(ProvidingFakeDevice(units=(_KEYFRAME,)))
+
+    proxy.receive_matched_scene_video_frame_and_gaze(timeout_seconds=0.25)
+    proxy.receive_matched_scene_video_frame_and_gaze(timeout_seconds=0.25)
+
+    assert not proxy._video_connection.poll(0.3), "something crossed the video pipe before any VIDEO request"
+
+
+def test_a_video_request_on_a_device_that_is_not_a_provider_is_refused_as_a_value_error() -> None:
+    proxy = _serve_on_thread_with_video(ChildFakeDevice())
+
+    with pytest.raises(ValueError, match="ChildFakeDevice provides no scene video"):
+        proxy.subscribe_video(_UnitCollector())
+
+
+def test_a_video_request_without_a_video_pipe_is_refused_by_name(served: NeonDeviceProcess) -> None:
+    # The thread-served fixture gives the child no video pipe at all.
+    served._video_connection = multiprocessing.Pipe(duplex=False)[0]
+
+    with pytest.raises(ValueError, match="without a video pipe"):
+        served.subscribe_video(_UnitCollector())
+
+
+def test_the_spawned_child_forwards_units_and_closes_the_video_pipe_on_exit() -> None:
+    proxy = NeonDeviceProcess(NeonConfig(), device_factory=make_providing_device)
+    proxy.start()
+    collector = _UnitCollector()
+    try:
+        proxy.subscribe_video(collector)
+        reader = proxy._video_thread
+        _wait_for_units(collector, 2)
+    finally:
+        proxy.close()
+
+    assert collector.descriptions == [_DESCRIPTION]
+    assert collector.units == [_KEYFRAME, _DELTA]
+    assert reader is not None and not reader.is_alive(), "the reader thread outlived close"
+
+
+def test_a_parent_that_closes_while_units_are_crossing_ends_the_reader_without_an_error(caplog: pytest.LogCaptureFixture) -> None:
+    proxy = NeonDeviceProcess(NeonConfig(), device_factory=make_streaming_device)
+    proxy.start()
+    collector = _UnitCollector()
+    with caplog.at_level("ERROR", logger="nav.sources.neon_device"):
+        try:
+            proxy.subscribe_video(collector)
+            reader = proxy._video_thread
+            _wait_for_units(collector, 5)
+        finally:
+            started = time.monotonic()
+            proxy.close()
+            closing_seconds = time.monotonic() - started
+
+    assert len(collector.units) >= 5
+    assert not reader.is_alive()
+    assert closing_seconds < 6.0
+    assert [record for record in caplog.records if record.levelname == "ERROR"] == []
+
+
+def _unit(index: int, keyframe: bool) -> AccessUnit:
+    # Bigger than the pipe's buffer, so a sender whose parent reads nothing blocks on the first one.
+    return AccessUnit(timestamp_seconds=100.0 + index / 30, data=b"\x00\x00\x00\x01" + bytes([0x65 if keyframe else 0x61]) + bytes([index]) * 30_000, keyframe=keyframe)
+
+
+def test_a_slow_parent_never_holds_the_decoders_offer_and_the_units_after_a_drop_start_at_a_keyframe() -> None:
+    # Nothing reads the parent end until every offer is in, so the sender blocks on the first unit
+    # and the queue fills behind it, which is a parent that fell a whole keyframe gap behind. The
+    # offers come from the decode thread in the child, so each has to return at once regardless.
+    parent_end, child_end = multiprocessing.Pipe(duplex=False)
+    listener = _PipeVideoListener(child_end, queue_limit=4)
+    units = [_unit(index, keyframe=index % 5 == 0) for index in range(20)]
+    try:
+        listener.describe(_DESCRIPTION)
+        offer_seconds: list[float] = []
+
+        def offer_all() -> None:
+            for unit in units:
+                started = time.perf_counter()
+                listener.offer(unit)
+                offer_seconds.append(time.perf_counter() - started)
+                time.sleep(0.005)  # The decode thread's pace, so the sender gets to take the first unit.
+
+        # On a thread, so an offer that blocks fails this test instead of hanging it.
+        decode_thread = threading.Thread(target=offer_all, daemon=True)
+        decode_thread.start()
+        decode_thread.join(3.0)
+        time.sleep(0.2)
+
+        assert not decode_thread.is_alive(), f"an offer is still holding the decode thread after {len(offer_seconds)} offers"
+        assert max(offer_seconds) < 0.05, f"an offer held the decode thread for {max(offer_seconds) * 1000:.0f} ms"
+        assert listener.dropped > 0
+        assert parent_end.recv() == _DESCRIPTION
+        # The pipe is in message mode, and a message the sender is still blocked on shows
+        # nothing to poll, so a thread reads until the pipe ends. The end comes once the queue
+        # has drained and the listener and the pipe are closed, so a wrong drop count fails
+        # the count below rather than hanging a read.
+        crossed: list[AccessUnit] = []
+
+        def read_until_the_end() -> None:
+            try:
+                while True:
+                    crossed.append(unpack_unit(parent_end.recv_bytes()))
+            except EOFError:
+                return
+
+        reader = threading.Thread(target=read_until_the_end, daemon=True)
+        reader.start()
+        deadline = time.monotonic() + 3.0
+        while not listener._queue.empty() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        time.sleep(0.1)
+    finally:
+        listener.close()
+        child_end.close()
+    reader.join(3.0)
+    parent_end.close()
+    assert not reader.is_alive(), "the pipe never ended for the reader"
+
+    assert crossed, "nothing crossed after the description"
+    assert crossed[0] == units[0]
+    indices = [units.index(unit) for unit in crossed]
+    for earlier, later in zip(indices, indices[1:]):
+        if later != earlier + 1:
+            assert units[later].keyframe, f"after a gap the next unit was {later}, a delta"
+    assert len(crossed) + listener.dropped == len(units)
+
+
+def test_a_parent_that_keeps_up_gets_every_unit_in_order_and_nothing_is_dropped() -> None:
+    parent_end, child_end = multiprocessing.Pipe(duplex=False)
+    listener = _PipeVideoListener(child_end)
+    units = [_unit(index, keyframe=index == 0) for index in range(10)]
+    try:
+        listener.describe(_DESCRIPTION)
+        assert parent_end.recv() == _DESCRIPTION
+        crossed = []
+        for unit in units:
+            listener.offer(unit)
+            crossed.append(unpack_unit(parent_end.recv_bytes()))
+    finally:
+        listener.close()
+        child_end.close()
+        parent_end.close()
+
+    assert crossed == units
+    assert listener.dropped == 0
+
+
+def test_closing_the_listener_with_units_still_queued_counts_them_as_dropped_and_ends_its_thread() -> None:
+    # Units bigger than the pipe's buffer, so the sender blocks on the first one and the rest wait
+    # in the queue when close comes. Nothing reads the parent end until after the close.
+    parent_end, child_end = multiprocessing.Pipe(duplex=False)
+    listener = _PipeVideoListener(child_end, queue_limit=8)
+    big = [AccessUnit(timestamp_seconds=100.0 + index / 30, data=b"\x00\x00\x00\x01\x65" + bytes([index]) * 30_000, keyframe=True) for index in range(6)]
+    listener.describe(_DESCRIPTION)
+    for unit in big:
+        listener.offer(unit)
+    time.sleep(0.2)
+
+    listener.close()
+    child_end.close()
+    listener._thread.join(2.0)
+
+    assert not listener._thread.is_alive(), "the sender outlived the pipe"
+    assert listener.dropped >= 1
+    assert parent_end.recv() == _DESCRIPTION
+    crossed = 0
+    try:
+        while True:
+            unpack_unit(parent_end.recv_bytes())
+            crossed += 1
+    except EOFError:
+        pass
+    parent_end.close()
+    assert crossed + listener.dropped == len(big)
+
+
+def _reader_on_a_thread(parent_end, collector: _UnitCollector) -> tuple[NeonDeviceProcess, threading.Thread]:
+    """The parent's video reader on its own end of a pipe, as subscribe_video starts it."""
+    proxy = NeonDeviceProcess(NeonConfig())
+    proxy._video_connection = parent_end
+    thread = threading.Thread(target=proxy._read_video, args=(collector,), daemon=True)
+    thread.start()
+    proxy._video_thread = thread
+    return proxy, thread
+
+
+def test_a_malformed_unit_on_the_video_pipe_is_skipped_with_a_warning_and_the_next_unit_still_arrives(caplog: pytest.LogCaptureFixture) -> None:
+    parent_end, child_end = multiprocessing.Pipe(duplex=False)
+    collector = _UnitCollector()
+    _, reader = _reader_on_a_thread(parent_end, collector)
+    with caplog.at_level("WARNING", logger="nav.sources.neon_device"):
+        child_end.send(_DESCRIPTION)
+        child_end.send_bytes(b"not a unit")
+        child_end.send_bytes(pack_unit(_KEYFRAME))
+        _wait_for_units(collector, 1)
+        child_end.close()
+        reader.join(3.0)
+    parent_end.close()
+
+    assert collector.units == [_KEYFRAME]
+    assert any("malformed unit" in record.getMessage() for record in caplog.records)
+    assert not reader.is_alive()
+
+
+def test_closing_the_parent_ends_its_reader_even_when_the_child_keeps_its_end_open() -> None:
+    # A child that is stuck, or killed before its own close, never closes its end of the video
+    # pipe. The parent's close() has to end the reader itself by closing the end it holds.
+    parent_end, child_end = multiprocessing.Pipe(duplex=False)
+    request_parent_end, request_child_end = multiprocessing.Pipe()
+    threading.Thread(target=serve, args=(request_child_end, ChildFakeDevice(), known_child_failures()), daemon=True).start()
+    collector = _UnitCollector()
+    proxy, reader = _reader_on_a_thread(parent_end, collector)
+    proxy._connection = request_parent_end
+    # A stand-in for the child process, so close() takes its full path without spawning one.
+    proxy._process = types.SimpleNamespace(join=lambda timeout: None, is_alive=lambda: False, terminate=lambda: None)
+    child_end.send(_DESCRIPTION)
+    _wait_for(lambda: collector.descriptions == [_DESCRIPTION])
+
+    proxy.close()
+
+    assert not reader.is_alive(), "the reader outlived close() while the child's end stayed open"
+    child_end.close()
+
+
+def test_the_child_closes_its_video_end_when_it_stops_serving_so_a_waiting_parent_reader_ends() -> None:
+    parent_end, child_end = multiprocessing.Pipe(duplex=False)
+    request_parent_end, request_child_end = multiprocessing.Pipe()
+    device = ProvidingFakeDevice()
+    threading.Thread(target=serve, args=(request_child_end, device, known_child_failures(), child_end), daemon=True).start()
+    proxy = NeonDeviceProcess(NeonConfig(time_echo_timeout_seconds=0.2))
+    proxy._connection = request_parent_end
+    proxy._video_connection = parent_end
+    collector = _UnitCollector()
+    proxy.subscribe_video(collector)
+    reader = proxy._video_thread
+    _wait_for(lambda: collector.descriptions == [_DESCRIPTION])
+    # This test holds the child's end, so only serve() closing it can end the reader.
+    assert reader is not None and reader.is_alive()
+
+    proxy._request(DeviceRequest.CLOSE, wait_seconds=2.0)
+
+    reader.join(3.0)
+    assert not reader.is_alive(), "serve() returned without closing the child's video end"
+    parent_end.close()
+    child_end.close()
+
+
+def _wait_for(condition, timeout_seconds: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.02)

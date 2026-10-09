@@ -21,7 +21,7 @@ def test_the_loop_can_tell_a_plain_sink_from_a_debug_sink_at_runtime() -> None:
     assert not isinstance(NullSink(), DebugSink)
     assert not isinstance(PhoneAppSink(PhoneAppConfig(port=1)), DebugSink)
     assert isinstance(DebugWindowSink(DebugWindowConfig()), DebugSink)
-    assert isinstance(WebSink(WebConfig(port=0), SceneConfig()), DebugSink)
+    assert isinstance(WebSink(WebConfig(port=0), SceneConfig(), video_feed=None), DebugSink)
 
 
 def test_publish_and_close_do_nothing_and_do_not_raise() -> None:

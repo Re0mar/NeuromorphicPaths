@@ -12,6 +12,7 @@ import dataclasses
 import json
 import logging
 import socket
+import ssl
 import threading
 import time
 import urllib.request
@@ -168,7 +169,8 @@ def test_a_logged_replay_serves_a_phone_and_a_browser_in_the_same_run(tmp_path: 
         deadline = time.monotonic() + 10.0
         while time.monotonic() < deadline:
             try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{web_port}/", timeout=5.0) as response:
+                # The page is HTTPS with a self-signed certificate, accepted here as a browser does once.
+                with urllib.request.urlopen(f"https://127.0.0.1:{web_port}/", timeout=5.0, context=ssl._create_unverified_context()) as response:
                     pages.append(response.read().decode("utf-8"))
                 break
             except OSError:
@@ -179,8 +181,8 @@ def test_a_logged_replay_serves_a_phone_and_a_browser_in_the_same_run(tmp_path: 
     async def read_until_a_plan_view() -> None:
         import aiohttp
 
-        async with aiohttp.ClientSession() as session:
-            async with session.ws_connect(f"ws://127.0.0.1:{web_port}/ws") as connection:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+            async with session.ws_connect(f"wss://127.0.0.1:{web_port}/ws") as connection:
                 deadline = time.monotonic() + 10.0
                 while time.monotonic() < deadline:
                     message = await asyncio.wait_for(connection.receive(), 5.0)
