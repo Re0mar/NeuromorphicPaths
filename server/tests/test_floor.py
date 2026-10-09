@@ -6,6 +6,10 @@ plane has a tilted normal and a known offset, and a fit that was wrong by a cons
 would fail here rather than agree with itself.
 """
 
+# Standard library imports
+import dataclasses
+import math
+
 # Third party imports
 import numpy as np
 import pytest
@@ -17,8 +21,11 @@ from nav.scene.floor import (
     CAMERA_UP,
     FloorRefusal,
     FloorRefusalCause,
+    LevelFloorChoice,
+    LevelFloorHistory,
     fit_floor,
     fit_floor_with_refusal,
+    fit_level_floor,
     ground_axes,
     height_above_floor,
     normalize_plane,
@@ -26,7 +33,7 @@ from nav.scene.floor import (
 )
 from nav.scene.unproject import unproject_depth
 from nav.types import Plane
-from synthetic_depth import CAMERA_HEIGHT_METERS, clean_scene, degrade_without_floor, floor_plane_in_camera
+from synthetic_depth import CAMERA_HEIGHT_METERS, PITCH_DEGREES, clean_scene, degrade_without_floor, floor_plane_in_camera, pitch_rotation
 
 CONFIG = SceneConfig()
 
@@ -515,7 +522,6 @@ def test_every_refusal_cause_has_a_message() -> None:
         assert str(FloorRefusal(cause, 1.0, 2.0))
 
 
-
 @pytest.mark.parametrize(
     "plane",
     [
@@ -530,3 +536,291 @@ def test_a_plane_that_is_not_finite_is_refused(plane: Plane) -> None:
 
     assert refusal == FloorRefusal(FloorRefusalCause.NOT_FINITE, None, None)
     assert str(refusal) == "the plane's normal or offset isn't a finite number"
+
+
+# *******************************************
+# The level-surface floor
+# *******************************************
+
+# A level camera, so up is image-up and a surface's drop below the camera is its points' y.
+LEVEL_UP = CAMERA_UP
+FLOOR_DROP_METERS = 1.6
+PREVIOUS = Plane(normal=LEVEL_UP, offset_meters=1.5)
+
+
+def _level_patch(drop_meters: float, forward_from: float, forward_to: float, spacing: float = 0.1) -> np.ndarray:
+    """A level surface drop_meters below a level camera, 4 m wide, from forward_from up to forward_to."""
+    lateral = np.arange(-2.0, 2.0 + spacing / 2, spacing)
+    forward = np.arange(forward_from, forward_to - spacing / 2, spacing)
+    return _points_on_plane(np.array([0.0, -1.0, 0.0]), drop_meters, lateral, forward)
+
+
+def _ramp(lean_degrees: float) -> np.ndarray:
+    """A plane rising away from the camera at the given lean, 1.6 m below it at 1 m ahead, out to 6 m."""
+    rise = np.tan(np.radians(lean_degrees))
+    x, z = np.meshgrid(np.linspace(-2.0, 2.0, 41), np.linspace(1.0, 6.0, 101))
+    y = FLOOR_DROP_METERS - (z - 1.0) * rise
+    return np.column_stack((x.ravel(), y.ravel(), z.ravel()))
+
+
+def _floor_and_lower_tier() -> np.ndarray:
+    # The walker's tier 1.6 m down out to 3 m, and a lower tier 2.0 m down from 3.5 m, holding more points.
+    return np.vstack((_level_patch(FLOOR_DROP_METERS, 1.0, 3.0), _level_patch(2.0, 3.5, 6.5)))
+
+
+def _fresh_history() -> LevelFloorHistory:
+    return LevelFloorHistory(CONFIG.floor_level_history)
+
+
+def _history_at(height_meters: float, frames: int = 3) -> LevelFloorHistory:
+    history = _fresh_history()
+    for _ in range(frames):
+        history.record_supplied(Plane(normal=LEVEL_UP, offset_meters=height_meters))
+    return history
+
+
+def test_the_floor_is_the_deepest_level_surface_not_a_raised_tier() -> None:
+    # The raised tier holds 1640 points against the floor's 615, so one plane fit takes the tier.
+    # Tiers stand on the floor, so the deepest level surface is the floor whatever its size.
+    cloud = np.vstack((_level_patch(FLOOR_DROP_METERS, 1.5, 3.0), _level_patch(1.2, 3.0, 7.0)))
+
+    choice = fit_level_floor(cloud, None, _fresh_history(), CONFIG, LEVEL_UP)
+    ransac, _ = fit_floor_with_refusal(cloud, None, CONFIG, LEVEL_UP)
+
+    assert choice.refusal is None
+    assert choice.floor.offset_meters == pytest.approx(FLOOR_DROP_METERS, abs=1e-6)
+    assert _angle_between_degrees(choice.floor.normal, LEVEL_UP) < 0.01
+    assert ransac.offset_meters == pytest.approx(1.2, abs=0.01)
+
+
+def test_a_staircase_slope_is_refused_and_the_level_floor_kept() -> None:
+    # Ten treads 0.3 m deep rising 0.1 m each from 1.5 m ahead. Every tread lies within the 5 cm
+    # inlier distance of one plane through the step edges, leaning atan(0.1 / 0.3) = 18.4 degrees,
+    # and holding 4860 points to the floor's 1620, so one plane fit takes that slope. Spread over a
+    # meter of height, it never makes a level surface. Each tread is under the 8 % share on its own,
+    # so what this guards is the floor's refit staying on the floor rather than reaching the first
+    # tread 0.1 m up. The tilt limit itself is the ramp test's.
+    floor = _level_patch(FLOOR_DROP_METERS, 0.5, 1.5, spacing=0.05)
+    treads = [_level_patch(FLOOR_DROP_METERS - 0.1 * step, 1.5 + 0.3 * (step - 1), 1.5 + 0.3 * step, spacing=0.05) for step in range(1, 11)]
+    cloud = np.vstack([floor, *treads])
+
+    choice = fit_level_floor(cloud, None, _fresh_history(), CONFIG, LEVEL_UP)
+    ransac, _ = fit_floor_with_refusal(cloud, None, CONFIG, LEVEL_UP)
+
+    assert _angle_between_degrees(ransac.normal, LEVEL_UP) == pytest.approx(18.4, abs=1.5)
+    assert choice.refusal is None
+    assert choice.floor.offset_meters == pytest.approx(FLOOR_DROP_METERS, abs=1e-6)
+    assert _angle_between_degrees(choice.floor.normal, LEVEL_UP) < 0.01
+
+
+@pytest.mark.parametrize(("lean_degrees", "refused"), [(7.0, False), (9.0, True), (12.0, True)])
+def test_a_surface_is_level_up_to_the_tilt_limit_and_a_slope_past_it(lean_degrees: float, refused: bool) -> None:
+    # A plain ramp. Each height's slice of it refits to the ramp's own lean exactly, so the 8 degree
+    # limit is all that decides. Past it, the previous floor stands and the refusal names the lean.
+    choice = fit_level_floor(_ramp(lean_degrees), PREVIOUS, _fresh_history(), CONFIG, LEVEL_UP)
+
+    if refused:
+        assert choice.floor is PREVIOUS
+        assert choice.refusal.cause is FloorRefusalCause.LEANS
+        assert choice.refusal.measured == pytest.approx(lean_degrees, abs=0.01)
+        assert choice.refusal.limit == CONFIG.floor_level_max_tilt_degrees
+    else:
+        assert choice.refusal is None
+        assert _angle_between_degrees(choice.floor.normal, LEVEL_UP) == pytest.approx(lean_degrees, abs=0.01)
+
+
+def test_a_surface_near_the_recent_floor_wins_over_a_deeper_one() -> None:
+    # From a higher tier, the lower tiers are deeper. With the walker's floor recently at 1.6 m, the
+    # surface there is taken over the lower tier 0.4 m further down. Without that history, deepest wins.
+    cloud = _floor_and_lower_tier()
+
+    with_history = fit_level_floor(cloud, None, _history_at(FLOOR_DROP_METERS), CONFIG, LEVEL_UP)
+    without_history = fit_level_floor(cloud, None, _fresh_history(), CONFIG, LEVEL_UP)
+
+    assert with_history.floor.offset_meters == pytest.approx(FLOOR_DROP_METERS, abs=1e-6)
+    assert with_history.passed_over_deeper and not with_history.reset
+    assert without_history.floor.offset_meters == pytest.approx(2.0, abs=1e-6)
+    assert not without_history.passed_over_deeper
+
+
+def test_after_enough_frames_the_deeper_surface_is_taken_and_the_history_resets() -> None:
+    # A deeper surface passed over frame after frame means the recent floor settled on the wrong
+    # surface, a seat row say. It's passed over reset_frames - 1 times, taken on the next, and the
+    # history then starts from it.
+    cloud = _floor_and_lower_tier()
+    history = _history_at(FLOOR_DROP_METERS)
+    offsets = []
+    for _ in range(CONFIG.floor_level_reset_frames):
+        choice = fit_level_floor(cloud, None, history, CONFIG, LEVEL_UP)
+        history.record(choice)
+        offsets.append(round(choice.floor.offset_meters, 3))
+
+    assert offsets == [FLOOR_DROP_METERS] * (CONFIG.floor_level_reset_frames - 1) + [2.0]
+    assert choice.reset
+    assert history.reference_meters == pytest.approx(2.0, abs=1e-6)
+    assert history.passed_over_frames == 0
+    # And it stays on the new level rather than flipping back.
+    assert fit_level_floor(cloud, None, history, CONFIG, LEVEL_UP).floor.offset_meters == pytest.approx(2.0, abs=1e-6)
+
+
+def test_with_nothing_near_the_recent_floor_the_deepest_is_taken_and_the_history_kept() -> None:
+    # The walker's own level out of view, a lower tier in it. The lower tier is the only floor on
+    # offer, but one such frame mustn't move the reference, or the next frame would lock onto it.
+    history = _history_at(FLOOR_DROP_METERS)
+
+    choice = fit_level_floor(_level_patch(2.0, 3.5, 6.5), None, history, CONFIG, LEVEL_UP)
+    history.record(choice)
+
+    assert choice.floor.offset_meters == pytest.approx(2.0, abs=1e-6)
+    assert not choice.passed_over_deeper and not choice.reset
+    assert history.reference_meters == pytest.approx(FLOOR_DROP_METERS, abs=1e-6)
+
+
+def test_with_no_level_surface_the_previous_floor_stands_with_its_refusal() -> None:
+    # Points spread evenly from 0.6 to 2.2 m down: no 10 cm of height holds the 8 % a surface needs.
+    generator = np.random.default_rng(3)
+    count = 4000
+    cloud = np.column_stack((generator.uniform(-2.0, 2.0, count), generator.uniform(0.6, 2.2, count), generator.uniform(1.0, 6.0, count)))
+
+    choice = fit_level_floor(cloud, PREVIOUS, _fresh_history(), CONFIG, LEVEL_UP)
+
+    assert choice.floor is PREVIOUS
+    assert choice.refusal.cause is FloorRefusalCause.NO_LEVEL_SURFACE
+    assert choice.refusal.limit == math.ceil(CONFIG.floor_level_min_share * count)
+    assert 0 < choice.refusal.measured < choice.refusal.limit
+
+
+def test_a_level_surface_below_the_height_limit_is_refused_as_too_far() -> None:
+    choice = fit_level_floor(_level_patch(2.9, 1.0, 5.0), PREVIOUS, _fresh_history(), CONFIG, LEVEL_UP)
+
+    assert choice.floor is PREVIOUS
+    assert choice.refusal.cause is FloorRefusalCause.TOO_FAR
+    assert choice.refusal.measured == pytest.approx(2.9, abs=1e-6)
+
+
+def test_with_no_level_surface_and_no_previous_floor_it_raises() -> None:
+    with pytest.raises(ValueError, match="no previous plane"):
+        fit_level_floor(_ramp(12.0), None, _fresh_history(), CONFIG, LEVEL_UP)
+
+
+def test_too_few_candidates_is_refused_as_before() -> None:
+    # The same cut and the same refusal as the RANSAC route, so a report counts them as one cause.
+    few = _level_patch(FLOOR_DROP_METERS, 1.0, 1.4)
+    assert len(few) < CONFIG.floor_min_candidate_points
+
+    choice = fit_level_floor(few, PREVIOUS, _fresh_history(), CONFIG, LEVEL_UP)
+    _, ransac_refusal = fit_floor_with_refusal(few, PREVIOUS, CONFIG, LEVEL_UP)
+
+    assert choice.floor is PREVIOUS
+    expected = FloorRefusal(FloorRefusalCause.TOO_FEW_CANDIDATES, float(len(few)), float(CONFIG.floor_min_candidate_points))
+    assert choice.refusal == ransac_refusal == expected
+
+
+def test_the_same_frame_always_picks_the_same_floor() -> None:
+    generator = np.random.default_rng(5)
+    cloud = _floor_and_lower_tier()
+    cloud = cloud + generator.normal(0.0, 0.01, cloud.shape)
+
+    first = fit_level_floor(cloud, None, _history_at(FLOOR_DROP_METERS), CONFIG, LEVEL_UP)
+    second = fit_level_floor(cloud.copy(), None, _history_at(FLOOR_DROP_METERS), CONFIG, LEVEL_UP)
+
+    assert _identical(first.floor, second.floor)
+    assert (first.refusal, first.passed_over_deeper, first.reset) == (second.refusal, second.passed_over_deeper, second.reset)
+
+
+def test_a_pitched_camera_finds_the_analytic_floor_along_gravity() -> None:
+    # Up from gravity, not from the image, which is what the scene hands over on a worn camera.
+    scene = clean_scene(box_lateral_meters=None)
+    up = scene.floor_plane_camera.normal
+
+    choice = fit_level_floor(_cloud(scene.depth_meters, scene.intrinsics), None, _fresh_history(), CONFIG, up)
+
+    assert choice.refusal is None
+    assert choice.floor.offset_meters == pytest.approx(CAMERA_HEIGHT_METERS, abs=1e-3)
+    assert _angle_between_degrees(choice.floor.normal, floor_plane_in_camera().normal) < 0.05
+
+
+def test_a_previous_floor_adds_nothing_to_the_history() -> None:
+    history = _history_at(FLOOR_DROP_METERS)
+    history.record(LevelFloorChoice(Plane(normal=LEVEL_UP, offset_meters=1.6), None, passed_over_deeper=True))
+
+    history.record(LevelFloorChoice(PREVIOUS, FloorRefusal(FloorRefusalCause.NO_LEVEL_SURFACE, 10.0, 200.0)))
+
+    assert history.passed_over_frames == 1
+    assert history.reference_meters == pytest.approx(FLOOR_DROP_METERS, abs=1e-6)
+
+
+def test_the_recent_floor_is_a_median_over_the_last_few() -> None:
+    # A median, so one stray height can't drag the reference toward it. Bounded, so an old level is
+    # forgotten. Over the last 3, the median is 1.6. Unbounded it would be 1.3, and the mean 4.07.
+    history = LevelFloorHistory(3)
+    for height in (1.0, 1.0, 1.0, 1.6, 1.6, 9.0):
+        history.record(LevelFloorChoice(Plane(normal=LEVEL_UP, offset_meters=height), None))
+
+    assert history.reference_meters == pytest.approx(1.6)
+
+
+def test_of_the_surfaces_near_the_recent_floor_the_deepest_is_taken() -> None:
+    # A stair tread 0.15 m above the walker's floor is inside the 0.25 m tolerance too. Deepest-wins
+    # holds among the near surfaces as well, so the tread loses to the floor.
+    cloud = np.vstack((_level_patch(1.45, 1.0, 2.5), _level_patch(FLOOR_DROP_METERS, 2.5, 4.0), _level_patch(2.0, 4.0, 6.0)))
+
+    choice = fit_level_floor(cloud, None, _history_at(1.5), CONFIG, LEVEL_UP)
+
+    assert choice.floor.offset_meters == pytest.approx(FLOOR_DROP_METERS, abs=1e-6)
+    assert choice.passed_over_deeper
+
+
+def test_on_a_small_frame_a_surface_still_needs_two_hundred_points() -> None:
+    # 8 % of 1000 candidates is 80 points, so the 200-point floor is what decides here. A 150-point
+    # patch is no surface, as on the Pixel's sparse frames before ARCore's first floor.
+    small_patch = _level_patch(FLOOR_DROP_METERS, 1.0, 1.4)
+    generator = np.random.default_rng(7)
+    spread = np.column_stack((generator.uniform(-2.0, 2.0, 850), generator.uniform(0.6, 1.4, 850), generator.uniform(1.0, 6.0, 850)))
+    cloud = np.vstack((small_patch, spread))
+    # The patch beats 8 % and misses 200, so only the 200 can refuse it.
+    assert math.ceil(CONFIG.floor_level_min_share * len(cloud)) < len(small_patch) < CONFIG.floor_min_candidate_points
+
+    choice = fit_level_floor(cloud, PREVIOUS, _fresh_history(), CONFIG, LEVEL_UP)
+
+    assert choice.floor is PREVIOUS
+    assert choice.refusal.cause is FloorRefusalCause.NO_LEVEL_SURFACE
+    assert choice.refusal.limit == CONFIG.floor_min_candidate_points
+
+
+def test_the_passed_over_count_restarts_when_a_frame_takes_the_deepest() -> None:
+    # Glimpses of a lower tier between frames that see only the walker's floor never add up to a
+    # reset. Only reset_frames in a row do.
+    both = _floor_and_lower_tier()
+    floor_only = _level_patch(FLOOR_DROP_METERS, 1.0, 3.0)
+    history = _history_at(FLOOR_DROP_METERS)
+    offsets = []
+    for cloud in [both] * (CONFIG.floor_level_reset_frames - 2) + [floor_only] + [both] * CONFIG.floor_level_reset_frames:
+        choice = fit_level_floor(cloud, None, history, CONFIG, LEVEL_UP)
+        history.record(choice)
+        offsets.append(round(choice.floor.offset_meters, 3))
+
+    expected = [FLOOR_DROP_METERS] * (2 * CONFIG.floor_level_reset_frames - 2) + [2.0]
+    assert offsets == expected
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("floor_level_bin_meters", 0.0),
+        ("floor_level_min_share", -0.1),
+        ("floor_level_min_share", 1.5),
+        ("floor_level_tolerance_meters", -0.1),
+        ("floor_level_reset_frames", 0),
+    ],
+)
+def test_a_level_setting_out_of_range_is_refused_naming_it(field: str, value: float) -> None:
+    config = dataclasses.replace(CONFIG, **{field: value})
+
+    with pytest.raises(ValueError, match=field):
+        fit_level_floor(_floor_and_lower_tier(), PREVIOUS, _fresh_history(), config, LEVEL_UP)
+
+
+def test_a_history_of_no_frames_is_refused() -> None:
+    with pytest.raises(ValueError, match="floor_level_history"):
+        LevelFloorHistory(0)
