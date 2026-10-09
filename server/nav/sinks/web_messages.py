@@ -15,7 +15,8 @@ from enum import Enum
 import numpy as np
 
 # Local package imports
-from nav.sinks.floor_geometry import floor_seen_mask
+from nav.scene.config import SceneConfig
+from nav.sinks.floor_geometry import floor_hidden_mask, floor_seen_mask
 from nav.sinks.path_style import BORDER_OPACITY, GROUP_RGB, WALL_RGB, path_color_rgb, path_fill_opacity
 from nav.types import DebugView, PlannedPath
 
@@ -45,18 +46,22 @@ PLAN_VIEW_KEYS = (
     "group_color_rgb",
     "wall_color_rgb",
     "floor_seen",
+    "floor_hidden",
 )
 OBSTACLE_KEYS = ("lateral_meters", "forward_meters", "is_wall")
 
 
-def plan_view_message(path: PlannedPath, field: np.ndarray, grid: np.ndarray, view: DebugView) -> dict:
+def plan_view_message(path: PlannedPath, field: np.ndarray, grid: np.ndarray, view: DebugView, scene: SceneConfig) -> dict:
     """
     The top-down view's data for one planned frame.
 
     :param path: The path the planner chose.
     :param field: (steps, cells) the field it planned through, goal term included.
     :param grid: (cells,) the lateral position of each field column.
-    :param view: The frame's obstacles, walking speed and body half-width.
+    :param view: The frame's obstacles, walking speed and body half-width, and the depth and floor
+        the two floor masks read.
+    :param scene: The run's scene config. It supplies the floor fit's inlier distance and the usable
+        depth range, so the hidden floor is judged the way the scene judged the frame.
     :return: Plain Python values keyed by PLAN_VIEW_KEYS, ready for web_text_message.
     :rtype: dict
     :raises ValueError: When the field is not one row per path step by one column per grid cell.
@@ -88,6 +93,7 @@ def plan_view_message(path: PlannedPath, field: np.ndarray, grid: np.ndarray, vi
         "group_color_rgb": list(GROUP_RGB),
         "wall_color_rgb": list(WALL_RGB),
         "floor_seen": floor_seen_mask(view, path.times_seconds, grid).tolist(),
+        "floor_hidden": floor_hidden_mask(view, path.times_seconds, grid, scene).tolist(),
     }
     return message
 
