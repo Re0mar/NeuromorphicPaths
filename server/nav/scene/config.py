@@ -36,4 +36,12 @@ class SceneConfig:
     floor_max_tilt_degrees: float = 35.0  # Old file's floor sanity check.
     floor_min_offset_meters: float = 0.3  # Old file's floor sanity check.
     floor_max_offset_meters: float = 2.2  # A head-worn or hand-held camera is under about two meters. The first Pixel walk's false plane put it at 2.3.
+    floor_from_level_surfaces: bool = True  # With gravity, pick the floor among level surfaces. False fits one plane by RANSAC on every frame.
+    # The six level-surface settings were set on 49 hand-labeled frames of a tiered lecture room and its hallway.
+    floor_level_bin_meters: float = 0.02  # Height bins. Bins of 0.05 got 3 fewer of the 49 right.
+    floor_level_min_share: float = 0.08  # Share of the points below the camera a surface needs. At 0.05 lower tiers count, the reset locks onto them, and 18 % of the top-tier frames went wrong.
+    floor_level_max_tilt_degrees: float = 8.0  # A surface leaning more is a slope. At 3 the depth model's lean on real floors refused them, and 9 fewer were right.
+    floor_level_history: int = 10  # The recent floor is the median of this many, 5 s at the recordings' 2 frames a second.
+    floor_level_tolerance_meters: float = 0.25  # Same level as the recent floor within this. Above the 15 % frame-to-frame scale drift, under the 0.37 m between tiers in the room it was set on.
+    floor_level_reset_frames: int = 5  # A deeper surface passed over this many frames in a row is taken on the last. It undoes a recent floor stuck on the wrong surface.
     wall_cell_min_height_meters: float = 1.5  # A cell with points this tall is treated as a wall.

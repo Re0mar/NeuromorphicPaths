@@ -180,4 +180,4 @@ def test_two_processes_print_byte_identical_reports(tmp_path: Path) -> None:
 
 def test_every_refusal_cause_has_a_unit_to_print_its_median_in() -> None:
     # A cause added without a unit would raise the first time a walk had one, mid-report.
-    assert [measured_unit(cause) for cause in FloorRefusalCause] == ["deg", "m", "m", "points", ""]
+    assert [measured_unit(cause) for cause in FloorRefusalCause] == ["deg", "m", "m", "points", "", "points"]
