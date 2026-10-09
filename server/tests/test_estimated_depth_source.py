@@ -27,7 +27,7 @@ from nav.sources.estimator import (
 from nav.sources.rgb import RgbFrame
 from nav.sources.video_file import VideoFileRgbSource
 from nav.types import FrameTiming
-from stubs import StubDepthEstimator, WrongShapeDepthEstimator
+from stubs import CanonicalDepthEstimator, StubDepthEstimator, WrongShapeDepthEstimator
 
 
 class ListRgbSource:
@@ -353,27 +353,6 @@ def test_the_estimator_is_warmed_once_before_the_first_frame() -> None:
     list(source.frames())
 
     assert stub.calls == ["warm_up", "estimate", "estimate"]
-
-
-class CanonicalDepthEstimator:
-    """Answers like the metric checkpoint: one raw value everywhere, for a 300 px focal."""
-
-    device = "cuda"
-
-    def __init__(self, raw_depth: float, height: int, width: int) -> None:
-        self._raw_depth = raw_depth
-        self._shape = (height, width)
-
-    def warm_up(self) -> None:
-        """Nothing to warm."""
-
-    def estimate(self, image_rgb: np.ndarray) -> DepthEstimate:
-        return DepthEstimate(
-            depth=np.full(self._shape, self._raw_depth, dtype=np.float32),
-            intrinsics=None,
-            confidence=None,
-            canonical_focal_pixels=METRIC_MODEL_CANONICAL_FOCAL_PIXELS,
-        )
 
 
 def test_canonical_depth_is_converted_with_the_cameras_focal_at_the_depth_resolution() -> None:

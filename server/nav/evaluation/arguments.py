@@ -13,10 +13,15 @@ from pathlib import Path
 from nav.evaluation.replay import DEFAULT_CACHE_DIR
 
 
-def add_replay_arguments(parser: argparse.ArgumentParser) -> None:
-    """Add --cached, --cache-dir, --scene-defaults, --scene-set and --set to a parser."""
+def add_scene_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add --cached, --cache-dir, --scene-defaults and --scene-set to a parser. The scene's half, for a command that never plans."""
     parser.add_argument("--cached", action="store_true", help="one scene pass through the cache, for iterating, not for a verdict")
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR, help="where cached scene passes live, server/.replay_cache by default")
     parser.add_argument("--scene-defaults", action="store_true", help="today's scene defaults, for a recording with no run_config.json")
     parser.add_argument("--scene-set", action="append", default=[], metavar="FIELD=VALUE", help="override a SceneConfig field")
+
+
+def add_replay_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add the scene's flags and --set to a parser."""
+    add_scene_arguments(parser)
     parser.add_argument("--set", dest="planner_set", action="append", default=[], metavar="FIELD=VALUE", help="override a PlannerConfig field")

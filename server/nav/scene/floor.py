@@ -17,6 +17,8 @@ and a replayed recording gives the same numbers every run.
 
 # Standard library imports
 import math
+from dataclasses import dataclass
+from enum import Enum
 
 # Third party imports
 import numpy as np
@@ -31,6 +33,47 @@ CAMERA_UP = np.array([0.0, -1.0, 0.0])
 # How many RANSAC planes are scored at once. Bounds memory to points times this, and changes
 # nothing about which plane wins.
 _PLANES_PER_CHUNK = 32
+
+
+class FloorRefusalCause(Enum):
+    """Why a plane, or a frame's whole search, did not give a floor."""
+
+    LEANS = "leans"  # Tilted from up past the limit.
+    TOO_CLOSE = "too close"  # Camera at or under the minimum height above it.
+    TOO_FAR = "too far"  # Camera over the maximum height above it.
+    TOO_FEW_CANDIDATES = "too few candidates"  # Not enough points below the camera to search.
+    NO_PLANE = "no plane"  # Every drawn triple was degenerate, so there was nothing to judge.
+
+
+@dataclass(frozen=True)
+class FloorRefusal:
+    """
+    One refusal, with the number that broke the rule and the rule's limit.
+
+    measured is degrees for LEANS, meters for the two height causes and a point count for
+    TOO_FEW_CANDIDATES. NO_PLANE has neither.
+    """
+
+    cause: FloorRefusalCause
+    measured: float | None
+    limit: float | None
+
+    def __str__(self) -> str:
+        # The three plane rules keep the exact wording the debug log has always printed.
+        match self.cause:
+            case FloorRefusalCause.LEANS:
+                return f"leans {self.measured:.1f} deg from up, limit {self.limit:.1f}"
+            case FloorRefusalCause.TOO_CLOSE:
+                return f"camera {self.measured:.2f} m above it, under the minimum {self.limit:.2f}"
+            case FloorRefusalCause.TOO_FAR:
+                return f"camera {self.measured:.2f} m above it, over the maximum {self.limit:.2f}"
+            case FloorRefusalCause.TOO_FEW_CANDIDATES:
+                return f"{self.measured:.0f} candidate points below the camera, under the minimum {self.limit:.0f}"
+            case FloorRefusalCause.NO_PLANE:
+                return "every drawn triple was degenerate, so there was no plane to judge"
+            case _:
+                # Unreachable while every member is handled. Loud, so a new cause can't print nothing.
+                raise ValueError(f"no message for {self.cause}")
 
 
 def normalize_plane(plane: Plane, up_camera: np.ndarray) -> Plane:
@@ -57,7 +100,7 @@ def normalize_plane(plane: Plane, up_camera: np.ndarray) -> Plane:
     return Plane(normal=normal, offset_meters=float(offset))
 
 
-def plane_is_a_floor(plane: Plane, config: SceneConfig, up_camera: np.ndarray) -> str | None:
+def plane_is_a_floor(plane: Plane, config: SceneConfig, up_camera: np.ndarray) -> FloorRefusal | None:
     """
     Judge a normalized plane against where a floor can be, and say which rule it broke.
 
@@ -70,21 +113,45 @@ def plane_is_a_floor(plane: Plane, config: SceneConfig, up_camera: np.ndarray) -
     :param config: The tilt limit, the minimum and the maximum camera height.
     :param up_camera: Unit vector pointing up, in the camera frame. Level is measured against it.
     :return: None when the plane passes, otherwise the rule it broke, with the numbers.
-    :rtype: str | None
+    :rtype: FloorRefusal | None
     """
     tilt_degrees = float(np.degrees(np.arccos(np.clip(plane.normal @ up_camera, -1.0, 1.0))))
     if tilt_degrees > config.floor_max_tilt_degrees:
-        return f"leans {tilt_degrees:.1f} deg from up, limit {config.floor_max_tilt_degrees:.1f}"
+        return FloorRefusal(FloorRefusalCause.LEANS, tilt_degrees, config.floor_max_tilt_degrees)
     if plane.offset_meters <= config.floor_min_offset_meters:
-        return f"camera {plane.offset_meters:.2f} m above it, under the minimum {config.floor_min_offset_meters:.2f}"
+        return FloorRefusal(FloorRefusalCause.TOO_CLOSE, plane.offset_meters, config.floor_min_offset_meters)
     if plane.offset_meters > config.floor_max_offset_meters:
-        return f"camera {plane.offset_meters:.2f} m above it, over the maximum {config.floor_max_offset_meters:.2f}"
+        return FloorRefusal(FloorRefusalCause.TOO_FAR, plane.offset_meters, config.floor_max_offset_meters)
     return None
 
 
 def fit_floor(points_camera: np.ndarray, previous: Plane | None, config: SceneConfig, up_camera: np.ndarray) -> Plane:
     """
     RANSAC a plane through the points that could plausibly be floor.
+
+    The floor alone, for callers that don't need to know why a fit fell back. Same search and same
+    answer as fit_floor_with_refusal.
+
+    :param points_camera: (N, 3) camera-frame points.
+    :param previous: Last frame's plane, returned when this frame has no believable floor.
+    :param config: Candidate selection and sanity thresholds.
+    :param up_camera: Unit vector pointing up, in the camera frame.
+    :return: The floor, normal pointing up.
+    :rtype: Plane
+    :raises ValueError: As fit_floor_with_refusal.
+    """
+    floor, _ = fit_floor_with_refusal(points_camera, previous, config, up_camera)
+    return floor
+
+
+def fit_floor_with_refusal(
+    points_camera: np.ndarray,
+    previous: Plane | None,
+    config: SceneConfig,
+    up_camera: np.ndarray,
+) -> tuple[Plane, FloorRefusal | None]:
+    """
+    RANSAC a plane through the points that could plausibly be floor, and say why when none was.
 
     Every candidate goes through plane_is_a_floor. A plane that is not roughly level, that sits
     too close to the camera, or that lies further below it than a held or worn camera can be is
@@ -96,8 +163,10 @@ def fit_floor(points_camera: np.ndarray, previous: Plane | None, config: SceneCo
     :param config: Candidate selection and sanity thresholds.
     :param up_camera: Unit vector pointing up, in the camera frame. Gravity from the pose when
         the source has one, CAMERA_UP otherwise. "Below" and "level" are both measured against it.
-    :return: The floor, normal pointing up.
-    :rtype: Plane
+    :return: The floor, normal pointing up, and None when it was fitted from these points. On a
+        fall back, the previous plane itself, so callers can test identity, and why this frame's
+        search gave nothing.
+    :rtype: tuple[Plane, FloorRefusal | None]
     :raises ValueError: When the RANSAC seed or success probability is out of range, or when no
         floor is found and there is no previous plane to fall back on.
     """
@@ -109,14 +178,15 @@ def fit_floor(points_camera: np.ndarray, previous: Plane | None, config: SceneCo
     # with enough points wins the vote.
     depth_below_camera = -(points_camera @ up_camera)
     candidates = points_camera[depth_below_camera > config.floor_candidate_min_below_camera_meters]
-    fitted = None
     if len(candidates) >= config.floor_min_candidate_points:
         fitted = _ransac_plane(candidates, config, up_camera)
+    else:
+        fitted = FloorRefusal(FloorRefusalCause.TOO_FEW_CANDIDATES, float(len(candidates)), float(config.floor_min_candidate_points))
 
-    if fitted is not None:
-        return fitted
+    if isinstance(fitted, Plane):
+        return fitted, None
     if previous is not None:
-        return previous
+        return previous, fitted
     raise ValueError(
         f"no floor found in {len(points_camera)} points, {len(candidates)} below the camera, and no previous plane"
     )
@@ -130,7 +200,7 @@ def _check_ransac_config(config: SceneConfig) -> None:
         raise ValueError(f"floor_ransac_success_probability must be above 0 and at most 1, got {probability}")
 
 
-def _ransac_plane(candidates: np.ndarray, config: SceneConfig, up_camera: np.ndarray) -> Plane | None:
+def _ransac_plane(candidates: np.ndarray, config: SceneConfig, up_camera: np.ndarray) -> Plane | FloorRefusal:
     # A fresh generator from the config's seed on every call, so the same cloud always draws the
     # same planes and a frame's floor never depends on the frames before it. Open3D's RANSAC
     # ignored its seed, and a replay came out different every run.
@@ -145,7 +215,7 @@ def _ransac_plane(candidates: np.ndarray, config: SceneConfig, up_camera: np.nda
     # a normal pointing anywhere, and it loses on inlier count rather than being filtered.
     has_normal = lengths > 0
     if not has_normal.any():
-        return None
+        return FloorRefusal(FloorRefusalCause.NO_PLANE, None, None)
     normals = normals[has_normal] / lengths[has_normal, None]
     first = first[has_normal]
     offsets = -(normals[:, 0] * first[:, 0] + normals[:, 1] * first[:, 1] + normals[:, 2] * first[:, 2])
@@ -156,9 +226,11 @@ def _ransac_plane(candidates: np.ndarray, config: SceneConfig, up_camera: np.nda
     plane = _refit_on_inliers(points, x, y, z, normals[best], offsets[best], config.floor_ransac_distance_meters)
     plane = normalize_plane(plane, up_camera)
 
-    # Not level enough, too close, or too far down means this is not the floor.
-    if plane_is_a_floor(plane, config, up_camera) is not None:
-        return None
+    # Not level enough, too close, or too far down means this is not the floor. The refusal is
+    # handed back rather than dropped, so a replay can say why the previous floor stood.
+    refusal = plane_is_a_floor(plane, config, up_camera)
+    if refusal is not None:
+        return refusal
     return plane
 
 

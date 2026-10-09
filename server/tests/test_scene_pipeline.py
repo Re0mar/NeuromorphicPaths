@@ -521,8 +521,26 @@ def test_a_frame_refused_after_a_fitted_one_reports_no_floor_source(monkeypatch:
     def refuse(*args, **kwargs):
         raise ValueError("no floor found")
 
-    monkeypatch.setattr(scene_module, "fit_floor", refuse)
+    monkeypatch.setattr(scene_module, "fit_floor_with_refusal", refuse)
     with pytest.raises(ValueError, match="no floor found"):
         pipeline.process(_frame(scene, timestamp=0.1))
 
     assert pipeline.last_floor_source is None
+
+
+def test_a_previous_floor_says_why_the_fit_gave_nothing_and_the_next_fitted_frame_clears_it() -> None:
+    scene = clean_scene()
+    floorless = degrade_without_floor(scene.depth_meters, scene.floor_plane_camera, scene.intrinsics)
+    pipeline = ScenePipeline(CONFIG, WALKER)
+
+    pipeline.process(_frame(scene))
+    assert pipeline.last_floor_source is FloorSource.FITTED
+    assert pipeline.last_floor_refusal is None
+
+    pipeline.process(_frame(scene, timestamp=0.1, depth=floorless))
+    assert pipeline.last_floor_source is FloorSource.PREVIOUS
+    assert pipeline.last_floor_refusal is not None
+
+    pipeline.process(_frame(scene, timestamp=0.2))
+    assert pipeline.last_floor_source is FloorSource.FITTED
+    assert pipeline.last_floor_refusal is None

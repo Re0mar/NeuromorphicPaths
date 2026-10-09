@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 # Local package imports
-from nav.sources.estimator import DepthEstimate, fallback_intrinsics
+from nav.sources.estimator import METRIC_MODEL_CANONICAL_FOCAL_PIXELS, DepthEstimate, fallback_intrinsics
 
 
 @dataclass(frozen=True)
@@ -33,7 +33,7 @@ class StubDepthEstimator:
     It returns meters with canonical_focal_pixels None, as the nested checkpoint does. The default
     metric checkpoint returns raw depth for a 300 px focal, which the composed source converts. So a
     test built on this stub runs no conversion, and cannot fail if the conversion breaks. The
-    conversion is covered by CanonicalDepthEstimator in test_estimated_depth_source.py and by the
+    conversion is covered by CanonicalDepthEstimator, below, and by the
     estimator in test_neon_chain.py.
     """
 
@@ -104,4 +104,25 @@ class WrongShapeDepthEstimator:
             depth=np.ones((4, 4, 4), dtype=np.float32),
             intrinsics=fallback_intrinsics(4, 4),
             confidence=None,
+        )
+
+
+class CanonicalDepthEstimator:
+    """Answers like the metric checkpoint: one raw value everywhere, for a 300 px focal."""
+
+    device = "cuda"
+
+    def __init__(self, raw_depth: float, height: int, width: int) -> None:
+        self._raw_depth = raw_depth
+        self._shape = (height, width)
+
+    def warm_up(self) -> None:
+        """Nothing to warm."""
+
+    def estimate(self, image_rgb: np.ndarray) -> DepthEstimate:
+        return DepthEstimate(
+            depth=np.full(self._shape, self._raw_depth, dtype=np.float32),
+            intrinsics=None,
+            confidence=None,
+            canonical_focal_pixels=METRIC_MODEL_CANONICAL_FOCAL_PIXELS,
         )

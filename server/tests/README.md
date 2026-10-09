@@ -18,9 +18,9 @@ minute of that is `test_evaluation_replay.py`, which writes synthetic recordings
 recording tap and replays them through the real scene, and about 30 seconds is the golden test
 below. `pytest -rs` is already in
 `pyproject.toml`, so a skipped test prints its reason in the summary. With only the `dev` extra,
-the Neon tests that need PyAV or the Pupil Labs client skip, because those come with the
-`glasses` extra. With both extras installed, nothing skips: 1438 passed on 2026-10-08. With only
-the `dev` extra, those 15 Neon tests skip.
+the Neon tests that need PyAV, the Pupil Labs client or its recording reader skip, because those
+come with the `glasses` extra. With both extras installed, nothing skips: 1505 passed on 2026-10-08.
+With only the `dev` extra, those 16 Neon tests skip.
 
 ## Adding a test
 

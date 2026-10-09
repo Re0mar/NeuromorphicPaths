@@ -50,6 +50,7 @@ EVALUATION_MODULES = (
     "nav.evaluation.config",
     "nav.evaluation.fixture",
     "nav.evaluation.floor_lean",
+    "nav.evaluation.floor_report",
     "nav.evaluation.frames",
     "nav.evaluation.overrides",
     "nav.evaluation.planner_numbers",

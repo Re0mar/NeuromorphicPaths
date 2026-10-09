@@ -30,8 +30,9 @@ import numpy as np
 from nav.clock import laptop_time_seconds
 from nav.pose.imu_orientation import IMU_MATCH_TOLERANCE_SECONDS, pose_from_imu
 from nav.pose.neon_mount import NEON_IMU_MOUNT
-from nav.sources.camera_model import CameraCalibration, CameraModelError, Undistorter, scale_intrinsics
+from nav.sources.camera_model import CameraModelError, Undistorter, undistorter_for
 from nav.sources.config import NeonConfig
+from nav.sources.neon_camera import NEON_SCENE_SIZE
 from nav.sources.neon_device import (
     DeviceImuStatus,
     DeviceMatched,
@@ -56,9 +57,6 @@ MISSING_ORIENTATION_LOG_INTERVAL_SECONDS = 10.0
 # How long one receive may block. Short, so Ctrl+C lands within a quarter of a second even when
 # the stream has stopped, which a receive with no timeout does not allow.
 RECEIVE_POLL_SECONDS = 0.25
-# The scene camera's native size, which the device's calibration describes. The calibration buffer
-# does not carry a size of its own.
-NEON_SCENE_SIZE = (1200, 1600)  # height, width
 # The failures a request to the device can end in. NeonDeviceError is a ConnectionError, named
 # anyway so the tuple says what it means.
 DEVICE_FAILURES: tuple[type[BaseException], ...] = (NeonDeviceError, OSError, ValueError)
@@ -140,21 +138,14 @@ class NeonLiveRgbSource:
         if self._calibration_matrix is None or self._distortion_coefficients is None:
             raise NeonCalibrationError("no calibration was read before the first frame")
 
-        camera_matrix = self._calibration_matrix
         if image_shape != NEON_SCENE_SIZE:
             # A different streaming resolution. Distortion coefficients are unitless and stay.
             log.info("scene frames are %dx%d, scaling the %dx%d calibration to match", image_shape[1], image_shape[0], NEON_SCENE_SIZE[1], NEON_SCENE_SIZE[0])
-            camera_matrix = scale_intrinsics(camera_matrix, NEON_SCENE_SIZE, image_shape)
         try:
-            calibration = CameraCalibration(
-                camera_matrix=camera_matrix,
-                distortion_coefficients=self._distortion_coefficients,
-                image_size=image_shape,
-            )
+            self._undistorter = undistorter_for(self._calibration_matrix, self._distortion_coefficients, NEON_SCENE_SIZE, image_shape)
         except CameraModelError as unusable:
             raise NeonCalibrationError(f"the Neon's calibration cannot describe a camera: {unusable}") from unusable
 
-        self._undistorter = Undistorter(calibration)
         log.info(
             "undistorting with the device calibration: %.1f deg wide before, %.1f deg after the crop",
             self._undistorter.field_of_view_before_degrees,
