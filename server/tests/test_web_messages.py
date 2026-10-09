@@ -4,6 +4,7 @@
 import base64
 import dataclasses
 import json
+import re
 
 # Third party imports
 import numpy as np
@@ -12,12 +13,15 @@ import pytest
 # Local package imports
 from nav.planner.alarm import avoidance_surprise_bits_at
 from nav.scene.config import SceneConfig
-from nav.sinks.floor_geometry import floor_hidden_mask, floor_seen_mask
+from nav.sinks.floor_geometry import floor_hidden_mask, floor_seen_mask, group_rings
 from nav.sinks.path_style import BORDER_OPACITY, GROUP_RGB, SURPRISE_HIGH_RGB, WALL_RGB, path_color_rgb, path_fill_opacity
 from nav.sinks.web_messages import (
     OBSTACLE_KEYS,
     PLAN_VIEW_KEYS,
+    RING_KEYS,
+    PictureKind,
     WebMessageKind,
+    picture_choice,
     plan_view_message,
     web_text_message,
 )
@@ -245,3 +249,39 @@ def test_the_plan_view_uses_the_scene_config_it_is_given() -> None:
 
     assert not default_range[30, 30]
     assert narrowed_range[30, 30]
+
+
+def test_the_plan_view_says_where_each_groups_ring_goes() -> None:
+    # The same rings the depth view would draw, so the page and the laptop's window agree. Both
+    # groups sit 2 m ahead, in front of the camera, so each has a ring to compare.
+    in_view = (
+        dataclasses.replace(_obstacle(0.2, 2.0, False), camera_point=np.array([0.2, 0.0, 2.0])),
+        dataclasses.replace(_obstacle(-0.5, 2.0, True), camera_point=np.array([-0.5, 0.0, 2.0])),
+    )
+    view = _view(in_view)
+
+    message = plan_view_message(_path(), _field(), GRID, view, SCENE)
+
+    assert len(message["group_rings"]) == 2
+    assert message["group_rings"] == [dataclasses.asdict(ring) for ring in group_rings(view)]
+    assert all(set(ring) == set(RING_KEYS) for ring in message["group_rings"])
+
+
+@pytest.mark.parametrize("picture", list(PictureKind))
+def test_a_picture_choice_is_read_back_as_the_picture_named(picture: PictureKind) -> None:
+    assert picture_choice(json.dumps({"kind": "picture", "picture": picture.value})) is picture
+
+
+@pytest.mark.parametrize(
+    ("text", "fragment"),
+    [
+        ("{not json", "not JSON"),
+        ("[1, 2]", "does not read"),
+        (json.dumps({"kind": "path", "picture": "risk"}), "does not read"),
+        (json.dumps({"kind": "picture"}), "does not draw: None"),
+        (json.dumps({"kind": "picture", "picture": "x-ray"}), "does not draw: 'x-ray'"),
+    ],
+)
+def test_a_message_that_is_not_a_picture_choice_is_refused(text: str, fragment: str) -> None:
+    with pytest.raises(ValueError, match=re.escape(fragment)):
+        picture_choice(text)

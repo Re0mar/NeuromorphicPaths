@@ -16,6 +16,11 @@ PNG of the depth image the planner saw, groups and path drawn on it. The page di
 frames on their kind. It draws the arrow and turns red on alarm, draws the plan view, and shows the
 picture when one arrives.
 
+A page can ask for the risk view in place of the depth view, the same picture recolored by the
+planner's field. That is the one message a page sends. Each browser gets only the picture it chose,
+and the risk view is drawn only while some browser shows it. Neither picture carries the group
+rings. The plan view says where they go, and the page draws them, so it can hide them at once.
+
 The plan view and the picture are built on a render thread of their own, from the newest debug view
 only, and at most `max_pictures_per_second` times a second. Building them takes about 50 ms. On the
 publisher thread that held up the phone's next path, and at every frame it took planning time too.
@@ -46,9 +51,11 @@ import numpy as np
 # Local package imports
 from nav.scene.config import SceneConfig
 from nav.sinks.config import WebConfig
-from nav.sinks.rendering import encode_png, render_depth_view
+from nav.sinks.rendering import encode_png, render_depth_view, render_risk_view
 from nav.sinks.web_messages import (
+    PictureKind,
     WebMessageKind,
+    picture_choice,
     plan_view_message,
     video_stream_message,
     video_unavailable_message,
@@ -93,6 +100,11 @@ class _Slot(Enum):
     PATH = 1
     PLAN_VIEW = 2
     DEPTH_PNG = 3
+    RISK_PNG = 4
+
+
+# Which slot carries each picture. A browser gets the one it chose and never the other.
+PICTURE_SLOTS = {PictureKind.DEPTH: _Slot.DEPTH_PNG, PictureKind.RISK: _Slot.RISK_PNG}
 
 
 @dataclass
@@ -146,6 +158,12 @@ class WebSink:
         self._render_thread: threading.Thread | None = None
         self._render_wake = threading.Condition()
         self._pending_picture: _DebugPicture | None = None
+        # The last view drawn, kept so a browser switching to Risk on a still source gets a picture
+        # without waiting for a frame that may never come. Guarded by the render condition.
+        self._last_picture: _DebugPicture | None = None
+        # Written on the server's loop, read by the render thread. The risk picture is only drawn
+        # while some browser shows it, so a run nobody looks at it on pays nothing for it.
+        self._risk_wanted = False
         self._render_stopping = False
         self._pictures_replaced = 0
         # Set by close() for good. A publisher still inside a display at shutdown can call in after
@@ -269,6 +287,7 @@ class WebSink:
                         return
             with self._render_wake:
                 picture, self._pending_picture = self._pending_picture, None
+                self._last_picture = picture
             last_render_started = time.perf_counter()
             try:
                 self._draw(picture)
@@ -280,11 +299,12 @@ class WebSink:
 
     def _draw(self, picture: _DebugPicture) -> None:
         """
-        Queue the plan view, then a PNG of the depth view.
+        Queue the plan view, then a PNG of the depth view, then one of the risk view while a browser shows it.
 
         Each one that cannot be built costs itself and nothing else. A plan view that will not
-        build still leaves the picture, and a view that will not render still leaves the plan view.
-        The path itself has already gone out.
+        build still leaves the pictures, and a picture that will not render still leaves the rest.
+        The path itself has already gone out. Neither picture carries the group rings. The plan
+        view says where they go, and the page draws them over whichever picture it shows.
         """
         try:
             plan_view = web_text_message(WebMessageKind.PLAN_VIEW, plan_view_message(picture.path, picture.field, picture.grid, picture.view, self._scene))
@@ -293,11 +313,26 @@ class WebSink:
         else:
             self._enqueue(_Slot.PLAN_VIEW, plan_view)
         try:
-            png = encode_png(render_depth_view(picture.view, picture.path))
+            png = encode_png(render_depth_view(picture.view, picture.path, rings=False))
         except ValueError as unrenderable:
             log.warning("depth view not sent (caught %s, expected): %s", type(unrenderable).__name__, unrenderable)
+        else:
+            self._enqueue(_Slot.DEPTH_PNG, png)
+        if not self._risk_wanted:
             return
-        self._enqueue(_Slot.DEPTH_PNG, png)
+        try:
+            png = encode_png(render_risk_view(picture.view, picture.path, picture.field, picture.grid, self._scene))
+        except ValueError as unrenderable:
+            log.warning("risk view not sent (caught %s, expected): %s", type(unrenderable).__name__, unrenderable)
+            return
+        self._enqueue(_Slot.RISK_PNG, png)
+
+    def _redraw_last(self) -> None:
+        """Ask the render thread to draw the last view again, unless a newer one is already waiting."""
+        with self._render_wake:
+            if self._pending_picture is None and self._last_picture is not None:
+                self._pending_picture = self._last_picture
+                self._render_wake.notify_all()
 
     def _call_on_loop(self, callback: Callable[..., None], *arguments: object) -> None:
         """Run a callback on the server's loop from any thread, or drop it when the server is gone."""
@@ -415,7 +450,8 @@ class WebSink:
         self._loop = asyncio.get_running_loop()
         self._loop.set_exception_handler(_quiet_client_resets)
         self._outgoing = asyncio.Queue(maxsize=OUTGOING_QUEUE_LIMIT)
-        sockets: set = set()
+        # Each browser and the picture it shows. Loop-thread state only.
+        sockets: dict[object, PictureKind] = {}
         page = PAGE_PATH.read_text(encoding="utf-8")
         # The newest of each kind, written by the send loop below and read when a browser
         # connects, so a page opened mid-run shows something at once rather than waiting for the
@@ -431,23 +467,49 @@ class WebSink:
             else:
                 await socket.send_str(message)
 
+        def wanted_by(socket, slot: _Slot) -> bool:
+            # Every slot goes to every browser except the pictures, which go only where chosen.
+            return slot not in PICTURE_SLOTS.values() or PICTURE_SLOTS[sockets[socket]] is slot
+
+        def note_who_wants_risk() -> None:
+            self._risk_wanted = PictureKind.RISK in sockets.values()
+            if not self._risk_wanted:
+                # Stale the moment nobody looks at it. A browser that switches back later gets a
+                # fresh one drawn, never a picture from minutes ago.
+                latest[_Slot.RISK_PNG] = None
+
+        async def choose_picture(socket, text: str) -> None:
+            try:
+                choice = picture_choice(text)
+            except ValueError as unreadable:
+                log.warning("browser message ignored (caught ValueError, expected): %s", unreadable)
+                return
+            sockets[socket] = choice
+            note_who_wants_risk()
+            message = latest[PICTURE_SLOTS[choice]]
+            if message is not None:
+                await send(socket, message)
+            else:
+                self._redraw_last()
+
         async def serve_socket(request):
             socket = web.WebSocketResponse()
             await socket.prepare(request)
-            sockets.add(socket)
+            sockets[socket] = PictureKind.DEPTH
             log.info("browser connected, %d open", len(sockets))
             try:
                 # Enum order: the path, then the plan view, then the picture, as a live frame sends them.
                 for slot in _Slot:
                     message = latest[slot]
-                    if message is not None:
+                    if message is not None and wanted_by(socket, slot):
                         await send(socket, message)
-                async for _ in socket:
-                    # The browser sends nothing we act on. Reading keeps the socket alive and
-                    # notices when it closes.
-                    pass
+                async for received in socket:
+                    # Reading also keeps the socket alive and notices when it closes.
+                    if received.type == web.WSMsgType.TEXT:
+                        await choose_picture(socket, received.data)
             finally:
-                sockets.discard(socket)
+                sockets.pop(socket, None)
+                note_who_wants_risk()
                 log.info("browser disconnected, %d open", len(sockets))
             return socket
 
@@ -532,15 +594,20 @@ class WebSink:
                 if queued is None:
                     break
                 slot, message = queued
+                if slot is _Slot.RISK_PNG and not self._risk_wanted:
+                    # Drawn just before the last browser showing it switched away or left.
+                    continue
                 latest[slot] = message
                 for socket in list(sockets):
+                    if socket not in sockets or not wanted_by(socket, slot):
+                        continue
                     try:
                         await send(socket, message)
                     except (ConnectionResetError, RuntimeError) as gone:
                         # The browser went away between the check and the send. Expected on a
                         # phone browser that got backgrounded. Costs that one client only.
                         log.info("dropping a browser (caught %s, expected): %s", type(gone).__name__, gone)
-                        sockets.discard(socket)
+                        sockets.pop(socket, None)
         finally:
             for socket in list(sockets):
                 await socket.close()

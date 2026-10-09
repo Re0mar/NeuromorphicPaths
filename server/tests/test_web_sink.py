@@ -24,7 +24,7 @@ from nav.scene.config import SceneConfig
 from nav.sinks.config import WebConfig
 from nav.sinks.floor_geometry import floor_hidden_mask
 from nav.sinks.web import OUTGOING_QUEUE_LIMIT, WebSink, _quiet_client_resets
-from nav.sinks.web_messages import OBSTACLE_KEYS, PLAN_VIEW_KEYS, WebMessageKind
+from nav.sinks.web_messages import OBSTACLE_KEYS, PLAN_VIEW_KEYS, RING_KEYS, PictureKind, WebMessageKind
 from nav.sources.framecodec import path_message
 from nav.sources.scene_video import AccessUnit, SceneVideoFeed, VideoDescription, unpack_unit
 from nav.types import DebugSink, DebugView, DepthFrame, FloorSource, ObstacleSet, Plane, PlannedPath, Pose
@@ -114,7 +114,7 @@ def test_the_served_page_reads_every_plan_view_key_it_is_sent(sink: WebSink) -> 
 
     page = asyncio.run(fetch())
 
-    for key in PLAN_VIEW_KEYS + OBSTACLE_KEYS:
+    for key in PLAN_VIEW_KEYS + OBSTACLE_KEYS + RING_KEYS:
         assert f".{key}" in page, f"the page never reads {key}"
 
 
@@ -311,7 +311,7 @@ async def _receive_texts_then_check_quiet(port: int, after_connect, texts: int) 
 def test_a_png_encode_failure_still_sends_the_path_and_the_plan_view(sink: WebSink, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     import nav.sinks.web as web_module
 
-    def broken(view, path):
+    def broken(view, path, **options):
         raise ValueError("no picture today")
 
     monkeypatch.setattr(web_module, "render_depth_view", broken)
@@ -342,6 +342,134 @@ def test_a_plan_view_that_cannot_be_built_still_sends_the_path_and_the_png(sink:
     good = asyncio.run(_receive_frames(sink.port, lambda: sink.publish_debug(path, field, grid, sample_view()), count=4))
     kinds = [json.loads(message)["kind"] for message in good if isinstance(message, str)]
     assert WebMessageKind.PLAN_VIEW.value in kinds
+
+
+# A picture no real view draws: a flat 8 by 8 of one color, so a frame can say which renderer made it.
+RISK_MARKER_BGR = (11, 22, 33)
+
+
+def _picture_message(picture: PictureKind) -> str:
+    return json.dumps({"kind": "picture", "picture": picture.value})
+
+
+def _is_risk_marker(png: bytes) -> bool:
+    decoded = cv2.imdecode(np.frombuffer(png, dtype=np.uint8), cv2.IMREAD_COLOR)
+    return decoded.shape == (8, 8, 3) and bool(np.all(decoded == RISK_MARKER_BGR))
+
+
+@pytest.fixture
+def risk_calls(monkeypatch: pytest.MonkeyPatch) -> list:
+    """Replaces the risk renderer with one that draws the marker, and records each call."""
+    import nav.sinks.web as web_module
+
+    calls = []
+
+    def marker(view, path, field, grid, scene):
+        calls.append(path)
+        return np.full((8, 8, 3), RISK_MARKER_BGR, dtype=np.uint8)
+
+    monkeypatch.setattr(web_module, "render_risk_view", marker)
+    return calls
+
+
+async def _say_then_receive_until_quiet(port: int, said: list[str], after_saying, quiet_seconds: float) -> list:
+    """Every frame after connecting and sending each of said, until none arrives for quiet_seconds."""
+    async with _session() as session:
+        async with session.ws_connect(f"wss://127.0.0.1:{port}/ws") as socket:
+            for text in said:
+                await socket.send_str(text)
+            # The server reads the choice on its own loop. A moment's wait makes sure it has before the publish.
+            await asyncio.sleep(0.2)
+            after_saying()
+            received = []
+            while True:
+                try:
+                    message = await asyncio.wait_for(socket.receive(), quiet_seconds)
+                except TimeoutError:
+                    return received
+                received.append(message.data)
+
+
+def test_a_browser_that_asks_for_risk_gets_the_risk_picture_and_never_the_depth_one(sink: WebSink, risk_calls: list) -> None:
+    field, grid = sample_field()
+
+    received = asyncio.run(
+        _say_then_receive_until_quiet(sink.port, [_picture_message(PictureKind.RISK)], lambda: sink.publish_debug(sample_path(), field, grid, sample_view()), 0.5)
+    )
+
+    pictures = [message for message in received if isinstance(message, bytes)]
+    assert len(pictures) == 1 and _is_risk_marker(pictures[0]), "one picture, and it is the risk view"
+    assert len(risk_calls) == 1
+
+
+def test_no_risk_picture_is_drawn_while_no_browser_shows_it(sink: WebSink, risk_calls: list) -> None:
+    field, grid = sample_field()
+
+    received = asyncio.run(_say_then_receive_until_quiet(sink.port, [], lambda: sink.publish_debug(sample_path(), field, grid, sample_view()), 0.5))
+
+    pictures = [message for message in received if isinstance(message, bytes)]
+    assert len(pictures) == 1 and not _is_risk_marker(pictures[0]), "the depth view, as before"
+    assert risk_calls == [], "nobody asked, so it was never drawn"
+
+
+def test_switching_back_to_depth_stops_the_risk_pictures(sink: WebSink, risk_calls: list) -> None:
+    field, grid = sample_field()
+    choices = [_picture_message(PictureKind.RISK), _picture_message(PictureKind.DEPTH)]
+
+    received = asyncio.run(_say_then_receive_until_quiet(sink.port, choices, lambda: sink.publish_debug(sample_path(), field, grid, sample_view()), 0.5))
+
+    pictures = [message for message in received if isinstance(message, bytes)]
+    assert pictures and not any(_is_risk_marker(picture) for picture in pictures)
+    assert risk_calls == []
+
+
+def test_asking_for_risk_on_a_still_source_redraws_the_last_view(sink: WebSink, risk_calls: list) -> None:
+    # One frame, then nothing, as from a phone on a table. The risk view still has to appear.
+    field, grid = sample_field()
+    sink.publish_debug(sample_path(heading=0.2), field, grid, sample_view())
+    time.sleep(0.3)
+
+    received = asyncio.run(_say_then_receive_until_quiet(sink.port, [_picture_message(PictureKind.RISK)], lambda: None, 0.5))
+
+    assert any(isinstance(message, bytes) and _is_risk_marker(message) for message in received)
+    assert len(risk_calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("text", "fragment"),
+    [
+        ("not json", "not JSON"),
+        (json.dumps({"kind": "volume", "picture": "risk"}), "does not read"),
+        (json.dumps({"kind": "picture", "picture": "x-ray"}), "does not draw"),
+    ],
+)
+def test_a_message_the_laptop_cannot_read_is_logged_and_changes_nothing(sink: WebSink, risk_calls: list, caplog: pytest.LogCaptureFixture, text: str, fragment: str) -> None:
+    field, grid = sample_field()
+
+    with caplog.at_level("WARNING", logger="nav.sinks.web"):
+        received = asyncio.run(_say_then_receive_until_quiet(sink.port, [text], lambda: sink.publish_debug(sample_path(), field, grid, sample_view()), 0.5))
+
+    pictures = [message for message in received if isinstance(message, bytes)]
+    assert len(pictures) == 1 and not _is_risk_marker(pictures[0])
+    assert any(fragment in record.message for record in caplog.records), [record.message for record in caplog.records]
+
+
+def test_the_depth_picture_leaves_the_rings_to_the_page(sink: WebSink, monkeypatch: pytest.MonkeyPatch) -> None:
+    import nav.sinks.web as web_module
+
+    asked = []
+    real_render = web_module.render_depth_view
+
+    def recording_render(view, path, **options):
+        asked.append(options)
+        return real_render(view, path, **options)
+
+    monkeypatch.setattr(web_module, "render_depth_view", recording_render)
+    field, grid = sample_field()
+
+    asyncio.run(_receive_frames(sink.port, lambda: sink.publish_debug(sample_path(), field, grid, sample_view()), count=3))
+
+    assert asked == [{"rings": False}]
 
 
 class _RecordingLoop:
@@ -408,9 +536,9 @@ def test_publish_debug_returns_without_drawing(sink: WebSink, monkeypatch: pytes
 
     real_render = web_module.render_depth_view
 
-    def slow_render(view, path):
+    def slow_render(view, path, **options):
         time.sleep(0.3)
-        return real_render(view, path)
+        return real_render(view, path, **options)
 
     monkeypatch.setattr(web_module, "render_depth_view", slow_render)
     field, grid = sample_field()
@@ -454,9 +582,9 @@ def test_close_stops_the_render_thread_with_a_view_still_waiting(monkeypatch: py
 
     real_render = web_module.render_depth_view
 
-    def slow_render(view, path):
+    def slow_render(view, path, **options):
         time.sleep(0.3)
-        return real_render(view, path)
+        return real_render(view, path, **options)
 
     monkeypatch.setattr(web_module, "render_depth_view", slow_render)
     sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None)
@@ -479,12 +607,12 @@ def test_an_unexpected_drawing_error_stops_the_pictures_and_the_paths_keep_going
     real_render = web_module.render_depth_view
     calls: list[int] = []
 
-    def broken_once(view, path):
+    def broken_once(view, path, **options):
         # Only the first drawing fails, so a picture for the second path means the thread carried on.
         calls.append(1)
         if len(calls) == 1:
             raise RuntimeError("a bug in the drawing")
-        return real_render(view, path)
+        return real_render(view, path, **options)
 
     monkeypatch.setattr(web_module, "render_depth_view", broken_once)
     field, grid = sample_field()
@@ -527,7 +655,7 @@ def test_a_publish_after_close_starts_no_new_server() -> None:
 def test_views_are_not_queued_once_the_render_thread_has_ended(sink: WebSink, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     import nav.sinks.web as web_module
 
-    def broken(view, path):
+    def broken(view, path, **options):
         raise RuntimeError("a bug in the drawing")
 
     monkeypatch.setattr(web_module, "render_depth_view", broken)
@@ -552,9 +680,9 @@ def test_a_draw_that_outlives_close_is_dropped_quietly(monkeypatch: pytest.Monke
 
     real_render = web_module.render_depth_view
 
-    def slow_render(view, path):
+    def slow_render(view, path, **options):
         time.sleep(2.3)
-        return real_render(view, path)
+        return real_render(view, path, **options)
 
     monkeypatch.setattr(web_module, "render_depth_view", slow_render)
     sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None)
@@ -587,7 +715,7 @@ STALL_UNIT_BYTES = 30_000
 
 
 def _unit(index: int, keyframe: bool, size: int = 64) -> AccessUnit:
-    """Unit number `index` of a stream, its stamp a frame interval apart from its neighbours."""
+    """Unit number `index` of a stream, its stamp a frame interval apart from its neighbors."""
     return AccessUnit(timestamp_seconds=index * UNIT_INTERVAL_SECONDS, data=bytes([index % 256]) * size, keyframe=keyframe)
 
 

@@ -167,6 +167,19 @@ nearest clearance, where the floor came from (`supplied` by the source, `fitted`
 or the `previous` frame's), and `ALARM` when set. It is what a person tuning the planner looks at, and the window
 and the browser draw it from the same code. The phone never gets it.
 
+In the browser the Depth card has a **Picture** selector and a **Rings** checkbox. Picture
+switches to the risk view: the same picture, with every reading the planner's field reaches
+recolored by what the field costs there, at the moment the walker would get there, on OpenCV's
+TURBO scale from blue for cheap to red for costly. It is the view from above's field seen through
+the camera, clipped at the same 98th percentile. Readings past the plan, behind the feet, off the
+grid's sides or above head height keep their gray. The path keeps only its borders, so its blue to
+red still reads over the colors. The page tells the laptop which picture it wants, each browser
+gets only that one, and the laptop draws the risk view only while some browser shows it. On a
+recorded Neon frame, 252 by 336, the risk view took 21.2 ms to draw and encode against the depth
+view's 9.0 ms. Rings hides the group rings over either picture at once. The browser draws them
+itself, at places the laptop works out and sends with the plan view, so neither picture carries
+them. The window still draws its rings into the picture.
+
 The browser also draws the planner's view from above, walking up the screen, about 5.3 m ahead and
 3 m to each side. Three layers, each with a checkbox that hides it in the browser alone:
 

@@ -13,6 +13,7 @@ import json
 import re
 
 # Third party imports
+import numpy as np
 import pytest
 
 # Local package imports
@@ -32,6 +33,7 @@ from nav.sinks.config import WebConfig
 from nav.sinks.web import WebSink
 from nav.sinks.web_messages import WebMessageKind
 from nav.sources.scene_video import AccessUnit, AccessUnitAssembler, SceneVideoFeed, VideoDescription
+from nav.types import DebugView, ObstaclePoint, ObstacleSet
 from web_samples import sample_field, sample_path, sample_view
 
 ELEMENT_TIMEOUT_MS = 4000
@@ -166,6 +168,55 @@ def test_a_depth_picture_appears_when_sent(browser_page: PageSession, sink: WebS
 
     page.wait_for_selector("#depth", state="visible", timeout=ELEMENT_TIMEOUT_MS)
     assert page.get_attribute("#depth", "src").startswith("blob:")
+
+
+def test_choosing_risk_brings_the_risk_picture_and_its_reading_line(browser_page: PageSession, sink: WebSink, monkeypatch: pytest.MonkeyPatch) -> None:
+    import nav.sinks.web as web_module
+
+    drawn = []
+    real_render = web_module.render_risk_view
+
+    def counting_render(*arguments):
+        drawn.append(arguments)
+        return real_render(*arguments)
+
+    monkeypatch.setattr(web_module, "render_risk_view", counting_render)
+    page = browser_page.page
+    _publish_everything(sink)
+    page.wait_for_selector("#depth", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+    depth_source = page.get_attribute("#depth", "src")
+    assert not page.is_visible("#risk-legend")
+
+    # Nothing more is published, so the risk picture can only come from the laptop redrawing the last view.
+    page.select_option("#picture-mode", "risk")
+
+    page.wait_for_function("(before) => document.getElementById('depth').src !== before", arg=depth_source, timeout=ELEMENT_TIMEOUT_MS)
+    assert page.is_visible("#risk-legend")
+    assert len(drawn) == 1
+
+
+def _view_with_a_group() -> DebugView:
+    # The 4 by 4 sample frame, f = 2 and center (2, 2). A group 2 m straight ahead lands on pixel
+    # (2, 2), which the 160 times scale-up puts at (320, 320), and the level floor turns nothing.
+    group = ObstaclePoint(0.0, 2.0, 1, 1.0, 0.01, None, None, False, np.array([0.0, 0.0, 2.0]))
+    return dataclasses.replace(sample_view(), obstacles=ObstacleSet(1.0, (group,), 1))
+
+
+def test_the_rings_are_drawn_over_the_picture_and_hide_with_their_box(browser_page: PageSession, sink: WebSink) -> None:
+    page = browser_page.page
+    field, grid = sample_field()
+    sink.publish_debug(sample_path(), field, grid, _view_with_a_group())
+    page.wait_for_selector("#rings", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+    page.wait_for_function("() => document.getElementById('rings').width > 0", timeout=ELEMENT_TIMEOUT_MS)
+
+    assert canvas_pixels(page, "rings") > 0
+    ring_box, picture_box = _box(page, "rings"), _box(page, "depth")
+    assert all(abs(ring_box[side] - picture_box[side]) <= 1 for side in ("x", "y", "width", "height")), "the rings lie exactly over the picture"
+
+    page.uncheck("#show-rings")
+    assert not page.is_visible("#rings")
+    page.check("#show-rings")
+    assert page.is_visible("#rings")
 
 
 def test_switching_sound_modes_throws_nothing_and_shows_the_picker_only_in_cancellation(browser_page: PageSession) -> None:
@@ -643,7 +694,7 @@ FEATURE_ELEMENTS = [
     "arrow", "status", "link",
     "video-mode", "video-status", "live",
     "show-field", "show-path", "show-obstacles", "plan", "information", "legend",
-    "depth",
+    "picture-mode", "show-rings", "depth",
     "mode", "ears", "nc",
 ]
 PHONE_VIEWPORT = (412, 915)
@@ -790,7 +841,7 @@ def test_coarse_pointer_controls_are_at_least_44_px(browser, sink: WebSink) -> N
         page = session.page
         if not page.evaluate("() => matchMedia('(pointer: coarse)').matches"):
             pytest.skip("headless Chrome does not emulate a coarse pointer here, so the touch sizes cannot be checked")
-        for control in ("mode", "video-mode"):
+        for control in ("mode", "video-mode", "picture-mode"):
             box = _box(page, control)
             assert box["height"] >= TOUCH_TARGET_PX, f"#{control} is {box['height']} px tall under a finger"
     finally:

@@ -1,5 +1,5 @@
 """
-Covers the three renderers and the PNG encoder without opening a window or a browser.
+Covers the four renderers and the PNG encoder without opening a window or a browser.
 
 The render functions are pure and are what can go wrong. Showing the result is OpenCV's or the
 browser's job, checked by eye in a run.
@@ -16,19 +16,19 @@ import pytest
 # Local package imports
 from nav.scene.config import SceneConfig
 from nav.scene.pipeline import ScenePipeline
+from nav.sinks.floor_geometry import DEPTH_VIEW_TARGET_WIDTH, field_cells_at_pixels, upright_quarter_turns
 from nav.sinks.rendering import (
     CANVAS_HEIGHT,
     CANVAS_WIDTH,
     COLOR_GROUP,
     COLOR_INVALID_DEPTH,
     COLOR_WALL,
-    DEPTH_VIEW_TARGET_WIDTH,
     FIELD_INSET_SCALE,
     encode_png,
     render_arrow,
     render_depth_view,
     render_field,
-    upright_quarter_turns,
+    render_risk_view,
 )
 from nav.sinks.path_style import GROUP_RGB, WALL_RGB
 from nav.types import DebugView, DepthFrame, FloorSource, ObstaclePoint, ObstacleSet, Plane, PlannedPath, Pose
@@ -431,3 +431,78 @@ def test_the_depth_views_obstacle_colors_are_the_pages() -> None:
     # are the shared RGB triples reversed, and a literal here would let the two views disagree.
     assert tuple(COLOR_GROUP) == tuple(reversed(GROUP_RGB))
     assert tuple(COLOR_WALL) == tuple(reversed(WALL_RGB))
+
+
+# ------------------------------------------------------------------ the risk view
+
+# A field that costs more the further right a cell is, so a pixel's color says which column it read.
+RISING_FIELD = np.tile(np.arange(len(GRID), dtype=np.float64), (STEPS, 1))
+
+
+def _turbo_bgr(share: float) -> tuple[int, int, int]:
+    level = np.array([[int(round(share * 255))]], dtype=np.uint8)
+    return tuple(int(channel) for channel in cv2.applyColorMap(level, cv2.COLORMAP_TURBO)[0, 0])
+
+
+def test_a_covered_pixel_takes_the_turbo_color_of_its_cells_cost() -> None:
+    view = _scene_view(ObstacleSet(0.0, (), 0))
+    assert upright_quarter_turns(view.floor) == 0, "the pixel arithmetic below assumes no turn"
+    step, cell, covered = field_cells_at_pixels(view, np.arange(STEPS) * 0.1, GRID, CONFIG)
+    # Floor, lower left, clear of the path down the middle and the text at the top.
+    row, column = 90, 20
+    assert covered[row, column]
+    ceiling = float(np.percentile(RISING_FIELD, 98))
+
+    image = render_risk_view(view, _path(np.zeros(STEPS)), RISING_FIELD, GRID, CONFIG)
+
+    scale = DEPTH_VIEW_TARGET_WIDTH // WIDTH
+    expected = _turbo_bgr(min(RISING_FIELD[step[row, column], cell[row, column]] / ceiling, 1.0))
+    assert tuple(int(channel) for channel in image[row * scale + 2, column * scale + 2]) == expected
+
+
+def test_an_uncovered_pixel_keeps_the_depth_views_gray() -> None:
+    view = _scene_view(ObstacleSet(0.0, (), 0))
+    _, _, covered = field_cells_at_pixels(view, np.arange(STEPS) * 0.1, GRID, CONFIG)
+    rows, columns = np.nonzero(~covered[TEXT_BAND_ROWS // 5 + 1 :, :20])
+    row, column = int(rows[0]) + TEXT_BAND_ROWS // 5 + 1, int(columns[0])
+
+    risk = render_risk_view(view, _path(np.zeros(STEPS)), RISING_FIELD, GRID, CONFIG)
+    depth = render_depth_view(view, _path(np.zeros(STEPS)))
+
+    scale = DEPTH_VIEW_TARGET_WIDTH // WIDTH
+    assert np.array_equal(risk[row * scale + 2, column * scale + 2], depth[row * scale + 2, column * scale + 2])
+
+
+def test_the_risk_view_draws_no_group_rings() -> None:
+    camera_point = np.array([0.5, 0.2, 2.9])
+    with_group = render_risk_view(_scene_view(_group_at(camera_point)), _path(np.zeros(STEPS)), RISING_FIELD, GRID, CONFIG)
+    without = render_risk_view(_scene_view(ObstacleSet(0.0, (), 0)), _path(np.zeros(STEPS)), RISING_FIELD, GRID, CONFIG)
+
+    assert np.array_equal(_below_text(with_group), _below_text(without))
+
+
+def test_the_depth_view_can_leave_the_rings_off() -> None:
+    camera_point = np.array([0.5, 0.2, 2.9])
+    with_group = render_depth_view(_scene_view(_group_at(camera_point)), _one_step_path(), rings=False)
+    without = render_depth_view(_scene_view(ObstacleSet(0.0, (), 0)), _one_step_path())
+
+    assert np.array_equal(_below_text(with_group), _below_text(without))
+
+
+def test_the_risk_view_keeps_the_paths_borders_and_drops_its_fill() -> None:
+    # No depth readings, so nothing is covered and only the ribbon can differ from the blank.
+    view = _floor_view()
+    field = np.zeros((STEPS, len(GRID)))
+    risk = render_risk_view(view, _styled_path(np.zeros(STEPS), information=1.0), field, GRID, CONFIG)
+    depth = render_depth_view(view, _styled_path(np.zeros(STEPS), information=1.0))
+    row, middle = _pixel_on_floor(1.4, 0.0)
+    _, border = _pixel_on_floor(1.4, BODY_HALF_WIDTH)
+
+    assert tuple(risk[row, middle]) == COLOR_INVALID_DEPTH, "no fill between the borders"
+    assert tuple(depth[row, middle]) != COLOR_INVALID_DEPTH, "the depth view fills there"
+    assert tuple(risk[row, border]) != COLOR_INVALID_DEPTH, "the border is still drawn"
+
+
+def test_a_field_that_does_not_fit_the_path_and_grid_is_refused() -> None:
+    with pytest.raises(ValueError, match=r"field is \(2, 61\), the path and grid need \(39, 61\)"):
+        render_risk_view(_scene_view(ObstacleSet(0.0, (), 0)), _path(np.zeros(STEPS)), np.zeros((2, len(GRID))), GRID, CONFIG)
