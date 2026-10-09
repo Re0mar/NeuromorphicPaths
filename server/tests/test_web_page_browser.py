@@ -33,9 +33,11 @@ from nav.scene.config import SceneConfig
 from nav.sinks.config import WebConfig
 from nav.sinks.web import WebSink
 from nav.sinks.web_messages import WebMessageKind
+from nav.sources.config import SourceMode
 from nav.sources.scene_video import AccessUnit, AccessUnitAssembler, SceneVideoFeed, VideoDescription
+from nav.sources.switching import GlassesLink
 from nav.types import DebugView, ObstaclePoint, ObstacleSet
-from web_samples import sample_field, sample_path, sample_view
+from web_samples import FakeSwitch, sample_field, sample_path, sample_view
 
 ELEMENT_TIMEOUT_MS = 4000
 # Longer than the page's STALE_MS of 1500, fast-forwarded on the fake clock.
@@ -466,25 +468,6 @@ def _unit(index: int, keyframe: bool, size: int = 64) -> AccessUnit:
     return AccessUnit(timestamp_seconds=index * UNIT_INTERVAL_SECONDS, data=bytes([index % 256]) * size, keyframe=keyframe)
 
 
-def _write_mp4(path):
-    """A short H.264 MP4 the browser can play, written with PyAV."""
-    pytest.importorskip("av", reason="PyAV comes with the glasses extra")
-    import av
-    import numpy as np
-
-    container = av.open(str(path), mode="w")
-    stream = container.add_stream("libx264", rate=10)
-    stream.width, stream.height, stream.pix_fmt = 64, 48, "yuv420p"
-    for index in range(20):
-        frame = av.VideoFrame.from_ndarray(np.full((48, 64, 3), index * 12, dtype=np.uint8), format="bgr24")
-        for packet in stream.encode(frame):
-            container.mux(packet)
-    for packet in stream.encode():
-        container.mux(packet)
-    container.close()
-    return path
-
-
 @pytest.fixture
 def feed() -> SceneVideoFeed:
     return SceneVideoFeed()
@@ -496,10 +479,6 @@ def video_sink(feed: SceneVideoFeed):
     sink.start()
     yield sink
     sink.close()
-
-
-def _live_option_disabled(page) -> bool:
-    return page.evaluate("() => document.querySelector('#video-mode input[value=\"live\"]').disabled")
 
 
 def _decoded_count(page) -> int:
@@ -563,52 +542,8 @@ def test_a_page_that_joins_mid_stream_draws_its_first_frame_on_the_next_keyframe
     assert session.errors == [], session.errors
 
 
-def test_switching_to_recording_plays_the_file_and_back_to_live_keeps_decoding(browser, feed: SceneVideoFeed, tmp_path) -> None:
-    recording = _write_mp4(tmp_path / "demo.mp4")
-    sink = WebSink(WebConfig(port=0, recording_path=str(recording)), SceneConfig(), video_feed=feed)
-    sink.start()
-    description, units = _real_units()
-    feed.describe(description)
-    session = open_page(browser, sink)
-    try:
-        page = session.page
-        # The video socket opens from the path socket's connect, so the first unit, the only
-        # keyframe, must not go out before the page says the description arrived.
-        _wait_for_text(page, "video-status", "Waiting for the next keyframe")
-        for unit in units[:4]:
-            feed.offer(unit)
-        _wait_for_decoded(page, 3)
-
-        _choose(page, "video-mode", "recording")
-        page.wait_for_selector("#recording", state="visible", timeout=ELEMENT_TIMEOUT_MS)
-        _wait_for_text(page, "video-status", "Recording")
-        page.wait_for_function("() => document.getElementById('recording').currentTime > 0.2", timeout=ELEMENT_TIMEOUT_MS)
-        assert page.is_hidden("#live")
-        for unit in units[4:8]:
-            feed.offer(unit)
-
-        _choose(page, "video-mode", "live")
-        page.wait_for_selector("#live", state="visible", timeout=ELEMENT_TIMEOUT_MS)
-        assert page.is_hidden("#recording")
-        _wait_for_decoded(page, 7)
-    finally:
-        session.close()
-        sink.close()
-    assert session.errors == [], session.errors
-
-
-def test_without_a_recording_the_option_says_so(browser_page: PageSession) -> None:
-    page = browser_page.page
-
-    _choose(page, "video-mode", "recording")
-
-    _wait_for_text(page, "video-status", "No recording configured")
-    assert page.is_visible("#live") and page.is_hidden("#recording"), "the canvas stays rather than a blank panel"
-
-
-def test_a_run_without_scene_video_says_so_in_live_mode(browser_page: PageSession) -> None:
+def test_a_run_without_scene_video_says_so(browser_page: PageSession) -> None:
     _wait_for_text(browser_page.page, "video-status", "no scene video")
-    assert _live_option_disabled(browser_page.page)
 
 
 @pytest.mark.parametrize("sound_mode", ["off", "alarm", "cancel"])
@@ -709,12 +644,11 @@ def test_hidden_floor_draws_in_the_second_gray(browser_page: PageSession, sink: 
     assert canvas_signature(page, "plan") != without_hidden, "a hidden cell drew in the same color as a seen one"
 
 
-def test_without_a_decoder_live_is_disabled_and_says_why(browser, sink: WebSink) -> None:
+def test_without_a_decoder_the_video_panel_says_why(browser, sink: WebSink) -> None:
     session = open_page(browser, sink, init_script="Object.defineProperty(window, 'VideoDecoder', { value: undefined });")
     try:
         page = session.page
         _wait_for_text(page, "video-status", "can't decode the live video")
-        assert _live_option_disabled(page)
         sink.publish(sample_path(heading=0.3))
         _wait_for_text(page, "status", "Heading +17 degrees")
     finally:
@@ -794,7 +728,7 @@ CARDS_IN_PHONE_ORDER = ["heading-card", "video-card", "plan-card", "depth-card",
 # Every display and control element on the page, by the id that shows it.
 FEATURE_ELEMENTS = [
     "arrow", "status", "link",
-    "video-mode", "video-status", "live",
+    "video-status", "live",
     "show-field", "show-path", "show-obstacles", "plan", "information", "plan-info",
     "picture-mode", "show-rings", "depth-info", "depth",
     "mode", "ears", "nc",
@@ -968,7 +902,7 @@ def test_coarse_pointer_controls_are_at_least_44_px(browser, sink: WebSink) -> N
         page = session.page
         if not page.evaluate("() => matchMedia('(pointer: coarse)').matches"):
             pytest.skip("headless Chrome does not emulate a coarse pointer here, so the touch sizes cannot be checked")
-        for control in ("mode", "video-mode", "picture-mode"):
+        for control in ("mode", "picture-mode"):
             box = _box(page, control)
             assert box["height"] >= TOUCH_TARGET_PX, f"#{control} is {box['height']} px tall under a finger"
     finally:
@@ -984,11 +918,64 @@ def test_the_live_status_says_the_stream_is_undescribed_until_the_laptop_describ
     try:
         page = session.page
         _wait_for_text(page, "video-status", "Waiting for the laptop to describe the stream")
-        assert not page.evaluate("() => document.querySelector('#video-mode input[value=live]').disabled")
 
         feed.describe(description)
 
         _wait_for_text(page, "video-status", "Waiting for the next keyframe")
     finally:
         session.close()
+    assert session.errors == [], session.errors
+
+
+# *******************************************
+# The glasses and demo switch
+# *******************************************
+
+
+def test_a_run_without_a_demo_shows_no_switch(browser_page: PageSession, sink: WebSink) -> None:
+    page = browser_page.page
+    sink.publish(sample_path())
+    _wait_for_text(page, "link", "Connected")
+
+    assert not page.is_visible("#source-field")
+    assert not page.is_visible("#glasses-link")
+
+
+def _switch_page(browser, switch: FakeSwitch) -> tuple[WebSink, PageSession]:
+    switch_sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None, source_switch=switch)
+    switch_sink.start()
+    return switch_sink, open_page(browser, switch_sink)
+
+
+def test_the_switch_follows_the_laptop_and_a_click_asks_it_to_switch(browser) -> None:
+    switch = FakeSwitch(SourceMode.GLASSES, GlassesLink.CONNECTED)
+    switch_sink, session = _switch_page(browser, switch)
+    try:
+        page = session.page
+        page.wait_for_selector("#source-field", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+        assert page.is_checked("#source-mode input[value='glasses']")
+        assert page.text_content("#glasses-link") == "Glasses connected"
+
+        _choose(page, "source-mode", "demo")
+
+        page.wait_for_function("() => document.querySelector(\"#source-mode input[value='demo']\").checked", timeout=ELEMENT_TIMEOUT_MS)
+        assert switch.requests == [SourceMode.DEMO]
+    finally:
+        session.close()
+        switch_sink.close()
+    assert session.errors == [], session.errors
+
+
+def test_glasses_that_cant_be_reached_say_so_and_why(browser) -> None:
+    switch = FakeSwitch(SourceMode.DEMO, GlassesLink.UNREACHABLE, "ConnectionError: no Neon found on the network")
+    switch_sink, session = _switch_page(browser, switch)
+    try:
+        page = session.page
+        _wait_for_text(page, "glasses-link", "Glasses unreachable")
+
+        assert page.is_checked("#source-mode input[value='demo']")
+        assert page.get_attribute("#glasses-link", "title") == "ConnectionError: no Neon found on the network"
+    finally:
+        session.close()
+        switch_sink.close()
     assert session.errors == [], session.errors

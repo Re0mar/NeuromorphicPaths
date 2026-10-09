@@ -21,10 +21,13 @@ from nav.sinks.web_messages import (
     RING_KEYS,
     PictureKind,
     WebMessageKind,
-    picture_choice,
+    browser_choice,
     plan_view_message,
+    source_state_message,
     web_text_message,
 )
+from nav.sources.config import SourceMode
+from nav.sources.switching import GlassesLink, SwitchState
 from nav.types import DebugView, DepthFrame, FloorSource, ObstaclePoint, ObstacleSet, Plane, PlannedPath, Pose
 from synthetic_depth import intrinsics, level_floor_depth, with_box_on_level_floor
 
@@ -269,7 +272,12 @@ def test_the_plan_view_says_where_each_groups_ring_goes() -> None:
 
 @pytest.mark.parametrize("picture", list(PictureKind))
 def test_a_picture_choice_is_read_back_as_the_picture_named(picture: PictureKind) -> None:
-    assert picture_choice(json.dumps({"kind": "picture", "picture": picture.value})) is picture
+    assert browser_choice(json.dumps({"kind": "picture", "picture": picture.value})) is picture
+
+
+@pytest.mark.parametrize("side", list(SourceMode))
+def test_a_source_choice_is_read_back_as_the_side_named(side: SourceMode) -> None:
+    assert browser_choice(json.dumps({"kind": "source", "source": side.value})) is side
 
 
 @pytest.mark.parametrize(
@@ -278,10 +286,21 @@ def test_a_picture_choice_is_read_back_as_the_picture_named(picture: PictureKind
         ("{not json", "not JSON"),
         ("[1, 2]", "does not read"),
         (json.dumps({"kind": "path", "picture": "risk"}), "does not read"),
-        (json.dumps({"kind": "picture"}), "does not draw: None"),
-        (json.dumps({"kind": "picture", "picture": "x-ray"}), "does not draw: 'x-ray'"),
+        (json.dumps({"kind": "picture"}), "a picture this laptop does not have: None"),
+        (json.dumps({"kind": "picture", "picture": "x-ray"}), "a picture this laptop does not have: 'x-ray'"),
+        (json.dumps({"kind": "source", "source": "phone"}), "a source this laptop does not have: 'phone'"),
+        # A choice in the other message's field is no choice at all.
+        (json.dumps({"kind": "source", "picture": "risk"}), "a source this laptop does not have: None"),
     ],
 )
-def test_a_message_that_is_not_a_picture_choice_is_refused(text: str, fragment: str) -> None:
+def test_a_message_that_is_not_a_choice_is_refused(text: str, fragment: str) -> None:
     with pytest.raises(ValueError, match=re.escape(fragment)):
-        picture_choice(text)
+        browser_choice(text)
+
+
+def test_the_source_state_carries_the_side_and_the_glasses_link_as_the_page_reads_them() -> None:
+    state = SwitchState(SourceMode.DEMO, GlassesLink.UNREACHABLE, "ConnectionError: no Neon found")
+
+    message = json.loads(web_text_message(WebMessageKind.SOURCE_STATE, source_state_message(state)))
+
+    assert message == {"kind": "source_state", "mode": "demo", "glasses": "unreachable", "glasses_detail": "ConnectionError: no Neon found"}

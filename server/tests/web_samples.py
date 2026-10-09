@@ -1,5 +1,6 @@
 """
-The smallest path, view and field the web sink can send, shared by the sink tests and the browser tests.
+The smallest path, view and field the web sink can send, and a stand-in for the glasses and demo
+switch, shared by the sink tests and the browser tests.
 
 Both suites build the same messages, so a key the page reads is the key the sink sends, and a
 test on either side that changes the shape changes it for both.
@@ -9,6 +10,8 @@ test on either side that changes the shape changes it for both.
 import numpy as np
 
 # Local package imports
+from nav.sources.config import SourceMode
+from nav.sources.switching import GlassesLink, SwitchState
 from nav.types import DebugView, DepthFrame, FloorSource, ObstacleSet, Plane, PlannedPath, Pose
 
 VIEW_SIDE = 4
@@ -47,3 +50,23 @@ def sample_view() -> DebugView:
 def sample_field() -> tuple[np.ndarray, np.ndarray]:
     """A field of two steps by three cells, all zero, and the grid under it."""
     return np.zeros((2, 3)), np.array([-1.0, 0.0, 1.0])
+
+
+class FakeSwitch:
+    """The glasses and demo switch as the sink sees it: state to subscribe to, and requests to make."""
+
+    def __init__(self, mode: SourceMode = SourceMode.GLASSES, glasses: GlassesLink = GlassesLink.CONNECTED, detail: str | None = None) -> None:
+        self.requests: list[SourceMode] = []
+        self.listeners: list = []
+        self.current = SwitchState(mode, glasses, detail)
+
+    def subscribe(self, listener):
+        self.listeners.append(listener)
+        listener(self.current)
+        return lambda: self.listeners.remove(listener)
+
+    def request(self, mode: SourceMode) -> None:
+        self.requests.append(mode)
+        self.current = SwitchState(mode, self.current.glasses, self.current.glasses_detail)
+        for listener in list(self.listeners):
+            listener(self.current)

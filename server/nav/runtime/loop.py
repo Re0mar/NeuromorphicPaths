@@ -146,8 +146,20 @@ def run(config: RunConfig) -> int:
     # Floor sources over the frames the worker took, None for a frame skipped with no usable floor.
     # This is the live run's floor acceptance figure.
     floor_counts: Counter[FloorSource | None] = Counter()
+    # The stretch of video the scene and the planner remember. A source that switches between the
+    # glasses and a demo, or starts the demo over, moves it on.
+    generation = 0
 
     def process(frame: DepthFrame) -> FrameResult:
+        nonlocal scene, planner, baseline, generation
+        if frame.source_generation != generation:
+            # A floor, a previous plan and a heading baseline from another stretch of video would
+            # steer this one's first frames, so all three start afresh, on the worker, before it plans.
+            generation = frame.source_generation
+            scene = ScenePipeline(config.scene, config.walker)
+            planner = PlannerPipeline(config.planner, config.walker)
+            baseline = HeadingBaseline(HEADING_BASELINE_SECONDS)
+            log.info("new stretch of video %d, the scene and the planner start afresh", generation)
         timing.frame_taken(frame)
         try:
             result, plan_done_seconds, stages = plan_frame(frame)

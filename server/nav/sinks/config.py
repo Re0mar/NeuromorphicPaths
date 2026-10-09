@@ -33,9 +33,6 @@ class WebConfig:
     # laptop serves the same certificate and each browser accepts it once.
     certificate_path: str = str(DEFAULT_CERTIFICATE_PATH)
     key_path: str = str(DEFAULT_KEY_PATH)
-    # A video file the page's Recording mode plays, served at /recording. None means the page says
-    # no recording is configured. For the demo, when the glasses fail in the room.
-    recording_path: str | None = None
     # How many access units may wait for one browser on the video socket. Two seconds at the
     # glasses' 30 frames a second, one keyframe gap, so a browser further behind than that is
     # resynced at the next keyframe rather than fed a growing backlog.
@@ -51,8 +48,6 @@ class WebConfig:
         for name, path in (("certificate_path", self.certificate_path), ("key_path", self.key_path)):
             if not Path(path).is_file():
                 raise ValueError(f"{name} {path} is not a file")
-        if self.recording_path is not None and not Path(self.recording_path).is_file():
-            raise ValueError(f"recording_path {self.recording_path} is not a file")
 
 
 @dataclass(frozen=True)

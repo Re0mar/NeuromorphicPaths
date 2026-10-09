@@ -34,6 +34,10 @@ class RgbFrame:
     # Capture and arrival on the laptop clock. depth_ready_seconds is still None at this point,
     # because no depth exists yet.
     timing: FrameTiming | None
+    # Which unbroken stretch of video this frame belongs to. A source that can switch, or start a
+    # recording over, counts up, and the loop clears what the scene and planner remember when it
+    # changes. Every other source leaves it at 0.
+    source_generation: int = 0
 
     def __post_init__(self) -> None:
         # Same reasoning as DepthFrame. Two unrelated sources build these, and a wrongly shaped

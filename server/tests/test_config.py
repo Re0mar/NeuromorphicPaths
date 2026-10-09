@@ -33,6 +33,7 @@ from nav.sources.config import (
     LoggedConfig,
     NeonConfig,
     NeonRecordingConfig,
+    SourceMode,
     TapConfig,
     VideoConfig,
 )
@@ -40,6 +41,7 @@ from nav.runtime.tap import RecordingTap
 from nav.scene.config import SceneConfig
 from nav.sinks.config import PhoneAppConfig, WebConfig
 from nav.sources.scene_video import SceneVideoFeed
+from nav.sources.switching import CurrentStretchOnly, SwitchableRgbSource
 from nav.types import DepthFrame, PlannedPath, Pose
 from nav.walker import WalkerConfig
 
@@ -507,6 +509,76 @@ def test_neon_replay_is_refused_for_a_source_that_is_not_neon_live(
     assert f"--neon-replay only applies to neon_live, not {source}" in capsys.readouterr().err
 
 
+def test_a_demo_capture_and_the_side_to_start_on_reach_the_neon_config(tmp_path) -> None:
+    capture = _capture_folder(tmp_path, with_meta=True)
+
+    config = build_run_config(
+        ["--source", "neon_live", "--sink", "none", "--neon-address", "10.0.0.5", "--demo-capture", str(capture), "--start-with", "demo"]
+    )
+
+    assert config.neon is not None
+    assert config.neon.demo_capture_dir == str(capture)
+    assert config.neon.start_with is SourceMode.DEMO
+    assert config.neon.address == "10.0.0.5", "the glasses side still has its address"
+
+
+def test_a_run_without_a_demo_starts_with_the_glasses(tmp_path) -> None:
+    config = build_run_config(["--source", "neon_live", "--sink", "none"])
+
+    assert config.neon is not None and config.neon.demo_capture_dir is None
+    assert config.neon.start_with is SourceMode.GLASSES
+
+
+@pytest.mark.parametrize(
+    ("extra_argv", "fragment"),
+    [
+        (["--start-with", "demo"], "--start-with demo needs --demo-capture"),
+        (["--demo-capture", "{folder_without_meta}"], "is not a capture folder, it has no meta.json"),
+        (["--demo-capture", "{capture}", "--neon-replay", "{capture}"], "--demo-capture and --neon-replay cannot be used together"),
+    ],
+)
+def test_a_demo_that_couldnt_work_is_refused_before_anything_loads(tmp_path, capsys: pytest.CaptureFixture[str], extra_argv: list[str], fragment: str) -> None:
+    capture = _capture_folder(tmp_path, with_meta=True)
+    folder_without_meta = tmp_path / "half_written"
+    folder_without_meta.mkdir()
+    argv = [argument.format(capture=capture, folder_without_meta=folder_without_meta) for argument in extra_argv]
+
+    with pytest.raises(SystemExit):
+        build_run_config(["--source", "neon_live", "--sink", "none", *argv])
+
+    assert fragment in capsys.readouterr().err
+
+
+def test_a_demo_capture_is_refused_for_a_source_that_is_not_neon_live(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    capture = _capture_folder(tmp_path, with_meta=True)
+
+    with pytest.raises(SystemExit):
+        build_run_config([*MINIMAL_VIDEO_ARGV, "--demo-capture", str(capture)])
+
+    assert "--demo-capture only applies to neon_live, not video_file" in capsys.readouterr().err
+
+
+def test_the_source_and_the_page_share_one_switch_and_one_depth_model(tmp_path) -> None:
+    # The page turns the switch, and the source plans on whatever it says, so they must be one object.
+    pytest.importorskip("aiohttp", reason="the web sink comes with the web extra")
+    capture = _capture_folder(tmp_path, with_meta=True)
+    config = dataclasses.replace(
+        build_run_config(["--source", "neon_live", "--sink", "web", "--demo-capture", str(capture)]),
+        estimator_factory=lambda estimator_config: StubDepthEstimator(),
+    )
+
+    source, sink = build_source_and_sink(config)
+    try:
+        assert isinstance(source, CurrentStretchOnly), "frames from a side already left never reach the planner"
+        assert isinstance(source.switch, SwitchableRgbSource)
+        assert sink._source_switch is source.switch
+        assert sink.video_feed is source.switch.video_feed
+    finally:
+        # Built, never started, so nothing is listening and nothing needs more than this.
+        sink.close()
+        source.close()
+
+
 def test_neon_address_and_neon_replay_together_are_refused(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
     """A replay plays a capture in place of the glasses, so the address would be ignored without a word."""
     capture = _capture_folder(tmp_path, with_meta=True)
@@ -754,34 +826,16 @@ def test_a_source_without_scene_video_leaves_the_web_sink_without_a_feed() -> No
 # *******************************************
 
 
-def test_the_demo_recording_flag_reaches_the_web_config(tmp_path) -> None:
-    recording = tmp_path / "demo.mp4"
-    recording.write_bytes(b"\x00" * 16)
-
-    config = build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "web", "--demo-recording", str(recording)])
-
-    assert config.web is not None and config.web.recording_path == str(recording)
-
-
-def test_a_demo_recording_that_is_not_a_file_is_refused_before_anything_loads(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
-    missing = tmp_path / "nowhere.mp4"
-
-    with pytest.raises(SystemExit):
-        build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "web", "--demo-recording", str(missing)])
-
-    message = capsys.readouterr().err
-    assert "--demo-recording" in message and str(missing) in message and "not a file" in message
-
-
-def test_a_demo_recording_without_the_web_sink_is_refused(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_there_is_no_demo_recording_flag_any_more(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    # The page used to play a file of its own, out of step with the planning. A demo from a
+    # recording now converts it to a capture and replays that, so the flag is refused outright.
     recording = tmp_path / "demo.mp4"
     recording.write_bytes(b"\x00" * 16)
 
     with pytest.raises(SystemExit):
-        build_run_config([*MINIMAL_VIDEO_ARGV, "--demo-recording", str(recording)])
+        build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "web", "--demo-recording", str(recording)])
 
-    message = capsys.readouterr().err
-    assert "--demo-recording" in message and "--sink web" in message
+    assert "--demo-recording" in capsys.readouterr().err
 
 
 # *******************************************

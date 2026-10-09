@@ -31,7 +31,8 @@ frame, from the scene video feed the composition root gave this sink. Each brows
 queue of its own and starts at a keyframe. A browser that falls behind by more than its queue
 loses units up to the next keyframe, so it never gets a delta whose reference it missed, and one
 slow browser never holds up another. A run whose source has no video says so on that socket and
-closes it. /recording serves the file --demo-recording named, for the page's Recording mode.
+closes it. The page only ever shows the video the laptop plans on. A demo from a recording replays
+it as a capture, through the same route, so the video stays in step with everything else.
 """
 
 # Standard library imports
@@ -55,14 +56,17 @@ from nav.sinks.rendering import encode_png, render_depth_view, render_risk_view
 from nav.sinks.web_messages import (
     PictureKind,
     WebMessageKind,
-    picture_choice,
+    browser_choice,
     plan_view_message,
+    source_state_message,
     video_stream_message,
     video_unavailable_message,
     web_text_message,
 )
+from nav.sources.config import SourceMode
 from nav.sources.framecodec import path_message
 from nav.sources.scene_video import AccessUnit, SceneVideoFeed, VideoDescription, pack_unit
+from nav.sources.switching import SwitchableRgbSource
 from nav.types import DebugView, PlannedPath
 
 log = logging.getLogger(__name__)
@@ -101,6 +105,8 @@ class _Slot(Enum):
     PLAN_VIEW = 2
     DEPTH_PNG = 3
     RISK_PNG = 4
+    # Which side a run with a demo plans on. Never sent on a run without one.
+    SOURCE_STATE = 5
 
 
 # Which slot carries each picture. A browser gets the one it chose and never the other.
@@ -136,7 +142,14 @@ class _LoopVideoListener:
 class WebSink:
     """Serves the page and pushes every published path, and the depth view when given one, to every connected browser."""
 
-    def __init__(self, config: WebConfig, scene: SceneConfig, *, video_feed: SceneVideoFeed | None) -> None:
+    def __init__(
+        self,
+        config: WebConfig,
+        scene: SceneConfig,
+        *,
+        video_feed: SceneVideoFeed | None,
+        source_switch: SwitchableRgbSource | None = None,
+    ) -> None:
         """
         :param config: The port and the certificate.
         :param scene: The run's own scene settings, so the plan view judges hidden floor with the
@@ -144,8 +157,12 @@ class WebSink:
         :param video_feed: Where the glasses' compressed video arrives for the page's browser to
             decode. None when the run's source has no video to offer, which the page is told.
             Keyword-only and without a default, so every caller says which it is.
+        :param source_switch: The switch between the glasses and a demo, which any page may turn.
+            None on a run without a demo, the usual case, so callers that have none leave it out.
         """
         self._config = config
+        self._source_switch = source_switch
+        self._unsubscribe_switch: Callable[[], None] | None = None
         self._scene = scene
         self._video_feed = video_feed
         self._thread: threading.Thread | None = None
@@ -175,7 +192,6 @@ class WebSink:
         self._video_description_text: str | None = None
         self._video_dropped = 0
         self._unsubscribe_video: Callable[[], None] | None = None
-        self._recording_missing_logged = False
 
     @property
     def dropped(self) -> int:
@@ -209,6 +225,11 @@ class WebSink:
         if self._video_feed is not None:
             # Once the loop exists, so the listener always has somewhere to hand units to.
             self._unsubscribe_video = self._video_feed.subscribe(_LoopVideoListener(self))
+        if self._source_switch is not None:
+            # Called on whichever thread changed the state, so it only queues, like publish.
+            self._unsubscribe_switch = self._source_switch.subscribe(
+                lambda state: self._enqueue(_Slot.SOURCE_STATE, web_text_message(WebMessageKind.SOURCE_STATE, source_state_message(state)))
+            )
 
     def publish(self, path: PlannedPath) -> None:
         """Queue the path for every browser. Starts the server on the first call, and does nothing once closed."""
@@ -237,6 +258,9 @@ class WebSink:
 
     def close(self) -> None:
         self._closed = True
+        if self._unsubscribe_switch is not None:
+            self._unsubscribe_switch()
+            self._unsubscribe_switch = None
         if self._unsubscribe_video is not None:
             # First, so no unit is handed to a loop that is about to stop.
             self._unsubscribe_video()
@@ -346,9 +370,19 @@ class WebSink:
             log.debug("video not sent, the server had stopped (caught RuntimeError, expected): %s", closed_loop)
 
     def _offer_description(self, description: VideoDescription) -> None:
-        """Loop thread. Remember the stream's description and send it to every video browser."""
+        """
+        Loop thread. Remember the stream's description and send it to every video browser.
+
+        A new description is a new stream, after a switch between the glasses and the demo. Units
+        still queued from the old one are dropped, and each browser waits for the new stream's first
+        keyframe, since a delta from one stream can't be decoded against the other.
+        """
         self._video_description_text = web_text_message(WebMessageKind.VIDEO_STREAM, video_stream_message(description))
         for client in list(self._video_clients.values()):
+            while not client.queue.empty():
+                if not isinstance(client.queue.get_nowait(), str):
+                    self._video_dropped += 1
+            client.waiting_for_keyframe = True
             self._put_for_client(client, self._video_description_text)
 
     def _offer_unit(self, unit: AccessUnit) -> None:
@@ -478,11 +512,18 @@ class WebSink:
                 # fresh one drawn, never a picture from minutes ago.
                 latest[_Slot.RISK_PNG] = None
 
-        async def choose_picture(socket, text: str) -> None:
+        async def act_on_choice(socket, text: str) -> None:
             try:
-                choice = picture_choice(text)
+                choice = browser_choice(text)
             except ValueError as unreadable:
                 log.warning("browser message ignored (caught ValueError, expected): %s", unreadable)
+                return
+            if isinstance(choice, SourceMode):
+                if self._source_switch is None:
+                    log.warning("a page asked for the %s, and this run has no demo to switch between", choice.value)
+                    return
+                # For every page at once. The switch announces the new state to all of them.
+                self._source_switch.request(choice)
                 return
             sockets[socket] = choice
             note_who_wants_risk()
@@ -506,7 +547,7 @@ class WebSink:
                 async for received in socket:
                     # Reading also keeps the socket alive and notices when it closes.
                     if received.type == web.WSMsgType.TEXT:
-                        await choose_picture(socket, received.data)
+                        await act_on_choice(socket, received.data)
             finally:
                 sockets.pop(socket, None)
                 note_who_wants_risk()
@@ -552,33 +593,10 @@ class WebSink:
                 log.info("browser disconnected from video, %d open", len(self._video_clients))
             return socket
 
-        def recording_available() -> bool:
-            recording = self._config.recording_path
-            if recording is not None and Path(recording).is_file():
-                return True
-            if recording is not None and not self._recording_missing_logged:
-                # Was there when the run started and is gone now. Said once, then answered like none.
-                self._recording_missing_logged = True
-                log.warning("the demo recording %s is gone, the page's Recording mode has nothing to play", recording)
-            return False
-
-        async def serve_recording(request):
-            if recording_available():
-                # FileResponse answers Range requests and HEAD, which a <video> needs to seek and loop.
-                return web.FileResponse(self._config.recording_path)
-            return web.json_response({"error": "no recording configured"}, status=404)
-
-        async def serve_recording_status(request):
-            # Always 200, so the page can ask whether a recording exists without the browser logging
-            # a failed request. The page is judged by its console, and an expected 404 would be noise.
-            return web.json_response({"available": recording_available()})
-
         app = web.Application()
         app.router.add_get("/", serve_page)
         app.router.add_get("/ws", serve_socket)
         app.router.add_get("/video", serve_video)
-        app.router.add_get("/recording", serve_recording)
-        app.router.add_get("/recording/status", serve_recording_status)
         runner = web.AppRunner(app, access_log=None)
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", self._config.port, ssl_context=self._tls_context())

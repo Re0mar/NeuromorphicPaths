@@ -89,7 +89,7 @@
     }
     #sound-card, #heading-card { flex: 1 1 0; }
     #video-card, #heading-card, #depth-card { contain: size; }
-    #live, #recording { flex: 1 1 0; min-height: 0; object-fit: contain; }
+    #live { flex: 1 1 0; min-height: 0; object-fit: contain; }
     #arrow { flex: 1 1 0; min-height: 0; object-fit: contain; }
     #depth-frame { flex: 1 1 0; min-height: 0; }
     #depth { width: 100%; height: 100%; object-fit: contain; object-position: 50% 0; }
@@ -103,7 +103,11 @@
   #sound-card { grid-area: sound; }
   canvas, img, video { max-width: 100%; height: auto; }
   .placeholder { font-size: var(--text-s); color: var(--muted); }
-  .placeholder[hidden], #depth[hidden], #rings[hidden], .help[hidden], #plan-panel[hidden], #music-label[hidden], #music-controls[hidden], #live[hidden], #recording[hidden] { display: none; }
+  .placeholder[hidden], #depth[hidden], #rings[hidden], .help[hidden], #plan-panel[hidden], #music-label[hidden], #music-controls[hidden], #source-field[hidden], #glasses-link[hidden], #live[hidden] { display: none; }
+  /* How the glasses are doing, on a run that can switch to them. */
+  #glasses-link { font-size: var(--text-s); color: var(--muted); }
+  #glasses-link.connected { color: var(--accent); }
+  #glasses-link.unreachable { color: var(--alarm-fg); }
   /* Where the track is, and a slider to jump anywhere in it. */
   #music-controls { display: flex; flex-direction: column; gap: var(--space-1); font-size: var(--text-s); color: var(--muted); }
   #music-seek { width: 100%; margin: 0; accent-color: var(--accent); }
@@ -128,8 +132,6 @@
   .toggle input { position: absolute; width: 1px; height: 1px; opacity: 0; margin: 0; }
   .toggle label:has(input:checked) { background: var(--accent); color: var(--black); font-weight: 600; }
   .toggle label:has(input:disabled) { color: var(--dim); cursor: not-allowed; }
-  /* Chosen but unavailable, as Live is on a run with no video: marked, but not in the accent. */
-  .toggle label:has(input:checked:disabled) { background: var(--panel-edge); color: var(--muted); }
   .toggle label:has(input:focus-visible) { outline: 2px solid var(--fg); outline-offset: -2px; }
   #layers label { display: flex; align-items: center; gap: var(--space-1); }
   #nc { padding: var(--space-1) var(--space-2); border-radius: var(--space-1); border: 2px solid currentColor; font-weight: bold; }
@@ -141,8 +143,8 @@
   #ears .head { fill: var(--head); }
   #ears .arc { fill: none; stroke: var(--dim); stroke-width: 4; stroke-linecap: round; }
   #ears .arc.lit { stroke: var(--accent); }
-  /* The video panel: the live canvas or the recording, one shown at a time, filling the card. */
-  #live, #recording { width: 100%; background: var(--black); border-radius: var(--space-1); }
+  /* The video panel: the decoded video, filling the card. */
+  #live { width: 100%; background: var(--black); border-radius: var(--space-1); }
   #video-status, #information { font-size: var(--text-s); color: var(--muted); }
   /* The two numbers on one line, apart, with a dim bar between. Each number keeps its label with it,
      so a card too narrow for both puts the second on its own line rather than breaking one. */
@@ -216,17 +218,18 @@
   <section class="card" id="video-card">
     <h2>Video</h2>
     <div id="video-controls">
-      <div class="toggle-field">
-        <span class="toggle-name" id="video-mode-name">Video</span>
-        <div id="video-mode" class="toggle" role="radiogroup" aria-labelledby="video-mode-name">
-          <label><input type="radio" name="video-mode" value="live" checked> Live</label>
-          <label><input type="radio" name="video-mode" value="recording"> Recording</label>
+      <!-- Shown on a run started with a demo capture. Switches every page's run, not just this one. -->
+      <div class="toggle-field" id="source-field" hidden>
+        <span class="toggle-name" id="source-mode-name">Source</span>
+        <div id="source-mode" class="toggle" role="radiogroup" aria-labelledby="source-mode-name">
+          <label><input type="radio" name="source-mode" value="glasses"> Glasses</label>
+          <label><input type="radio" name="source-mode" value="demo"> Demo</label>
         </div>
       </div>
+      <span id="glasses-link" hidden></span>
       <span id="video-status">Waiting for video.</span>
     </div>
     <canvas id="live" width="640" height="480" aria-label="What the glasses see, decoded in this browser"></canvas>
-    <video id="recording" loop muted playsinline hidden aria-label="A recording of what the glasses saw"></video>
   </section>
   <section class="card" id="plan-card">
     <div class="card-head">
@@ -319,10 +322,11 @@
   // floor. Two readouts show the same numbers in every mode: a head with five arcs an ear, one lit
   // per 20 % of that ear's gain, and whether noise cancelling would be on, which goes off with the
   // alarm and comes back 2 s after it clears, since no page can switch it.
-  // The video panel shows what the glasses see. Live is the glasses' own stream: the laptop
-  // forwards the compressed frames on a second socket and this browser decodes them with
-  // WebCodecs, which is why the page is HTTPS. Recording is a file the laptop serves, played here,
-  // for when the glasses fail. It is the one thing on the page not in step with the arrow.
+  // The video panel shows what the laptop is planning on: the glasses' own stream, or a capture the
+  // laptop replays, which includes a converted recording. The laptop forwards the compressed frames
+  // on a second socket and this browser decodes them with WebCodecs, which is why the page is
+  // HTTPS. It never plays video of its own, so the picture is always in step with the arrow. On a
+  // run started with a demo, any page can switch the laptop between the glasses and the demo.
   const canvas = document.getElementById("arrow");
   const context = canvas.getContext("2d");
   const depth = document.getElementById("depth");
@@ -339,8 +343,6 @@
   const ears = document.getElementById("ears");
   const liveCanvas = document.getElementById("live");
   const liveContext = liveCanvas.getContext("2d");
-  const recordingVideo = document.getElementById("recording");
-  const videoMode = document.getElementById("video-mode");
   const videoStatus = document.getElementById("video-status");
   const planPanel = document.getElementById("plan-panel");
   const planPlaceholder = document.getElementById("plan-placeholder");
@@ -357,6 +359,10 @@
   const showRings = document.getElementById("show-rings");
   const ringCanvas = document.getElementById("rings");
   const depthTitle = document.getElementById("depth-title");
+  const sourceField = document.getElementById("source-field");
+  const sourceMode = document.getElementById("source-mode");
+  const glassesLink = document.getElementById("glasses-link");
+  const GLASSES_LINK_TEXT = { connecting: "Glasses connecting", connected: "Glasses connected", unreachable: "Glasses unreachable" };
   let depthUrl = null;
   // The newest plan view, kept so a toggle can redraw it without asking the laptop for anything.
   let latestPlanView = null;
@@ -926,6 +932,25 @@
     sendPictureChoice();
   });
   showRings.addEventListener("change", drawRings);
+
+  // On a run with a demo, the laptop says which side it plans on and how the glasses are. The toggle
+  // only follows what the laptop says, so every page shows the same side whoever switched it.
+  function showSourceState(message) {
+    sourceField.hidden = false;
+    const chosenSide = sourceMode.querySelector('input[value="' + message.mode + '"]');
+    if (chosenSide) chosenSide.checked = true;
+    glassesLink.hidden = false;
+    glassesLink.textContent = GLASSES_LINK_TEXT[message.glasses] || "Glasses " + message.glasses;
+    glassesLink.className = message.glasses;
+    // The full reason is long, so it waits under the pointer rather than filling the card.
+    glassesLink.title = message.glasses_detail || "";
+  }
+
+  sourceMode.addEventListener("change", () => {
+    if (laptopSocket && laptopSocket.readyState === WebSocket.OPEN) {
+      laptopSocket.send(JSON.stringify({ kind: "source", source: chosen(sourceMode) }));
+    }
+  });
   window.addEventListener("resize", drawRings);
 
   // A card's ? button opens how to read that card, over the card. One panel is open at a time, and
@@ -979,6 +1004,7 @@
         // newer laptop can add one without breaking an older page.
         if (message.kind === "path") showPath(message);
         else if (message.kind === "plan_view") showPlanView(message);
+        else if (message.kind === "source_state") showSourceState(message);
         return;
       }
       showDepth(event.data);
@@ -1012,21 +1038,15 @@
   // Why there is no live video, from this browser or from the laptop. Null while there is.
   let liveReason = typeof VideoDecoder === "function" && window.isSecureContext ? null : VIDEO_UNSUPPORTED_HERE;
 
-  function liveOption() {
-    return videoMode.querySelector('input[value="live"]');
-  }
-
   function setVideoStatus(text) {
     videoStatus.textContent = text;
   }
 
   function showLiveState() {
-    if (chosen(videoMode) !== "live") return;
-    liveOption().disabled = liveReason !== null;
-    if (liveReason !== null) setVideoStatus("No live video: " + liveReason + ".");
-    else if (streamDescription === null) setVideoStatus("Live. Waiting for the laptop to describe the stream.");
-    else if (framesDecoded === 0) setVideoStatus("Live. Waiting for the next keyframe.");
-    else setVideoStatus("Live. " + framesThisSecond + " frames a second, " + framesDecoded + " decoded.");
+    if (liveReason !== null) setVideoStatus("No video: " + liveReason + ".");
+    else if (streamDescription === null) setVideoStatus("Waiting for the laptop to describe the stream.");
+    else if (framesDecoded === 0) setVideoStatus("Waiting for the next keyframe.");
+    else setVideoStatus(framesThisSecond + " frames a second, " + framesDecoded + " decoded.");
   }
 
   function drawFrame(frame) {
@@ -1055,6 +1075,8 @@
     if (decoder !== null && decoder.state !== "closed") decoder.close();
     decoder = new VideoDecoder({ output: drawFrame, error: onDecoderError });
     waitingForKeyframe = true;
+    // A new stream, after a switch, keeps its own clock, so the decoder's timestamps start over with it.
+    firstUnitSeconds = null;
     try {
       // No description field, so the units arrive in Annex B form with their start codes, as the
       // laptop sends them, and every keyframe carries the parameter sets in front of it.
@@ -1122,37 +1144,6 @@
     socket.onclose = () => { if (videoSocket === socket) videoSocket = null; waitingForKeyframe = true; };
     socket.onerror = () => { socket.close(); };
   }
-
-  async function setVideoMode(next) {
-    if (next === "recording") {
-      // Asked of a route that always answers, rather than of the file, so a laptop without a
-      // recording costs no failed request in the console.
-      let available = false;
-      try {
-        const answer = await fetch("/recording/status");
-        available = answer.ok && (await answer.json()).available === true;
-      } catch (error) {
-        available = false;
-      }
-      if (!available) {
-        // The canvas stays, so the panel is never blank for want of a file.
-        setVideoStatus("No recording configured on the laptop.");
-        return;
-      }
-      if (!recordingVideo.getAttribute("src")) recordingVideo.src = "/recording";
-      liveCanvas.hidden = true;
-      recordingVideo.hidden = false;
-      recordingVideo.play().catch(() => {});
-      setVideoStatus("Recording. Not in step with the arrow.");
-      return;
-    }
-    recordingVideo.pause();
-    recordingVideo.hidden = true;
-    liveCanvas.hidden = false;
-    showLiveState();
-  }
-
-  videoMode.onchange = () => { setVideoMode(chosen(videoMode)); };
 
   setInterval(() => {
     // The decode rate, read once a second. The frames themselves are counted as they are drawn.

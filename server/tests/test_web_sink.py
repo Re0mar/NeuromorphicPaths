@@ -25,11 +25,12 @@ from nav.sinks.config import WebConfig
 from nav.sinks.floor_geometry import floor_hidden_mask
 from nav.sinks.web import OUTGOING_QUEUE_LIMIT, WebSink, _quiet_client_resets
 from nav.sinks.web_messages import OBSTACLE_KEYS, PLAN_VIEW_KEYS, RING_KEYS, PictureKind, WebMessageKind
+from nav.sources.config import SourceMode
 from nav.sources.framecodec import path_message
 from nav.sources.scene_video import AccessUnit, SceneVideoFeed, VideoDescription, unpack_unit
 from nav.types import DebugSink, DebugView, DepthFrame, FloorSource, ObstacleSet, Plane, PlannedPath, Pose
 from synthetic_depth import intrinsics, level_floor_depth
-from web_samples import sample_field, sample_path, sample_view
+from web_samples import FakeSwitch, sample_field, sample_path, sample_view
 
 RECEIVE_TIMEOUT_SECONDS = 3.0
 
@@ -440,7 +441,7 @@ def test_asking_for_risk_on_a_still_source_redraws_the_last_view(sink: WebSink, 
     [
         ("not json", "not JSON"),
         (json.dumps({"kind": "volume", "picture": "risk"}), "does not read"),
-        (json.dumps({"kind": "picture", "picture": "x-ray"}), "does not draw"),
+        (json.dumps({"kind": "picture", "picture": "x-ray"}), "does not have"),
     ],
 )
 def test_a_message_the_laptop_cannot_read_is_logged_and_changes_nothing(sink: WebSink, risk_calls: list, caplog: pytest.LogCaptureFixture, text: str, fragment: str) -> None:
@@ -924,85 +925,16 @@ def test_close_returns_within_two_seconds_with_a_video_client_connected(feed: Sc
     assert asyncio.run(scenario()) < 2.0
 
 
-def _recording_file(tmp_path, size: int = 100):
-    recording = tmp_path / "demo.mp4"
-    recording.write_bytes(bytes(range(size)))
-    return recording
-
-
-def test_the_recording_route_serves_the_file_with_ranges_and_answers_head(tmp_path) -> None:
-    recording = _recording_file(tmp_path)
-    sink = WebSink(WebConfig(port=0, recording_path=str(recording)), SceneConfig(), video_feed=None)
-    sink.start()
-
-    async def fetch() -> tuple:
+@pytest.mark.parametrize("route", ["/recording", "/recording/status"])
+def test_the_page_server_plays_no_video_of_its_own(sink: WebSink, route: str) -> None:
+    # The page only shows the video the laptop plans on. A file served beside it would be out of
+    # step with every other card, which is what the old Recording mode was.
+    async def fetch() -> int:
         async with _session() as session:
-            async with session.get(f"https://127.0.0.1:{sink.port}/recording", headers={"Range": "bytes=0-9"}) as partial:
-                partial_status, partial_body = partial.status, await partial.read()
-            async with session.head(f"https://127.0.0.1:{sink.port}/recording") as head:
-                return partial_status, partial_body, head.status, head.headers.get("Content-Length")
+            async with session.get(f"https://127.0.0.1:{sink.port}{route}") as response:
+                return response.status
 
-    try:
-        partial_status, partial_body, head_status, length = asyncio.run(fetch())
-    finally:
-        sink.close()
-
-    assert partial_status == 206 and partial_body == bytes(range(10))
-    assert head_status == 200 and length == "100"
-
-
-def test_the_recording_status_says_whether_a_recording_exists_without_a_failed_request(tmp_path, sink: WebSink) -> None:
-    recording = _recording_file(tmp_path)
-    with_recording = WebSink(WebConfig(port=0, recording_path=str(recording)), SceneConfig(), video_feed=None)
-    with_recording.start()
-
-    async def status_of(port: int) -> tuple[int, dict]:
-        async with _session() as session:
-            async with session.get(f"https://127.0.0.1:{port}/recording/status") as response:
-                return response.status, await response.json()
-
-    try:
-        assert asyncio.run(status_of(with_recording.port)) == (200, {"available": True})
-        assert asyncio.run(status_of(sink.port)) == (200, {"available": False})
-    finally:
-        with_recording.close()
-
-
-def test_the_recording_route_is_404_without_a_recording(sink: WebSink) -> None:
-    async def fetch() -> tuple[int, dict]:
-        async with _session() as session:
-            async with session.get(f"https://127.0.0.1:{sink.port}/recording") as response:
-                return response.status, await response.json()
-
-    status, body = asyncio.run(fetch())
-
-    assert status == 404
-    assert "no recording configured" in body["error"]
-
-
-def test_a_recording_deleted_after_start_is_404_and_logged_once(tmp_path, caplog: pytest.LogCaptureFixture) -> None:
-    recording = _recording_file(tmp_path)
-    sink = WebSink(WebConfig(port=0, recording_path=str(recording)), SceneConfig(), video_feed=None)
-    sink.start()
-    recording.unlink()
-
-    async def fetch_twice() -> list[int]:
-        async with _session() as session:
-            statuses = []
-            for _ in range(2):
-                async with session.get(f"https://127.0.0.1:{sink.port}/recording") as response:
-                    statuses.append(response.status)
-            return statuses
-
-    try:
-        with caplog.at_level("WARNING", logger="nav.sinks.web"):
-            statuses = asyncio.run(fetch_twice())
-    finally:
-        sink.close()
-
-    assert statuses == [404, 404]
-    warnings = [record for record in caplog.records if "is gone" in record.getMessage()]
-    assert len(warnings) == 1 and str(recording) in warnings[0].getMessage()
+    assert asyncio.run(fetch()) == 404
 
 
 def test_a_browser_gets_the_hidden_floor_under_the_runs_scene_config() -> None:
@@ -1100,3 +1032,74 @@ def test_a_second_description_reaching_a_full_two_slot_queue_is_queued_after_the
     after_last_description = _units_in(received[text_positions[-1] + 1:])
     assert after_last_description, "units follow the last description"
     assert after_last_description[0].keyframe, "after the resync the browser resumes on a keyframe"
+
+
+def test_a_new_stream_starts_every_browser_over_at_its_first_keyframe(video_sink: WebSink, feed: SceneVideoFeed) -> None:
+    # After a switch between the glasses and the demo. A delta of the new stream can't be decoded
+    # against the old one's frames, so nothing goes out between the new description and its keyframe.
+    second = VideoDescription(codec="avc1.640028", parameter_sets=(b"\x00\x00\x00\x01\x67new", b"\x00\x00\x00\x01\x68new"))
+
+    async def two_streams() -> list:
+        async with _session() as session:
+            async with session.ws_connect(f"wss://127.0.0.1:{video_sink.port}/video") as socket:
+                feed.describe(VIDEO_DESCRIPTION)
+                feed.offer(_unit(0, keyframe=True))
+                feed.offer(_unit(1, keyframe=False))
+                await asyncio.sleep(0.2)
+                feed.describe(second)
+                for index, keyframe in ((2, False), (3, False), (4, True), (5, False)):
+                    feed.offer(_unit(index, keyframe))
+                return await _read_until_quiet(socket, 0.5)
+
+    import aiohttp
+
+    received = asyncio.run(two_streams())
+
+    descriptions = [position for position, message in enumerate(received) if message.type == aiohttp.WSMsgType.TEXT]
+    assert len(descriptions) == 2
+    assert json.loads(received[descriptions[1]].data)["codec"] == "avc1.640028"
+    after_switch = _units_in(received[descriptions[1] + 1 :])
+    assert [(_index_of(unit), unit.keyframe) for unit in after_switch] == [(4, True), (5, False)]
+
+
+def _source_states(received: list) -> list[dict]:
+    texts = [json.loads(message) for message in received if isinstance(message, str)]
+    return [text for text in texts if text["kind"] == WebMessageKind.SOURCE_STATE.value]
+
+
+def test_a_page_sees_the_side_in_use_and_its_choice_switches_every_page() -> None:
+    switch = FakeSwitch()
+    sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None, source_switch=switch)
+    sink.start()
+    try:
+        choice = json.dumps({"kind": "source", "source": "demo"})
+        received = asyncio.run(_say_then_receive_until_quiet(sink.port, [choice], lambda: None, 0.5))
+        late_page = asyncio.run(_receive_until_quiet(sink.port, lambda: None, 0.5))
+    finally:
+        sink.close()
+
+    assert switch.requests == [SourceMode.DEMO]
+    states = _source_states(received)
+    assert states[0] == {"kind": "source_state", "mode": "glasses", "glasses": "connected", "glasses_detail": None}, "on connect"
+    assert states[-1]["mode"] == "demo", "the switch's new state reaches the page that asked"
+    assert _source_states(late_page)[-1]["mode"] == "demo", "and a page opened afterwards"
+
+
+def test_a_run_without_a_demo_says_nothing_of_one_and_ignores_a_request(sink: WebSink, caplog: pytest.LogCaptureFixture) -> None:
+    choice = json.dumps({"kind": "source", "source": "demo"})
+
+    with caplog.at_level("WARNING", logger="nav.sinks.web"):
+        received = asyncio.run(_say_then_receive_until_quiet(sink.port, [choice], lambda: None, 0.5))
+
+    assert _source_states(received) == [], "the page shows no switch"
+    assert any("no demo to switch between" in record.getMessage() for record in caplog.records)
+
+
+def test_closing_the_sink_stops_listening_to_the_switch() -> None:
+    switch = FakeSwitch()
+    sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None, source_switch=switch)
+    sink.start()
+
+    sink.close()
+
+    assert switch.listeners == []

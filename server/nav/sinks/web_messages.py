@@ -7,8 +7,9 @@ the path through it, the obstacles, and how the path should look. Everything the
 computed here, on the laptop. The page only draws.
 
 The video socket's two text messages are here too: the stream's description, which the page's
-decoder needs before the first unit, and the word that this run has no video to send. So is the one
-message a page sends back, saying which picture it wants in its Depth card.
+decoder needs before the first unit, and the word that this run has no video to send. So are the two
+messages a page sends back, saying which picture it wants in its Depth card and, on a run with a
+demo, which side every page's run should plan on, and the state of that switch the laptop announces.
 """
 
 # Standard library imports
@@ -24,7 +25,9 @@ from nav.planner.alarm import time_to_contact_from_avoidance_bits
 from nav.scene.config import SceneConfig
 from nav.sinks.floor_geometry import floor_hidden_mask, floor_seen_mask, group_rings
 from nav.sinks.path_style import BORDER_OPACITY, GROUP_RGB, WALL_RGB, path_color_rgb, path_fill_opacity
+from nav.sources.config import SourceMode
 from nav.sources.scene_video import VideoDescription
+from nav.sources.switching import SwitchState
 from nav.types import DebugView, PlannedPath
 
 
@@ -37,6 +40,8 @@ class WebMessageKind(Enum):
     VIDEO_STREAM = "video_stream"
     # On the video socket. This run's source has no video, and the socket closes after it.
     VIDEO_UNAVAILABLE = "video_unavailable"
+    # Which side a switchable run plans on, and how the glasses are. Sent on a run with a demo only.
+    SOURCE_STATE = "source_state"
 
 
 # Every key a plan view carries, in one place. The page test checks the page reads each of these,
@@ -78,6 +83,15 @@ class BrowserMessageKind(Enum):
 
     # Which picture this browser wants from now on, in a "picture" field.
     PICTURE = "picture"
+    # Which side every page's run should plan on, the glasses or the demo, in a "source" field.
+    SOURCE = "source"
+
+
+# Each message a page sends, the field its choice is in, and the vocabulary that choice comes from.
+BROWSER_CHOICES: dict[BrowserMessageKind, type[Enum]] = {
+    BrowserMessageKind.PICTURE: PictureKind,
+    BrowserMessageKind.SOURCE: SourceMode,
+}
 
 
 def plan_view_message(path: PlannedPath, field: np.ndarray, grid: np.ndarray, view: DebugView, scene: SceneConfig) -> dict:
@@ -138,25 +152,34 @@ def plan_view_message(path: PlannedPath, field: np.ndarray, grid: np.ndarray, vi
     return message
 
 
-def picture_choice(text: str) -> PictureKind:
+def browser_choice(text: str) -> PictureKind | SourceMode:
     """
-    The picture a page asked for, read from one text frame it sent.
+    What a page asked for, read from one text frame it sent: a picture, or a side to plan on.
 
-    :param text: The frame, JSON with a kind of "picture" and a "picture" field.
-    :return: The picture asked for.
-    :rtype: PictureKind
-    :raises ValueError: When the frame is not JSON, not a picture message, or names no picture this laptop draws.
+    :param text: The frame, JSON with a kind of "picture" or "source" and the field of the same name.
+    :return: The picture or the side asked for. The caller tells them apart by type.
+    :rtype: PictureKind | SourceMode
+    :raises ValueError: When the frame is not JSON, not a message this laptop reads, or names a
+        choice that isn't one.
     """
     try:
         message = json.loads(text)
     except json.JSONDecodeError as not_json:
         raise ValueError(f"the page sent a frame that is not JSON: {not_json}") from not_json
-    if not isinstance(message, dict) or message.get("kind") != BrowserMessageKind.PICTURE.value:
-        raise ValueError(f"the page sent a message this laptop does not read: {text[:80]!r}")
+    kind = message.get("kind") if isinstance(message, dict) else None
     try:
-        return PictureKind(message.get("picture"))
+        message_kind = BrowserMessageKind(kind)
+    except ValueError as unknown_kind:
+        raise ValueError(f"the page sent a message this laptop does not read: {text[:80]!r}") from unknown_kind
+    try:
+        return BROWSER_CHOICES[message_kind](message.get(message_kind.value))
     except ValueError as unknown:
-        raise ValueError(f"the page asked for a picture this laptop does not draw: {message.get('picture')!r}") from unknown
+        raise ValueError(f"the page asked for a {message_kind.value} this laptop does not have: {message.get(message_kind.value)!r}") from unknown
+
+
+def source_state_message(state: SwitchState) -> dict:
+    """What every page shows of a switchable run: the side in use, and the glasses' link, with why it's down."""
+    return {"mode": state.mode.value, "glasses": state.glasses.value, "glasses_detail": state.glasses_detail}
 
 
 def video_stream_message(description: VideoDescription) -> dict:

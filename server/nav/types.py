@@ -115,6 +115,9 @@ class DepthFrame:
     # Measurement only. Nothing in the scene or the planner reads it, and a frame without it is a
     # complete frame.
     timing: FrameTiming | None = None
+    # Which unbroken stretch of video the frame came from, carried over from RgbFrame. The loop
+    # starts the scene and the planner afresh when it changes. 0 for every source that can't switch.
+    source_generation: int = 0
 
     def __post_init__(self) -> None:
         # Every source builds one of these, and a wrongly shaped array from any of them would

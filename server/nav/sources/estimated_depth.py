@@ -81,6 +81,7 @@ class EstimatedDepthSource:
                     depth_shape=depth_meters.shape,
                 ),
                 timing=timing,
+                source_generation=rgb_frame.source_generation,
             )
 
     def close(self) -> None:

@@ -308,11 +308,18 @@ class NativeNeonRecordingReader:
         return np.asarray(imu.time, dtype=np.int64), xyzw_to_wxyz(rotations)
 
     def gaze_points_at(self, times_ns: np.ndarray, tolerance_ns: int) -> np.ndarray | None:
+        samples = self.gaze_samples()
+        if samples is None:
+            return None
+        gaze_times_ns, points = samples
+        return sample_nearest(gaze_times_ns, points, times_ns, tolerance_ns)
+
+    def gaze_samples(self) -> tuple[np.ndarray, np.ndarray] | None:
+        """Every gaze sample as recorded: (N,) int64 times and (N, 2) scene pixels. None when the stream won't load."""
         gaze = self._stream(RecordingStream.GAZE)
         if gaze is None:
             return None
-        points = np.asarray(gaze.point, dtype=np.float64).reshape(-1, 2)
-        return sample_nearest(np.asarray(gaze.time, dtype=np.int64), points, times_ns, tolerance_ns)
+        return np.asarray(gaze.time, dtype=np.int64), np.asarray(gaze.point, dtype=np.float64).reshape(-1, 2)
 
     def close(self) -> None:
         self._recording.close()
