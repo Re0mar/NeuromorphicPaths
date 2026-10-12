@@ -9,7 +9,8 @@ computed here, on the laptop. The page only draws.
 The video socket's two text messages are here too: the stream's description, which the page's
 decoder needs before the first unit, and the word that this run has no video to send. So are the two
 messages a page sends back, saying which picture it wants in its Depth card and, on a run with a
-demo, which side every page's run should plan on, and the state of that switch the laptop announces.
+recording, which side every page's run should plan on, and the state of the live input and that
+switch the laptop announces.
 """
 
 # Standard library imports
@@ -40,7 +41,8 @@ class WebMessageKind(Enum):
     VIDEO_STREAM = "video_stream"
     # On the video socket. This run's source has no video, and the socket closes after it.
     VIDEO_UNAVAILABLE = "video_unavailable"
-    # Which side a switchable run plans on, and how the glasses are. Sent on a run with a demo only.
+    # Which side a run serving the page from a live input plans on, and how that input is. Never sent
+    # on any other run.
     SOURCE_STATE = "source_state"
 
 
@@ -83,7 +85,7 @@ class BrowserMessageKind(Enum):
 
     # Which picture this browser wants from now on, in a "picture" field.
     PICTURE = "picture"
-    # Which side every page's run should plan on, the glasses or the demo, in a "source" field.
+    # Which side every page's run should plan on, the live input or the recording, in a "source" field.
     SOURCE = "source"
 
 
@@ -178,8 +180,14 @@ def browser_choice(text: str) -> PictureKind | SourceMode:
 
 
 def source_state_message(state: SwitchState) -> dict:
-    """What every page shows of a switchable run: the side in use, and the glasses' link, with why it's down."""
-    return {"mode": state.mode.value, "glasses": state.glasses.value, "glasses_detail": state.glasses_detail}
+    """What every page shows of a run with a live input: the side in use, the input, why there is none, and what the run offers."""
+    return {
+        "mode": state.mode.value,
+        "live": state.live.value,
+        "live_detail": state.live_detail,
+        "has_recording": state.has_recording,
+        "live_has_video": state.live_has_video,
+    }
 
 
 def video_stream_message(description: VideoDescription) -> dict:

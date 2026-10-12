@@ -19,10 +19,10 @@ class VideoConfig:
 
 
 class SourceMode(Enum):
-    """Which side a switchable glasses run plans on. Values are what the page sends and shows."""
+    """Which side a run serving the page plans on: its live input, or its recording. Values are what the page sends."""
 
-    GLASSES = "glasses"
-    DEMO = "demo"
+    LIVE = "live"
+    RECORDING = "recording"
 
 
 @dataclass(frozen=True)
@@ -47,11 +47,6 @@ class NeonConfig:
     # A capture folder from examples/capture_neon_stream.py, played back in place of the glasses at
     # the pace it was recorded. None means the glasses themselves.
     replay_dir: str | None = None
-    # A capture the page can switch to while the glasses stay connected, and back. A converted
-    # Companion recording is the usual one. None means a run with the glasses or the replay only.
-    demo_capture_dir: str | None = None
-    # Which side a switchable run plans on first. Only read when demo_capture_dir is set.
-    start_with: SourceMode = SourceMode.GLASSES
 
 
 @dataclass(frozen=True)

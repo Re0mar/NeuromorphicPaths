@@ -895,7 +895,7 @@ def test_a_unit_offered_on_the_sources_feed_reaches_a_video_client_through_build
     source, sink = build_source_and_sink(config)
     sink.start()
     try:
-        feed = source.rgb_source.video_feed
+        feed = source.video_feed
 
         def describe_and_offer() -> None:
             feed.describe(VIDEO_DESCRIPTION)
@@ -1072,27 +1072,34 @@ def test_a_page_sees_the_side_in_use_and_its_choice_switches_every_page() -> Non
     sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None, source_switch=switch)
     sink.start()
     try:
-        choice = json.dumps({"kind": "source", "source": "demo"})
+        choice = json.dumps({"kind": "source", "source": "recording"})
         received = asyncio.run(_say_then_receive_until_quiet(sink.port, [choice], lambda: None, 0.5))
         late_page = asyncio.run(_receive_until_quiet(sink.port, lambda: None, 0.5))
     finally:
         sink.close()
 
-    assert switch.requests == [SourceMode.DEMO]
+    assert switch.requests == [SourceMode.RECORDING]
     states = _source_states(received)
-    assert states[0] == {"kind": "source_state", "mode": "glasses", "glasses": "connected", "glasses_detail": None}, "on connect"
-    assert states[-1]["mode"] == "demo", "the switch's new state reaches the page that asked"
-    assert _source_states(late_page)[-1]["mode"] == "demo", "and a page opened afterwards"
+    assert states[0] == {
+        "kind": "source_state",
+        "mode": "live",
+        "live": "connected",
+        "live_detail": None,
+        "has_recording": True,
+        "live_has_video": True,
+    }, "on connect"
+    assert states[-1]["mode"] == "recording", "the switch's new state reaches the page that asked"
+    assert _source_states(late_page)[-1]["mode"] == "recording", "and a page opened afterwards"
 
 
-def test_a_run_without_a_demo_says_nothing_of_one_and_ignores_a_request(sink: WebSink, caplog: pytest.LogCaptureFixture) -> None:
-    choice = json.dumps({"kind": "source", "source": "demo"})
+def test_a_run_without_a_switch_says_nothing_of_one_and_ignores_a_request(sink: WebSink, caplog: pytest.LogCaptureFixture) -> None:
+    choice = json.dumps({"kind": "source", "source": "recording"})
 
     with caplog.at_level("WARNING", logger="nav.sinks.web"):
         received = asyncio.run(_say_then_receive_until_quiet(sink.port, [choice], lambda: None, 0.5))
 
     assert _source_states(received) == [], "the page shows no switch"
-    assert any("no demo to switch between" in record.getMessage() for record in caplog.records)
+    assert any("no live input and recording to switch between" in record.getMessage() for record in caplog.records)
 
 
 def test_closing_the_sink_stops_listening_to_the_switch() -> None:

@@ -89,7 +89,8 @@
     }
     #sound-card, #heading-card { flex: 1 1 0; }
     #video-card, #heading-card, #depth-card { contain: size; }
-    #live { flex: 1 1 0; min-height: 0; object-fit: contain; }
+    #live-frame { flex: 1 1 0; min-height: 0; }
+    #live { width: 100%; height: 100%; object-fit: contain; }
     #arrow { flex: 1 1 0; min-height: 0; object-fit: contain; }
     #depth-frame { flex: 1 1 0; min-height: 0; }
     #depth { width: 100%; height: 100%; object-fit: contain; object-position: 50% 0; }
@@ -103,11 +104,16 @@
   #sound-card { grid-area: sound; }
   canvas, img, video { max-width: 100%; height: auto; }
   .placeholder { font-size: var(--text-s); color: var(--muted); }
-  .placeholder[hidden], #depth[hidden], #rings[hidden], .help[hidden], #plan-panel[hidden], #music-label[hidden], #music-controls[hidden], #source-field[hidden], #glasses-link[hidden], #live[hidden] { display: none; }
-  /* How the glasses are doing, on a run that can switch to them. */
-  #glasses-link { font-size: var(--text-s); color: var(--muted); }
-  #glasses-link.connected { color: var(--accent); }
-  #glasses-link.unreachable { color: var(--alarm-fg); }
+  .placeholder[hidden], #depth[hidden], #rings[hidden], .help[hidden], #plan-panel[hidden], #music-label[hidden], #music-controls[hidden], #source-field[hidden], #input-link[hidden], #no-input[hidden], #live[hidden] { display: none; }
+  /* How the live input is doing, on a run that serves the page from one. */
+  #input-link { font-size: var(--text-s); color: var(--muted); }
+  #input-link.connected { color: var(--accent); }
+  #input-link.no_input { color: var(--alarm-fg); }
+  /* Over the video while the live input is chosen and nothing comes in, so nobody mistakes the last
+     frame for a live one. */
+  #live-frame { position: relative; }
+  #no-input { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: var(--space-3); font-size: 2rem; font-weight: 700; color: var(--alarm-fg); background: rgba(0, 0, 0, 0.6); border-radius: var(--space-1); }
+  #no-input.quiet { font-size: var(--text-l); font-weight: 400; color: var(--muted); }
   /* Where the track is, and a slider to jump anywhere in it. */
   #music-controls { display: flex; flex-direction: column; gap: var(--space-1); font-size: var(--text-s); color: var(--muted); }
   #music-seek { width: 100%; margin: 0; accent-color: var(--accent); }
@@ -218,18 +224,21 @@
   <section class="card" id="video-card">
     <h2>Video</h2>
     <div id="video-controls">
-      <!-- Shown on a run started with a demo capture. Switches every page's run, not just this one. -->
+      <!-- Shown on a run with a recording. Switches every page's run, not just this one. -->
       <div class="toggle-field" id="source-field" hidden>
         <span class="toggle-name" id="source-mode-name">Source</span>
         <div id="source-mode" class="toggle" role="radiogroup" aria-labelledby="source-mode-name">
-          <label><input type="radio" name="source-mode" value="glasses"> Glasses</label>
-          <label><input type="radio" name="source-mode" value="demo"> Demo</label>
+          <label><input type="radio" name="source-mode" value="live"> Live</label>
+          <label><input type="radio" name="source-mode" value="recording"> Recording</label>
         </div>
       </div>
-      <span id="glasses-link" hidden></span>
+      <span id="input-link" hidden></span>
       <span id="video-status">Waiting for video.</span>
     </div>
-    <canvas id="live" width="640" height="480" aria-label="What the glasses see, decoded in this browser"></canvas>
+    <div id="live-frame">
+      <canvas id="live" width="640" height="480" aria-label="What the glasses see, decoded in this browser"></canvas>
+      <div id="no-input" role="status" hidden>No Input</div>
+    </div>
   </section>
   <section class="card" id="plan-card">
     <div class="card-head">
@@ -326,7 +335,8 @@
   // laptop replays, which includes a converted recording. The laptop forwards the compressed frames
   // on a second socket and this browser decodes them with WebCodecs, which is why the page is
   // HTTPS. It never plays video of its own, so the picture is always in step with the arrow. On a
-  // run started with a demo, any page can switch the laptop between the glasses and the demo.
+  // run serving the page from a live input it says how that input is, and with a recording any page can
+  // switch the laptop between the two.
   const canvas = document.getElementById("arrow");
   const context = canvas.getContext("2d");
   const depth = document.getElementById("depth");
@@ -361,8 +371,11 @@
   const depthTitle = document.getElementById("depth-title");
   const sourceField = document.getElementById("source-field");
   const sourceMode = document.getElementById("source-mode");
-  const glassesLink = document.getElementById("glasses-link");
-  const GLASSES_LINK_TEXT = { connecting: "Glasses connecting", connected: "Glasses connected", unreachable: "Glasses unreachable" };
+  const inputLink = document.getElementById("input-link");
+  const noInput = document.getElementById("no-input");
+  const INPUT_LINK_TEXT = { connecting: "Looking for the live input", connected: "Live input connected", no_input: "No Input" };
+  // The side the last state named, so a switch can clear the other side's last frame. Null before any.
+  let shownSide = null;
   let depthUrl = null;
   // The newest plan view, kept so a toggle can redraw it without asking the laptop for anything.
   let latestPlanView = null;
@@ -933,17 +946,31 @@
   });
   showRings.addEventListener("change", drawRings);
 
-  // On a run with a demo, the laptop says which side it plans on and how the glasses are. The toggle
-  // only follows what the laptop says, so every page shows the same side whoever switched it.
+  // On a run serving the page from a live input, the laptop says which side it plans on and how the
+  // input is. The toggle only follows what the laptop says, so every page shows the same side
+  // whoever switched it.
   function showSourceState(message) {
-    sourceField.hidden = false;
+    sourceField.hidden = !message.has_recording;
     const chosenSide = sourceMode.querySelector('input[value="' + message.mode + '"]');
     if (chosenSide) chosenSide.checked = true;
-    glassesLink.hidden = false;
-    glassesLink.textContent = GLASSES_LINK_TEXT[message.glasses] || "Glasses " + message.glasses;
-    glassesLink.className = message.glasses;
+    inputLink.hidden = false;
+    inputLink.textContent = INPUT_LINK_TEXT[message.live] || message.live;
+    inputLink.className = message.live;
     // The full reason is long, so it waits under the pointer rather than filling the card.
-    glassesLink.title = message.glasses_detail || "";
+    inputLink.title = message.live_detail || "";
+    if (shownSide !== null && shownSide !== message.mode) {
+      // The other side's last frame would otherwise sit there as if it were this side's.
+      liveContext.fillStyle = "#000";
+      liveContext.fillRect(0, 0, liveCanvas.width, liveCanvas.height);
+    }
+    shownSide = message.mode;
+    const onLive = message.mode === "live";
+    const nothingComing = onLive && message.live !== "connected";
+    const noVideo = onLive && !nothingComing && !message.live_has_video;
+    noInput.hidden = !nothingComing && !noVideo;
+    noInput.textContent = nothingComing ? "No Input" : "This input sends no video";
+    noInput.classList.toggle("quiet", noVideo);
+    if (nothingComing) status.textContent = "No Input";
   }
 
   sourceMode.addEventListener("change", () => {

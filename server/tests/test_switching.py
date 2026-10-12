@@ -1,8 +1,8 @@
 """
-Covers the switch between the glasses and a demo capture, with fake sides that need no hardware.
+Covers the switch between the live input and a recording, with fake sides that need no hardware.
 
-Each fake side yields frames whose pixels say which side made them, and offers video units that say
-the same, so a test can read off which side the planner and the page are getting.
+Each fake side yields depth frames whose timestamps say which side made them, and offers video units
+that say the same, so a test can read off which side the planner and the page are getting.
 """
 
 # Standard library imports
@@ -18,26 +18,42 @@ import pytest
 from nav.sources.config import SourceMode
 from nav.sources.rgb import RgbFrame
 from nav.sources.scene_video import AccessUnit, SceneVideoFeed, VideoDescription
-from nav.sources.switching import CurrentStretchOnly, GlassesLink, SwitchableRgbSource, SwitchState
+from nav.sources.switching import InputLink, OnlyWhileChosen, SharedEstimator, SwitchableSource, SwitchState
 from nav.types import DepthFrame, Pose
 
 FRAME_INTERVAL_SECONDS = 0.005
 WAIT_SECONDS = 3.0
-# The pixel value each side's frames carry.
-SIDE_PIXEL = {SourceMode.GLASSES: 10, SourceMode.DEMO: 20}
+# The whole-second part of each side's timestamps, so a frame says which side made it.
+SIDE_SECONDS = {SourceMode.LIVE: 1000.0, SourceMode.RECORDING: 2000.0}
+
+
+def _side_of(frame: DepthFrame) -> SourceMode:
+    return SourceMode.LIVE if frame.timestamp_seconds < SIDE_SECONDS[SourceMode.RECORDING] else SourceMode.RECORDING
+
+
+def _depth_frame(seconds: float) -> DepthFrame:
+    return DepthFrame(
+        timestamp_seconds=seconds,
+        depth_meters=np.ones((2, 2), dtype=np.float32),
+        intrinsics=np.eye(3),
+        pose=Pose(np.array([1.0, 0.0, 0.0, 0.0]), None, False),
+        ground_plane=None,
+        gaze_pixel=None,
+    )
 
 
 class FakeSide:
-    """Yields frames of its own pixel value until closed, or until it has given frame_count of them."""
+    """Yields depth frames stamped for its side until closed, or until it has given frame_count of them."""
 
-    def __init__(self, mode: SourceMode, feed: SceneVideoFeed | None, frame_count: int | None = None, fail_with: BaseException | None = None) -> None:
+    def __init__(self, mode: SourceMode, feed: SceneVideoFeed | None, frame_count: int | None, fail_with: BaseException | None, flowing: threading.Event) -> None:
         self.mode = mode
         self.feed = feed
         self.frame_count = frame_count
         self.fail_with = fail_with
+        self.flowing = flowing
         self.closed = threading.Event()
 
-    def frames(self) -> Iterator[RgbFrame]:
+    def frames(self) -> Iterator[DepthFrame]:
         if self.fail_with is not None:
             raise self.fail_with
         if self.feed is not None:
@@ -45,10 +61,12 @@ class FakeSide:
         index = 0
         while not self.closed.is_set() and (self.frame_count is None or index < self.frame_count):
             time.sleep(FRAME_INTERVAL_SECONDS)
+            # A side whose input has gone quiet keeps its link open and sends nothing.
+            if not self.flowing.is_set():
+                continue
             if self.feed is not None:
                 self.feed.offer(AccessUnit(timestamp_seconds=float(index), data=self.mode.value.encode(), keyframe=True))
-            image = np.full((4, 4, 3), SIDE_PIXEL[self.mode], dtype=np.uint8)
-            yield RgbFrame(timestamp_seconds=float(index), image_rgb=image, gaze_pixel=None, pose=None, camera_matrix=None, timing=None)
+            yield _depth_frame(SIDE_SECONDS[self.mode] + index * 0.001)
             index += 1
 
     def close(self) -> None:
@@ -63,10 +81,12 @@ class Factory:
         self.built: list[FakeSide] = []
         self.frame_count: int | None = None
         self.failures: list[BaseException] = []
+        self.flowing = threading.Event()
+        self.flowing.set()
 
-    def __call__(self, feed: SceneVideoFeed | None) -> FakeSide:
+    def __call__(self, feed: SceneVideoFeed | None, chosen) -> FakeSide:
         fail_with = self.failures.pop(0) if self.failures else None
-        side = FakeSide(self.mode, feed, self.frame_count, fail_with)
+        side = FakeSide(self.mode, feed, self.frame_count, fail_with, self.flowing)
         self.built.append(side)
         return side
 
@@ -91,23 +111,34 @@ class VideoRecorder:
             return self.events[len(self.events) - self.events[::-1].index(marker) :]
 
 
+class Collector:
+    """Pulls frames on a thread of its own, the way the loop does, so a test can wait without pulling."""
+
+    def __init__(self, switch: SwitchableSource) -> None:
+        self.frames: list[DepthFrame] = []
+        self._thread = threading.Thread(target=lambda: self.frames.extend(switch.frames()), daemon=True)
+        self._thread.start()
+
+    def wait_for_side(self, mode: SourceMode) -> DepthFrame:
+        seen = len(self.frames)
+        _wait_for(lambda: any(_side_of(frame) is mode for frame in self.frames[seen:]), f"a frame from the {mode.value}")
+        return next(frame for frame in self.frames[seen:] if _side_of(frame) is mode)
+
+
 @pytest.fixture
 def factories() -> dict[SourceMode, Factory]:
     return {mode: Factory(mode) for mode in SourceMode}
 
 
-def _switch(factories, initial: SourceMode = SourceMode.GLASSES, feed: SceneVideoFeed | None = None) -> SwitchableRgbSource:
-    return SwitchableRgbSource(factories[SourceMode.GLASSES], factories[SourceMode.DEMO], initial, video_feed=feed, glasses_retry_seconds=0.05)
-
-
-def _next_from(frames: Iterator[RgbFrame], mode: SourceMode) -> RgbFrame:
-    """The next frame from the given side, skipping any the other side had already handed over."""
-    deadline = time.monotonic() + WAIT_SECONDS
-    while time.monotonic() < deadline:
-        frame = next(frames)
-        if frame.image_rgb[0, 0, 0] == SIDE_PIXEL[mode]:
-            return frame
-    raise AssertionError(f"no frame from the {mode.value} within {WAIT_SECONDS} s")
+def _switch(factories, initial: SourceMode = SourceMode.LIVE, feed: SceneVideoFeed | None = None, with_recording: bool = True, stall_seconds: float = 3.0) -> SwitchableSource:
+    return SwitchableSource(
+        factories[SourceMode.LIVE],
+        factories[SourceMode.RECORDING] if with_recording else None,
+        initial,
+        video_feed=feed,
+        live_retry_seconds=0.05,
+        live_stall_seconds=stall_seconds,
+    )
 
 
 def _wait_for(condition, what: str) -> None:
@@ -119,81 +150,133 @@ def _wait_for(condition, what: str) -> None:
 
 
 def test_frames_come_from_the_side_it_starts_on(factories) -> None:
-    switch = _switch(factories, initial=SourceMode.DEMO)
-    frames = switch.frames()
+    switch = _switch(factories, initial=SourceMode.RECORDING)
+    collector = Collector(switch)
     try:
-        assert next(frames).image_rgb[0, 0, 0] == SIDE_PIXEL[SourceMode.DEMO]
+        assert _side_of(collector.wait_for_side(SourceMode.RECORDING)) is SourceMode.RECORDING
     finally:
         switch.close()
 
 
 def test_a_switch_moves_the_frames_and_starts_a_new_stretch_each_time(factories) -> None:
     switch = _switch(factories)
-    frames = switch.frames()
+    collector = Collector(switch)
     try:
-        glasses = _next_from(frames, SourceMode.GLASSES)
-        switch.request(SourceMode.DEMO)
-        demo = _next_from(frames, SourceMode.DEMO)
-        switch.request(SourceMode.GLASSES)
-        back = _next_from(frames, SourceMode.GLASSES)
+        live = collector.wait_for_side(SourceMode.LIVE)
+        switch.request(SourceMode.RECORDING)
+        recording = collector.wait_for_side(SourceMode.RECORDING)
+        switch.request(SourceMode.LIVE)
+        back = collector.wait_for_side(SourceMode.LIVE)
 
-        assert glasses.source_generation < demo.source_generation < back.source_generation
+        assert live.source_generation < recording.source_generation < back.source_generation
     finally:
         switch.close()
 
 
-def test_the_glasses_stay_connected_while_the_demo_plays_and_the_demo_starts_over_each_time(factories) -> None:
+def test_the_live_input_stays_connected_while_the_recording_plays_and_the_recording_starts_over_each_time(factories) -> None:
     switch = _switch(factories)
-    frames = switch.frames()
+    collector = Collector(switch)
     try:
-        _next_from(frames, SourceMode.GLASSES)
-        switch.request(SourceMode.DEMO)
-        _next_from(frames, SourceMode.DEMO)
-        switch.request(SourceMode.GLASSES)
-        _next_from(frames, SourceMode.GLASSES)
-        _wait_for(lambda: factories[SourceMode.DEMO].built[0].closed.is_set(), "the demo to close when left")
-        switch.request(SourceMode.DEMO)
-        _next_from(frames, SourceMode.DEMO)
+        collector.wait_for_side(SourceMode.LIVE)
+        switch.request(SourceMode.RECORDING)
+        collector.wait_for_side(SourceMode.RECORDING)
+        switch.request(SourceMode.LIVE)
+        collector.wait_for_side(SourceMode.LIVE)
+        _wait_for(lambda: factories[SourceMode.RECORDING].built[0].closed.is_set(), "the recording to close when left")
+        switch.request(SourceMode.RECORDING)
+        collector.wait_for_side(SourceMode.RECORDING)
 
-        assert len(factories[SourceMode.GLASSES].built) == 1, "one glasses link for the whole run"
-        assert not factories[SourceMode.GLASSES].built[0].closed.is_set()
-        assert len(factories[SourceMode.DEMO].built) == 2, "the demo starts from the beginning when chosen again"
+        assert len(factories[SourceMode.LIVE].built) == 1, "one live link for the whole run"
+        assert not factories[SourceMode.LIVE].built[0].closed.is_set()
+        assert len(factories[SourceMode.RECORDING].built) == 2, "the recording starts from the beginning when chosen again"
     finally:
         switch.close()
 
 
-def test_the_demo_loops_when_it_ends_as_a_new_stretch(factories) -> None:
-    factories[SourceMode.DEMO].frame_count = 3
-    switch = _switch(factories, initial=SourceMode.DEMO)
-    frames = switch.frames()
+def test_the_recording_loops_when_it_ends_as_a_new_stretch(factories) -> None:
+    factories[SourceMode.RECORDING].frame_count = 3
+    switch = _switch(factories, initial=SourceMode.RECORDING)
+    collector = Collector(switch)
     try:
-        generations = set()
-        deadline = time.monotonic() + WAIT_SECONDS
-        while len(factories[SourceMode.DEMO].built) < 3 and time.monotonic() < deadline:
-            generations.add(_next_from(frames, SourceMode.DEMO).source_generation)
+        _wait_for(lambda: len(factories[SourceMode.RECORDING].built) >= 3, "the recording to start over twice")
 
-        assert len(factories[SourceMode.DEMO].built) >= 3, "the demo started over after each end"
+        generations = {frame.source_generation for frame in collector.frames if _side_of(frame) is SourceMode.RECORDING}
         assert len(generations) >= 2
     finally:
         switch.close()
 
 
-def test_glasses_that_cant_be_reached_are_retried_and_the_state_says_why(factories) -> None:
-    factories[SourceMode.GLASSES].failures = [ConnectionError("no Neon found on the network")]
+def test_a_missing_live_input_reads_as_no_input_and_is_retried_until_it_comes(factories) -> None:
+    factories[SourceMode.LIVE].failures = [ConnectionError("no Neon found on the network")] * 2
     switch = _switch(factories)
     states: list[SwitchState] = []
     switch.subscribe(states.append)
-    frames = switch.frames()
+    collector = Collector(switch)
     try:
-        frame = _next_from(frames, SourceMode.GLASSES)
+        collector.wait_for_side(SourceMode.LIVE)
 
-        unreachable = [state for state in states if state.glasses is GlassesLink.UNREACHABLE]
-        assert unreachable and "no Neon found" in unreachable[0].glasses_detail
-        assert states[-1].glasses is GlassesLink.CONNECTED, "the retry got through"
-        assert len(factories[SourceMode.GLASSES].built) == 2
-        assert frame.image_rgb[0, 0, 0] == SIDE_PIXEL[SourceMode.GLASSES]
+        no_input = [state for state in states if state.live is InputLink.NO_INPUT]
+        assert no_input and "no Neon found" in no_input[0].live_detail
+        assert states[-1].live is InputLink.CONNECTED, "the retry got through"
+        assert len(factories[SourceMode.LIVE].built) == 3
     finally:
         switch.close()
+
+
+def test_a_live_input_that_goes_quiet_reads_as_no_input_and_recovers_when_frames_return(factories) -> None:
+    switch = _switch(factories, stall_seconds=0.3)
+    states: list[SwitchState] = []
+    switch.subscribe(states.append)
+    collector = Collector(switch)
+    try:
+        collector.wait_for_side(SourceMode.LIVE)
+        factories[SourceMode.LIVE].flowing.clear()
+
+        _wait_for(lambda: states[-1].live is InputLink.NO_INPUT, "the quiet input to read as no input")
+        assert "no frames for" in states[-1].live_detail
+        factories[SourceMode.LIVE].flowing.set()
+        _wait_for(lambda: states[-1].live is InputLink.CONNECTED, "frames to bring the input back")
+        assert len(factories[SourceMode.LIVE].built) == 1, "a quiet link is not reconnected, only reported"
+    finally:
+        switch.close()
+
+
+def test_a_quiet_live_input_isnt_reported_while_the_recording_plays(factories) -> None:
+    switch = _switch(factories, initial=SourceMode.RECORDING, stall_seconds=0.2)
+    states: list[SwitchState] = []
+    switch.subscribe(states.append)
+    collector = Collector(switch)
+    try:
+        collector.wait_for_side(SourceMode.RECORDING)
+        _wait_for(lambda: states[-1].live is InputLink.CONNECTED, "the live input to connect")
+        factories[SourceMode.LIVE].flowing.clear()
+        time.sleep(0.5)
+
+        assert states[-1].live is InputLink.CONNECTED, "the live side isn't chosen, so its silence isn't news"
+    finally:
+        switch.close()
+
+
+def test_a_run_without_a_recording_only_plans_on_the_live_input(factories) -> None:
+    switch = _switch(factories, with_recording=False)
+    states: list[SwitchState] = []
+    switch.subscribe(states.append)
+    collector = Collector(switch)
+    try:
+        collector.wait_for_side(SourceMode.LIVE)
+        switch.request(SourceMode.RECORDING)
+        collector.wait_for_side(SourceMode.LIVE)
+
+        assert switch.mode is SourceMode.LIVE
+        assert not states[-1].has_recording
+        assert factories[SourceMode.RECORDING].built == []
+    finally:
+        switch.close()
+
+
+def test_a_run_cant_start_on_a_recording_it_doesnt_have(factories) -> None:
+    with pytest.raises(ValueError, match="only start on the recording when it has one"):
+        _switch(factories, initial=SourceMode.RECORDING, with_recording=False)
 
 
 def test_a_listener_gets_the_state_at_once_and_on_every_switch(factories) -> None:
@@ -201,10 +284,11 @@ def test_a_listener_gets_the_state_at_once_and_on_every_switch(factories) -> Non
     states: list[SwitchState] = []
 
     switch.subscribe(states.append)
-    switch.request(SourceMode.DEMO)
-    switch.request(SourceMode.DEMO)
+    switch.request(SourceMode.RECORDING)
+    switch.request(SourceMode.RECORDING)
 
-    assert [state.mode for state in states] == [SourceMode.GLASSES, SourceMode.DEMO], "choosing the side in use changes nothing"
+    assert [state.mode for state in states] == [SourceMode.LIVE, SourceMode.RECORDING], "choosing the side in use changes nothing"
+    assert states[0].has_recording and states[0].live is InputLink.CONNECTING
     switch.close()
 
 
@@ -213,51 +297,38 @@ def test_only_the_chosen_sides_video_reaches_the_page_and_a_switch_redescribes_i
     page = VideoRecorder()
     feed.subscribe(page)
     switch = _switch(factories, feed=feed)
-    frames = switch.frames()
+    collector = Collector(switch)
     try:
-        _next_from(frames, SourceMode.GLASSES)
-        switch.request(SourceMode.DEMO)
-        _next_from(frames, SourceMode.DEMO)
-        _wait_for(lambda: page.events.count("demo") >= 3, "demo video")
+        collector.wait_for_side(SourceMode.LIVE)
+        switch.request(SourceMode.RECORDING)
+        collector.wait_for_side(SourceMode.RECORDING)
+        _wait_for(lambda: page.events.count("recording") >= 3, "recording video")
 
-        assert "glasses" not in page.after("describe demo"), "the glasses' units stop reaching the page"
-        switch.request(SourceMode.GLASSES)
-        # Described again at once, from the stream description the glasses gave at connect.
-        assert page.events[-1] == "describe glasses" or "describe glasses" in page.events[-3:]
-        _wait_for(lambda: page.after("describe glasses").count("glasses") >= 3, "glasses video again")
-        assert "demo" not in page.after("describe glasses")[1:], "the demo's units stop once it is left"
+        assert "live" not in page.after("describe recording"), "the live units stop reaching the page"
+        switch.request(SourceMode.LIVE)
+        # Described again at once, from the stream description the live input gave at connect.
+        _wait_for(lambda: "describe live" in page.events[-5:], "the live stream described again")
+        _wait_for(lambda: page.after("describe live").count("live") >= 3, "live video again")
+        assert "recording" not in page.after("describe live")[1:], "the recording's units stop once it is left"
     finally:
         switch.close()
 
 
-class Collector:
-    """Pulls frames on a thread of its own, the way the loop does, so a test can wait without pulling."""
-
-    def __init__(self, switch: SwitchableRgbSource) -> None:
-        self.frames: list[RgbFrame] = []
-        self._thread = threading.Thread(target=lambda: self.frames.extend(switch.frames()), daemon=True)
-        self._thread.start()
-
-    def wait_for_side(self, mode: SourceMode) -> None:
-        seen = len(self.frames)
-        _wait_for(lambda: any(frame.image_rgb[0, 0, 0] == SIDE_PIXEL[mode] for frame in self.frames[seen:]), f"a frame from the {mode.value}")
-
-
-def test_a_demo_that_wont_play_waits_to_be_chosen_again_and_the_glasses_still_work(factories, caplog: pytest.LogCaptureFixture) -> None:
-    factories[SourceMode.DEMO].failures = [ValueError("capture is malformed: meta.json has no 'sprop'")]
-    switch = _switch(factories, initial=SourceMode.DEMO)
+def test_a_recording_that_wont_play_waits_to_be_chosen_again_and_the_live_input_still_works(factories, caplog: pytest.LogCaptureFixture) -> None:
+    factories[SourceMode.RECORDING].failures = [ValueError("capture is malformed: meta.json has no 'sprop'")]
+    switch = _switch(factories, initial=SourceMode.RECORDING)
     collector = Collector(switch)
     try:
-        _wait_for(lambda: "the demo stopped" in caplog.text, "the demo's failure to be logged")
+        _wait_for(lambda: "the recording stopped" in caplog.text, "the recording's failure to be logged")
         time.sleep(0.1)
-        assert len(factories[SourceMode.DEMO].built) == 1, "a failed demo is not retried on its own"
+        assert len(factories[SourceMode.RECORDING].built) == 1, "a failed recording is not retried on its own"
 
-        switch.request(SourceMode.GLASSES)
-        collector.wait_for_side(SourceMode.GLASSES)
-        switch.request(SourceMode.DEMO)
-        collector.wait_for_side(SourceMode.DEMO)
+        switch.request(SourceMode.LIVE)
+        collector.wait_for_side(SourceMode.LIVE)
+        switch.request(SourceMode.RECORDING)
+        collector.wait_for_side(SourceMode.RECORDING)
 
-        assert len(factories[SourceMode.DEMO].built) == 2, "choosing it again tries once more"
+        assert len(factories[SourceMode.RECORDING].built) == 2, "choosing it again tries once more"
     finally:
         switch.close()
 
@@ -265,9 +336,9 @@ def test_a_demo_that_wont_play_waits_to_be_chosen_again_and_the_glasses_still_wo
 def test_close_ends_the_frames_and_closes_both_sides(factories) -> None:
     switch = _switch(factories)
     frames = switch.frames()
-    _next_from(frames, SourceMode.GLASSES)
-    switch.request(SourceMode.DEMO)
-    _next_from(frames, SourceMode.DEMO)
+    next(frames)
+    switch.request(SourceMode.RECORDING)
+    _wait_for(lambda: factories[SourceMode.RECORDING].built, "the recording to start")
 
     switch.close()
 
@@ -276,34 +347,81 @@ def test_close_ends_the_frames_and_closes_both_sides(factories) -> None:
         next(frames)
 
 
-def test_a_depth_frame_from_a_stretch_already_left_never_reaches_the_planner() -> None:
-    # The frame that was still in the depth model when the switch turned is the one this drops.
-    class SwitchAt:
-        generation = 2
+def test_a_frame_that_finishes_after_its_side_was_left_never_reaches_the_planner() -> None:
+    # The depth model takes about half a second a frame, so the side being left can finish one after
+    # the switch. Handed over, it would put one arrow from that side on the page.
+    release = threading.Event()
 
-    def depth_frame(generation: int) -> DepthFrame:
-        return DepthFrame(
-            timestamp_seconds=float(generation),
-            depth_meters=np.ones((2, 2), dtype=np.float32),
-            intrinsics=np.eye(3),
-            pose=Pose(np.array([1.0, 0.0, 0.0, 0.0]), None, False),
-            ground_plane=None,
-            gaze_pixel=None,
-            source_generation=generation,
-        )
-
-    class Frames:
-        closed = False
-
+    class SlowRecording:
         def frames(self):
-            yield from (depth_frame(generation) for generation in (1, 1, 2, 2))
+            release.wait(WAIT_SECONDS)
+            yield _depth_frame(SIDE_SECONDS[SourceMode.RECORDING])
 
         def close(self) -> None:
-            self.closed = True
+            release.set()
 
-    inner = Frames()
-    filtered = CurrentStretchOnly(inner, SwitchAt())
+    live = Factory(SourceMode.LIVE)
+    switch = SwitchableSource(live, lambda feed, chosen: SlowRecording(), SourceMode.RECORDING, live_retry_seconds=0.05)
+    collector = Collector(switch)
+    try:
+        time.sleep(0.2)
+        switch.request(SourceMode.LIVE)
+        release.set()
+        collector.wait_for_side(SourceMode.LIVE)
+        time.sleep(0.1)
 
-    assert [frame.source_generation for frame in filtered.frames()] == [2, 2]
-    filtered.close()
-    assert inner.closed
+        assert not any(_side_of(frame) is SourceMode.RECORDING for frame in collector.frames)
+    finally:
+        switch.close()
+
+
+def test_frames_of_a_side_that_isnt_chosen_never_reach_the_depth_model() -> None:
+    chosen = {"now": True}
+
+    class Pictures:
+        def frames(self):
+            for index in range(4):
+                if index == 2:
+                    chosen["now"] = False
+                yield RgbFrame(timestamp_seconds=float(index), image_rgb=np.zeros((2, 2, 3), dtype=np.uint8), gaze_pixel=None, pose=None, camera_matrix=None, timing=None)
+
+        def close(self) -> None:
+            pass
+
+    gated = OnlyWhileChosen(Pictures(), lambda: chosen["now"])
+
+    assert [frame.timestamp_seconds for frame in gated.frames()] == [0.0, 1.0]
+
+
+def test_the_shared_model_warms_up_once_and_takes_one_frame_at_a_time() -> None:
+    class CountingModel:
+        device = "cuda"
+
+        def __init__(self) -> None:
+            self.warm_ups = 0
+            self.inside = 0
+            self.most_inside = 0
+
+        def warm_up(self) -> None:
+            self.warm_ups += 1
+
+        def estimate(self, image_rgb):
+            self.inside += 1
+            self.most_inside = max(self.most_inside, self.inside)
+            time.sleep(0.02)
+            self.inside -= 1
+            return "depth"
+
+    model = CountingModel()
+    shared = SharedEstimator(model)
+    shared.warm_up()
+    shared.warm_up()
+    threads = [threading.Thread(target=shared.estimate, args=(None,)) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert model.warm_ups == 1
+    assert model.most_inside == 1
+    assert shared.device == "cuda"

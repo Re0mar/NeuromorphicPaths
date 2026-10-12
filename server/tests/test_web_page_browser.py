@@ -35,7 +35,7 @@ from nav.sinks.web import WebSink
 from nav.sinks.web_messages import WebMessageKind
 from nav.sources.config import SourceMode
 from nav.sources.scene_video import AccessUnit, AccessUnitAssembler, SceneVideoFeed, VideoDescription
-from nav.sources.switching import GlassesLink
+from nav.sources.switching import InputLink
 from nav.types import DebugView, ObstaclePoint, ObstacleSet
 from web_samples import FakeSwitch, sample_field, sample_path, sample_view
 
@@ -928,17 +928,18 @@ def test_the_live_status_says_the_stream_is_undescribed_until_the_laptop_describ
 
 
 # *******************************************
-# The glasses and demo switch
+# The live and recording switch
 # *******************************************
 
 
-def test_a_run_without_a_demo_shows_no_switch(browser_page: PageSession, sink: WebSink) -> None:
+def test_a_run_without_a_switch_shows_no_toggle_and_no_link(browser_page: PageSession, sink: WebSink) -> None:
     page = browser_page.page
     sink.publish(sample_path())
     _wait_for_text(page, "link", "Connected")
 
     assert not page.is_visible("#source-field")
-    assert not page.is_visible("#glasses-link")
+    assert not page.is_visible("#input-link")
+    assert not page.is_visible("#no-input")
 
 
 def _switch_page(browser, switch: FakeSwitch) -> tuple[WebSink, PageSession]:
@@ -947,34 +948,104 @@ def _switch_page(browser, switch: FakeSwitch) -> tuple[WebSink, PageSession]:
     return switch_sink, open_page(browser, switch_sink)
 
 
-def test_the_switch_follows_the_laptop_and_a_click_asks_it_to_switch(browser) -> None:
-    switch = FakeSwitch(SourceMode.GLASSES, GlassesLink.CONNECTED)
+def test_the_toggle_follows_the_laptop_and_a_click_asks_it_to_switch(browser) -> None:
+    switch = FakeSwitch(SourceMode.LIVE, InputLink.CONNECTED)
     switch_sink, session = _switch_page(browser, switch)
     try:
         page = session.page
         page.wait_for_selector("#source-field", state="visible", timeout=ELEMENT_TIMEOUT_MS)
-        assert page.is_checked("#source-mode input[value='glasses']")
-        assert page.text_content("#glasses-link") == "Glasses connected"
+        assert page.is_checked("#source-mode input[value='live']")
+        assert page.text_content("#input-link") == "Live input connected"
+        assert not page.is_visible("#no-input")
 
-        _choose(page, "source-mode", "demo")
+        _choose(page, "source-mode", "recording")
 
-        page.wait_for_function("() => document.querySelector(\"#source-mode input[value='demo']\").checked", timeout=ELEMENT_TIMEOUT_MS)
-        assert switch.requests == [SourceMode.DEMO]
+        page.wait_for_function("() => document.querySelector(\"#source-mode input[value='recording']\").checked", timeout=ELEMENT_TIMEOUT_MS)
+        assert switch.requests == [SourceMode.RECORDING]
     finally:
         session.close()
         switch_sink.close()
     assert session.errors == [], session.errors
 
 
-def test_glasses_that_cant_be_reached_say_so_and_why(browser) -> None:
-    switch = FakeSwitch(SourceMode.DEMO, GlassesLink.UNREACHABLE, "ConnectionError: no Neon found on the network")
+def test_a_missing_live_input_shows_no_input_over_the_video_and_says_why(browser) -> None:
+    switch = FakeSwitch(SourceMode.LIVE, InputLink.NO_INPUT, "ConnectionError: no Neon found on the network")
     switch_sink, session = _switch_page(browser, switch)
     try:
         page = session.page
-        _wait_for_text(page, "glasses-link", "Glasses unreachable")
+        page.wait_for_selector("#no-input", state="visible", timeout=ELEMENT_TIMEOUT_MS)
 
-        assert page.is_checked("#source-mode input[value='demo']")
-        assert page.get_attribute("#glasses-link", "title") == "ConnectionError: no Neon found on the network"
+        assert page.text_content("#no-input") == "No Input"
+        assert page.text_content("#input-link") == "No Input"
+        assert page.get_attribute("#input-link", "title") == "ConnectionError: no Neon found on the network"
+        assert page.text_content("#status") == "No Input"
+    finally:
+        session.close()
+        switch_sink.close()
+    assert session.errors == [], session.errors
+
+
+def test_the_recording_plays_while_the_live_input_is_missing(browser) -> None:
+    # The recording is the demo's fallback, so a missing device must not cover it.
+    switch = FakeSwitch(SourceMode.RECORDING, InputLink.NO_INPUT, "ConnectionError: no Neon found on the network")
+    switch_sink, session = _switch_page(browser, switch)
+    try:
+        page = session.page
+        _wait_for_text(page, "input-link", "No Input")
+
+        assert page.is_checked("#source-mode input[value='recording']")
+        assert not page.is_visible("#no-input")
+        switch_sink.publish(sample_path())
+        _wait_for_text(page, "status", "Heading")
+    finally:
+        session.close()
+        switch_sink.close()
+    assert session.errors == [], session.errors
+
+
+def test_a_live_run_without_a_recording_still_shows_no_input(browser) -> None:
+    switch = FakeSwitch(SourceMode.LIVE, InputLink.NO_INPUT, "ConnectionError: no phone connected", has_recording=False)
+    switch_sink, session = _switch_page(browser, switch)
+    try:
+        page = session.page
+        page.wait_for_selector("#no-input", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+
+        assert not page.is_visible("#source-field"), "nothing to switch to"
+        assert page.text_content("#no-input") == "No Input"
+    finally:
+        session.close()
+        switch_sink.close()
+    assert session.errors == [], session.errors
+
+
+def test_a_connected_input_with_no_video_says_so_quietly(browser) -> None:
+    # The Pixel sends depth and no video, so its video card would otherwise sit black for no reason.
+    switch = FakeSwitch(SourceMode.LIVE, InputLink.CONNECTED, live_has_video=False)
+    switch_sink, session = _switch_page(browser, switch)
+    try:
+        page = session.page
+        page.wait_for_selector("#no-input", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+
+        assert page.text_content("#no-input") == "This input sends no video"
+        assert "quiet" in page.get_attribute("#no-input", "class")
+    finally:
+        session.close()
+        switch_sink.close()
+    assert session.errors == [], session.errors
+
+
+def test_no_input_clears_when_the_live_input_connects(browser) -> None:
+    switch = FakeSwitch(SourceMode.LIVE, InputLink.CONNECTING)
+    switch_sink, session = _switch_page(browser, switch)
+    try:
+        page = session.page
+        page.wait_for_selector("#no-input", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+        assert page.text_content("#input-link") == "Looking for the live input"
+
+        switch.announce(dataclasses.replace(switch.current, live=InputLink.CONNECTED))
+
+        page.wait_for_selector("#no-input", state="hidden", timeout=ELEMENT_TIMEOUT_MS)
+        assert page.text_content("#input-link") == "Live input connected"
     finally:
         session.close()
         switch_sink.close()

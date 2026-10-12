@@ -17,9 +17,13 @@ frames on their kind. It draws the arrow and turns red on alarm, draws the plan 
 picture when one arrives.
 
 A page can ask for the risk view in place of the depth view, the same picture recolored by the
-planner's field. That is the one message a page sends. Each browser gets only the picture it chose,
-and the risk view is drawn only while some browser shows it. Neither picture carries the group
-rings. The plan view says where they go, and the page draws them, so it can hide them at once.
+planner's field. Each browser gets only the picture it chose, and the risk view is drawn only while
+some browser shows it. Neither picture carries the group rings. The plan view says where they go,
+and the page draws them, so it can hide them at once.
+
+On a run serving the page from a live input, the glasses or the Pixel, the page is told how that
+input is, "No Input" included, and can switch every page's run to the recording and back. Those two
+choices, the picture and the side, are the only messages a page sends.
 
 The plan view and the picture are built on a render thread of their own, from the newest debug view
 only, and at most `max_pictures_per_second` times a second. Building them takes about 50 ms. On the
@@ -31,8 +35,8 @@ frame, from the scene video feed the composition root gave this sink. Each brows
 queue of its own and starts at a keyframe. A browser that falls behind by more than its queue
 loses units up to the next keyframe, so it never gets a delta whose reference it missed, and one
 slow browser never holds up another. A run whose source has no video says so on that socket and
-closes it. The page only ever shows the video the laptop plans on. A demo from a recording replays
-it as a capture, through the same route, so the video stays in step with everything else.
+closes it. The page only ever shows the video the laptop plans on. A recording replays as a capture through the same route, so its video stays in step with
+everything else.
 """
 
 # Standard library imports
@@ -66,7 +70,7 @@ from nav.sinks.web_messages import (
 from nav.sources.config import SourceMode
 from nav.sources.framecodec import path_message
 from nav.sources.scene_video import AccessUnit, SceneVideoFeed, VideoDescription, pack_unit
-from nav.sources.switching import SwitchableRgbSource
+from nav.sources.switching import SwitchableSource
 from nav.types import DebugView, PlannedPath
 
 log = logging.getLogger(__name__)
@@ -105,7 +109,7 @@ class _Slot(Enum):
     PLAN_VIEW = 2
     DEPTH_PNG = 3
     RISK_PNG = 4
-    # Which side a run with a demo plans on. Never sent on a run without one.
+    # Which side a run serving the page from a live input plans on, and how the input is.
     SOURCE_STATE = 5
 
 
@@ -148,7 +152,7 @@ class WebSink:
         scene: SceneConfig,
         *,
         video_feed: SceneVideoFeed | None,
-        source_switch: SwitchableRgbSource | None = None,
+        source_switch: SwitchableSource | None = None,
     ) -> None:
         """
         :param config: The port and the certificate.
@@ -157,8 +161,8 @@ class WebSink:
         :param video_feed: Where the glasses' compressed video arrives for the page's browser to
             decode. None when the run's source has no video to offer, which the page is told.
             Keyword-only and without a default, so every caller says which it is.
-        :param source_switch: The switch between the glasses and a demo, which any page may turn.
-            None on a run without a demo, the usual case, so callers that have none leave it out.
+        :param source_switch: The live input and its recording, which any page may switch between.
+            None on a run with no live input, so callers that have none leave it out.
         """
         self._config = config
         self._source_switch = source_switch
@@ -373,7 +377,7 @@ class WebSink:
         """
         Loop thread. Remember the stream's description and send it to every video browser.
 
-        A new description is a new stream, after a switch between the glasses and the demo. Units
+        A new description is a new stream, after a switch between the live input and the recording. Units
         still queued from the old one are dropped, and each browser waits for the new stream's first
         keyframe, since a delta from one stream can't be decoded against the other.
         """
@@ -520,7 +524,7 @@ class WebSink:
                 return
             if isinstance(choice, SourceMode):
                 if self._source_switch is None:
-                    log.warning("a page asked for the %s, and this run has no demo to switch between", choice.value)
+                    log.warning("a page asked for the %s, and this run has no live input and recording to switch between", choice.value)
                     return
                 # For every page at once. The switch announces the new state to all of them.
                 self._source_switch.request(choice)

@@ -27,7 +27,7 @@ from nav.sinks.web_messages import (
     web_text_message,
 )
 from nav.sources.config import SourceMode
-from nav.sources.switching import GlassesLink, SwitchState
+from nav.sources.switching import InputLink, SwitchState
 from nav.types import DebugView, DepthFrame, FloorSource, ObstaclePoint, ObstacleSet, Plane, PlannedPath, Pose
 from synthetic_depth import intrinsics, level_floor_depth, with_box_on_level_floor
 
@@ -298,9 +298,16 @@ def test_a_message_that_is_not_a_choice_is_refused(text: str, fragment: str) -> 
         browser_choice(text)
 
 
-def test_the_source_state_carries_the_side_and_the_glasses_link_as_the_page_reads_them() -> None:
-    state = SwitchState(SourceMode.DEMO, GlassesLink.UNREACHABLE, "ConnectionError: no Neon found")
+def test_the_source_state_carries_the_side_and_the_live_link_as_the_page_reads_them() -> None:
+    state = SwitchState(SourceMode.RECORDING, InputLink.NO_INPUT, "ConnectionError: no Neon found", has_recording=True, live_has_video=False)
 
     message = json.loads(web_text_message(WebMessageKind.SOURCE_STATE, source_state_message(state)))
 
-    assert message == {"kind": "source_state", "mode": "demo", "glasses": "unreachable", "glasses_detail": "ConnectionError: no Neon found"}
+    assert message == {
+        "kind": "source_state",
+        "mode": "recording",
+        "live": "no_input",
+        "live_detail": "ConnectionError: no Neon found",
+        "has_recording": True,
+        "live_has_video": False,
+    }
