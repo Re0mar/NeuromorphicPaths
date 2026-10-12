@@ -74,15 +74,15 @@ is the whole configuration, and `--verbose` prints per-stage timings.
 | Source | What it reads | Flags |
 |---|---|---|
 | `video_file` | a recording, or an IP camera app's stream URL, through the depth estimator | `--path`, checked before the model loads |
-| `neon_live` | the Pupil Labs Neon over the network, through the depth estimator | `--neon-address` only if discovery is blocked |
-| `arcore_tcp` | the Pixel app's depth frames over TCP | `--arcore-port` (9000), `--arcore-accept-timeout` (30), `--reconnect` |
+| `neon_live` | the Pupil Labs Neon over the network, through the depth estimator | `--neon-address` only if discovery is blocked, `--neon-replay` to play a capture instead, `--recording-capture` and `--start-with` for a run the page can switch to a recording and back |
+| `arcore_tcp` | the Pixel app's depth frames over TCP | `--arcore-port` (9000), `--arcore-accept-timeout` (30), `--reconnect`, `--recording-capture` and `--start-with` as for `neon_live` |
 | `neon_recording` | a native Neon recording, straightened with its own calibration, through the depth estimator | `--recording-dir`, `--recording-rate` (2 frames a second of recording) |
 | `logged` | a frame log this pipeline recorded earlier | `--log-dir`, `--realtime` |
 
 `--reconnect` keeps the same listener open after the phone disconnects, so a walk recorded with
 `--record-to` continues in the same log with the frame numbers running on. It waits up to the
 accept timeout for the phone to come back, and then ends the run normally. Without the flag the
-run ends when the phone disconnects. Launching the app by hand takes longer than the default
+run ends when the phone disconnects. A run serving the page never ends that way, see *No input* below. Launching the app by hand takes longer than the default
 30 seconds, so a live run usually sets `--arcore-accept-timeout 600`.
 
 ### Sinks
@@ -90,7 +90,7 @@ run ends when the phone disconnects. Launching the app by hand takes longer than
 | Sink | Where the path goes | Flags |
 |---|---|---|
 | `debug_window` | an OpenCV window with the arrow, the alarm, the surprise field and the depth view | |
-| `web` | a page in any browser on the network, over HTTPS: the arrow, the alarm, the planner's view from above, the depth view, and the glasses' video | `--web-port` (8765), `--demo-recording` |
+| `web` | a page in any browser on the network, over HTTPS: the arrow, the alarm, the planner's view from above, the depth view, and the glasses' video | `--web-port` (8765) |
 | `phone_app` | the Pixel app over TCP. The phone connects to the laptop, on this port | `--phone-port` (9100) |
 | `none` | nowhere. For recording and for tests | |
 
@@ -144,16 +144,15 @@ clears, both reading unknown after 1.5 s without a path. The alarm still turns t
 A page tab open across a laptop restart keeps the HTML it loaded, so a page change shows only
 after a reload.
 
-The page's video panel has two modes. **Live** is the glasses' own stream passed through: the
-laptop forwards the compressed frames as they arrive, on a second websocket at `/video`, and the
-browser decodes them, so the panel costs the laptop a copy and nothing else. On a `--neon-replay`
-run it is the capture's video, in step with the arrow, the view from above and the sound, which is
-the fallback to start the laptop with if the glasses are in doubt. A browser that opens the page
-mid-run waits for the next keyframe, up to 2 s on the glasses. A source with no video, the Pixel
-or a frame log, makes the panel say so. **Recording** plays a file the laptop serves at
-`/recording`, named with `--demo-recording`, for when the glasses fail in the room. The file is
-the Companion app's scene video of a demo-room recording, supplied by hand, kept under
-`frame_logs/`, which git ignores. Without the flag the panel says no recording is configured.
+The page's video panel shows the video the laptop is planning on, and nothing else. On the glasses
+it is their own stream passed through: the laptop forwards the compressed frames as they arrive, on
+a second websocket at `/video`, and the browser decodes them, so the panel costs the laptop a copy
+and nothing else. On a `--neon-replay` run it is the capture's video, in step with the arrow, the
+view from above, the depth picture and the sound. That is also how a demo runs from a recording when
+the glasses are in doubt: convert the recording to a capture and replay it, as in *A demo from a
+Companion recording* below. A browser that opens the page mid-run waits for the next keyframe, up to
+2 s on the glasses. A source with no video, the Pixel or a frame log, makes the panel say so. The
+page never plays a video file of its own, because one would be out of step with every other card.
 
 **`--sink` can be repeated, and a walk usually repeats it.** The arrow belongs on the phone, where
 the walker is looking, and the depth view belongs in a browser, where whoever is watching the
@@ -492,6 +491,46 @@ capture through the same decoder, depth model, scene and planner as a live run, 
 recorded, with the timestamps moved to now. The run ends when the capture does. A 240 s capture is
 about 200 MB.
 
+### A demo from a Companion recording
+
+A walk recorded in the Companion app, with nothing on the laptop, can be demoed as if it were live.
+Convert it to a capture once:
+
+```
+.venv/Scripts/python examples/recording_to_capture.py "<Companion recording folder>" frame_logs/captures/<name>
+```
+
+The converter reads the recording's scene video, IMU, gaze and calibration, and writes them in the
+capture format above. It decodes nothing, so a 263 s recording converts in about 3 s.
+
+**For a demo, start one server that can switch between the live input and the recording:**
+
+```
+.venv/Scripts/python -m nav --source neon_live --neon-address <glasses address> --recording-capture frame_logs/captures/<name> --sink web
+```
+
+The page's Video card then has a **Live / Recording** toggle. Any open page can turn it, every page
+follows, and the depth model, the planner and the server stay up throughout. The recording plays
+through the live route end to end, so the page's video is the recording's own, in step with every
+other card. It starts from the beginning each time it is chosen, and loops. The glasses stay
+connected while the recording plays, so switching back is immediate. That also means the glasses'
+IMU stream stays claimed by this run, so no other program should connect to it at the same time.
+Each switch starts the scene and the planner afresh, since a floor and a previous plan from the
+other side would steer the first frames of this one. `--start-with recording` starts on the
+recording, which is the safe choice when the glasses haven't been checked yet. The same flags work
+with `--source arcore_tcp`, with the Pixel as the live input. Without `--recording-capture`, a
+recording alone also replays with `--neon-replay frame_logs/captures/<name>`.
+
+**To move the demo to another recording, convert that one and point `--recording-capture` at it.** There is
+nothing else to change. Depth is estimated from the video on every run and never stored, so there is
+no depth map to regenerate, and a change to the depth model reaches every converted recording by
+itself. The output folder must not exist yet, so an earlier capture is never overwritten.
+
+The converter refuses a video stored out of display order, since its frames could then not be
+paired with the recording's stamps. The Companion app never stores one, so this only matters for a
+video from somewhere else. The current demo recording is the Companion recording of 2026-10-09 at
+13:04, 147 s, converted to `frame_logs/captures/2026-10-09_13-04-15`.
+
 The glasses' client runs in a process of its own, at above-normal priority, and hands frames over
 through shared memory. When it ran in the same process as everything else, frames reached the
 planner 4 to 12 s late. Three things stacked up. The depth model and the planner held Python's
@@ -499,6 +538,19 @@ global lock while the client decoded on one thread. The client converted all 30 
 to color whether anyone wanted them or not. And the depth model leaked about 7 threads on every
 call. Frames go through shared memory rather than the pipe between the two processes, because a
 1600 by 1200 frame is 5.8 MB to copy.
+
+### No input
+
+**A run serving the page from the glasses or the Pixel stays up when the device isn't there.** The
+live side then shows **No Input** over the video, and the line beside the toggle says the same, with
+the reason under the pointer. The link is retried every 5 s, and the page clears the moment frames
+arrive. A device that connects and then goes quiet for 3 s reads as No Input too. The recording
+side plays as normal throughout, so a demo can start on the recording and switch to the glasses once
+they turn up. The Pixel sends no video of its own, so with it connected the video card says so
+instead.
+
+This only holds with `--sink web`. A run without the page, or replaying with `--neon-replay`,
+still ends when its device or its capture does, which is what recording a walk relies on.
 
 ## Checking the planner on a recording
 

@@ -224,6 +224,49 @@ def test_one_planner_serves_every_frame_of_a_run(tmp_path: Path, monkeypatch: py
     assert counts["built"] == 1
 
 
+def test_a_new_stretch_of_video_starts_the_scene_and_the_planner_afresh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A switch between the glasses and the demo moves the frames' generation on. The floor and the
+    # previous plan from before belong to another room, so neither may carry over.
+    import nav.runtime.loop as loop_module
+
+    built = Counter()
+
+    class CountingScene(loop_module.ScenePipeline):
+        def __init__(self, *args, **kwargs) -> None:
+            built["scene"] += 1
+            super().__init__(*args, **kwargs)
+
+    class CountingPlanner(loop_module.PlannerPipeline):
+        def __init__(self, *args, **kwargs) -> None:
+            built["planner"] += 1
+            super().__init__(*args, **kwargs)
+
+    class TwoStretchSource:
+        """Three frames of generation 0, then three of generation 1, one at a time so none is dropped."""
+
+        def __init__(self, inner) -> None:
+            self._inner = inner
+
+        def frames(self):
+            for index, frame in enumerate(self._inner.frames()):
+                time.sleep(0.2)
+                yield dataclasses.replace(frame, source_generation=0 if index < 3 else 1)
+
+        def close(self) -> None:
+            self._inner.close()
+
+    monkeypatch.setattr(loop_module, "ScenePipeline", CountingScene)
+    monkeypatch.setattr(loop_module, "PlannerPipeline", CountingPlanner)
+    log_dir = tmp_path / "log"
+    _record_synthetic_log(log_dir, count=6)
+    config = RunConfig(source_kind=SourceKind.LOGGED, sink_kinds=(SinkKind.NONE,), goal_mode=GoalMode.AHEAD, logged=LoggedConfig(log_dir=str(log_dir)))
+    monkeypatch.setattr(loop_module, "build_source_and_sink", lambda config, **hooks: (TwoStretchSource(build_source(config)), build_sink(config, **hooks)))
+
+    assert run(config) == 0
+
+    assert built == {"scene": 2, "planner": 2}, "one of each for each stretch"
+
+
 def test_the_views_red_point_is_the_runs_alarm_threshold_in_bits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # The path turns fully red when the alarm raises, so the red point a display gets has to come
     # from the run's own threshold. A constant here would survive every sink test, because they build

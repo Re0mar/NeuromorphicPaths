@@ -33,6 +33,7 @@ from nav.sources.config import (
     LoggedConfig,
     NeonConfig,
     NeonRecordingConfig,
+    SourceMode,
     TapConfig,
     VideoConfig,
 )
@@ -40,6 +41,7 @@ from nav.runtime.tap import RecordingTap
 from nav.scene.config import SceneConfig
 from nav.sinks.config import PhoneAppConfig, WebConfig
 from nav.sources.scene_video import SceneVideoFeed
+from nav.sources.switching import SwitchableSource
 from nav.types import DepthFrame, PlannedPath, Pose
 from nav.walker import WalkerConfig
 
@@ -507,6 +509,114 @@ def test_neon_replay_is_refused_for_a_source_that_is_not_neon_live(
     assert f"--neon-replay only applies to neon_live, not {source}" in capsys.readouterr().err
 
 
+def test_a_recording_capture_and_the_side_to_start_on_reach_the_run_config(tmp_path) -> None:
+    capture = _capture_folder(tmp_path, with_meta=True)
+
+    config = build_run_config(
+        ["--source", "neon_live", "--sink", "web", "--neon-address", "10.0.0.5", "--recording-capture", str(capture), "--start-with", "recording"]
+    )
+
+    assert config.recording_capture == str(capture)
+    assert config.start_with is SourceMode.RECORDING
+    assert config.neon is not None and config.neon.address == "10.0.0.5", "the live side still has its address"
+
+
+def test_a_run_without_a_recording_starts_on_the_live_input() -> None:
+    config = build_run_config(["--source", "neon_live", "--sink", "none"])
+
+    assert config.recording_capture is None
+    assert config.start_with is SourceMode.LIVE
+
+
+@pytest.mark.parametrize(
+    ("extra_argv", "fragment"),
+    [
+        (["--sink", "web", "--start-with", "recording"], "--start-with recording needs --recording-capture"),
+        (["--sink", "web", "--recording-capture", "{folder_without_meta}"], "is not a capture folder, it has no meta.json"),
+        (["--sink", "web", "--recording-capture", "{capture}", "--neon-replay", "{capture}"], "--recording-capture and --neon-replay cannot be used together"),
+        (["--sink", "none", "--recording-capture", "{capture}"], "--recording-capture needs --sink web"),
+    ],
+)
+def test_a_recording_that_couldnt_work_is_refused_before_anything_loads(
+    tmp_path, capsys: pytest.CaptureFixture[str], extra_argv: list[str], fragment: str
+) -> None:
+    capture = _capture_folder(tmp_path, with_meta=True)
+    folder_without_meta = tmp_path / "half_written"
+    folder_without_meta.mkdir()
+    argv = [argument.format(capture=capture, folder_without_meta=folder_without_meta) for argument in extra_argv]
+
+    with pytest.raises(SystemExit):
+        build_run_config(["--source", "neon_live", *argv])
+
+    assert fragment in capsys.readouterr().err
+
+
+def test_a_recording_capture_is_refused_for_a_source_without_a_live_input(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    capture = _capture_folder(tmp_path, with_meta=True)
+
+    with pytest.raises(SystemExit):
+        build_run_config([*MINIMAL_VIDEO_ARGV, "--recording-capture", str(capture)])
+
+    assert "--recording-capture only applies to neon_live or arcore_tcp, not video_file" in capsys.readouterr().err
+
+
+def _source_and_sink(argv: list[str]):
+    config = dataclasses.replace(build_run_config(argv), estimator_factory=lambda estimator_config: StubDepthEstimator())
+    return build_source_and_sink(config)
+
+
+@pytest.mark.parametrize(
+    ("source_argv", "with_recording", "live_has_video"),
+    [
+        (["--source", "neon_live"], True, True),
+        (["--source", "neon_live"], False, True),
+        (["--source", "arcore_tcp"], True, False),
+        (["--source", "arcore_tcp"], False, False),
+    ],
+)
+def test_a_live_input_served_to_the_page_goes_through_the_switch_the_page_turns(
+    tmp_path, source_argv: list[str], with_recording: bool, live_has_video: bool
+) -> None:
+    # The switch is what keeps the server up when the device isn't there, so every page run gets
+    # one. And the page turns it while the source plans on it, so they must be one object.
+    pytest.importorskip("aiohttp", reason="the web sink comes with the web extra")
+    recording_argv = ["--recording-capture", str(_capture_folder(tmp_path, with_meta=True))] if with_recording else []
+
+    source, sink = _source_and_sink([*source_argv, "--sink", "web", *recording_argv])
+    try:
+        assert isinstance(source, SwitchableSource)
+        assert sink._source_switch is source
+        assert source.state().has_recording is with_recording
+        assert source.state().live_has_video is live_has_video
+        assert sink.video_feed is source.video_feed
+        assert (source.video_feed is not None) is (live_has_video or with_recording), "a feed only when some side has video"
+    finally:
+        # Built, never started, so nothing is listening and nothing needs more than this.
+        sink.close()
+        source.close()
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--source", "neon_live", "--sink", "none"],
+        ["--source", "arcore_tcp", "--sink", "none"],
+        ["--source", "neon_live", "--sink", "web", "--neon-replay", "{capture}"],
+    ],
+)
+def test_a_run_without_the_page_or_replaying_a_capture_keeps_a_source_that_ends_with_its_device(tmp_path, argv: list[str]) -> None:
+    # Recording a walk relies on the run ending when the glasses or the phone go away.
+    pytest.importorskip("aiohttp", reason="the web sink comes with the web extra")
+    capture = _capture_folder(tmp_path, with_meta=True)
+
+    source, sink = _source_and_sink([argument.format(capture=capture) for argument in argv])
+    try:
+        assert not isinstance(source, SwitchableSource)
+    finally:
+        sink.close()
+        source.close()
+
+
 def test_neon_address_and_neon_replay_together_are_refused(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
     """A replay plays a capture in place of the glasses, so the address would be ignored without a word."""
     capture = _capture_folder(tmp_path, with_meta=True)
@@ -725,7 +835,8 @@ def test_build_source_and_sink_gives_the_neon_source_and_the_web_sink_one_feed()
     source, sink = build_source_and_sink(config)
     try:
         assert isinstance(sink.video_feed, SceneVideoFeed)
-        assert source.rgb_source.video_feed is sink.video_feed
+        # A page run goes through the live and recording switch, which holds the feed both sides offer on.
+        assert source.video_feed is sink.video_feed
     finally:
         sink.close()
 
@@ -754,34 +865,16 @@ def test_a_source_without_scene_video_leaves_the_web_sink_without_a_feed() -> No
 # *******************************************
 
 
-def test_the_demo_recording_flag_reaches_the_web_config(tmp_path) -> None:
-    recording = tmp_path / "demo.mp4"
-    recording.write_bytes(b"\x00" * 16)
-
-    config = build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "web", "--demo-recording", str(recording)])
-
-    assert config.web is not None and config.web.recording_path == str(recording)
-
-
-def test_a_demo_recording_that_is_not_a_file_is_refused_before_anything_loads(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
-    missing = tmp_path / "nowhere.mp4"
-
-    with pytest.raises(SystemExit):
-        build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "web", "--demo-recording", str(missing)])
-
-    message = capsys.readouterr().err
-    assert "--demo-recording" in message and str(missing) in message and "not a file" in message
-
-
-def test_a_demo_recording_without_the_web_sink_is_refused(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_there_is_no_demo_recording_flag_any_more(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    # The page used to play a file of its own, out of step with the planning. A demo from a
+    # recording now converts it to a capture and replays that, so the flag is refused outright.
     recording = tmp_path / "demo.mp4"
     recording.write_bytes(b"\x00" * 16)
 
     with pytest.raises(SystemExit):
-        build_run_config([*MINIMAL_VIDEO_ARGV, "--demo-recording", str(recording)])
+        build_run_config([*MINIMAL_VIDEO_ARGV[:-2], "--sink", "web", "--demo-recording", str(recording)])
 
-    message = capsys.readouterr().err
-    assert "--demo-recording" in message and "--sink web" in message
+    assert "--demo-recording" in capsys.readouterr().err
 
 
 # *******************************************

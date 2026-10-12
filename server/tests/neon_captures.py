@@ -4,7 +4,7 @@ Builds Neon capture folders for the tests, in the format examples/capture_neon_s
 write_capture puts packets, gaze, IMU and meta into a folder through the same format constants the
 replay reads. encode_h264 makes a short real H.264 stream, cut into packets the way the glasses
 send it, for the tests that run the real decoder. That one needs PyAV and the client, so callers
-importorskip both first.
+importorskip both first. write_h264_mp4 writes the MP4 a Companion recording keeps its scene video in.
 """
 
 # Standard library imports
@@ -130,3 +130,27 @@ def encode_h264(frame_count: int, height: int = 48, width: int = 64) -> EncodedS
         unit for unit in units if unit[0] & 0x1F not in (SEQUENCE_PARAMETER_SET, PICTURE_PARAMETER_SET, SUPPLEMENTAL_INFORMATION)
     ]
     return EncodedStream(parameter_sets=parameter_sets, pictures=pictures, brightness=brightness)
+
+
+def write_h264_mp4(path: Path, frame_count: int, reordered: bool = False, height: int = 48, width: int = 64) -> Path:
+    """
+    A short H.264 MP4, flat gray frames each brighter than the last, the way the Companion app stores video.
+
+    The app encodes without reordered frames, so by default neither does this. `reordered` turns on
+    B-frames, for the tests that need a video stored out of display order.
+    """
+    # Optional dependency. It comes with the glasses extra, and every caller importorskips it.
+    import av
+
+    with av.open(str(path), mode="w") as container:
+        stream = container.add_stream("libx264", rate=30)
+        stream.width, stream.height, stream.pix_fmt = width, height, "yuv420p"
+        # B-frames go through x264-params. A plain "bframes" option is silently ignored by the wrapper.
+        stream.options = {"preset": "veryfast", "x264-params": "bframes=2:b-adapt=0"} if reordered else {"tune": "zerolatency", "preset": "ultrafast"}
+        for index in range(frame_count):
+            image = np.full((height, width, 3), index * 20 % 256, dtype=np.uint8)
+            for packet in stream.encode(av.VideoFrame.from_ndarray(image, format="bgr24")):
+                container.mux(packet)
+        for packet in stream.encode():
+            container.mux(packet)
+    return path

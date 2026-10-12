@@ -18,6 +18,13 @@ class VideoConfig:
     path: str
 
 
+class SourceMode(Enum):
+    """Which side a run serving the page plans on: its live input, or its recording. Values are what the page sends."""
+
+    LIVE = "live"
+    RECORDING = "recording"
+
+
 @dataclass(frozen=True)
 class NeonConfig:
     """A Pupil Labs Neon on the network.
