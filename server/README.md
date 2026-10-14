@@ -103,12 +103,18 @@ The web page gets every path's arrow, but its plan view and depth picture are dr
 their own, at most 10 times a second, from the newest frame. Drawing one takes about 50 ms. Done on
 the publisher thread, it held up the phone's next path and slowed the planner.
 
-The page also plays sound, in two modes picked from its "Sound" control, both from numbers the
-laptop sends with every path. **Alarm** beeps toward the side the arrow points to, and while the
-alarm is up the beep quickens, rises in pitch and moves to the danger's side, which the laptop sends
-as `alarm_pan`. **Noise cancellation** plays music instead, a built-in bed or a file picked on the
-page, with each ear at the gain the laptop sends: the ear away from the heading goes quieter by the
-course's surprise of the heading error, and the danger's ear drops to a floor while the alarm is up.
+The page also plays sound, from numbers the laptop sends with every path. Its "Sound" control has
+three modes:
+
+- **Off** plays nothing. The Sound card's two readouts still follow every path.
+- **Alarm** plays two kinds of beep. With nothing in the way it plays a steering tick, a soft low
+  click at 220 Hz every 0.7 s, placed toward the side the arrow points to. While the alarm is up it
+  plays the alarm sound instead, placed on the danger's side, which the laptop sends as
+  `alarm_pan`. The tick is about 8 dB under the alarm, so the alarm stands out.
+- **Noise cancellation** plays music instead, a built-in bed or a file picked on the page, with each
+  ear at the gain the laptop sends: the ear away from the heading goes quieter by the course's
+  surprise of the heading error, and the danger's ear drops to a floor while the alarm is up.
+
 A picked file plays from disk a piece at a time, so an hour-long track starts at once, about 0.05 s
 in Chrome against 18.5 s when the page used to decode the whole file first. A slider under the
 picker shows where the track is and jumps anywhere in it, and leaving the mode pauses the track
@@ -117,6 +123,23 @@ can switch it. When no path has arrived for 1.5 s the beeps stop, the music play
 both ears, which is no cue, and the label reads `NC ?`. Browsers refuse sound before a tap, so
 the control has to be touched once on the page that should play. The formula is in
 `docs/math/09_arrow_and_alarm.md`.
+
+In Alarm mode two more controls appear. **Alarm sound** picks one of three:
+
+- **Pulse**, the default: a low click at 330 Hz that speeds up as the walker closes in, from every
+  250 ms at 0.7 s to contact to every 100 ms at 0.2 s. It reads the path's
+  `time_to_contact_seconds`, the number the page labels "Est. Time to Collision".
+- **Chime**: two falling notes, 880 then 660 Hz, each fading like a bell, every 0.5 s.
+- **Tone**: the page's first alarm, a 990 Hz beep 120 ms long every 160 ms.
+
+**Volume** picks Low, Med or High for every beep in Alarm mode, the tick included. High is the
+level the page shipped with, Med is 6 dB under it and the default, Low is 12 dB under it. It has
+its own gain, so the music in noise-cancellation mode does not change with it. The browser
+remembers the sound and the volume, so a reload brings them back. A private window, or a browser
+that blocks site data, starts from Pulse and Med each time.
+
+Pulse, Med and the tick's level were picked by ear on 2026-10-14, on the phone with headphones,
+with a music track at a comfortable volume for comparison.
 
 The page is at `https://<laptop>:8765`, and `http://` no longer answers on that port. It is HTTPS
 because the browser's own video decoder only exists on a secure origin, and a phone opens the page
@@ -137,7 +160,8 @@ toggles. On a phone the same cards stack
 in one column with Heading first, since the phone page is the walker's. The page picks by its own
 width, at 900 pixels, so a phone turned sideways gets the laptop layout at natural heights, and
 controls grow under a finger. Sound holds, from the top, two readouts that follow every path in
-every mode, then the mode toggle and the music picker in noise-cancellation mode. The readouts are
+every mode, then the mode toggle, the alarm sound and volume toggles in alarm mode, and the music
+picker in noise-cancellation mode. The readouts are
 a head with five arcs an ear, one lit per 20 % of that ear's gain as the laptop sent it, and
 `NC ON` or `NC OFF`, the driving guide's rule, off while the alarm is up and back on 2 s after it
 clears, both reading unknown after 1.5 s without a path. The alarm still turns the whole page red.

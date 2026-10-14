@@ -243,6 +243,17 @@ through the hold, so the cue does not jump to center the moment the point leaves
 > - **The gain is the surprise in his form, used as it is.** $`e^{-U}`$ is the likelihood the surprise
 >   came from, and each bit of surprise is one halving of the far ear.
 
+**What the page plays.** The two numbers above are all the laptop decides. How they sound is the
+page's choice, and none of it changes what the laptop sends. In Alarm mode the page plays a soft
+steering tick while the alarm is down and one of three alarm sounds while it is up, at one of
+three levels: 0 dB, −6 dB and −12 dB against the level the page shipped with. The tick sits about
+8 dB under the alarm. The default alarm sound, Pulse, gets quicker as the walker gets closer. It
+reads the path's `time_to_contact_seconds`, which is the avoidance surprise turned back into
+seconds by the inverse in `server/nav/planner/alarm.py`, the same 1 s over the time to contact as
+above. Between 0.7 s and 0.2 s to contact the pulse quickens as the surprise rises, and
+outside that range it holds at its slowest or fastest rate. The modes and the sounds are
+listed in `server/README.md`.
+
 ---
 
 [Contents](README.md#contents) · [The colors](README.md#the-colors) · Previous: [8. Planning a path](08_planning_a_path.md) · Next: [10. How much the scene shaped the plan](10_scene_shaped_the_plan.md)

@@ -104,7 +104,7 @@
   #sound-card { grid-area: sound; }
   canvas, img, video { max-width: 100%; height: auto; }
   .placeholder { font-size: var(--text-s); color: var(--muted); }
-  .placeholder[hidden], #depth[hidden], #rings[hidden], .help[hidden], #plan-panel[hidden], #music-label[hidden], #music-controls[hidden], #source-field[hidden], #input-link[hidden], #no-input[hidden], #live[hidden] { display: none; }
+  .placeholder[hidden], #depth[hidden], #rings[hidden], .help[hidden], #plan-panel[hidden], #music-label[hidden], #music-controls[hidden], #alarm-sound-field[hidden], #volume-field[hidden], #source-field[hidden], #input-link[hidden], #no-input[hidden], #live[hidden] { display: none; }
   /* How the live input is doing, on a run that serves the page from one. */
   #input-link { font-size: var(--text-s); color: var(--muted); }
   #input-link.connected { color: var(--accent); }
@@ -202,6 +202,23 @@
             <label><input type="radio" name="mode" value="off" checked> Off</label>
             <label><input type="radio" name="mode" value="alarm"> Alarm</label>
             <label><input type="radio" name="mode" value="cancel"> Noise cancellation</label>
+          </div>
+        </div>
+        <!-- Shown in Alarm mode only. This browser keeps the choice, the laptop never sees it. -->
+        <div class="toggle-field" id="alarm-sound-field" hidden>
+          <span class="toggle-name" id="alarm-sound-name">Alarm sound</span>
+          <div id="alarm-sound" class="toggle" role="radiogroup" aria-labelledby="alarm-sound-name">
+            <label><input type="radio" name="alarm-sound" value="tone"> Tone</label>
+            <label><input type="radio" name="alarm-sound" value="chime"> Chime</label>
+            <label><input type="radio" name="alarm-sound" value="pulse" checked> Pulse</label>
+          </div>
+        </div>
+        <div class="toggle-field" id="volume-field" hidden>
+          <span class="toggle-name" id="volume-name">Volume</span>
+          <div id="volume" class="toggle" role="radiogroup" aria-labelledby="volume-name">
+            <label><input type="radio" name="volume" value="low"> Low</label>
+            <label><input type="radio" name="volume" value="med" checked> Med</label>
+            <label><input type="radio" name="volume" value="high"> High</label>
           </div>
         </div>
         <label id="music-label" hidden>Music <input type="file" id="music" accept="audio/*"></label>
@@ -343,6 +360,10 @@
   const status = document.getElementById("status");
   const link = document.getElementById("link");
   const soundMode = document.getElementById("mode");
+  const alarmSoundField = document.getElementById("alarm-sound-field");
+  const alarmSoundToggle = document.getElementById("alarm-sound");
+  const volumeField = document.getElementById("volume-field");
+  const volumeToggle = document.getElementById("volume");
   const musicLabel = document.getElementById("music-label");
   const musicInput = document.getElementById("music");
   const musicControls = document.getElementById("music-controls");
@@ -398,15 +419,55 @@
   // Heading 0 (straight ahead) is centered, equal in both ears. Heading at or beyond this angle
   // to either side is fully in that ear. Lower it for a more dramatic swing.
   const FULL_PAN_RADIANS = Math.PI / 3;
-  const BEEP_HZ = 660;
   const ALARM_HZ = 990;
-  const BEEP_INTERVAL_MS = 700;
+  const STEERING_INTERVAL_MS = 700;
+  // The steering tick while the alarm is down: the Pulse's shape, a lowpassed triangle, so the two
+  // read as one family. A fifth lower, slower and at 0.4 of the alarm's level, about 8 dB under it,
+  // so the walker hears the arrow without it competing with the alarm. Chosen by ear on 2026-10-14
+  // after the 660 Hz flat-topped beep it replaces was still too harsh.
+  const STEERING_HZ = 220;
+  const STEERING_LOWPASS_HZ = 800;
+  const STEERING_PEAK_GAIN = 0.4;
+  const STEERING_ATTACK_SECONDS = 0.008;
+  const STEERING_HOLD_UNTIL_SECONDS = 0.04;
+  const STEERING_RELEASE_SECONDS = 0.04;
   const ALARM_INTERVAL_MS = 160;
-  const BEEP_SECONDS = 0.12;
+  const TONE_SECONDS = 0.12;
   const MASTER_VOLUME = 0.5;
   // The music under the steering cue, before the laptop's ear gains. Quiet enough that the floor
   // the laptop sends is still audible as a presence rather than silence.
   const BED_VOLUME = 0.35;
+  // Every beep's level, on its own gain in front of the pan, so the music keeps its own. With the
+  // master's 0.5 a full beep comes out at 0.125, 0.25 and 0.5: 12 dB and 6 dB under the level the
+  // page shipped with, and that level. 6 dB apart because steps much closer sound like one step.
+  const BEEP_VOLUMES = { low: 0.25, med: 0.5, high: 1.0 };
+  const DEFAULT_VOLUME = "med";
+  // Chime: two falling notes, each with a quick start and a fade, no flat middle, which reads as a
+  // bell rather than a buzzer. The fundamental plus its octave at 0.3, scaled by 1 / 1.3. The two
+  // start in phase, so together they peak at about 0.87, 1 dB under Tone. Approved by ear.
+  const CHIME_NOTES_HZ = [880, 660];
+  const CHIME_NOTE_GAP_SECONDS = 0.18;
+  const CHIME_HARMONIC_GAIN = 0.3;
+  const CHIME_PEAK_GAIN = 1 / (1 + CHIME_HARMONIC_GAIN);
+  const CHIME_ATTACK_SECONDS = 0.015;
+  // setTargetAtTime's time constant. Down to 3 % after 0.2 s, which is inaudible under music.
+  const CHIME_DECAY_SECONDS = 0.06;
+  const CHIME_STOP_SECONDS = 0.4;
+  const CHIME_INTERVAL_MS = 500;
+  // Pulse: a short low click whose rate carries the urgency instead of its pitch, the way a parking
+  // sensor does. A lowpassed triangle so it has no edge.
+  const PULSE_HZ = 330;
+  const PULSE_LOWPASS_HZ = 1000;
+  const PULSE_ATTACK_SECONDS = 0.005;
+  const PULSE_HOLD_UNTIL_SECONDS = 0.05;
+  const PULSE_RELEASE_SECONDS = 0.02;
+  const PULSE_SLOW_MS = 250;
+  const PULSE_FAST_MS = 100;
+  // Mirrors the laptop's default alarm_time_to_contact_seconds, which the page cannot read. The
+  // clamp makes a raised threshold harmless: above 0.7 s the pulse sits at its slow rate anyway.
+  const PULSE_SLOW_AT_SECONDS = 0.7;
+  const PULSE_FAST_AT_SECONDS = 0.2;
+  const STORAGE_KEYS = { alarmSound: "alarm_sound", volume: "alarm_volume" };
   // The time constant each ear's gain approaches the next frame's value with, so a step is not a
   // click. setTargetAtTime is exponential: 63 % of the way at 0.1 s, settled after about 0.3 s.
   const GAIN_RAMP_SECONDS = 0.1;
@@ -425,7 +486,7 @@
   let audio = null;  // Built on the first mode change, because browsers refuse sound before a gesture.
   let mode = "off";
   let musicUrl = null;  // The picked file, as the player's source. Null plays the built-in bed.
-  let latest = { heading: 0, alarm: false, alarmPan: null, earGainLeft: 1, earGainRight: 1, receivedAt: -Infinity };
+  let latest = { heading: 0, alarm: false, alarmPan: null, earGainLeft: 1, earGainRight: 1, timeToContactSeconds: null, receivedAt: -Infinity };
   // When the alarm last went from up to down, for the 2 s return. Never while it has not.
   let alarmClearedAt = -Infinity;
 
@@ -436,15 +497,21 @@
     const merger = audioContext.createChannelMerger(2);
     merger.connect(master);
     master.connect(audioContext.destination);
-    // The beeps: one envelope feeds a left gain and a right gain, which feed the two channels of
-    // the merger. Plain gains instead of StereoPannerNode so it works on every browser that has
-    // Web Audio.
+    // The beeps: every one joins at the beep volume, which feeds a left gain and a right gain, which
+    // feed the two channels of the merger. Plain gains instead of StereoPannerNode so it works on
+    // every browser that has Web Audio. Tone alone shapes the shared envelope in front of the
+    // volume. Chime, Pulse and the steering tick shape their own notes and join at the volume
+    // directly, since the envelope sits at 0 between Tone's beeps and a sound fed into it there
+    // would be silent.
     const envelope = audioContext.createGain();
     envelope.gain.value = 0;
+    const beepVolume = audioContext.createGain();
+    beepVolume.gain.value = BEEP_VOLUMES[volume];
     const beepLeft = audioContext.createGain();
     const beepRight = audioContext.createGain();
-    envelope.connect(beepLeft);
-    envelope.connect(beepRight);
+    envelope.connect(beepVolume);
+    beepVolume.connect(beepLeft);
+    beepVolume.connect(beepRight);
     beepLeft.connect(merger, 0, 0);
     beepRight.connect(merger, 0, 1);
     // The music: whatever plays feeds a left gain and a right gain of its own, at the laptop's
@@ -467,7 +534,7 @@
     twoChannels.connect(splitter);
     splitter.connect(bedLeft, 0);
     splitter.connect(bedRight, 1);
-    return { audioContext, envelope, beepLeft, beepRight, bedLeft, bedRight, bedNodes: [], timer: null };
+    return { audioContext, master, envelope, beepVolume, beepLeft, beepRight, bedLeft, bedRight, bedNodes: [], timer: null, lastPlayed: null, lastIntervalMs: null };
   }
 
   function panFromHeading(headingRadians) {
@@ -564,29 +631,126 @@
     showNoiseCancellation();
   }
 
-  function beep() {
+  // A flat-topped sine through the shared envelope, the page's first beep. Tone uses it.
+  function envelopeBeep(hz, start, sound) {
     const { audioContext, envelope } = audio;
-    setBeepPan(beepPan());
-    const start = audioContext.currentTime;
     const oscillator = audioContext.createOscillator();
     oscillator.type = "sine";
-    oscillator.frequency.value = latest.alarm ? ALARM_HZ : BEEP_HZ;
+    oscillator.frequency.value = hz;
     oscillator.connect(envelope);
     // A short ramp each side so the beep does not click.
     envelope.gain.cancelScheduledValues(start);
     envelope.gain.setValueAtTime(0, start);
     envelope.gain.linearRampToValueAtTime(1, start + 0.01);
-    envelope.gain.setValueAtTime(1, start + BEEP_SECONDS - 0.02);
-    envelope.gain.linearRampToValueAtTime(0, start + BEEP_SECONDS);
+    envelope.gain.setValueAtTime(1, start + TONE_SECONDS - 0.02);
+    envelope.gain.linearRampToValueAtTime(0, start + TONE_SECONDS);
     oscillator.start(start);
-    oscillator.stop(start + BEEP_SECONDS + 0.02);
+    oscillator.stop(start + TONE_SECONDS + 0.02);
+    audio.lastPlayed = { sound, type: "sine", frequenciesHz: [hz], startSeconds: start, feeds: "envelope" };
+  }
+
+  // The tick while the alarm is down, the same for every alarm sound, so nobody adds a steering
+  // variant per sound. It shares playSoftClick, below, with Pulse.
+  function steeringTick(start) {
+    playSoftClick(start, STEERING_HZ, STEERING_LOWPASS_HZ, STEERING_PEAK_GAIN, STEERING_ATTACK_SECONDS, STEERING_HOLD_UNTIL_SECONDS, STEERING_RELEASE_SECONDS);
+    audio.lastPlayed = { sound: "steering", type: "triangle", frequenciesHz: [STEERING_HZ], startSeconds: start, feeds: "beepVolume" };
+  }
+
+  // One gain shaped as a single note, feeding the beep volume directly.
+  function noteEnvelope(start) {
+    const gain = audio.audioContext.createGain();
+    gain.gain.value = 0;
+    gain.gain.setValueAtTime(0, start);
+    gain.connect(audio.beepVolume);
+    return gain;
+  }
+
+  function playChime(start) {
+    const { audioContext } = audio;
+    const frequencies = [];
+    CHIME_NOTES_HZ.forEach((hz, index) => {
+      const noteStart = start + index * CHIME_NOTE_GAP_SECONDS;
+      const gain = noteEnvelope(noteStart);
+      gain.gain.linearRampToValueAtTime(CHIME_PEAK_GAIN, noteStart + CHIME_ATTACK_SECONDS);
+      gain.gain.setTargetAtTime(0, noteStart + CHIME_ATTACK_SECONDS, CHIME_DECAY_SECONDS);
+      const fundamental = audioContext.createOscillator();
+      fundamental.type = "sine";
+      fundamental.frequency.value = hz;
+      fundamental.connect(gain);
+      const octave = audioContext.createOscillator();
+      octave.type = "sine";
+      octave.frequency.value = 2 * hz;
+      const octaveLevel = audioContext.createGain();
+      octaveLevel.gain.value = CHIME_HARMONIC_GAIN;
+      octave.connect(octaveLevel);
+      octaveLevel.connect(gain);
+      for (const oscillator of [fundamental, octave]) {
+        oscillator.start(noteStart);
+        oscillator.stop(noteStart + CHIME_STOP_SECONDS);
+      }
+      frequencies.push(hz, 2 * hz);
+    });
+    audio.lastPlayed = { sound: "chime", type: "sine", frequenciesHz: frequencies, startSeconds: start, feeds: "beepVolume" };
+  }
+
+  // A lowpassed triangle with a short rise, a hold and a fall: the shape Pulse and the steering
+  // tick share, at their own pitch, level and length. The hold ends holdUntilSeconds after the
+  // note starts, so it counts the rise too.
+  function playSoftClick(start, hz, lowpassHz, peak, attackSeconds, holdUntilSeconds, releaseSeconds) {
+    const { audioContext } = audio;
+    const gain = noteEnvelope(start);
+    gain.gain.linearRampToValueAtTime(peak, start + attackSeconds);
+    gain.gain.setValueAtTime(peak, start + holdUntilSeconds);
+    gain.gain.linearRampToValueAtTime(0, start + holdUntilSeconds + releaseSeconds);
+    const oscillator = audioContext.createOscillator();
+    oscillator.type = "triangle";
+    oscillator.frequency.value = hz;
+    const soften = audioContext.createBiquadFilter();
+    soften.type = "lowpass";
+    soften.frequency.value = lowpassHz;
+    oscillator.connect(soften);
+    soften.connect(gain);
+    oscillator.start(start);
+    oscillator.stop(start + holdUntilSeconds + releaseSeconds + 0.01);
+  }
+
+  function playPulse(start) {
+    playSoftClick(start, PULSE_HZ, PULSE_LOWPASS_HZ, 1, PULSE_ATTACK_SECONDS, PULSE_HOLD_UNTIL_SECONDS, PULSE_RELEASE_SECONDS);
+    audio.lastPlayed = { sound: "pulse", type: "triangle", frequenciesHz: [PULSE_HZ], startSeconds: start, feeds: "beepVolume" };
+  }
+
+  // Quicker as the walker closes in: slowest at the alarm's threshold and with no contact time, as
+  // through the hold with an empty corridor, fastest near contact, a straight line between.
+  function pulseIntervalMs(timeToContactSeconds) {
+    if (timeToContactSeconds === null || timeToContactSeconds >= PULSE_SLOW_AT_SECONDS) return PULSE_SLOW_MS;
+    if (timeToContactSeconds <= PULSE_FAST_AT_SECONDS) return PULSE_FAST_MS;
+    const share = (timeToContactSeconds - PULSE_FAST_AT_SECONDS) / (PULSE_SLOW_AT_SECONDS - PULSE_FAST_AT_SECONDS);
+    return PULSE_FAST_MS + share * (PULSE_SLOW_MS - PULSE_FAST_MS);
+  }
+
+  // The alarm sounds, by the name the radio and the stored choice use. A fourth sound is one more
+  // entry here, and the scheduler below never reads a name.
+  const ALARM_SOUNDS = {
+    tone: { play: (start) => envelopeBeep(ALARM_HZ, start, "tone"), intervalMs: () => ALARM_INTERVAL_MS },
+    chime: { play: playChime, intervalMs: () => CHIME_INTERVAL_MS },
+    pulse: { play: playPulse, intervalMs: pulseIntervalMs },
+  };
+  // Pulse, the sound picked in the listening session on 2026-10-14. A browser that saved another keeps it.
+  const DEFAULT_ALARM_SOUND = "pulse";
+
+  function beep() {
+    setBeepPan(beepPan());
+    const start = audio.audioContext.currentTime;
+    if (latest.alarm) ALARM_SOUNDS[alarmSound].play(start);
+    else steeringTick(start);
   }
 
   function tick() {
     if (!audio) return;
     if (mode === "alarm") {
       if (performance.now() - latest.receivedAt < STALE_MS) beep();
-      audio.timer = setTimeout(tick, latest.alarm ? ALARM_INTERVAL_MS : BEEP_INTERVAL_MS);
+      audio.lastIntervalMs = latest.alarm ? ALARM_SOUNDS[alarmSound].intervalMs(latest.timeToContactSeconds) : STEERING_INTERVAL_MS;
+      audio.timer = setTimeout(tick, audio.lastIntervalMs);
     } else if (mode === "cancel") {
       // Only to notice a laptop that went quiet. Fresh paths apply their gains as they arrive.
       applyEarGains();
@@ -638,6 +802,8 @@
     }
     musicLabel.hidden = next !== "cancel";
     musicControls.hidden = next !== "cancel" || musicUrl === null;
+    alarmSoundField.hidden = next !== "alarm";
+    volumeField.hidden = next !== "alarm";
     if (next === "off") {
       if (audio) audio.audioContext.suspend();
       return;
@@ -652,6 +818,96 @@
   }
 
   soundMode.onchange = () => { setMode(chosen(soundMode)); };
+
+  // The sound and volume are this browser's to choose, kept in its storage. A private window or
+  // blocked site data refuses storage, and the page then runs on the defaults, said once.
+  let storageWarned = false;
+  function warnStorageOnce(error) {
+    if (storageWarned) return;
+    storageWarned = true;
+    console.warn("This browser won't keep the alarm sound and volume (" + error.name + "), so they reset on every load.");
+  }
+
+  // The storage errors a browser is known to raise, each worth the once-warning.
+  const EXPECTED_STORAGE_ERRORS = ["SecurityError", "QuotaExceededError"];
+  let storageUnexpectedReported = false;
+
+  // Anything else is reported as unexpected and the page still falls back to the defaults. It does
+  // not rethrow: this runs before the page connects, and a sound preference is not worth losing
+  // the arrow and the alarm over.
+  function storageFailed(error) {
+    if (error instanceof DOMException && EXPECTED_STORAGE_ERRORS.includes(error.name)) {
+      warnStorageOnce(error);
+      return;
+    }
+    if (storageUnexpectedReported) return;
+    storageUnexpectedReported = true;
+    console.error("UNEXPECTED storage error, may need a handler. The alarm sound and volume use the defaults.", error);
+  }
+
+  // Null in a browser with storage switched off, which is a refusal rather than a fault.
+  function choiceStorage() {
+    const storage = window.localStorage;
+    if (storage === null) warnStorageOnce({ name: "storage switched off" });
+    return storage;
+  }
+
+  function readChoice(key, table, fallback) {
+    let stored;
+    try {
+      const storage = choiceStorage();
+      if (storage === null) return fallback;
+      stored = storage.getItem(key);
+    } catch (error) {
+      storageFailed(error);
+      return fallback;
+    }
+    // Own keys only. A stored "constructor" is in every object through its prototype.
+    return stored !== null && Object.hasOwn(table, stored) ? stored : fallback;
+  }
+
+  function writeChoice(key, value) {
+    try {
+      const storage = choiceStorage();
+      if (storage !== null) storage.setItem(key, value);
+    } catch (error) {
+      storageFailed(error);
+    }
+  }
+
+  let alarmSound = readChoice(STORAGE_KEYS.alarmSound, ALARM_SOUNDS, DEFAULT_ALARM_SOUND);
+  let volume = readChoice(STORAGE_KEYS.volume, BEEP_VOLUMES, DEFAULT_VOLUME);
+
+  // The one place a choice reaches the controls and the sound, at load and on every change.
+  function applyChoices() {
+    alarmSoundToggle.querySelector('input[value="' + alarmSound + '"]').checked = true;
+    volumeToggle.querySelector('input[value="' + volume + '"]').checked = true;
+    if (audio) audio.beepVolume.gain.setTargetAtTime(BEEP_VOLUMES[volume], audio.audioContext.currentTime, GAIN_RAMP_SECONDS);
+  }
+
+  alarmSoundToggle.onchange = () => {
+    alarmSound = chosen(alarmSoundToggle);
+    writeChoice(STORAGE_KEYS.alarmSound, alarmSound);
+    applyChoices();
+  };
+  volumeToggle.onchange = () => {
+    volume = chosen(volumeToggle);
+    writeChoice(STORAGE_KEYS.volume, volume);
+    applyChoices();
+  };
+  applyChoices();
+
+  // For the browser tests, which read the audio graph because a headless browser may have no
+  // speaker to hear it on. Nothing on the page calls it.
+  window.__audio = () => audio ? {
+    master: audio.master.gain.value,
+    beepVolume: audio.beepVolume.gain.value,
+    envelope: audio.envelope.gain.value,
+    bedLeft: audio.bedLeft.gain.value,
+    bedRight: audio.bedRight.gain.value,
+    lastPlayed: audio.lastPlayed,
+    lastIntervalMs: audio.lastIntervalMs,
+  } : null;
 
   musicInput.onchange = () => {
     const file = musicInput.files[0];
@@ -747,6 +1003,9 @@
       alarmPan: typeof message.alarm_pan === "number" ? message.alarm_pan : null,
       earGainLeft: typeof message.ear_gain_left === "number" ? message.ear_gain_left : 1,
       earGainRight: typeof message.ear_gain_right === "number" ? message.ear_gain_right : 1,
+      // How soon the walker reaches what is in its corridor, for the pulse's rate. An older laptop
+      // sends none, which reads as the slowest pulse.
+      timeToContactSeconds: typeof message.time_to_contact_seconds === "number" ? message.time_to_contact_seconds : null,
       receivedAt: performance.now(),
     };
     if (audio && mode === "alarm") setBeepPan(beepPan());
