@@ -12,6 +12,7 @@ import pytest
 
 # Local package imports
 from nav.planner.alarm import avoidance_surprise_bits_at
+from nav.planner.config import OnOff
 from nav.scene.config import SceneConfig
 from nav.sinks.floor_geometry import floor_hidden_mask, floor_seen_mask, group_rings
 from nav.sinks.path_style import BORDER_OPACITY, GROUP_RGB, SURPRISE_HIGH_RGB, WALL_RGB, path_color_rgb, path_fill_opacity
@@ -22,6 +23,7 @@ from nav.sinks.web_messages import (
     PictureKind,
     WebMessageKind,
     browser_choice,
+    gaze_silencing_state_message,
     plan_view_message,
     source_state_message,
     web_text_message,
@@ -311,3 +313,21 @@ def test_the_source_state_carries_the_side_and_the_live_link_as_the_page_reads_t
         "has_recording": True,
         "live_has_video": False,
     }
+
+
+@pytest.mark.parametrize("state", list(OnOff))
+def test_a_gaze_silencing_choice_is_read_from_its_vocabulary(state: OnOff) -> None:
+    assert browser_choice(json.dumps({"kind": "gaze_silencing", "gaze_silencing": state.value})) is state
+
+
+def test_a_gaze_silencing_state_message_carries_its_state() -> None:
+    assert gaze_silencing_state_message(True) == {"state": "on"}
+    assert gaze_silencing_state_message(False) == {"state": "off"}
+    framed = json.loads(web_text_message(WebMessageKind.GAZE_SILENCING_STATE, gaze_silencing_state_message(True)))
+    assert framed == {"kind": "gaze_silencing_state", "state": "on"}
+
+
+@pytest.mark.parametrize("value", ["yes", True, None, "ON"])
+def test_a_gaze_silencing_value_outside_the_vocabulary_is_refused(value: object) -> None:
+    with pytest.raises(ValueError, match="gaze_silencing"):
+        browser_choice(json.dumps({"kind": "gaze_silencing", "gaze_silencing": value}))

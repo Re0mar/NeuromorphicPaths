@@ -76,10 +76,18 @@ class _Gaze:
 
 
 @dataclasses.dataclass
+class _GazeSample:
+    offset_seconds: float
+    x: float
+    y: float
+
+
+@dataclasses.dataclass
 class _Matched:
     frame: _Frame
     gaze: _Gaze | None
     orientation: _Quaternion | None
+    gaze_samples: tuple[_GazeSample, ...] = ()
 
 
 @dataclasses.dataclass
@@ -124,7 +132,8 @@ class ChildFakeDevice:
         gaze = _Gaze(3.0, 4.0) if self._gaze else None
         # Odd frames had an IMU reading near their capture, even ones did not.
         orientation = _Quaternion(0.9, 0.1, 0.2, 0.3) if self._frame_index % 2 == 1 else None
-        return _Matched(_Frame(pixels, 100.0 + self._frame_index), gaze, orientation)
+        samples = (_GazeSample(-0.04, 2.5, 3.5), _GazeSample(0.01, 3.0, 4.0)) if self._gaze else ()
+        return _Matched(_Frame(pixels, 100.0 + self._frame_index), gaze, orientation, samples)
 
     def imu_status(self) -> _ImuStatus:
         return _ImuStatus(readings=40, empty_readings=3, unstamped_empty_readings=2, frames_without_orientation=1)
@@ -211,7 +220,15 @@ def test_a_matched_frame_crosses_the_pipe_with_its_pixels_stamp_and_gaze(served:
 def test_a_frame_without_gaze_crosses_as_no_gaze() -> None:
     proxy = _serve_on_thread(ChildFakeDevice(gaze=False))
 
-    assert proxy.receive_matched_scene_video_frame_and_gaze(timeout_seconds=0.25).gaze is None
+    matched = proxy.receive_matched_scene_video_frame_and_gaze(timeout_seconds=0.25)
+    assert matched.gaze is None
+    assert matched.gaze_samples == ()
+
+
+def test_the_gaze_samples_cross_the_pipe_in_order_with_their_offsets(served: NeonDeviceProcess) -> None:
+    matched = served.receive_matched_scene_video_frame_and_gaze(timeout_seconds=0.25)
+
+    assert [(sample.offset_seconds, sample.x, sample.y) for sample in matched.gaze_samples] == [(-0.04, 2.5, 3.5), (0.01, 3.0, 4.0)]
 
 
 def test_a_frames_orientation_crosses_the_pipe_with_it_field_for_field_and_none_as_none(served: NeonDeviceProcess) -> None:
@@ -453,7 +470,8 @@ def test_a_frame_reply_carries_where_the_pixels_are_and_not_the_pixels() -> None
         frames.close()
 
     assert not any(isinstance(part, np.ndarray) for part in payload)
-    block_name, shape, dtype, timestamp, gaze, orientation = payload
+    block_name, shape, dtype, timestamp, gaze, orientation, gaze_samples = payload
+    assert gaze_samples == [(-0.04, 2.5, 3.5), (0.01, 3.0, 4.0)]
     assert isinstance(block_name, str)
     assert tuple(shape) == FRAME_SHAPE
     assert np.dtype(dtype) == np.uint8

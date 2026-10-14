@@ -15,7 +15,7 @@ from typing import Protocol
 import numpy as np
 
 # Local package imports
-from nav.types import FrameTiming, Pose
+from nav.types import FrameTiming, Pose, check_gaze_samples
 
 
 @dataclass(frozen=True)
@@ -34,6 +34,10 @@ class RgbFrame:
     # Capture and arrival on the laptop clock. depth_ready_seconds is still None at this point,
     # because no depth exists yet.
     timing: FrameTiming | None
+    # Every gaze sample near the frame's stamp, (N, 2) pixels in image_rgb with (N,) offsets in
+    # seconds from the stamp. None when the device has no gaze.
+    gaze_pixels: np.ndarray | None = None
+    gaze_sample_offsets_seconds: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         # Same reasoning as DepthFrame. Two unrelated sources build these, and a wrongly shaped
@@ -42,6 +46,7 @@ class RgbFrame:
             raise ValueError(f"image_rgb must be (height, width, 3), got shape {self.image_rgb.shape}")
         if self.gaze_pixel is not None and self.gaze_pixel.shape != (2,):
             raise ValueError(f"gaze_pixel must be (2,) when present, got shape {self.gaze_pixel.shape}")
+        check_gaze_samples(self.gaze_pixels, self.gaze_sample_offsets_seconds)
         if self.pose is not None and not isinstance(self.pose, Pose):
             raise ValueError(f"pose must be a Pose when present, got {type(self.pose).__name__}")
         if self.camera_matrix is not None:

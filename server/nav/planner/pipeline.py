@@ -8,7 +8,22 @@ import time
 import numpy as np
 
 # Local package imports
-from nav.planner.alarm import AlarmHold, alarm_raised, avoidance_surprise_bits, check_alarm_config, nearest_corridor_point
+from nav.planner.alarm import (
+    AlarmHold,
+    alarm_raised,
+    avoidance_surprise_bits,
+    check_alarm_config,
+    corridor_time_to_contact,
+    nearest_corridor_point,
+)
+from nav.planner.attention import (
+    AttentionCredit,
+    alarm_audible,
+    check_attention_config,
+    danger_object,
+    gaze_on_outlines,
+    tolerance_radians,
+)
 from nav.planner.audio import alarm_pan, check_audio_config, ear_gains
 from nav.planner.config import GoalMode, PlannerConfig
 from nav.planner.contact import ContactSurprise, check_contact_config
@@ -20,7 +35,7 @@ from nav.planner.information import scene_information_bits
 from nav.planner.previous_plan import PreviousPlanPrior, check_previous_plan_config
 from nav.planner.surprise import CollisionSurprise
 from nav.planner.units import bits_from_nats
-from nav.types import ObstacleSet, PlannedPath
+from nav.types import GazeSamples, ObstacleSet, PlannedPath
 from nav.walker import WalkerConfig
 
 log = logging.getLogger(__name__)
@@ -62,6 +77,23 @@ class PlannerPipeline:
         check_previous_plan_config(config)
         self._previous_plan = PreviousPlanPrior(config, self._times) if config.previous_plan_prior_enabled else None
         self._last_field: np.ndarray | None = None
+        check_attention_config(config)
+        self._attention_tolerance = tolerance_radians(config.attention_tolerance_degrees)
+        self._attention = AttentionCredit(config.attention_credit_seconds, config.attention_match_meters, config.walking_speed_mps)
+        # Whether the eyes are on the danger, kept through the hold the way the pan is.
+        self._danger_noticed = False
+        # The run's switch. Read once a frame, so a page flipping it changes the next plan's sound.
+        self._gaze_silences_alarm = config.gaze_silences_alarm
+        # The credit runs on frame stamps. A frame planned twice must not age or renew it twice.
+        self._last_attention_stamp: float | None = None
+
+    @property
+    def gaze_silences_alarm(self) -> bool:
+        return self._gaze_silences_alarm
+
+    def set_gaze_silences_alarm(self, enabled: bool) -> None:
+        """Turn the gaze switch on or off for every plan from here on. The path itself never changes with it."""
+        self._gaze_silences_alarm = enabled
 
     @property
     def grid(self) -> np.ndarray:
@@ -83,6 +115,7 @@ class PlannerPipeline:
         start_lateral_meters: float = 0.0,
         goal_mode: GoalMode = GoalMode.AHEAD,
         gaze_ground_point: np.ndarray | None = None,
+        gaze: GazeSamples | None = None,
     ) -> PlannedPath:
         """
         Choose the path for this frame.
@@ -91,6 +124,7 @@ class PlannerPipeline:
         :param start_lateral_meters: Where the walker is on the grid. Zero, the walker is the origin.
         :param goal_mode: Straight ahead or the gaze.
         :param gaze_ground_point: The gaze on the floor, when the mode wants it.
+        :param gaze: The gaze samples the frame carried, for whether the alarm is heard. None without gaze.
         :return: The chosen path, its heading at the lookahead, and the alarm.
         :rtype: PlannedPath
         """
@@ -147,11 +181,14 @@ class PlannerPipeline:
             self._alarm_pan = None if danger is None else alarm_pan(danger.lateral_meters, config)
         elif not alarm:
             self._alarm_pan = None
-        ear_left, ear_right = ear_gains(heading, alarm, self._alarm_pan, config)
+        audible = self._attend(obstacles, gaze, alarm)
+        # The danger's ear drops only while the alarm is heard, so a quieted alarm leaves the steering
+        # cue as it is. ear_gains calls its argument alarm, and it is handed the heard one on purpose.
+        ear_left, ear_right = ear_gains(heading, audible, self._alarm_pan, config)
 
         log.debug(
             "planner %.1f ms: field %.1f, dp %.1f, info %.1f, %d groups, cost %.2f bits, heading %.1f deg, "
-            "information %.2f bits, avoidance %.2f bits, alarm %s",
+            "information %.2f bits, avoidance %.2f bits, alarm %s, eyes on danger %s, heard %s",
             (after_information - started) * 1000,
             (after_field - started) * 1000,
             (after_plan - after_field) * 1000,
@@ -162,6 +199,8 @@ class PlannerPipeline:
             information,
             avoidance,
             alarm,
+            self._danger_noticed,
+            audible,
         )
 
         return PlannedPath(
@@ -176,4 +215,40 @@ class PlannerPipeline:
             alarm_pan=self._alarm_pan,
             ear_gain_left=ear_left,
             ear_gain_right=ear_right,
+            danger_noticed=self._danger_noticed,
+            alarm_audible=audible,
         )
+
+    def _attend(self, obstacles: ObstacleSet, gaze: GazeSamples | None, alarm: bool) -> bool:
+        """
+        Decide whether the eyes are on the danger and whether the alarm is heard. Runs every frame, switch or not.
+
+        :return: Whether the alarm is heard this frame.
+        :rtype: bool
+        """
+        config = self._config
+        danger = nearest_corridor_point(obstacles, config)
+        stamp = obstacles.timestamp_seconds
+        if stamp != self._last_attention_stamp:
+            looked = False
+            if danger is not None and gaze is not None:
+                pieces = danger_object(danger, obstacles.points, config.attention_link_meters, config.attention_cap_meters)
+                looked = gaze_on_outlines(
+                    gaze.pixels,
+                    gaze.offsets_seconds,
+                    config.attention_window_seconds,
+                    gaze.intrinsics,
+                    [piece.camera_outline for piece in pieces],
+                    self._attention_tolerance,
+                    config.attention_dwell_seconds,
+                )
+            # No gaze is not looked, which keeps the alarm heard. Unknown fails safe.
+            noticed_now = self._attention.update(danger, looked, stamp)
+            if danger is not None:
+                self._danger_noticed = noticed_now
+            elif not alarm:
+                self._danger_noticed = False
+            # Otherwise the hold with an empty corridor, which keeps the last answer like the pan.
+            self._last_attention_stamp = stamp
+        contact = corridor_time_to_contact(obstacles, config)
+        return alarm_audible(alarm, self._danger_noticed, contact, self._gaze_silences_alarm, config)

@@ -15,7 +15,7 @@ import numpy as np
 # Local package imports
 from nav.scene.config import SceneConfig
 from nav.scene.floor import ground_axes
-from nav.types import Plane
+from nav.types import CameraOutline, Plane
 from nav.walker import WalkerConfig
 
 
@@ -201,6 +201,25 @@ def summarize_groups(
             )
         )
     return summaries
+
+
+def camera_outline(member_points_camera: np.ndarray) -> CameraOutline:
+    """
+    The part of the picture one group's points cover, edge to edge.
+
+    :param member_points_camera: (M, 3) the group's points in the camera frame, M at least 1, each
+        in front of the camera.
+    :return: The outline as tangents, so it means the same at any image resolution.
+    :rtype: CameraOutline
+    """
+    across = member_points_camera[:, 0] / member_points_camera[:, 2]
+    down = member_points_camera[:, 1] / member_points_camera[:, 2]
+    return CameraOutline(
+        left_tangent=float(across.min()),
+        right_tangent=float(across.max()),
+        top_tangent=float(down.min()),
+        bottom_tangent=float(down.max()),
+    )
 
 
 def clearance(group: GroupSummary, walker: WalkerConfig) -> float:

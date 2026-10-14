@@ -99,7 +99,8 @@ def test_replay_calls_plan_like_the_loop() -> None:
 
     (loop_call,) = plan_calls(NAV_DIR / "runtime" / "loop.py")
     (replay_call,) = plan_calls(NAV_DIR / "evaluation" / "replay.py")
-    assert len(loop_call.args) == len(replay_call.args) == 4
+    # The obstacles, the start, the goal mode, the gaze on the floor, and the gaze samples.
+    assert len(loop_call.args) == len(replay_call.args) == 5
     assert not loop_call.keywords and not replay_call.keywords
     assert isinstance(loop_call.args[1], ast.Constant) and loop_call.args[1].value == 0.0
     assert isinstance(replay_call.args[1], ast.Constant) and replay_call.args[1].value == 0.0

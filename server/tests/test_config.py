@@ -37,6 +37,7 @@ from nav.sources.config import (
     TapConfig,
     VideoConfig,
 )
+from nav.planner.config import PlannerConfig
 from nav.runtime.tap import RecordingTap
 from nav.scene.config import SceneConfig
 from nav.sinks.config import PhoneAppConfig, WebConfig
@@ -949,3 +950,22 @@ def test_the_retired_plugin_model_flag_is_refused(capsys: pytest.CaptureFixture[
         build_run_config(["--source", "neon_recording", "--recording-dir", ".", "--plugin-model", "DA3Metric-Large", "--sink", "none"])
 
     assert "unrecognized arguments: --plugin-model" in capsys.readouterr().err
+
+
+def test_gaze_silences_alarm_defaults_to_off() -> None:
+    assert build_run_config(MINIMAL_VIDEO_ARGV).planner.gaze_silences_alarm is False
+
+
+def test_gaze_silences_alarm_on_is_read_as_the_bool() -> None:
+    config = build_run_config([*MINIMAL_VIDEO_ARGV, "--gaze-silences-alarm", "on"])
+
+    assert config.planner.gaze_silences_alarm is True
+    # Only the switch moves. Every other planner value is its default.
+    assert dataclasses.replace(config.planner, gaze_silences_alarm=False) == PlannerConfig()
+
+
+def test_a_gaze_silences_alarm_value_outside_the_vocabulary_is_refused(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        build_run_config([*MINIMAL_VIDEO_ARGV, "--gaze-silences-alarm", "yes"])
+
+    assert "--gaze-silences-alarm" in capsys.readouterr().err

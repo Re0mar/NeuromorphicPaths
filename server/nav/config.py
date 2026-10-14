@@ -19,7 +19,7 @@ from enum import Enum
 from pathlib import Path
 
 # Local package imports
-from nav.planner.config import GoalMode, PlannerConfig
+from nav.planner.config import GoalMode, OnOff, PlannerConfig
 from nav.runtime.tap import RecordingTap
 from nav.scene.config import SceneConfig
 from nav.sinks.config import DebugWindowConfig, PhoneAppConfig, WebConfig
@@ -27,7 +27,7 @@ from nav.sinks.debug_window import DebugWindowSink
 from nav.sinks.fan_out import FanOutSink
 from nav.sinks.none import NullSink
 from nav.sinks.phone_app import PhoneAppSink
-from nav.sinks.web import WebSink
+from nav.sinks.web import OnOffSwitch, WebSink
 from nav.sources.arcore_tcp import ArCoreTcpSource
 from nav.sources.config import (
     ArCoreConfig,
@@ -202,6 +202,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="where the path goes. Repeat it for more than one display, as in --sink phone_app --sink web",
     )
     pipeline.add_argument("--goal", choices=[mode.value for mode in GoalMode], default=GoalMode.AHEAD.value)
+    pipeline.add_argument(
+        "--gaze-silences-alarm",
+        choices=[state.value for state in OnOff],
+        default=OnOff.OFF.value,
+        help="whether the glasses' gaze on the danger may quiet the alarm, at the start. A page can flip it for the whole run",
+    )
 
     video = parser.add_argument_group("video_file source")
     video.add_argument("--path", help="recording on disk, or an IP camera stream URL")
@@ -443,6 +449,8 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
         source_kind=source_kind,
         sink_kinds=sink_kinds,
         goal_mode=goal_mode,
+        # The page and the command line spell it as OnOff, and the planner holds the bool.
+        planner=PlannerConfig(gaze_silences_alarm=OnOff(arguments.gaze_silences_alarm) is OnOff.ON),
         scene=SceneConfig(floor_max_tilt_degrees=arguments.floor_max_tilt, floor_max_offset_meters=arguments.floor_max_height),
         walker=WalkerConfig(radius_meters=arguments.walker_radius),
         tap=TapConfig(log_dir=arguments.record_to),
@@ -502,7 +510,11 @@ def _build_estimator(config: RunConfig) -> DepthEstimatorProtocol:
 SOURCES_WITH_SCENE_VIDEO = frozenset({SourceKind.NEON_LIVE})
 
 
-def build_source_and_sink(config: RunConfig, on_path_sent: Callable[[float], None] | None = None) -> tuple[DepthFrameSource, PathSink]:
+def build_source_and_sink(
+    config: RunConfig,
+    on_path_sent: Callable[[float], None] | None = None,
+    gaze_switch: OnOffSwitch | None = None,
+) -> tuple[DepthFrameSource, PathSink]:
     """
     Build the run's source and its sink together, sharing what only both can use.
 
@@ -513,6 +525,7 @@ def build_source_and_sink(config: RunConfig, on_path_sent: Callable[[float], Non
 
     :param config: The run configuration.
     :param on_path_sent: As for build_sink.
+    :param gaze_switch: As for build_sink.
     :return: The source and the sink, in that order.
     :rtype: tuple[DepthFrameSource, PathSink]
     """
@@ -523,7 +536,7 @@ def build_source_and_sink(config: RunConfig, on_path_sent: Callable[[float], Non
     source_switch = _build_source_switch(config, video_feed)
     return (
         build_source(config, video_feed=video_feed, source_switch=source_switch),
-        build_sink(config, on_path_sent=on_path_sent, video_feed=video_feed, source_switch=source_switch),
+        build_sink(config, on_path_sent=on_path_sent, video_feed=video_feed, source_switch=source_switch, gaze_switch=gaze_switch),
     )
 
 
@@ -639,6 +652,7 @@ def build_sink(
     on_path_sent: Callable[[float], None] | None = None,
     video_feed: SceneVideoFeed | None = None,
     source_switch: SwitchableSource | None = None,
+    gaze_switch: OnOffSwitch | None = None,
 ) -> PathSink:
     """
     Turn the chosen sink kinds into one sink.
@@ -653,10 +667,11 @@ def build_sink(
         when the source has no video to offer, and the page then says so.
     :param source_switch: Given to the web sink, whose page switches between the live input and the
         recording. None on a run without a recording, and the page then shows no switch.
+    :param gaze_switch: Given to the web sink, whose page may flip whether the gaze quiets the alarm.
     :return: A sink accepting PlannedPath objects.
     :rtype: PathSink
     """
-    sinks = [_build_one_sink(kind, config, on_path_sent, video_feed, source_switch) for kind in config.sink_kinds]
+    sinks = [_build_one_sink(kind, config, on_path_sent, video_feed, source_switch, gaze_switch) for kind in config.sink_kinds]
     if len(sinks) == 1:
         return sinks[0]
     return FanOutSink(sinks)
@@ -668,6 +683,7 @@ def _build_one_sink(
     on_path_sent: Callable[[float], None] | None,
     video_feed: SceneVideoFeed | None,
     source_switch: SwitchableSource | None,
+    gaze_switch: OnOffSwitch | None = None,
 ) -> PathSink:
     match sink_kind:
         case SinkKind.DEBUG_WINDOW:
@@ -675,7 +691,7 @@ def _build_one_sink(
         case SinkKind.WEB:
             if config.web is None:
                 raise ValueError("web needs a web config and none was built")
-            return WebSink(config.web, config.scene, video_feed=video_feed, source_switch=source_switch)
+            return WebSink(config.web, config.scene, video_feed=video_feed, source_switch=source_switch, gaze_switch=gaze_switch)
         case SinkKind.PHONE_APP:
             if config.phone_app is None:
                 raise ValueError("phone_app needs a phone_app config and none was built")

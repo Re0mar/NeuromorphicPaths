@@ -145,6 +145,13 @@ class DeviceGaze:
 
 
 @dataclass(frozen=True)
+class DeviceGazeSample:
+    offset_seconds: float
+    x: float
+    y: float
+
+
+@dataclass(frozen=True)
 class DeviceQuaternion:
     w: float
     x: float
@@ -158,6 +165,9 @@ class DeviceMatched:
     gaze: DeviceGaze | None
     # The usable IMU reading nearest the frame's capture stamp, or None when none was near enough.
     orientation: DeviceQuaternion | None
+    # Every gaze sample within the stream's carry window of the frame's stamp, oldest first, as
+    # (offset from the frame's stamp in seconds, x, y) in the scene camera's raw pixels.
+    gaze_samples: tuple[DeviceGazeSample, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -401,7 +411,7 @@ class NeonDeviceProcess:
             answer = self._request(DeviceRequest.MATCHED, timeout_seconds, wait_seconds=timeout_seconds + RESPONSE_GRACE_SECONDS)
             if answer is None:
                 return None
-            block_name, shape, dtype, timestamp_unix_seconds, gaze, orientation = answer
+            block_name, shape, dtype, timestamp_unix_seconds, gaze, orientation, gaze_samples = answer
             # Copied while the lock is held, so no other request can reach the child, and the
             # child cannot write the next frame over this one before it is out.
             bgr_pixels = self._copy_frame(block_name, shape, dtype)
@@ -409,6 +419,7 @@ class NeonDeviceProcess:
             frame=DeviceFrame(bgr_pixels=bgr_pixels, timestamp_unix_seconds=timestamp_unix_seconds),
             gaze=None if gaze is None else DeviceGaze(*gaze),
             orientation=None if orientation is None else DeviceQuaternion(*orientation),
+            gaze_samples=tuple(DeviceGazeSample(*sample) for sample in gaze_samples),
         )
 
     def imu_status(self) -> DeviceImuStatus:
@@ -680,9 +691,22 @@ def answer(
             orientation = None
             if quaternion is not None:
                 orientation = (float(quaternion.w), float(quaternion.x), float(quaternion.y), float(quaternion.z))
+            gaze_samples = [
+                (float(sample.offset_seconds), float(sample.x), float(sample.y))
+                for sample in matched.gaze_samples
+            ]
             # The pixels go into shared memory. Only where to find them crosses the pipe.
             block_name, shape, dtype = frames.put(matched.frame.bgr_pixels)
-            return (block_name, shape, dtype, float(matched.frame.timestamp_unix_seconds), gaze, orientation)
+            # Unpacked in this order by NeonDeviceProcess.receive_matched_scene_video_frame_and_gaze.
+            return (
+                block_name,
+                shape,
+                dtype,
+                float(matched.frame.timestamp_unix_seconds),
+                gaze,
+                orientation,
+                gaze_samples,
+            )
         case DeviceRequest.IMU_STATUS:
             status = device.imu_status()
             return (

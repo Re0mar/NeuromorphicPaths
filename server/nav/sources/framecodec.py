@@ -152,6 +152,10 @@ def encode_frame(frame: DepthFrame) -> bytes:
             "arrival_seconds": frame.timing.arrival_seconds,
             "depth_ready_seconds": frame.timing.depth_ready_seconds,
         }
+    # The same for the carried gaze samples, which only the glasses have.
+    if frame.gaze_pixels is not None:
+        header["gaze_pixels"] = frame.gaze_pixels.tolist()
+        header["gaze_sample_offsets_seconds"] = frame.gaze_sample_offsets_seconds.tolist()
 
     try:
         # allow_nan=False turns a non-finite intrinsic or pose into an error here, rather than into
@@ -199,6 +203,12 @@ def decode_frame(payload: bytes) -> DepthFrame:
         "gaze_pixel": _optional_vector(_required(header, "gaze_pixel"), "gaze_pixel", length=2),
         # Optional. The Pixel app never sends it, and frame logs written before it existed lack it.
         "timing": _decode_timing(header["timing"]) if "timing" in header else None,
+        # Optional too. Only the glasses have them, and frame logs written before them lack both.
+        # DepthFrame refuses one without the other and unequal lengths.
+        "gaze_pixels": _optional_matrix(header.get("gaze_pixels"), "gaze_pixels", columns=2),
+        "gaze_sample_offsets_seconds": _optional_vector(
+            header.get("gaze_sample_offsets_seconds"), "gaze_sample_offsets_seconds", length=None,
+        ),
     }
 
     try:
@@ -233,6 +243,9 @@ def path_message(path: PlannedPath) -> dict:
         "alarm_pan": None if path.alarm_pan is None else float(path.alarm_pan),
         "ear_gain_left": float(path.ear_gain_left),
         "ear_gain_right": float(path.ear_gain_right),
+        # The gaze switch, decided on the laptop. The page turns red from alarm and sounds from alarm_audible.
+        "danger_noticed": bool(path.danger_noticed),
+        "alarm_audible": bool(path.alarm_audible),
     }
 
 
@@ -251,13 +264,14 @@ def decode_path(payload: bytes) -> PlannedPath:
     if not isinstance(message, dict):
         raise FrameDecodeError(f"path must be a JSON object, got {type(message).__name__}")
 
+    alarm = _boolean(_required(message, "alarm"), "alarm")
     try:
         return PlannedPath(
             timestamp_seconds=_number(_required(message, "timestamp_seconds"), "timestamp_seconds"),
             times_seconds=_vector(_required(message, "times_seconds"), "times_seconds"),
             lateral_offsets_meters=_vector(_required(message, "lateral_offsets_meters"), "lateral_offsets_meters"),
             lookahead_heading_radians=_number(_required(message, "lookahead_heading_radians"), "lookahead_heading_radians"),
-            alarm=_boolean(_required(message, "alarm"), "alarm"),
+            alarm=alarm,
             cumulative_cost_bits=_number(_required(message, "cumulative_cost_bits"), "cumulative_cost_bits"),
             scene_information_bits=_number(_required(message, "scene_information_bits"), "scene_information_bits"),
             avoidance_surprise_bits=_number(_required(message, "avoidance_surprise_bits"), "avoidance_surprise_bits"),
@@ -266,6 +280,9 @@ def decode_path(payload: bytes) -> PlannedPath:
             alarm_pan=None if message.get("alarm_pan") is None else _number(message["alarm_pan"], "alarm_pan"),
             ear_gain_left=_number(message.get("ear_gain_left", 1.0), "ear_gain_left"),
             ear_gain_right=_number(message.get("ear_gain_right", 1.0), "ear_gain_right"),
+            # Optional too. A path from before the gaze switch sounds whenever its alarm is up.
+            danger_noticed=_boolean(message.get("danger_noticed", False), "danger_noticed"),
+            alarm_audible=_boolean(message.get("alarm_audible", alarm), "alarm_audible"),
         )
     except ValueError as inconsistent_error:
         if isinstance(inconsistent_error, FrameDecodeError):
@@ -378,7 +395,7 @@ def _vector(value: object, field: str, length: int | None = None) -> np.ndarray:
     return np.array([_number(entry, f"{field}[{index}]") for index, entry in enumerate(value)], dtype=np.float64)
 
 
-def _optional_vector(value: object, field: str, length: int) -> np.ndarray | None:
+def _optional_vector(value: object, field: str, length: int | None) -> np.ndarray | None:
     if value is None:
         return None
     return _vector(value, field, length=length)
@@ -391,6 +408,17 @@ def _matrix(value: object, field: str, rows: int, columns: int) -> np.ndarray:
         [_vector(row, f"{field}[{index}]", length=columns) for index, row in enumerate(value)],
         dtype=np.float64,
     )
+
+
+def _optional_matrix(value: object, field: str, columns: int) -> np.ndarray | None:
+    """Any number of rows, zero included, each of `columns` numbers. None for an absent or null value."""
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise FrameDecodeError(f"{field} must be a list of rows, got {type(value).__name__}")
+    rows = [_vector(row, f"{field}[{index}]", length=columns) for index, row in enumerate(value)]
+    # Reshaped so an empty list still comes back as (0, columns).
+    return np.array(rows, dtype=np.float64).reshape(-1, columns)
 
 
 def _describe(value: object) -> str:

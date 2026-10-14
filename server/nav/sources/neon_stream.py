@@ -28,6 +28,7 @@ import asyncio
 import base64
 import bisect
 import collections
+import itertools
 import json
 import logging
 import queue
@@ -46,6 +47,7 @@ import numpy as np
 from nav.pose.imu_orientation import is_usable_orientation, orientation_at
 from nav.sources.config import NeonConfig
 from nav.sources.scene_video import AccessUnit, AccessUnitAssembler, SceneVideoListener
+from nav.types import GAZE_CARRY_WINDOW_SECONDS
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +64,9 @@ IMU_FIELDS = ("t", "w", "x", "y", "z")
 # How far a gaze sample may be from a frame and still count as that frame's gaze. A frame is 33 ms.
 GAZE_MATCH_TOLERANCE_SECONDS = 0.05
 GAZE_HISTORY = 400  # About two seconds of gaze at 200 Hz.
+# The carried samples have to still be in the history. Sample rate is 200 Hz, both sides of the stamp.
+if 2 * GAZE_CARRY_WINDOW_SECONDS > GAZE_HISTORY / 200:
+    raise ValueError(f"GAZE_CARRY_WINDOW_SECONDS {GAZE_CARRY_WINDOW_SECONDS} does not fit in GAZE_HISTORY {GAZE_HISTORY}")
 # Three seconds of usable IMU readings at about 110 Hz. A frame can reach the pipeline 1.6 s after it
 # was captured (the worst seen on the 2026-10-05 walk), and its orientation has to still be in here.
 IMU_HISTORY = 330
@@ -120,6 +125,15 @@ class StreamGaze:
 
 
 @dataclass(frozen=True)
+class StreamGazeSample:
+    """One gaze sample carried with a frame, stamped relative to the frame's capture stamp."""
+
+    offset_seconds: float
+    x: float
+    y: float
+
+
+@dataclass(frozen=True)
 class StreamQuaternion:
     w: float
     x: float
@@ -133,6 +147,9 @@ class StreamMatched:
     gaze: StreamGaze | None
     # The usable IMU reading nearest the frame's capture stamp, or None when none was near enough.
     orientation: StreamQuaternion | None
+    # Every gaze sample within GAZE_CARRY_WINDOW_SECONDS of the frame's stamp, oldest first.
+    # Live, the samples after the stamp may not all have arrived yet when the frame is handed over.
+    gaze_samples: tuple[StreamGazeSample, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -322,6 +339,7 @@ class NeonStreamDevice:
             frame, timestamp = self._newest_frame
             self._frames_served = self._frames_decoded
             gaze = self._gaze_near(timestamp)
+            gaze_samples = self._gaze_within(timestamp)
             # From when the frame was captured, not from now. The frame handed over is the newest
             # decoded one, which can be 1.6 s old by the time it's asked for, and the head has moved.
             orientation = self._orientation_at(timestamp)
@@ -329,7 +347,7 @@ class NeonStreamDevice:
                 self._frames_without_orientation += 1
         # Converted here, once, for the one frame that is used.
         pixels = frame.to_ndarray(format="bgr24")
-        return StreamMatched(StreamFrame(pixels, timestamp), gaze, orientation)
+        return StreamMatched(StreamFrame(pixels, timestamp), gaze, orientation, gaze_samples)
 
     def imu_status(self) -> StreamImuStatus:
         """What the IMU has sent so far: readings, how many were empty, and frames left without one."""
@@ -683,6 +701,16 @@ class NeonStreamDevice:
         if abs(nearest[0] - timestamp) > GAZE_MATCH_TOLERANCE_SECONDS:
             return None
         return StreamGaze(nearest[1], nearest[2])
+
+    def _gaze_within(self, timestamp: float) -> tuple[StreamGazeSample, ...]:
+        """Every gaze sample within the carry window of the frame's stamp, oldest first. Caller holds the lock."""
+        stamps = [sample[0] for sample in self._gaze]
+        first = bisect.bisect_left(stamps, timestamp - GAZE_CARRY_WINDOW_SECONDS)
+        last = bisect.bisect_right(stamps, timestamp + GAZE_CARRY_WINDOW_SECONDS)
+        return tuple(
+            StreamGazeSample(stamp - timestamp, x, y)
+            for stamp, x, y in itertools.islice(self._gaze, first, last)
+        )
 
     def _raise_if_failed(self) -> None:
         if self._failure is not None:

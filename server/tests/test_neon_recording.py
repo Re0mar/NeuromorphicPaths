@@ -29,6 +29,7 @@ from nav.sources.neon_recording import (
     NeonRecordingCalibrationError,
     NeonRecordingRgbSource,
     sample_nearest,
+    samples_within,
     thinned_indices,
     xyzw_to_wxyz,
 )
@@ -100,6 +101,11 @@ class FakeRecordingReader:
         if self.gaze is None:
             return None
         return sample_nearest(self.gaze[0], self.gaze[1], times_ns, tolerance_ns)
+
+    def gaze_points_within(self, times_ns: np.ndarray, window_ns: int) -> list[tuple[np.ndarray, np.ndarray]] | None:
+        if self.gaze is None:
+            return None
+        return samples_within(self.gaze[0], self.gaze[1], times_ns, window_ns)
 
     def close(self) -> None:
         self.closed = True
@@ -452,3 +458,81 @@ def test_quaternion_columns_are_reordered_from_the_recordings_xyzw() -> None:
 def test_quaternion_reorder_refuses_the_wrong_shape() -> None:
     with pytest.raises(ValueError, match=r"\(N, 4\)"):
         xyzw_to_wxyz(np.zeros((3, 3)))
+
+
+# *******************************************
+# Gaze samples in a window around each frame
+# *******************************************
+
+
+def test_gaze_points_within_returns_each_frames_window_in_nanoseconds() -> None:
+    sample_times = np.array([0, 100, 150, 200, 300, 1000], dtype=np.int64)
+    values = np.arange(12, dtype=np.float64).reshape(6, 2)
+    targets = np.array([150, 600], dtype=np.int64)
+
+    around_150, around_600 = samples_within(sample_times, values, targets, 50)
+
+    # Both edges are inside the window.
+    assert around_150[0].tolist() == [-50, 0, 50]
+    assert around_150[0].dtype == np.int64
+    assert around_150[1].tolist() == [[2.0, 3.0], [4.0, 5.0], [6.0, 7.0]]
+    # A gap mid-stream is an empty window for that frame, never an error.
+    assert around_600[0].shape == (0,)
+    assert around_600[1].shape == (0, 2)
+
+
+def test_gaze_points_within_an_empty_or_one_sample_stream() -> None:
+    (empty,) = samples_within(np.empty(0, dtype=np.int64), np.empty((0, 2)), np.array([5]), 50)
+    near, far = samples_within(np.array([10], dtype=np.int64), np.array([[1.0, 2.0]]), np.array([5, 500]), 50)
+
+    assert empty[0].shape == (0,) and empty[1].shape == (0, 2)
+    assert near[0].tolist() == [5] and near[1].tolist() == [[1.0, 2.0]]
+    assert far[0].shape == (0,)
+
+
+def test_gaze_points_within_keeps_nanoseconds_exact_at_recording_scale() -> None:
+    # Around 1.7e18 ns a float64 can't tell 1 ns apart. The offsets must still come out exact.
+    sample_times = FIRST_TIME_NS + np.array([0, 1, 2], dtype=np.int64)
+
+    ((offsets, _),) = samples_within(sample_times, np.zeros((3, 2)), np.array([FIRST_TIME_NS + 1]), 1)
+
+    assert offsets.tolist() == [-1, 0, 1]
+
+
+def test_gaze_points_within_refuses_sample_times_out_of_order() -> None:
+    with pytest.raises(ValueError, match="ascending"):
+        samples_within(np.array([0, 200, 100]), np.zeros((3, 2)), np.array([50]), 10)
+
+
+def test_each_frame_carries_its_windows_samples_straightened_with_offsets_in_seconds(tmp_path: Path) -> None:
+    times = FIRST_TIME_NS + np.arange(2, dtype=np.int64) * FRAME_GAP_NS
+    center = [NEON_CAMERA_MATRIX[0, 2], NEON_CAMERA_MATRIX[1, 2]]
+    # Around the first frame: the center 10 ms before, a NaN, and a corner the crop removes 10 ms after.
+    gaze_times = np.array([times[0] - 10_000_000, times[0], times[0] + 10_000_000], dtype=np.int64)
+    points = np.array([center, [np.nan, np.nan], [0.0, 0.0]])
+    reader = FakeRecordingReader(frame_count=2, size=NEON_SCENE_SIZE, gaze=(gaze_times, points))
+    expected = undistorter_for(NEON_CAMERA_MATRIX, NEON_DISTORTION, NEON_SCENE_SIZE, NEON_SCENE_SIZE)
+
+    first, second = _source(tmp_path, reader).frames()
+
+    assert first.gaze_sample_offsets_seconds.tolist() == [-0.01]
+    assert first.gaze_pixels == pytest.approx(expected.camera_matrix[:2, 2].reshape(1, 2), abs=0.01)
+    # 33 ms later the window still reaches the first two samples, and the NaN is still dropped.
+    assert second.gaze_sample_offsets_seconds == pytest.approx([-0.043333333])
+
+
+def test_a_frame_with_no_gaze_in_its_window_carries_an_empty_window(tmp_path: Path) -> None:
+    times = FIRST_TIME_NS + np.array([10 * 1_000_000_000], dtype=np.int64)
+    reader = FakeRecordingReader(frame_count=1, gaze=(times, np.array([[100.0, 100.0]])))
+
+    (frame,) = _source(tmp_path, reader).frames()
+
+    assert frame.gaze_pixels.shape == (0, 2)
+    assert frame.gaze_sample_offsets_seconds.shape == (0,)
+
+
+def test_a_recording_with_no_gaze_stream_carries_none(tmp_path: Path) -> None:
+    (frame,) = _source(tmp_path, FakeRecordingReader(frame_count=1)).frames()
+
+    assert frame.gaze_pixels is None
+    assert frame.gaze_sample_offsets_seconds is None

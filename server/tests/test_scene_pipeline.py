@@ -613,3 +613,27 @@ def test_a_supplied_floor_counts_as_the_recent_floor() -> None:
 
     assert pipeline.last_floor_source is FloorSource.FITTED
     assert height == pytest.approx(CAMERA_HEIGHT_METERS, abs=0.01)
+
+
+def test_each_obstacle_point_carries_the_outline_of_its_whole_group() -> None:
+    # A box a meter tall, 3 m ahead. Its nearest point is low down by the floor, and the outline
+    # reaches up its side, which is what a look at the box's body is tested against.
+    scene = clean_scene(box_lateral_meters=0.5, box_forward_meters=3.0, box_height_meters=1.0, box_half_width_meters=0.1)
+    body = ScenePipeline(CONFIG, WALKER).process(_frame(scene))
+    world = ScenePipeline(CONFIG, WALKER).process(_frame(scene, pose=_pitched_pose(np.zeros(3))))
+
+    for obstacles in (body, world):
+        assert obstacles.points
+        for point in obstacles.points:
+            x, y, z = point.camera_point
+            outline = point.camera_outline
+            assert outline.left_tangent <= x / z <= outline.right_tangent
+            assert outline.top_tangent <= y / z <= outline.bottom_tangent
+        tallest = max(obstacles.points, key=lambda point: point.camera_outline.bottom_tangent - point.camera_outline.top_tangent)
+        # From the ankle band to the top of a meter-tall box at 3 m is well over 10 degrees.
+        span = np.degrees(np.arctan(tallest.camera_outline.bottom_tangent) - np.arctan(tallest.camera_outline.top_tangent))
+        assert span > 10.0
+    nearest_body = min(body.points, key=lambda point: point.clearance_meters).camera_outline
+    nearest_world = min(world.points, key=lambda point: point.clearance_meters).camera_outline
+    assert nearest_body.top_tangent == pytest.approx(nearest_world.top_tangent, abs=1e-6)
+    assert nearest_body.bottom_tangent == pytest.approx(nearest_world.bottom_tangent, abs=1e-6)

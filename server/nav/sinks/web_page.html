@@ -946,6 +946,10 @@
   });
   showRings.addEventListener("change", drawRings);
 
+  // Whether the laptop lets the gaze quiet the alarm, run-wide, "off" or "on" as it last said. The
+  // Sound card's switch for it reads this. Until the laptop says, the page assumes off.
+  let gazeSilencing = "off";
+
   // On a run serving the page from a live input, the laptop says which side it plans on and how the
   // input is. The toggle only follows what the laptop says, so every page shows the same side
   // whoever switched it.
@@ -1032,6 +1036,7 @@
         if (message.kind === "path") showPath(message);
         else if (message.kind === "plan_view") showPlanView(message);
         else if (message.kind === "source_state") showSourceState(message);
+        else if (message.kind === "gaze_silencing_state") gazeSilencing = message.state;
         return;
       }
       showDepth(event.data);

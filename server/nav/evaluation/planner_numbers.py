@@ -46,6 +46,13 @@ class PlannerInput:
     lateral_axis: np.ndarray | None
     forward_axis: np.ndarray | None
     gaze_ground_point: np.ndarray | None
+    # The gaze samples the frame carried, (N, 2) pixels at the resolution of intrinsics with (N,)
+    # offsets in seconds from the stamp, for the attention test. None on a frame without them.
+    gaze_pixels: np.ndarray | None = None
+    gaze_sample_offsets_seconds: np.ndarray | None = None
+    intrinsics: np.ndarray | None = None
+    # The one gaze sample nearest the stamp, at the same resolution. None on a frame without gaze.
+    gaze_pixel: np.ndarray | None = None
 
 
 @dataclass(frozen=True)

@@ -23,6 +23,7 @@ import numpy as np
 
 # Local package imports
 from nav.planner.alarm import time_to_contact_from_avoidance_bits
+from nav.planner.config import OnOff
 from nav.scene.config import SceneConfig
 from nav.sinks.floor_geometry import floor_hidden_mask, floor_seen_mask, group_rings
 from nav.sinks.path_style import BORDER_OPACITY, GROUP_RGB, WALL_RGB, path_color_rgb, path_fill_opacity
@@ -44,6 +45,8 @@ class WebMessageKind(Enum):
     # Which side a run serving the page from a live input plans on, and how that input is. Never sent
     # on any other run.
     SOURCE_STATE = "source_state"
+    # Whether the gaze may quiet the alarm, run-wide. Sent on every change and to each page as it connects.
+    GAZE_SILENCING_STATE = "gaze_silencing_state"
 
 
 # Every key a plan view carries, in one place. The page test checks the page reads each of these,
@@ -87,12 +90,15 @@ class BrowserMessageKind(Enum):
     PICTURE = "picture"
     # Which side every page's run should plan on, the live input or the recording, in a "source" field.
     SOURCE = "source"
+    # Whether every page's run lets the gaze quiet the alarm, "off" or "on", in a "gaze_silencing" field.
+    GAZE_SILENCING = "gaze_silencing"
 
 
 # Each message a page sends, the field its choice is in, and the vocabulary that choice comes from.
 BROWSER_CHOICES: dict[BrowserMessageKind, type[Enum]] = {
     BrowserMessageKind.PICTURE: PictureKind,
     BrowserMessageKind.SOURCE: SourceMode,
+    BrowserMessageKind.GAZE_SILENCING: OnOff,
 }
 
 
@@ -154,13 +160,13 @@ def plan_view_message(path: PlannedPath, field: np.ndarray, grid: np.ndarray, vi
     return message
 
 
-def browser_choice(text: str) -> PictureKind | SourceMode:
+def browser_choice(text: str) -> PictureKind | SourceMode | OnOff:
     """
-    What a page asked for, read from one text frame it sent: a picture, or a side to plan on.
+    What a page asked for, read from one text frame it sent: a picture, a side to plan on, or the gaze switch.
 
-    :param text: The frame, JSON with a kind of "picture" or "source" and the field of the same name.
-    :return: The picture or the side asked for. The caller tells them apart by type.
-    :rtype: PictureKind | SourceMode
+    :param text: The frame, JSON with a kind of "picture", "source" or "gaze_silencing" and the field of the same name.
+    :return: The choice. The caller tells them apart by type, OnOff being the gaze switch's alone.
+    :rtype: PictureKind | SourceMode | OnOff
     :raises ValueError: When the frame is not JSON, not a message this laptop reads, or names a
         choice that isn't one.
     """
@@ -188,6 +194,11 @@ def source_state_message(state: SwitchState) -> dict:
         "has_recording": state.has_recording,
         "live_has_video": state.live_has_video,
     }
+
+
+def gaze_silencing_state_message(enabled: bool) -> dict:
+    """Whether the run lets the gaze quiet the alarm, spelled the way the page sends it."""
+    return {"state": (OnOff.ON if enabled else OnOff.OFF).value}
 
 
 def video_stream_message(description: VideoDescription) -> dict:

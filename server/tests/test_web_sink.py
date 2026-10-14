@@ -20,6 +20,7 @@ import pytest
 # Local package imports
 from nav.config import RunConfig, SinkKind, SourceKind, build_sink, build_source_and_sink
 from nav.planner.config import GoalMode
+from nav.runtime.gaze_silencing import GazeSilencingSwitch
 from nav.scene.config import SceneConfig
 from nav.sinks.config import WebConfig
 from nav.sinks.floor_geometry import floor_hidden_mask
@@ -1110,3 +1111,70 @@ def test_closing_the_sink_stops_listening_to_the_switch() -> None:
     sink.close()
 
     assert switch.listeners == []
+
+
+def _gaze_states(received: list) -> list[str]:
+    texts = [json.loads(message) for message in received if isinstance(message, str)]
+    return [text["state"] for text in texts if text["kind"] == WebMessageKind.GAZE_SILENCING_STATE.value]
+
+
+def test_a_page_asking_to_silence_switches_the_run_and_every_page_hears_it() -> None:
+    switch = GazeSilencingSwitch(False)
+    sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None, gaze_switch=switch)
+    sink.start()
+    try:
+        choice = json.dumps({"kind": "gaze_silencing", "gaze_silencing": "on"})
+        received = asyncio.run(_say_then_receive_until_quiet(sink.port, [choice], lambda: None, 0.5))
+    finally:
+        sink.close()
+
+    assert switch.enabled
+    states = _gaze_states(received)
+    assert states[0] == "off", "on connect"
+    assert states[-1] == "on", "the new state reaches the page that asked"
+
+
+def test_a_page_connecting_after_the_switch_was_set_gets_the_state_on_connect() -> None:
+    switch = GazeSilencingSwitch(False)
+    sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None, gaze_switch=switch)
+    sink.start()
+    try:
+        # Set first, with no page open, then connect.
+        switch.request(True)
+        late_page = asyncio.run(_receive_until_quiet(sink.port, lambda: None, 0.5))
+    finally:
+        sink.close()
+
+    assert _gaze_states(late_page) == ["on"]
+
+
+def test_a_sink_without_a_switch_logs_and_ignores_the_ask(sink: WebSink, caplog: pytest.LogCaptureFixture) -> None:
+    choice = json.dumps({"kind": "gaze_silencing", "gaze_silencing": "on"})
+
+    with caplog.at_level("WARNING", logger="nav.sinks.web"):
+        received = asyncio.run(_say_then_receive_until_quiet(sink.port, [choice], lambda: None, 0.5))
+
+    assert _gaze_states(received) == [], "the page shows no gaze switch state"
+    assert any("has no gaze switch" in record.getMessage() for record in caplog.records)
+
+
+def test_a_gaze_silencing_value_outside_the_vocabulary_changes_nothing() -> None:
+    switch = GazeSilencingSwitch(False)
+    sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None, gaze_switch=switch)
+    sink.start()
+    try:
+        asyncio.run(_say_then_receive_until_quiet(sink.port, [json.dumps({"kind": "gaze_silencing", "gaze_silencing": "yes"})], lambda: None, 0.3))
+    finally:
+        sink.close()
+
+    assert not switch.enabled
+
+
+def test_closing_the_sink_stops_listening_to_the_gaze_switch() -> None:
+    switch = GazeSilencingSwitch(False)
+    sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None, gaze_switch=switch)
+    sink.start()
+
+    sink.close()
+
+    assert switch._listeners == []

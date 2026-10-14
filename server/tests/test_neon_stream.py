@@ -892,3 +892,51 @@ def test_a_capture_without_a_sequence_parameter_set_still_replays_and_leaves_the
     assert numbers[-1] == 0x65, "the depth frames still come"
     assert collector.descriptions == [] and collector.units == []
     assert any("no scene video" in record.getMessage() for record in caplog.records)
+
+
+def _holding_gaze(frame_stamp: float, gaze: list[tuple[float, float, float]]) -> NeonStreamDevice:
+    """A receiver whose gaze samples have all arrived and whose newest frame was captured at frame_stamp."""
+    device = _holding(frame_stamp, [])
+    for sample in gaze:
+        device._on_gaze(*sample)
+    return device
+
+
+def test_the_samples_within_the_carry_window_are_handed_over_with_their_offsets() -> None:
+    # Offsets in ms from the frame at 10 s: -250 and +250 are outside the 200 ms window.
+    gaze = [(10.0 + offset_ms / 1000.0, float(offset_ms), 1.0) for offset_ms in (-250, -150, -80, 0, 60, 120, 250)]
+
+    matched = _holding_gaze(10.0, gaze).receive_matched_scene_video_frame_and_gaze(timeout_seconds=0.0)
+
+    assert [sample.x for sample in matched.gaze_samples] == [-150.0, -80.0, 0.0, 60.0, 120.0]
+    assert [sample.offset_seconds for sample in matched.gaze_samples] == pytest.approx([-0.15, -0.08, 0.0, 0.06, 0.12])
+
+
+def test_a_sample_on_the_window_edge_is_carried() -> None:
+    edge = neon_stream.GAZE_CARRY_WINDOW_SECONDS
+    gaze = [(10.0 - edge, 1.0, 1.0), (10.0 + edge, 2.0, 2.0)]
+
+    matched = _holding_gaze(10.0, gaze).receive_matched_scene_video_frame_and_gaze(timeout_seconds=0.0)
+
+    assert [sample.x for sample in matched.gaze_samples] == [1.0, 2.0]
+
+
+def test_no_samples_in_the_window_gives_an_empty_tuple() -> None:
+    matched = _holding_gaze(10.0, []).receive_matched_scene_video_frame_and_gaze(timeout_seconds=0.0)
+
+    assert matched.gaze_samples == ()
+    assert matched.gaze is None
+
+
+def test_a_gap_longer_than_the_window_mid_stream_gives_an_empty_tuple_not_an_error() -> None:
+    # Gaze up to 9 s, then nothing until 11 s. The frame at 10 s sits in the gap.
+    gaze = [(9.0 - index / 200.0, 1.0, 1.0) for index in range(50)][::-1] + [(11.0 + index / 200.0, 2.0, 2.0) for index in range(50)]
+
+    matched = _holding_gaze(10.0, gaze).receive_matched_scene_video_frame_and_gaze(timeout_seconds=0.0)
+
+    assert matched.gaze_samples == ()
+
+
+def test_the_carry_window_fits_in_the_gaze_history() -> None:
+    # The window both sides of the stamp, at 200 Hz, must still be in the deque.
+    assert 2 * neon_stream.GAZE_CARRY_WINDOW_SECONDS * 200 <= neon_stream.GAZE_HISTORY
