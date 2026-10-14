@@ -118,21 +118,33 @@ def nearest_corridor_point(obstacles: ObstacleSet, config: PlannerConfig) -> Obs
     return min(in_the_way, key=lambda point: point.clearance_meters)
 
 
+def avoidance_surprise_nats_at(time_to_contact_seconds: float) -> float:
+    """
+    The course's avoidance surprise for one time to contact, in nats.
+
+    U = half of (dt / tau) squared, with dt his 1 s and tau the time to contact. A natural-log value
+    like his other surprise. One second to contact is 0.5 nats.
+
+    :param time_to_contact_seconds: tau, above zero.
+    :return: Nats.
+    :rtype: float
+    :raises ValueError: When the time is not a finite number above zero.
+    """
+    if not np.isfinite(time_to_contact_seconds) or time_to_contact_seconds <= 0:
+        raise ValueError(f"time to contact must be above zero, got {time_to_contact_seconds}")
+    return float(0.5 * (AVOIDANCE_REFERENCE_SECONDS / time_to_contact_seconds) ** 2)
+
+
 def avoidance_surprise_bits_at(time_to_contact_seconds: float) -> float:
     """
-    The course's avoidance surprise for one time to contact, in bits.
-
-    U = half of (dt / tau) squared, with dt his 1 s and tau the time to contact. That is a natural-log
-    value like his other surprise, converted to bits. One second to contact is 0.72 bits.
+    The course's avoidance surprise for one time to contact, in bits. One second to contact is 0.72 bits.
 
     :param time_to_contact_seconds: tau, above zero.
     :return: Bits.
     :rtype: float
     :raises ValueError: When the time is not a finite number above zero.
     """
-    if not np.isfinite(time_to_contact_seconds) or time_to_contact_seconds <= 0:
-        raise ValueError(f"time to contact must be above zero, got {time_to_contact_seconds}")
-    return float(bits_from_nats(0.5 * (AVOIDANCE_REFERENCE_SECONDS / time_to_contact_seconds) ** 2))
+    return float(bits_from_nats(avoidance_surprise_nats_at(time_to_contact_seconds)))
 
 
 def time_to_contact_from_avoidance_bits(avoidance_bits: float) -> float | None:
@@ -172,17 +184,17 @@ def path_red_from_bits(config: PlannerConfig) -> float:
     return avoidance_surprise_bits_at(config.alarm_time_to_contact_seconds)
 
 
-def avoidance_surprise_bits(obstacles: ObstacleSet, config: PlannerConfig) -> float:
+def avoidance_surprise_nats(obstacles: ObstacleSet, config: PlannerConfig) -> float:
     """
-    How soon the walker reaches the nearest group in its corridor, as the course's avoidance surprise.
+    How soon the walker reaches the nearest group in its corridor, as the course's avoidance surprise in nats.
 
     The time to contact here is the nearest corridor clearance over walking speed, and the formula is
-    avoidance_surprise_bits_at's. Anything that needs a threshold in bits, such as the path's red
-    point, calls that function rather than restating the formula, so the two cannot drift apart.
+    avoidance_surprise_nats_at's. Anything that needs a threshold in bits, such as the path's red
+    point, calls avoidance_surprise_bits_at rather than restating the formula, so the two cannot drift apart.
 
     :param obstacles: This frame's groups.
     :param config: Walking speed, the body half-width, and the clearance floor.
-    :return: Bits, 0 when the corridor is empty.
+    :return: Nats, 0 when the corridor is empty.
     :rtype: float
     :raises ValueError: When the walking speed or the body half-width is not above zero.
     """
@@ -193,7 +205,12 @@ def avoidance_surprise_bits(obstacles: ObstacleSet, config: PlannerConfig) -> fl
     # Floored at his epsilon before dividing. The scene measures clearance from the footprint's
     # edge, so something touching the footprint reads zero and would otherwise be infinite.
     clearance = max(min(point.clearance_meters for point in in_the_way), config.clearance_epsilon_meters)
-    return avoidance_surprise_bits_at(clearance / config.walking_speed_mps)
+    return avoidance_surprise_nats_at(clearance / config.walking_speed_mps)
+
+
+def avoidance_surprise_bits(obstacles: ObstacleSet, config: PlannerConfig) -> float:
+    """The same surprise in the bits the course quotes, 0 when the corridor is empty."""
+    return float(bits_from_nats(avoidance_surprise_nats(obstacles, config)))
 
 
 def alarm_raised(obstacles: ObstacleSet, config: PlannerConfig) -> bool:

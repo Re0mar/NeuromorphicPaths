@@ -175,7 +175,7 @@ def test_a_gap_past_the_ceiling_forgets_the_plan_even_with_growth() -> None:
 
 
 def test_a_goal_that_moved_past_its_tolerance_forgets_the_plan() -> None:
-    # A wearer who looks from one gap to the other moves the gaze goal 2.5 m, past the 1.5 m tolerance.
+    # A wearer who looks from one gap to the other moves the gaze goal 2.5 m, past the 1.5 m forget distance.
     prior = PreviousPlanPrior(CONFIG, TIMES)
     prior.remember(straight_plan(-1.25), 0.0, np.array([-1.25, 4.0]))
     assert prior.field(GRID, FRAME_SECONDS, np.array([1.25, 4.0])) is None
@@ -206,6 +206,24 @@ def test_a_goal_that_moved_within_its_tolerance_keeps_the_plan() -> None:
     prior = PreviousPlanPrior(CONFIG, TIMES)
     prior.remember(straight_plan(-1.25), 0.0, np.array([-1.25, 4.0]))
     assert prior.field(GRID, FRAME_SECONDS, np.array([-0.75, 4.0])) is not None
+
+
+def test_the_previous_plan_forgets_against_its_own_distance_not_the_goal_tolerance() -> None:
+    # A goal move of 0.85 m, between two distances no shipped constant holds. Each half sets the two
+    # constants the other way round, so reading the wrong one fails one half or the other.
+    moved = np.array([-0.4, 4.0])
+    keeps = PreviousPlanPrior(replace(CONFIG, goal_tolerance_meters=0.35, previous_plan_forget_on_goal_move_meters=1.15), TIMES)
+    keeps.remember(straight_plan(0.45), 0.0, np.array([0.45, 4.0]))
+    assert keeps.field(GRID, FRAME_SECONDS, moved) is not None
+    forgets = PreviousPlanPrior(replace(CONFIG, goal_tolerance_meters=1.15, previous_plan_forget_on_goal_move_meters=0.35), TIMES)
+    forgets.remember(straight_plan(0.45), 0.0, np.array([0.45, 4.0]))
+    assert forgets.field(GRID, FRAME_SECONDS, moved) is None
+
+
+@pytest.mark.parametrize("value", [0.0, -0.5, float("nan")])
+def test_a_non_positive_forget_distance_is_refused(value: float) -> None:
+    with pytest.raises(ValueError, match="previous_plan_forget_on_goal_move_meters"):
+        PreviousPlanPrior(replace(CONFIG, previous_plan_forget_on_goal_move_meters=value), TIMES)
 
 
 # *******************************************

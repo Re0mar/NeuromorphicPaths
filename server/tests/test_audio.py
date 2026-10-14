@@ -14,9 +14,23 @@ from nav.planner.config import PlannerConfig
 CONFIG = PlannerConfig()
 
 
-def test_the_tolerance_is_the_goal_tolerance_seen_as_an_angle() -> None:
-    # atan(1.5 / 4.0), the shipped goal tolerance over the goal distance.
+def test_the_tolerance_is_the_cue_tolerance_seen_as_an_angle() -> None:
+    # atan(1.5 / 4.0), the shipped cue tolerance over the goal distance.
     assert np.degrees(heading_tolerance_radians(CONFIG)) == pytest.approx(20.556, abs=0.01)
+
+
+def test_the_cue_tolerance_is_its_own_constant() -> None:
+    # Retuning the goal leaves the cue alone, and the cue follows only its own constant.
+    sharper_goal = replace(CONFIG, goal_tolerance_meters=0.37)
+    assert heading_tolerance_radians(sharper_goal) == heading_tolerance_radians(CONFIG)
+    wider_cue = replace(CONFIG, cue_tolerance_meters=2.3)
+    assert heading_tolerance_radians(wider_cue) == pytest.approx(np.arctan(2.3 / CONFIG.goal_distance_meters))
+
+
+@pytest.mark.parametrize("value", [0.0, -1.0, float("nan")])
+def test_a_non_positive_cue_tolerance_is_refused(value: float) -> None:
+    with pytest.raises(ValueError, match="cue_tolerance_meters"):
+        heading_tolerance_radians(replace(CONFIG, cue_tolerance_meters=value))
 
 
 @pytest.mark.parametrize(
@@ -88,7 +102,7 @@ def test_a_non_finite_lateral_or_heading_is_refused(value: float) -> None:
         ("far_ear_floor_gain", 1.5),
         ("far_ear_floor_gain", float("nan")),
         ("goal_distance_meters", 0.0),
-        ("goal_tolerance_meters", 0.0),
+        ("cue_tolerance_meters", 0.0),
     ],
 )
 def test_a_bad_cue_constant_is_refused_by_name(name: str, value: float) -> None:

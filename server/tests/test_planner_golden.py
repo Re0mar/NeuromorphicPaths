@@ -31,10 +31,11 @@ run_config.json predates three floor settings, so they are set to today's defaul
 """
 
 # Standard library imports
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 # Third party imports
+import numpy as np
 import pytest
 
 # Local package imports
@@ -43,6 +44,9 @@ from nav.evaluation.fixture import read_fixture
 from nav.evaluation.planner_numbers import ClearanceBand, PlannerNumbers, whole_walk_numbers
 from nav.evaluation.replay import replayed_frames
 from nav.planner.config import GoalMode, PlannerConfig
+from nav.planner.dynamic_programming import plan
+from nav.planner.field import lateral_grid, step_count
+from nav.planner.goal import goal_position, goal_term, goal_tolerance, terminal_cost_as_rate
 from nav.walker import WalkerConfig
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -83,7 +87,8 @@ EXPECTED = {
     # pixel_walk_3, last segment, 1537469.27 to 1537502.30 s, 967 frames, outdoors.
     "golden_pixel_walk_3.json.gz": Expected(
         # Before the prior: 564 of 967 pinned, band 64 of 108, p90 1.3046 m.
-        pinned_all_percent=43.433,  # 420 of 967, one frame 0.10 points
+        # Before the goal could steer (goal as a rate, 1.5 m): 420 of 967 pinned, p90 0.3993 m.
+        pinned_all_percent=41.365,  # 400 of 967, one frame 0.10 points
         pinned_band_percent=4.630,  # 5 of 108, one frame 0.93 points
         pinned_clear_percent=0.0,  # 0 of 100, one frame 1.00 point
         restated_band_pinned=0,
@@ -97,17 +102,19 @@ EXPECTED = {
         near_noise_median_meters=0.0986,
         near_noise_readings=8392,
         disagreement_median_meters=0.0668,  # over 964 pairs
-        disagreement_p90_meters=0.3993,
+        disagreement_p90_meters=0.4591,
     ),
     # pixel_display_run, the classroom walk, last segment, 1566203.61 to 1566219.20 s, 461 frames.
     "golden_pixel_display_run.json.gz": Expected(
         # Before the prior: 227 of 461 pinned, band 48 of 115, 19 distinct headings, p90 1.1095 m.
-        pinned_all_percent=36.009,  # 166 of 461, one frame 0.22 points
-        pinned_band_percent=5.217,  # 6 of 115, one frame 0.87 points
+        # Before the goal could steer: 166 of 461 pinned, band 6 of 115, restated 6 of 54, 16 headings,
+        # p90 0.3573 m. The whole classroom walk's band went from 30.3 to 29.2 %, this slice's the other way.
+        pinned_all_percent=39.262,  # 181 of 461, one frame 0.22 points
+        pinned_band_percent=15.652,  # 18 of 115, one frame 0.87 points
         pinned_clear_percent=0.0,  # 0 of 100, one frame 1.00 point
-        restated_band_pinned=6,
+        restated_band_pinned=0,
         restated_band_frames=54,
-        distinct_headings=16,
+        distinct_headings=21,
         full_swings=0,
         alarm_on_percent=27.766,  # 128 of 461
         alarm_changes=12,
@@ -115,8 +122,8 @@ EXPECTED = {
         longest_hold_seconds=0.2999,
         near_noise_median_meters=0.1244,
         near_noise_readings=1480,
-        disagreement_median_meters=0.0521,  # over 460 pairs
-        disagreement_p90_meters=0.3573,
+        disagreement_median_meters=0.0610,  # over 460 pairs
+        disagreement_p90_meters=0.4160,
     ),
 }
 
@@ -180,3 +187,22 @@ def test_each_slice_holds_enough_band_and_clear_frames_for_both_shares(name: str
     needed = PlannerNumbersConfig().min_frames_for_a_share
     assert numbers.frames_by_band[ClearanceBand.BAND] >= needed
     assert numbers.frames_by_band[ClearanceBand.CLEAR] >= needed
+
+
+def test_the_goal_cost_on_the_chosen_path_matches_a_hand_sum() -> None:
+    # Beside the golden values, worked by hand so they are not the code certifying itself. Nothing in
+    # view, a gaze goal 1.5 m right, a 0.4 m tolerance and the 6.5 sideways weight, set here rather than
+    # read from the defaults. One 0.1 m sidestep a step costs 0.5 x 6.5 x (1 m/s) squared x 0.1 s = 0.325.
+    # Ending 1.0 m right takes 10 of them, 3.25, and leaves the goal 0.5 m away: 0.5 x (0.5 / 0.4)
+    # squared = 0.78125. 4.03125 in all. One more sidestep would save 0.5 x (0.25 - 0.16) / 0.16 = 0.28125,
+    # less than its 0.325, so the plan stops there.
+    config = replace(PlannerConfig(), goal_tolerance_meters=0.4, lateral_kinetic_weight=6.5)
+    grid = lateral_grid(config)
+    field = np.zeros((step_count(config), len(grid)))
+    goal = goal_position(GoalMode.GAZE, config, np.array([1.5, 4.0]))
+    field[-1] += terminal_cost_as_rate(goal_term(grid, goal, goal_tolerance(config, 0.0)), config)
+
+    offsets, cost = plan(field, 0.0, grid, config)
+
+    assert offsets[-1] == pytest.approx(1.0)
+    assert cost == pytest.approx(4.03125, abs=1e-9)

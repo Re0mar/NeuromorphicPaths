@@ -108,10 +108,34 @@ class PlannerConfig:
     # figures as before. pixel_walk_3 holds the arrow at its limit on 36.8 % of frames instead of 34.1,
     # the prior now holding a side through its tracking dropouts, with swings, band and alarm unchanged.
     previous_plan_spread_growth_square_meters_per_second: float = 0.05
+    # Ours. How far the goal may move sideways between frames before the previous-plan prior forgets its
+    # plan, as a wearer looking at the other of two gaps. It was the goal tolerance until the goal could
+    # steer. A narrower goal tolerance would have made every glance forget, and the flips come back.
+    previous_plan_forget_on_goal_move_meters: float = 1.5
     goal_distance_meters: float = 4.0  # Old file's goal_dist.
-    goal_tolerance_meters: float = 1.5  # Half a typical hallway's width, so the goal term picks among safe paths.
+    # Ours. How far from the goal the plan may end before the goal counts it as surprising, with nothing in
+    # the corridor. It was 1.5 m, and the goal couldn't move an empty-field plan at any tolerance while it
+    # was charged as a rate. As a cost it moves the plan's end only while one more 0.1 m sidestep, 0.325
+    # nats, saves more, so a goal 1.5 m to the side is reached to about 1.5 - 3.25 times the tolerance
+    # squared. Swept 2026-10-14 from 1.5 to 0.25 m. 0.4 m is the widest that ends at 1.0 m, and it does,
+    # 0.5 m ending at 0.7. On contact_walk_1, pixel_walk_3 and the classroom walk, last segments, with the
+    # growth below: full swings 0.0, 1.3 and 0.0 a minute as before, the arrow at its limit with something
+    # 3 to 5.32 m ahead on 4.1 % of pixel_walk_3's band and 29.2 % of the classroom's (was 4.1 and 30.3),
+    # the alarm unchanged.
+    goal_tolerance_meters: float = 0.4
+    # Ours. How much the goal's variance grows per nat of the course's avoidance surprise, so the goal gives
+    # way to something in the corridor. Without it every tolerance under 1.5 m walked into the post safety
+    # test's post at the classroom's 0.0337 m noise. At 0.4 m, 3.0 already clears every post corner, single
+    # frame and over many frames. 6.0 is the smallest that also adds no wall hit: walked toward 15 walls with
+    # the plan followed frame by frame, 3.0 to 5.0 walked into one more than the old planner did, a 0.03 m
+    # noise wall ending 1.0 m right. 3.0 had the classroom band at 19.5 %, partly from plans going straight.
+    goal_tolerance_growth_square_meters_per_nat: float = 6.0
+    # Ours. The stereo cue's spread as a sideways distance at the goal distance, 20.6 degrees as an angle.
+    # It was the goal tolerance until the goal could steer, and keeps that tolerance's old value so
+    # sharpening the goal does not sharpen the cue.
+    cue_tolerance_meters: float = 1.5
     # Ours. The quietest the stereo cue lets an ear go. A far ear that falls fully silent reads as broken
-    # headphones rather than as a cue. With the goal tolerance as the cue's spread, 20.6 degrees, the
+    # headphones rather than as a cue. With the cue tolerance as the cue's spread, 20.6 degrees, the
     # far ear only reaches this past 44 degrees of heading, beyond the 35.5 degree sidestep limit, so
     # steering alone never gets here. The alarm does: the danger's ear drops straight to it.
     far_ear_floor_gain: float = 0.10

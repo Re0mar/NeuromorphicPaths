@@ -6,8 +6,8 @@ Two cues, both decided here on the laptop so the page and the phone only apply n
 The steering cue. The ear on the far side from the planned heading goes quieter, and the walker
 turns away from the quiet ear. How much quieter is the course's surprise of the heading error: a
 turn of theta against a tolerance sigma costs U = half of (theta over sigma) squared, and the far
-ear's gain is e to the minus U, an exact Gaussian in sigma. Sigma is the planner's own goal
-tolerance seen as an angle, atan(goal_tolerance_meters / goal_distance_meters), 20.6 degrees with
+ear's gain is e to the minus U, an exact Gaussian in sigma. Sigma is the cue's own
+tolerance seen as an angle, atan(cue_tolerance_meters / goal_distance_meters), 20.6 degrees with
 the shipped values. At that sigma an ordinary 4 degree head wobble leaves the far ear at 98 %, and
 the 35.5 degree sidestep limit takes it to 22.5 %. The gain never goes under a floor, because an
 ear that goes fully silent reads as broken headphones rather than as a cue.
@@ -35,19 +35,19 @@ def check_audio_config(config: PlannerConfig) -> None:
         raise ValueError(f"far_ear_floor_gain must be from 0 to 1, got {floor}")
     if not np.isfinite(config.goal_distance_meters) or config.goal_distance_meters <= 0.0:
         raise ValueError(f"goal_distance_meters must be above zero, got {config.goal_distance_meters}")
-    if not np.isfinite(config.goal_tolerance_meters) or config.goal_tolerance_meters <= 0.0:
-        raise ValueError(f"goal_tolerance_meters must be above zero, got {config.goal_tolerance_meters}")
+    if not np.isfinite(config.cue_tolerance_meters) or config.cue_tolerance_meters <= 0.0:
+        raise ValueError(f"cue_tolerance_meters must be above zero, got {config.cue_tolerance_meters}")
 
 
 def heading_tolerance_radians(config: PlannerConfig) -> float:
     """
-    The goal tolerance as an angle: how far off the heading can be before the cue counts it.
+    The cue tolerance as an angle: how far off the heading can be before the cue counts it.
 
-    :return: atan(goal_tolerance_meters / goal_distance_meters), radians.
+    :return: atan(cue_tolerance_meters / goal_distance_meters), radians.
     :rtype: float
     """
     check_audio_config(config)
-    return float(np.arctan(config.goal_tolerance_meters / config.goal_distance_meters))
+    return float(np.arctan(config.cue_tolerance_meters / config.goal_distance_meters))
 
 
 def far_ear_gain(heading_radians: float, config: PlannerConfig) -> float:

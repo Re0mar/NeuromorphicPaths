@@ -6,7 +6,7 @@ import pytest
 
 # Local package imports
 from nav.planner.config import GoalMode, PlannerConfig
-from nav.planner.goal import goal_position, goal_term
+from nav.planner.goal import goal_position, goal_term, goal_tolerance
 from nav.planner.field import lateral_grid
 
 CONFIG = PlannerConfig()
@@ -44,7 +44,7 @@ def test_every_goal_mode_produces_a_goal() -> None:
 
 def test_the_terminal_prior_is_zero_at_the_goal_and_grows_with_distance() -> None:
     grid = lateral_grid(CONFIG)
-    term = goal_term(grid, np.array([1.0, 4.0]), CONFIG)
+    term = goal_term(grid, np.array([1.0, 4.0]), CONFIG.goal_tolerance_meters)
 
     assert term[int(np.argmin(np.abs(grid - 1.0)))] == pytest.approx(0.0, abs=1e-12)
     assert term[0] > term[int(np.argmin(np.abs(grid - 0.5)))] > 0.0
@@ -55,4 +55,29 @@ def test_the_terminal_prior_is_zero_at_the_goal_and_grows_with_distance() -> Non
 
 def test_a_non_positive_tolerance_is_refused() -> None:
     with pytest.raises(ValueError, match="tolerance"):
-        goal_term(lateral_grid(CONFIG), np.array([0.0, 4.0]), PlannerConfig(goal_tolerance_meters=0.0))
+        goal_term(lateral_grid(CONFIG), np.array([0.0, 4.0]), 0.0)
+    with pytest.raises(ValueError, match="goal_tolerance_meters"):
+        goal_tolerance(PlannerConfig(goal_tolerance_meters=0.0), 0.0)
+
+
+def test_with_an_empty_corridor_the_goal_keeps_its_base_tolerance() -> None:
+    config = PlannerConfig(goal_tolerance_meters=0.37, goal_tolerance_growth_square_meters_per_nat=2.9)
+    assert goal_tolerance(config, 0.0) == pytest.approx(0.37)
+
+
+def test_the_goals_variance_grows_with_the_avoidance_surprise() -> None:
+    # Worked by hand: 0.37 squared is 0.1369, plus 2.9 times 0.74 is 2.146, and the root of 2.2829 is 1.5109.
+    config = PlannerConfig(goal_tolerance_meters=0.37, goal_tolerance_growth_square_meters_per_nat=2.9)
+    assert goal_tolerance(config, 0.74) == pytest.approx(1.5109, abs=1e-4)
+
+
+@pytest.mark.parametrize("value", [-0.1, float("nan")])
+def test_a_negative_growth_is_refused(value: float) -> None:
+    with pytest.raises(ValueError, match="goal_tolerance_growth_square_meters_per_nat"):
+        goal_tolerance(PlannerConfig(goal_tolerance_growth_square_meters_per_nat=value), 0.0)
+
+
+@pytest.mark.parametrize("value", [-0.1, float("nan"), float("inf")])
+def test_a_negative_or_non_finite_avoidance_surprise_is_refused(value: float) -> None:
+    with pytest.raises(ValueError, match="avoidance surprise"):
+        goal_tolerance(CONFIG, value)

@@ -43,11 +43,12 @@ from nav.evaluation.planner_numbers import (
     nearest_heading_clearance,
     sidestep_limit_degrees,
 )
+from nav.planner.alarm import avoidance_surprise_nats
 from nav.planner.config import GoalMode, PlannerConfig
 from nav.planner.contact import ContactSurprise
 from nav.planner.dynamic_programming import plan
 from nav.planner.field import cost_field, lateral_grid
-from nav.planner.goal import goal_position, goal_term
+from nav.planner.goal import goal_position, goal_term, goal_tolerance, terminal_cost_as_rate
 from nav.planner.heading import lookahead_heading, lookahead_step_index
 from nav.planner.surprise import CollisionSurprise
 from nav.planner.units import bits_from_nats
@@ -55,6 +56,8 @@ from nav.types import ObstaclePoint, ObstacleSet
 from nav.walker import WalkerConfig
 
 TERM_NAMES = ("surprise", "contact", "goal", "previous plan", "kinetic")
+# The walker's own priors. The plan's cost leaves them out, since they are not work the scene imposed.
+WALKER_PRIOR_TERMS = frozenset({"goal", "previous plan"})
 # Where the slowest clearing sidestep is looked for, across the planner's grid.
 CLEARING_SEARCH_STEP_METERS = 0.05
 # Points this far beyond the nearest one still count as part of what has to be passed. Two scene cells.
@@ -147,8 +150,14 @@ def term_fields(
     real = frame.input.obstacles
     surprise = cost_field(obstacles, grid, planner_config, walker, (CollisionSurprise(),))
     contact = cost_field(obstacles, grid, planner_config, walker, (ContactSurprise(),)) if planner_config.contact_term_enabled else np.zeros_like(surprise)
+    # The goal's spread depends on the scene, so the re-planned scene gets its own goal, and the real
+    # one comes off the kept field, as the surprise and contact terms do.
+    goal_point = goal_position(goal_mode, planner_config, frame.input.gaze_ground_point)
     goal = np.zeros_like(surprise)
-    goal[-1] = goal_term(grid, goal_position(goal_mode, planner_config, frame.input.gaze_ground_point), planner_config)
+    goal[-1] = goal_term(grid, goal_point, goal_tolerance(planner_config, avoidance_surprise_nats(obstacles, planner_config)))
+    real_goal = goal if obstacles is real else np.zeros_like(surprise)
+    if obstacles is not real:
+        real_goal[-1] = goal_term(grid, goal_point, goal_tolerance(planner_config, avoidance_surprise_nats(real, planner_config)))
     real_surprise = surprise if obstacles is real else cost_field(real, grid, planner_config, walker, (CollisionSurprise(),))
     if obstacles is real:
         real_contact = contact
@@ -156,32 +165,46 @@ def term_fields(
         real_contact = cost_field(real, grid, planner_config, walker, (ContactSurprise(),))
     else:
         real_contact = np.zeros_like(surprise)
-    previous = frame.field - real_surprise - real_contact - goal
+    previous = frame.field - real_surprise - real_contact - real_goal
     return {"surprise": surprise, "contact": contact, "goal": goal, "previous plan": previous}
 
 
 def path_term_costs(fields: dict[str, np.ndarray], offsets: np.ndarray, planner_config: PlannerConfig) -> dict[str, float]:
     """
-    What each term costs along a path, in bits, so the terms add up to the path's `cumulative_cost_bits`.
+    What each term costs along a path, in bits. Every term outside WALKER_PRIOR_TERMS adds up to the path's `cumulative_cost_bits`.
 
     Added up the way the dynamic program adds them, times the time step, in its natural-log units,
-    then converted once at the end the way the planner converts its total.
+    then converted once at the end the way the planner converts its total. The goal is priced as the
+    dynamic program prices it, a cost paid once at the end rather than a rate.
     """
     grid = lateral_grid(planner_config)
     cells = np.argmin(np.abs(grid[None, :] - np.asarray(offsets)[:, None]), axis=1)
     rows = np.arange(len(offsets))
     dt = planner_config.time_step_seconds
-    nats = {name: float(np.sum(field[rows, cells]) * dt) for name, field in fields.items()}
+    priced = dict(fields)
+    priced["goal"] = goal_as_planned(fields["goal"], planner_config)
+    nats = {name: float(np.sum(field[rows, cells]) * dt) for name, field in priced.items()}
     lateral_speed = np.diff(np.asarray(offsets)) / dt
     nats["kinetic"] = float(np.sum(0.5 * planner_config.lateral_kinetic_weight * lateral_speed**2) * dt)
     return {name: float(bits_from_nats(value)) for name, value in nats.items()}
 
 
-def replan_pinned(fields: dict[str, np.ndarray], planner_config: PlannerConfig, config: PlannerNumbersConfig) -> bool:
-    """Whether the planner's own dynamic program, on this field, puts the arrow at its limit."""
+def goal_as_planned(goal: np.ndarray, planner_config: PlannerConfig) -> np.ndarray:
+    """The goal field from term_fields with its last row divided by the time step, as the pipeline plans it."""
+    scaled = goal.copy()
+    scaled[-1] = terminal_cost_as_rate(goal[-1], planner_config)
+    return scaled
+
+
+def field_as_planned(fields: dict[str, np.ndarray], planner_config: PlannerConfig) -> np.ndarray:
+    """The terms summed into the field the pipeline hands its dynamic program."""
+    return sum(goal_as_planned(field, planner_config) if name == "goal" else field for name, field in fields.items())
+
+
+def replan_pinned(field: np.ndarray, planner_config: PlannerConfig, config: PlannerNumbersConfig) -> bool:
+    """Whether the planner's own dynamic program, on this field as it would plan it, puts the arrow at its limit."""
     grid = lateral_grid(planner_config)
-    total = sum(fields.values())
-    offsets, _ = plan(total, 0.0, grid, planner_config)
+    offsets, _ = plan(field, 0.0, grid, planner_config)
     heading = lookahead_heading(offsets, lookahead_step_index(planner_config), planner_config)
     return is_pinned(float(np.degrees(heading)), sidestep_limit_degrees(planner_config), config)
 
@@ -314,19 +337,21 @@ def band_attribution(
         offset = travel_offset_at(frame.input.timestamp_seconds)
         if offset is None or abs(np.degrees(offset)) > MAX_PHONE_OFFSET_DEGREES:
             unknown.add(PinCandidate.PHONE_POINTING)
-        elif not replan_pinned(term_fields(frame, turned_into_travel(obstacles, offset), planner_config, walker, goal_mode), planner_config, config):
+        elif not replan_pinned(field_as_planned(term_fields(frame, turned_into_travel(obstacles, offset), planner_config, walker, goal_mode), planner_config), planner_config, config):
             explained.add(PinCandidate.PHONE_POINTING)
-        if not replan_pinned(term_fields(frame, walls_joined(obstacles, cell_size_meters), planner_config, walker, goal_mode), planner_config, config):
+        if not replan_pinned(field_as_planned(term_fields(frame, walls_joined(obstacles, cell_size_meters), planner_config, walker, goal_mode), planner_config), planner_config, config):
             explained.add(PinCandidate.WALL_CELLS)
-        spread_goal = dict(fields)
-        spread_goal["goal"] = np.broadcast_to(fields["goal"][-1] / len(fields["goal"]), fields["goal"].shape).copy()
-        if not replan_pinned(spread_goal, planner_config, config):
+        # The goal's whole cost, spread evenly over every row instead of paid on the last one.
+        without_goal = {name: field for name, field in fields.items() if name != "goal"}
+        terminal_cost = terminal_cost_as_rate(fields["goal"][-1], planner_config)
+        spread_goal = np.broadcast_to(terminal_cost / len(fields["goal"]), fields["goal"].shape)
+        if not replan_pinned(sum(without_goal.values()) + spread_goal, planner_config, config):
             explained.add(PinCandidate.GOAL_LAST_ROW)
         if sidestep_is_the_right_plan(obstacles, planner_config, config):
             explained.add(PinCandidate.RIGHT_PLAN)
         without_memory = dict(fields)
         without_memory["previous plan"] = np.zeros_like(fields["previous plan"])
-        if not replan_pinned(without_memory, planner_config, config):
+        if not replan_pinned(field_as_planned(without_memory, planner_config), planner_config, config):
             explained.add(PinCandidate.PREVIOUS_PLAN)
         attributed.append(
             FrameAttribution(

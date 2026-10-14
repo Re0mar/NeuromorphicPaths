@@ -32,7 +32,7 @@ from nav.planner.config import PlannerConfig
 
 def check_previous_plan_config(config: PlannerConfig) -> None:
     """
-    Refuse a spread, reach or gap the prior can't use.
+    Refuse a spread, reach, gap or forget distance the prior can't use.
 
     :raises ValueError: Naming the field.
     """
@@ -45,6 +45,9 @@ def check_previous_plan_config(config: PlannerConfig) -> None:
     growth = config.previous_plan_spread_growth_square_meters_per_second
     if not np.isfinite(growth) or growth < 0:
         raise ValueError(f"previous_plan_spread_growth_square_meters_per_second must be zero or more, got {growth}")
+    forget = config.previous_plan_forget_on_goal_move_meters
+    if not np.isfinite(forget) or forget <= 0:
+        raise ValueError(f"previous_plan_forget_on_goal_move_meters must be above zero, got {forget}")
 
 
 class PreviousPlanPrior:
@@ -66,8 +69,8 @@ class PreviousPlanPrior:
         Nothing is remembered on the first frame, after a clock that went backwards (a reconnect or a
         new recording segment), or after a gap longer than previous_plan_max_gap_seconds, when the old
         plan is too stale to say anything about this one. Nor after the goal moved sideways farther than
-        the goal's own tolerance: that is a different place to go, such as a wearer looking at the other
-        of two gaps, and holding the old plan would keep them from it. Only the sideways part counts,
+        previous_plan_forget_on_goal_move_meters: that is a different place to go, such as a wearer
+        looking at the other of two gaps, and holding the old plan would keep them from it. Only the sideways part counts,
         because it is the only part the goal term reads. A gaze sliding nearer or farther along the same
         line is the same goal, and forgetting on it would bring the flips straight back in gaze mode.
 
@@ -81,7 +84,7 @@ class PreviousPlanPrior:
             return None
         elapsed = timestamp_seconds - self._timestamp
         goal_moved_sideways = abs(float(goal[0]) - float(self._goal[0]))
-        if elapsed < 0 or elapsed > self._config.previous_plan_max_gap_seconds or goal_moved_sideways > self._config.goal_tolerance_meters:
+        if elapsed < 0 or elapsed > self._config.previous_plan_max_gap_seconds or goal_moved_sideways > self._config.previous_plan_forget_on_goal_move_meters:
             self.forget()
             return None
         # Where each of this frame's rows lies on the previous plan. The planner assumes the walker

@@ -33,7 +33,7 @@ BLOCKED = 1.0e4
 
 def _goal_only(goal_lateral: float = 0.0) -> np.ndarray:
     field = np.zeros((STEPS, len(GRID)))
-    field[-1] += goal_term(GRID, np.array([goal_lateral, CONFIG.goal_distance_meters]), CONFIG)
+    field[-1] += goal_term(GRID, np.array([goal_lateral, CONFIG.goal_distance_meters]), CONFIG.goal_tolerance_meters)
     return field
 
 

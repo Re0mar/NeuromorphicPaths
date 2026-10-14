@@ -16,8 +16,10 @@ import pytest
 # Local package imports
 from nav.evaluation.band_attribution import (
     FrameAttribution,
+    WALKER_PRIOR_TERMS,
     PinCandidate,
     band_attribution,
+    field_as_planned,
     path_term_costs,
     sidestep_is_the_right_plan,
     summarize_attribution,
@@ -30,6 +32,8 @@ from nav.evaluation.config import PlannerNumbersConfig
 from nav.evaluation.planner_numbers import PlannerInput
 from nav.evaluation.replay import replayed_frames
 from nav.planner.config import GoalMode, PlannerConfig
+from nav.planner.dynamic_programming import plan
+from nav.planner.field import lateral_grid
 from nav.types import ObstaclePoint, ObstacleSet
 from nav.walker import WalkerConfig
 from synthetic_walks import write_recording
@@ -40,25 +44,27 @@ WALKER = WalkerConfig()
 CELL = 0.25
 
 
-def point(lateral: float, forward: float, group: int, is_wall: bool = False) -> ObstaclePoint:
-    return ObstaclePoint(lateral, forward, group, float(np.hypot(lateral, forward)) - WALKER.radius_meters, 0.03, None, None, is_wall, np.zeros(3))
+def point(lateral: float, forward: float, group: int, is_wall: bool = False, noise: float = 0.03) -> ObstaclePoint:
+    return ObstaclePoint(lateral, forward, group, float(np.hypot(lateral, forward)) - WALKER.radius_meters, noise, None, None, is_wall, np.zeros(3))
 
 
 def scene(*points: ObstaclePoint) -> ObstacleSet:
     return ObstacleSet(0.0, points, len(points))
 
 
-def wall(start: float, stop: float, forward: float, first_group: int = 0) -> list[ObstaclePoint]:
-    return [point(float(x), forward, first_group + index, is_wall=True) for index, x in enumerate(np.arange(start, stop + 1e-9, CELL))]
+def wall(start: float, stop: float, forward: float, first_group: int = 0, noise: float = 0.03) -> list[ObstaclePoint]:
+    return [point(float(x), forward, first_group + index, is_wall=True, noise=noise) for index, x in enumerate(np.arange(start, stop + 1e-9, CELL))]
 
 
 def replayed(obstacles: ObstacleSet):
     return replayed_frames([PlannerInput(0.0, obstacles, None, None, None, None)], PLANNER, WALKER, GoalMode.AHEAD, keep_fields=True)
 
 
-# A wall from 3 m left to 1 m right, 4 m ahead: the nearest corridor point is in the band, and the
-# planner's arrow goes to its limit for the open floor on the right.
-PINNED_BAND = scene(*wall(-3.0, 1.0, 4.0))
+# A wall from 3 m left to 1.5 m right, 4 m ahead: the nearest corridor point is in the band, and the
+# planner's arrow goes to its limit for the open floor on the right. At 0.03 m of noise a single frame
+# plans straight at a wall like this, then gets round over the approach, so it would pin nothing.
+WALL_NOISE_METERS = 0.1
+PINNED_BAND = scene(*wall(-3.0, 1.5, 4.0, noise=WALL_NOISE_METERS))
 
 
 # *******************************************
@@ -69,9 +75,12 @@ PINNED_BAND = scene(*wall(-3.0, 1.0, 4.0))
 def test_the_term_breakdown_adds_up_to_the_plans_cost() -> None:
     frame = replayed(PINNED_BAND)[0]
     costs = path_term_costs(term_fields(frame, frame.input.obstacles, PLANNER, WALKER, GoalMode.AHEAD), frame.path.lateral_offsets_meters, PLANNER)
-    # The plan's cost leaves out the previous-plan prior, which a first frame doesn't have anyway.
+    # The plan's cost leaves out the walker's own priors. A first frame has no previous plan, and the
+    # plan ends off the goal's line here, so the goal's charge is real and is shown beside the cost.
     assert costs["previous plan"] == pytest.approx(0.0, abs=1e-12)
-    assert sum(costs.values()) == pytest.approx(frame.path.cumulative_cost_bits, rel=1e-9)
+    assert costs["goal"] > 0.0
+    scene_and_kinetic = sum(value for name, value in costs.items() if name not in WALKER_PRIOR_TERMS)
+    assert scene_and_kinetic == pytest.approx(frame.path.cumulative_cost_bits, rel=1e-9)
 
 
 def test_the_breakdown_adds_up_on_a_frame_with_a_previous_plan() -> None:
@@ -79,15 +88,33 @@ def test_the_breakdown_adds_up_on_a_frame_with_a_previous_plan() -> None:
     # the prior toward it charges something along the chosen path. The plan's cost leaves that charge
     # out, as the user model's work figure needs, and the breakdown shows it as its own term.
     first = ObstacleSet(0.0, PINNED_BAND.points, PINNED_BAND.groups_in_view)
-    switched = scene(*wall(-1.0, 3.0, 4.0))
+    switched = scene(*wall(-1.0, 3.0, 4.0, noise=WALL_NOISE_METERS))
     second = ObstacleSet(1.0 / 30.0, switched.points, switched.groups_in_view)
     inputs = [PlannerInput(rows.timestamp_seconds, rows, None, None, None, None) for rows in (first, second)]
     frame = replayed_frames(inputs, PLANNER, WALKER, GoalMode.AHEAD, keep_fields=True)[1]
     fields = term_fields(frame, frame.input.obstacles, PLANNER, WALKER, GoalMode.AHEAD)
     costs = path_term_costs(fields, frame.path.lateral_offsets_meters, PLANNER)
     assert costs["previous plan"] > 0.0
-    without_prior = sum(value for name, value in costs.items() if name != "previous plan")
-    assert without_prior == pytest.approx(frame.path.cumulative_cost_bits, rel=1e-9)
+    without_priors = sum(value for name, value in costs.items() if name not in WALKER_PRIOR_TERMS)
+    assert without_priors == pytest.approx(frame.path.cumulative_cost_bits, rel=1e-9)
+
+
+def test_the_term_split_accounts_for_the_pre_scaled_goal_row() -> None:
+    # The kept field has the goal row as a rate, the plan was made from a copy with it divided by the
+    # time step. The terms must add back up to the kept field, and summed the way the pipeline plans,
+    # give back the pipeline's own plan, on a frame that has a previous plan as well.
+    switched = scene(*wall(-1.0, 3.0, 4.0, noise=WALL_NOISE_METERS))
+    second = ObstacleSet(1.0 / 30.0, switched.points, switched.groups_in_view)
+    inputs = [PlannerInput(rows.timestamp_seconds, rows, None, None, None, None) for rows in (PINNED_BAND, second)]
+    frame = replayed_frames(inputs, PLANNER, WALKER, GoalMode.AHEAD, keep_fields=True)[1]
+    fields = term_fields(frame, frame.input.obstacles, PLANNER, WALKER, GoalMode.AHEAD)
+    assert np.max(np.abs(fields["previous plan"])) > 0.0, "the frame needs a previous plan to test the split with"
+
+    # Not to the bit. The previous plan is what's left after the others come off, so adding them back
+    # rounds differently, by up to about 1e-14 per cell.
+    np.testing.assert_allclose(sum(fields.values()), frame.field, rtol=0.0, atol=1e-12)
+    offsets, _ = plan(field_as_planned(fields, PLANNER), 0.0, lateral_grid(PLANNER), PLANNER)
+    np.testing.assert_array_equal(offsets, frame.path.lateral_offsets_meters)
 
 
 def test_with_the_contact_term_off_the_breakdown_charges_nothing_to_contact() -> None:
@@ -102,7 +129,7 @@ def test_with_the_contact_term_off_the_breakdown_charges_nothing_to_contact() ->
     assert np.max(np.abs(joined["previous plan"])) == pytest.approx(0.0, abs=1e-9)
     costs = path_term_costs(fields, frame.path.lateral_offsets_meters, without_contact)
     assert costs["contact"] == 0.0
-    assert sum(costs.values()) == pytest.approx(frame.path.cumulative_cost_bits, rel=1e-9)
+    assert sum(value for name, value in costs.items() if name not in WALKER_PRIOR_TERMS) == pytest.approx(frame.path.cumulative_cost_bits, rel=1e-9)
 
 
 def test_an_obstacle_too_close_to_clear_in_time_needs_the_full_sidestep() -> None:
@@ -154,7 +181,7 @@ def test_a_pinned_band_frame_is_attributed_with_its_terms() -> None:
     assert set(frame.term_difference) == {"surprise", "contact", "goal", "previous plan", "kinetic"}
     # The sidestep costs kinetic effort, so the chosen path pays more there than walking straight.
     assert frame.term_difference["kinetic"] > 0.0
-    # 17 wall cells each count as their own obstacle, and joined into one the open right side stops
+    # 19 wall cells each count as their own obstacle, and joined into one the open right side stops
     # being worth the limit. Spreading the goal over every row does the same. With the phone along the
     # walker's travel, turning into the travel frame changes nothing, and a first frame has no prior.
     assert frame.explained == {PinCandidate.WALL_CELLS, PinCandidate.GOAL_LAST_ROW}
@@ -168,9 +195,9 @@ def test_a_phone_turned_off_the_walking_direction_explains_the_frame() -> None:
 
 
 def test_a_sidestep_held_by_the_previous_plan_is_explained_by_it() -> None:
-    # First frame pins right. The second wall is 3 m wide and centered, so either side clears it and
-    # the prior is what keeps the plan at its limit on the right.
-    centered = scene(*wall(-1.5, 1.5, 4.0))
+    # First frame pins right. The second wall is short and nearly centered, 0.25 m left to 0.5 m right,
+    # so a gentle sidestep clears it and the prior is what keeps the plan at its limit on the right.
+    centered = scene(*wall(-0.25, 0.5, 4.0, noise=WALL_NOISE_METERS))
     later = ObstacleSet(1.0 / 30.0, centered.points, centered.groups_in_view)
     inputs = [PlannerInput(rows.timestamp_seconds, rows, None, None, None, None) for rows in (PINNED_BAND, later)]
     frames = replayed_frames(inputs, PLANNER, WALKER, GoalMode.AHEAD, keep_fields=True)
@@ -270,6 +297,6 @@ def test_a_frame_keeps_its_phone_offset_and_whether_something_sits_beside_it() -
     assert frame.phone_offset_degrees == pytest.approx(10.0)
     # Every point of this wall is 4 m out, so nothing nearer than 3 m sits beside the line.
     assert frame.near_beside is False
-    beside = scene(*wall(-3.0, 1.0, 4.0), point(0.8, 2.0, 99))
+    beside = scene(*PINNED_BAND.points, point(0.8, 2.0, 99))
     beside_frame = band_attribution(replayed(beside), lambda time: 0.0, PLANNER, WALKER, GoalMode.AHEAD, CELL, CONFIG).frames
     assert beside_frame and beside_frame[0].near_beside is True

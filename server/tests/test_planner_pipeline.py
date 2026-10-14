@@ -8,11 +8,12 @@ import numpy as np
 import pytest
 
 # Local package imports
+from nav.planner.alarm import avoidance_surprise_nats
 from nav.planner.config import GoalMode, PlannerConfig
 from nav.planner.contact import ContactSurprise
 from nav.planner.dynamic_programming import plan
 from nav.planner.field import cost_field
-from nav.planner.goal import goal_position, goal_term
+from nav.planner.goal import goal_position, goal_term, goal_tolerance, terminal_cost_as_rate
 from nav.planner.heading import lookahead_step_index
 from nav.planner.pipeline import PlannerPipeline, planner_terms
 from nav.planner.surprise import CollisionSurprise, surprise_field
@@ -199,15 +200,51 @@ def test_no_planned_heading_exceeds_the_sidestep_limit() -> None:
 
 
 def test_last_field_is_the_field_the_plan_was_made_from() -> None:
+    # "Made from" means the kept field, every row a rate, with only its goal row swapped for the same
+    # row divided by the time step. Planning that copy has to give back the pipeline's own path and cost.
+    gaze = np.array([0.9, 4.0])
+    scene = _set(_point(0.0, 3.0, group=1))
     pipeline = PlannerPipeline(CONFIG, WALKER)
     assert pipeline.last_field is None
 
-    path = pipeline.plan(_set(_point(0.0, 3.0, group=1)))
+    path = pipeline.plan(scene, goal_mode=GoalMode.GAZE, gaze_ground_point=gaze)
 
     assert pipeline.last_field is not None
     assert pipeline.last_field.shape == (len(path.times_seconds), len(pipeline.grid))
-    # The goal term is in it, so the terminal row is not flat even with one post far ahead.
-    assert pipeline.last_field[-1].max() > pipeline.last_field[-1].min()
+    goal_row = goal_term(pipeline.grid, goal_position(GoalMode.GAZE, CONFIG, gaze), goal_tolerance(CONFIG, avoidance_surprise_nats(scene, CONFIG)))
+    scene_only = cost_field(scene, pipeline.grid, CONFIG, WALKER, planner_terms(CONFIG))
+    np.testing.assert_array_equal(pipeline.last_field[:-1], scene_only[:-1])
+    np.testing.assert_array_equal(pipeline.last_field[-1], scene_only[-1] + goal_row)
+    as_planned = scene_only.copy()
+    as_planned[-1] += terminal_cost_as_rate(goal_row, CONFIG)
+    offsets, cost = plan(as_planned, 0.0, pipeline.grid, CONFIG)
+    np.testing.assert_array_equal(path.lateral_offsets_meters, offsets)
+    # The cost figure leaves out the goal's charge at the end cell, the walker's intent and not work.
+    end_cell = int(np.argmin(np.abs(pipeline.grid - offsets[-1])))
+    assert path.cumulative_cost_bits == pytest.approx((cost - goal_row[end_cell]) / NATS_PER_BIT, rel=1e-12)
+
+
+# How far the plan's end must get toward a gaze goal 1.5 m to the side with nothing in view. Two
+# thirds of the way, so a goal that only nudges the plan a cell or two does not count as steering.
+GOAL_REACH_METERS = 1.0
+
+
+def test_a_goal_to_the_side_moves_the_plan_in_an_empty_field() -> None:
+    pipeline = PlannerPipeline(CONFIG, WALKER)
+
+    path = pipeline.plan(_set(), goal_mode=GoalMode.GAZE, gaze_ground_point=np.array([1.5, 4.0]))
+
+    assert path.lateral_offsets_meters[-1] >= GOAL_REACH_METERS, path.lateral_offsets_meters[-1]
+    assert path.lookahead_heading_radians > 0.0
+
+
+def test_the_goal_adds_no_scene_information_in_an_empty_field() -> None:
+    # The goal is in the information measure's prior at the same scaling as in the plan, so with
+    # nothing in view the two are one distribution, wherever the gaze is.
+    pipeline = PlannerPipeline(CONFIG, WALKER)
+    for lateral in (-2.2, 0.0, 0.7, 1.5):
+        path = pipeline.plan(_set(), goal_mode=GoalMode.GAZE, gaze_ground_point=np.array([lateral, 4.0]))
+        assert path.scene_information_bits == pytest.approx(0.0, abs=1e-12), lateral
 
 
 def test_the_path_timestamp_is_the_obstacle_sets() -> None:
@@ -246,8 +283,11 @@ def test_with_contact_off_the_plan_is_what_his_field_alone_gives(scene: Obstacle
     config = replace(CONFIG, contact_term_enabled=False)
     pipeline = PlannerPipeline(config, WALKER)
     field = surprise_field(scene, pipeline.grid, config, WALKER)
-    field[-1] += goal_term(pipeline.grid, goal_position(GoalMode.AHEAD, config, None), config)
-    expected_offsets, expected_cost = plan(field, 0.0, pipeline.grid, config)
+    tolerance = goal_tolerance(config, avoidance_surprise_nats(scene, config))
+    goal_row = goal_term(pipeline.grid, goal_position(GoalMode.AHEAD, config, None), tolerance)
+    field[-1] += terminal_cost_as_rate(goal_row, config)
+    expected_offsets, planned_cost = plan(field, 0.0, pipeline.grid, config)
+    expected_cost = planned_cost - goal_row[int(np.argmin(np.abs(pipeline.grid - expected_offsets[-1])))]
 
     path = pipeline.plan(scene)
 
@@ -287,6 +327,12 @@ def test_a_post_at_a_raised_weight_is_cleared_only_because_of_contact(forward: f
 def test_a_bad_contact_constant_stops_the_pipeline_at_construction() -> None:
     with pytest.raises(ValueError, match="walker_sway_meters"):
         PlannerPipeline(replace(CONFIG, walker_sway_meters=0.0), WALKER)
+
+
+@pytest.mark.parametrize("name, value", [("goal_tolerance_meters", 0.0), ("goal_tolerance_growth_square_meters_per_nat", -1.0)])
+def test_a_bad_goal_constant_stops_the_pipeline_at_construction(name: str, value: float) -> None:
+    with pytest.raises(ValueError, match=name):
+        PlannerPipeline(replace(CONFIG, **{name: value}), WALKER)
 
 
 def test_the_alarm_does_not_depend_on_the_contact_term() -> None:
@@ -457,3 +503,59 @@ def test_a_planned_path_carries_both_new_numbers() -> None:
     post = pipeline.plan(_set(_point(0.1, 1.5, 1)))
     assert post.scene_information_bits > 0.0
     assert post.avoidance_surprise_bits > 0.0
+
+
+# *******************************************
+# A wall walked toward, the plan followed frame by frame
+# *******************************************
+
+
+def _wall_from_the_left(right_end: float, forward: float, noise: float, walker_lateral: float, time: float) -> ObstacleSet:
+    """A wall from 3 m left to right_end, both measured from where the walker started, seen from where the walker is now."""
+    points = []
+    for index, start_lateral in enumerate(np.arange(-3.0, right_end + 1e-9, 0.25)):
+        points.append(_point(float(start_lateral) - walker_lateral, forward, group=index, noise=noise, is_wall=True))
+    return _set(*points, timestamp=time)
+
+
+def _sidestep_on_reaching_the_wall(right_end: float, noise: float) -> float:
+    """
+    Walk 5 m toward the wall at walking pace, 30 frames a second, following each frame's plan for one frame.
+
+    The scene is walker relative, so every sidestep the walker makes moves the wall the other way.
+    :return: How far right of the start the walker is when it reaches the wall's line.
+    """
+    pipeline = PlannerPipeline(CONFIG, WALKER)
+    walker_lateral = 0.0
+    time = 0.0
+    while 5.0 - CONFIG.walking_speed_mps * time > 0.0:
+        forward = 5.0 - CONFIG.walking_speed_mps * time
+        path = pipeline.plan(_wall_from_the_left(right_end, forward, noise, walker_lateral, time))
+        walker_lateral += float(np.interp(FRAME_SECONDS, path.times_seconds, path.lateral_offsets_meters))
+        time += FRAME_SECONDS
+    return walker_lateral
+
+
+# Walls the planner gets round. At the lowest noise, a wall reaching 1.5 m or more to the right is
+# walked into, see below. A goal pulling back to straight ahead added the wall ending 1.0 m right at
+# that noise until its spread was widened enough near danger, which is what this guards.
+CLEARED_WALLS = [
+    (right_end, noise)
+    for noise in (0.03, 0.1, 0.3)
+    for right_end in (0.5, 1.0, 1.5, 2.0, 2.5)
+    if not (noise == 0.03 and right_end >= 1.5)
+]
+
+
+@pytest.mark.parametrize("right_end, noise", CLEARED_WALLS)
+def test_a_wall_walked_toward_is_passed_at_its_open_end(right_end: float, noise: float) -> None:
+    assert _sidestep_on_reaching_the_wall(right_end, noise) > right_end + WALKER.radius_meters
+
+
+# Known to fail. The scene hands over a wall as its front face, one forward distance with free floor
+# behind it, and crossing that line in a few rows costs less than going round a wide, steadily measured
+# wall. Strict, so the day it is fixed this fails and the wall moves into CLEARED_WALLS.
+@pytest.mark.xfail(strict=True, reason="a thin wall seen only from the front is cheaper to cross than to go round")
+@pytest.mark.parametrize("right_end", [1.5, 2.0, 2.5])
+def test_a_wide_steady_wall_is_passed_at_its_open_end(right_end: float) -> None:
+    assert _sidestep_on_reaching_the_wall(right_end, 0.03) > right_end + WALKER.radius_meters
