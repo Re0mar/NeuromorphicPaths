@@ -58,9 +58,11 @@ def test_the_laptops_path_fixture_is_written_and_decodes_to_the_stated_values() 
     assert decoded.cumulative_cost_bits == pytest.approx(18.4)
     assert decoded.scene_information_bits == pytest.approx(0.37)
     assert decoded.avoidance_surprise_bits == pytest.approx(0.51)
-    # The Kotlin decoder reads none of these three and must not refuse them.
+    # The Kotlin decoder reads none of these four and must not refuse them.
     assert decoded.alarm_pan == pytest.approx(-0.5)
     assert (decoded.ear_gain_left, decoded.ear_gain_right) == pytest.approx((0.1, 0.9))
+    # Derived on the laptop and not kept on PlannedPath, so it is checked in the bytes instead.
+    assert b'"time_to_contact_seconds": 1.1892884018741279' in raw
     # One line of JSON after the prefix. The Kotlin side reads it with readFully, not by lines,
     # but a newline here would mean the encoder changed shape.
     assert b"\n" not in raw

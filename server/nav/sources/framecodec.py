@@ -24,6 +24,7 @@ from pathlib import Path
 import numpy as np
 
 # Local package imports
+from nav.planner.alarm import time_to_contact_from_avoidance_bits
 from nav.types import DepthFrame, FrameTiming, Plane, PlannedPath, Pose
 
 WIRE_VERSION = 1
@@ -229,6 +230,9 @@ def path_message(path: PlannedPath) -> dict:
         "cumulative_cost_bits": float(path.cumulative_cost_bits),
         "scene_information_bits": float(path.scene_information_bits),
         "avoidance_surprise_bits": float(path.avoidance_surprise_bits),
+        # The avoidance surprise read back into seconds, so the page's pulse alarm reads a number
+        # rather than porting the formula. None when the corridor is empty, which JSON carries as null.
+        "time_to_contact_seconds": time_to_contact_from_avoidance_bits(path.avoidance_surprise_bits),
         # The stereo cue, decided on the laptop. Null pan while the alarm is down.
         "alarm_pan": None if path.alarm_pan is None else float(path.alarm_pan),
         "ear_gain_left": float(path.ear_gain_left),
@@ -250,6 +254,16 @@ def decode_path(payload: bytes) -> PlannedPath:
     message = _parse_json(payload, "path")
     if not isinstance(message, dict):
         raise FrameDecodeError(f"path must be a JSON object, got {type(message).__name__}")
+
+    # Optional, so a path from before it existed still reads back. PlannedPath has no field for it,
+    # since it is derived from the avoidance surprise, so it is checked here and then dropped. One
+    # that is not a number above zero is refused rather than ignored. It is not cross-checked
+    # against the surprise, since nothing on the laptop reads it back.
+    time_to_contact = message.get("time_to_contact_seconds")
+    if time_to_contact is not None:
+        time_to_contact = _number(time_to_contact, "time_to_contact_seconds")
+        if time_to_contact <= 0:
+            raise FrameDecodeError(f"time_to_contact_seconds must be above zero, got {time_to_contact}")
 
     try:
         return PlannedPath(
