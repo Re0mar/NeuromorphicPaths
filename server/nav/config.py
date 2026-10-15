@@ -115,7 +115,8 @@ class RunConfig:
     realtime_replay: bool = False
     # A capture the page can switch to while the live input stays connected, and back. A converted
     # Companion recording is the usual one. Only on a run that serves the page from a live input.
-    recording_capture: str | None = None
+    # Capture folders the page can switch to, in the order listed. Empty for a run without one.
+    recording_captures: tuple[str, ...] = ()
     # Which side such a run plans on first.
     start_with: SourceMode = SourceMode.LIVE
     verbose: bool = False
@@ -147,6 +148,32 @@ def _finite_positive_float(text: str) -> float:
     if not math.isfinite(value):
         raise argparse.ArgumentTypeError(f"must be a finite number, got {value}")
     return value
+
+
+def _recording_captures(parser: argparse.ArgumentParser, arguments: argparse.Namespace) -> tuple[str, ...]:
+    """
+    Every capture the run can switch to: each --recording-capture, then every capture folder in --recordings-dir.
+
+    A capture is a folder with a meta.json. The page lists them by folder name, so two with one
+    name are refused.
+    """
+    captures = list(arguments.recording_capture)
+    for capture in captures:
+        if not (Path(capture) / "meta.json").is_file():
+            parser.error(f"--recording-capture {capture} is not a capture folder, it has no meta.json")
+    if arguments.recordings_dir is not None:
+        recordings_dir = Path(arguments.recordings_dir)
+        if not recordings_dir.is_dir():
+            parser.error(f"--recordings-dir {arguments.recordings_dir} is not a directory")
+        found = sorted(str(folder) for folder in recordings_dir.iterdir() if (folder / "meta.json").is_file())
+        if not found:
+            parser.error(f"--recordings-dir {arguments.recordings_dir} holds no capture folder, none of its folders has a meta.json")
+        captures.extend(found)
+    names = [Path(capture).name for capture in captures]
+    for name in names:
+        if names.count(name) > 1:
+            parser.error(f"two recordings are both called {name}, and the page tells them apart by name")
+    return tuple(captures)
 
 
 def _positive_int(text: str) -> int:
@@ -224,7 +251,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     switching.add_argument(
         "--recording-capture",
-        help="a capture folder the page can switch to and from, such as a recording converted by examples/recording_to_capture.py",
+        action="append",
+        default=[],
+        metavar="CAPTURE",
+        help="a capture folder the page can switch to, beside the live input. Repeat it for more than one",
+    )
+    switching.add_argument(
+        "--recordings-dir",
+        help="a folder of capture folders, every one of which the page can switch to, listed by name",
     )
     switching.add_argument(
         "--start-with",
@@ -357,16 +391,15 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
         parser.error(f"--recording-rate only applies to {SourceKind.NEON_RECORDING.value}, not {source_kind.value}")
     if arguments.neon_replay is not None and arguments.neon_address is not None:
         parser.error("--neon-address and --neon-replay cannot be used together, a replay plays a capture in place of the glasses")
-    if arguments.recording_capture is not None and source_kind not in LIVE_INPUT_SOURCES:
+    recording_captures = _recording_captures(parser, arguments)
+    if recording_captures and source_kind not in LIVE_INPUT_SOURCES:
         parser.error(f"--recording-capture only applies to {SourceKind.NEON_LIVE.value} or {SourceKind.ARCORE_TCP.value}, not {source_kind.value}")
-    if arguments.recording_capture is not None and SinkKind.WEB not in sink_kinds:
+    if recording_captures and SinkKind.WEB not in sink_kinds:
         parser.error(f"--recording-capture needs --sink {SinkKind.WEB.value}, whose page switches to the recording")
-    if arguments.recording_capture is not None and arguments.neon_replay is not None:
+    if recording_captures and arguments.neon_replay is not None:
         parser.error("--recording-capture and --neon-replay cannot be used together, --recording-capture switches between the live input and a capture")
-    if arguments.recording_capture is not None and not (Path(arguments.recording_capture) / "meta.json").is_file():
-        parser.error(f"--recording-capture {arguments.recording_capture} is not a capture folder, it has no meta.json")
     # Starting on a recording that isn't there would plan on nothing and never say why.
-    if arguments.start_with == SourceMode.RECORDING.value and arguments.recording_capture is None:
+    if arguments.start_with == SourceMode.RECORDING.value and not recording_captures:
         parser.error("--start-with recording needs --recording-capture")
     # One log, one place. With both, a reader would have to guess which file the run wrote.
     if arguments.timing_log is not None and arguments.record_to is not None:
@@ -423,7 +456,7 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
 
     estimator = None
     # A recording goes through the depth model whatever the live input is, the Pixel included.
-    if source_kind in ESTIMATOR_BACKED_SOURCES or arguments.recording_capture is not None:
+    if source_kind in ESTIMATOR_BACKED_SOURCES or recording_captures:
         estimator = EstimatorConfig(
             model_name=arguments.model,
             process_resolution=arguments.process_resolution,
@@ -465,7 +498,7 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
         phone_app=phone_app,
         reconnect=arguments.reconnect,
         realtime_replay=arguments.realtime,
-        recording_capture=arguments.recording_capture,
+        recording_captures=recording_captures,
         start_with=SourceMode(arguments.start_with),
         verbose=arguments.verbose,
     )
@@ -530,7 +563,7 @@ def build_source_and_sink(
     :rtype: tuple[DepthFrameSource, PathSink]
     """
     # A recording plays the glasses' video, so a run with one has video whatever its live input is.
-    has_video = config.source_kind in SOURCES_WITH_SCENE_VIDEO or config.recording_capture is not None
+    has_video = config.source_kind in SOURCES_WITH_SCENE_VIDEO or config.recording_captures
     video_feed = SceneVideoFeed() if has_video else None
     # The switch is shared too: the source plans on whichever side it says, and the page changes it.
     source_switch = _build_source_switch(config, video_feed)
@@ -560,7 +593,7 @@ def _build_source_switch(config: RunConfig, video_feed: SceneVideoFeed | None) -
     from nav.sources.neon_live import NeonLiveRgbSource
 
     # One model for both sides, and built only when a side needs one: the Pixel sends its own depth.
-    needs_model = config.source_kind is SourceKind.NEON_LIVE or config.recording_capture is not None
+    needs_model = config.source_kind is SourceKind.NEON_LIVE or config.recording_captures
     shared = SharedEstimator(_build_estimator(config)) if needs_model else None
 
     def through_the_model(neon: NeonConfig) -> SideFactory:
@@ -571,10 +604,10 @@ def _build_source_switch(config: RunConfig, video_feed: SceneVideoFeed | None) -
         return ArCoreTcpSource(config.arcore)
 
     live = through_the_model(config.neon) if config.source_kind is SourceKind.NEON_LIVE else pixel
-    recording = None if config.recording_capture is None else through_the_model(NeonConfig(replay_dir=config.recording_capture))
+    recordings = {Path(capture).name: through_the_model(NeonConfig(replay_dir=capture)) for capture in config.recording_captures}
     return SwitchableSource(
         live_factory=live,
-        recording_factory=recording,
+        recordings=recordings,
         initial=config.start_with,
         video_feed=video_feed,
         live_has_video=config.source_kind is SourceKind.NEON_LIVE,

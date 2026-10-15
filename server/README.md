@@ -74,8 +74,8 @@ is the whole configuration, and `--verbose` prints per-stage timings.
 | Source | What it reads | Flags |
 |---|---|---|
 | `video_file` | a recording, or an IP camera app's stream URL, through the depth estimator | `--path`, checked before the model loads |
-| `neon_live` | the Pupil Labs Neon over the network, through the depth estimator | `--neon-address` only if discovery is blocked, `--neon-replay` to play a capture instead, `--recording-capture` and `--start-with` for a run the page can switch to a recording and back |
-| `arcore_tcp` | the Pixel app's depth frames over TCP | `--arcore-port` (9000), `--arcore-accept-timeout` (30), `--reconnect`, `--recording-capture` and `--start-with` as for `neon_live` |
+| `neon_live` | the Pupil Labs Neon over the network, through the depth estimator | `--neon-address` only if discovery is blocked, `--neon-replay` to play a capture instead, `--recording-capture`, `--recordings-dir` and `--start-with` for a run the page can switch to a recording and back |
+| `arcore_tcp` | the Pixel app's depth frames over TCP | `--arcore-port` (9000), `--arcore-accept-timeout` (30), `--reconnect`, `--recording-capture`, `--recordings-dir` and `--start-with` as for `neon_live` |
 | `neon_recording` | a native Neon recording, straightened with its own calibration, through the depth estimator | `--recording-dir`, `--recording-rate` (2 frames a second of recording) |
 | `logged` | a frame log this pipeline recorded earlier | `--log-dir`, `--realtime` |
 
@@ -200,7 +200,7 @@ nearest clearance, where the floor came from (`supplied` by the source, `fitted`
 or the `previous` frame's), and `ALARM` when set. It is what a person tuning the planner looks at, and the window
 and the browser draw it from the same code. The phone never gets it.
 
-In the browser the Depth card has a **Picture** toggle and a **Rings** checkbox, and its title
+In the browser the Depth card has a **Picture** toggle and **Rings** and **Gaze** checkboxes, and its title
 names the picture shown. Picture switches to the risk view: the same picture, with every reading the planner's field reaches
 recolored by what the field costs there, at the moment the walker would get there, on OpenCV's
 TURBO scale from blue for cheap to red for costly. It is the view from above's field seen through
@@ -211,7 +211,9 @@ gets only that one, and the laptop draws the risk view only while some browser s
 recorded Neon frame, 252 by 336, the risk view took 21.2 ms to draw and encode against the depth
 view's 9.0 ms. Rings hides the group rings over either picture at once. The browser draws them
 itself, at places the laptop works out and sends with the plan view, so neither picture carries
-them. The window still draws its rings into the picture.
+them. The window still draws its rings into the picture. Gaze draws a white ring where the glasses' eyes were in the frame the path was planned for,
+over either picture, from the same sample the planner's attention test reads. A run without
+gaze draws none.
 
 The browser also draws the planner's view from above, walking up the screen, about 5.3 m ahead and
 3 m to each side. Three layers, each with a checkbox that hides it in the browser alone:
@@ -527,14 +529,18 @@ Convert it to a capture once:
 The converter reads the recording's scene video, IMU, gaze and calibration, and writes them in the
 capture format above. It decodes nothing, so a 263 s recording converts in about 3 s.
 
-**For a demo, start one server that can switch between the live input and the recording:**
+**For a demo, start one server that can switch between the live input and the recordings:**
 
 ```
-.venv/Scripts/python -m nav --source neon_live --neon-address <glasses address> --recording-capture frame_logs/captures/<name> --sink web
+.venv/Scripts/python -m nav --source neon_live --neon-address <glasses address> --recordings-dir frame_logs/captures --sink web
 ```
 
-The page's Video card then has a **Live / Recording** toggle. Any open page can turn it, every page
-follows, and the depth model, the planner and the server stay up throughout. The recording plays
+`--recordings-dir` takes every capture folder inside it, by folder name. `--recording-capture
+<folder>` names one, and can be repeated. The page's Video card then has a **Live / Recording**
+toggle, and with more than one recording a dropdown under it that says which one the Recording
+side plays. Picking another while the recording plays starts that one from its beginning. Any open
+page can turn the toggle or the dropdown, every page follows, and the depth model, the planner and
+the server stay up throughout. The recording plays
 through the live route end to end, so the page's video is the recording's own, in step with every
 other card. It starts from the beginning each time it is chosen, and loops. The glasses stay
 connected while the recording plays, so switching back is immediate. That also means the glasses'
@@ -542,10 +548,10 @@ IMU stream stays claimed by this run, so no other program should connect to it a
 Each switch starts the scene and the planner afresh, since a floor and a previous plan from the
 other side would steer the first frames of this one. `--start-with recording` starts on the
 recording, which is the safe choice when the glasses haven't been checked yet. The same flags work
-with `--source arcore_tcp`, with the Pixel as the live input. Without `--recording-capture`, a
+with `--source arcore_tcp`, with the Pixel as the live input. Without a recording flag, a
 recording alone also replays with `--neon-replay frame_logs/captures/<name>`.
 
-**To move the demo to another recording, convert that one and point `--recording-capture` at it.** There is
+**To add a recording to the demo, convert it into the captures folder.** There is
 nothing else to change. Depth is estimated from the video on every run and never stored, so there is
 no depth map to regenerate, and a change to the depth model reaches every converted recording by
 itself. The output folder must not exist yet, so an earlier capture is never overwritten.

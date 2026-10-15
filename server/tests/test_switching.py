@@ -133,7 +133,7 @@ def factories() -> dict[SourceMode, Factory]:
 def _switch(factories, initial: SourceMode = SourceMode.LIVE, feed: SceneVideoFeed | None = None, with_recording: bool = True, stall_seconds: float = 3.0) -> SwitchableSource:
     return SwitchableSource(
         factories[SourceMode.LIVE],
-        factories[SourceMode.RECORDING] if with_recording else None,
+        {"walk_1": factories[SourceMode.RECORDING]} if with_recording else {},
         initial,
         video_feed=feed,
         live_retry_seconds=0.05,
@@ -279,6 +279,83 @@ def test_a_run_cant_start_on_a_recording_it_doesnt_have(factories) -> None:
         _switch(factories, initial=SourceMode.RECORDING, with_recording=False)
 
 
+def _two_recordings(factories, initial: SourceMode = SourceMode.LIVE) -> tuple[SwitchableSource, Factory]:
+    """A switch holding walk_1 from the fixture and a second recording, walk_2, with its own factory."""
+    second = Factory(SourceMode.RECORDING)
+    switch = SwitchableSource(
+        factories[SourceMode.LIVE],
+        {"walk_1": factories[SourceMode.RECORDING], "walk_2": second},
+        initial,
+        live_retry_seconds=0.05,
+        live_stall_seconds=3.0,
+    )
+    return switch, second
+
+
+def test_the_state_lists_the_recordings_in_order_with_the_first_chosen(factories) -> None:
+    switch, _ = _two_recordings(factories)
+    without = _switch(factories, with_recording=False)
+    try:
+        assert (switch.state().recordings, switch.state().recording, switch.state().has_recording) == (("walk_1", "walk_2"), "walk_1", True)
+        assert (without.state().recordings, without.state().recording, without.state().has_recording) == ((), None, False)
+    finally:
+        switch.close()
+        without.close()
+
+
+def test_picking_another_recording_while_it_plays_starts_that_one_from_the_start_as_a_new_stretch(factories) -> None:
+    switch, second = _two_recordings(factories, initial=SourceMode.RECORDING)
+    collector = Collector(switch)
+    states: list[SwitchState] = []
+    try:
+        before = collector.wait_for_side(SourceMode.RECORDING)
+        switch.subscribe(states.append)
+
+        switch.request_recording("walk_2")
+
+        _wait_for(lambda: len(second.built) == 1, "the second recording to start")
+        _wait_for(lambda: factories[SourceMode.RECORDING].built[0].closed.is_set(), "the first recording to close")
+        _wait_for(lambda: collector.frames and collector.frames[-1].source_generation > before.source_generation, "a frame from the new stretch")
+        assert states[-1].recording == "walk_2" and states[-1].mode is SourceMode.RECORDING
+        assert len(factories[SourceMode.RECORDING].built) == 1, "the first recording isn't started again"
+    finally:
+        switch.close()
+
+
+def test_picking_a_recording_while_on_the_live_input_only_changes_which_plays_next(factories) -> None:
+    switch, second = _two_recordings(factories)
+    collector = Collector(switch)
+    states: list[SwitchState] = []
+    try:
+        collector.wait_for_side(SourceMode.LIVE)
+        switch.subscribe(states.append)
+
+        switch.request_recording("walk_2")
+
+        assert states[-1].recording == "walk_2" and states[-1].mode is SourceMode.LIVE
+        assert not second.built and not factories[SourceMode.RECORDING].built, "nothing plays until the recording side is chosen"
+        switch.request(SourceMode.RECORDING)
+        collector.wait_for_side(SourceMode.RECORDING)
+        assert len(second.built) == 1 and not factories[SourceMode.RECORDING].built
+    finally:
+        switch.close()
+
+
+def test_a_recording_the_run_lacks_is_ignored_and_said_so(factories, caplog: pytest.LogCaptureFixture) -> None:
+    switch, second = _two_recordings(factories)
+    states: list[SwitchState] = []
+    switch.subscribe(states.append)
+    try:
+        with caplog.at_level("WARNING"):
+            switch.request_recording("walk_9")
+            switch.request_recording("walk_1")
+
+        assert [state.recording for state in states] == ["walk_1"], "neither an unknown name nor the one in use announces anything"
+        assert "walk_9" in caplog.text and "no such recording" in caplog.text
+    finally:
+        switch.close()
+
+
 def test_a_listener_gets_the_state_at_once_and_on_every_switch(factories) -> None:
     switch = _switch(factories)
     states: list[SwitchState] = []
@@ -361,7 +438,7 @@ def test_a_frame_that_finishes_after_its_side_was_left_never_reaches_the_planner
             release.set()
 
     live = Factory(SourceMode.LIVE)
-    switch = SwitchableSource(live, lambda feed, chosen: SlowRecording(), SourceMode.RECORDING, live_retry_seconds=0.05)
+    switch = SwitchableSource(live, {"slow": lambda feed, chosen: SlowRecording()}, SourceMode.RECORDING, live_retry_seconds=0.05)
     collector = Collector(switch)
     try:
         time.sleep(0.2)
