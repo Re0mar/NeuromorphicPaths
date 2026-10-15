@@ -8,6 +8,8 @@ the start of a walk.
 
 # Standard library imports
 import dataclasses
+import json
+from pathlib import Path
 
 import pytest
 
@@ -20,6 +22,8 @@ from nav.config import (
     RunConfig,
     SinkKind,
     SourceKind,
+    build_route_service,
+    build_route_tracker,
     build_run_config,
     build_sink,
     build_source,
@@ -37,6 +41,9 @@ from nav.sources.config import (
     TapConfig,
     VideoConfig,
 )
+from nav.route.geodesy import LatLon
+from nav.route.service import FileRouteService, OpenRouteServiceClient, RouteFetchOutcome
+from nav.runtime.loop import _config_as_json
 from nav.runtime.tap import RecordingTap
 from nav.scene.config import SceneConfig
 from nav.sinks.config import PhoneAppConfig, WebConfig
@@ -949,3 +956,87 @@ def test_the_retired_plugin_model_flag_is_refused(capsys: pytest.CaptureFixture[
         build_run_config(["--source", "neon_recording", "--recording-dir", ".", "--plugin-model", "DA3Metric-Large", "--sink", "none"])
 
     assert "unrecognized arguments: --plugin-model" in capsys.readouterr().err
+
+
+# *******************************************
+# The route service and its key, built in one place
+# *******************************************
+
+ROUTE_FIXTURE = Path(__file__).parent / "fixtures" / "ors_walking_response.json"
+WEB_VIDEO_ARGV = [*MINIMAL_VIDEO_ARGV[:-2], "--sink", "web"]
+# Made up for these tests. A real key never appears in a test.
+MADE_UP_ROUTE_KEY = "test-key-c41b77"
+
+
+def _repository_with_secrets(tmp_path: Path, gitignore: str = ".env_route*\n", key_line: str = f"ORS_API_KEY={MADE_UP_ROUTE_KEY}\n") -> Path:
+    """A repository with a server directory, a settings file at its root and the secrets file beside it."""
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    (root / ".gitignore").write_text(gitignore, encoding="utf-8")
+    (root / "server").mkdir()
+    (root / ".env_route").write_text("", encoding="utf-8")
+    (root / ".env_route_secrets").write_text(key_line, encoding="utf-8")
+    return root
+
+
+def test_the_route_service_is_picked_at_one_place(tmp_path: Path) -> None:
+    stored = build_run_config([*WEB_VIDEO_ARGV, "--route-service", "file", "--route-file", str(ROUTE_FIXTURE)])
+    assert isinstance(build_route_service(stored, tmp_path), FileRouteService)
+    live = build_run_config(WEB_VIDEO_ARGV)
+    assert isinstance(build_route_service(live, tmp_path), OpenRouteServiceClient)
+
+
+def test_the_file_service_needs_a_route_file() -> None:
+    with pytest.raises(SystemExit):
+        build_run_config([*WEB_VIDEO_ARGV, "--route-service", "file"])
+
+
+def test_a_route_file_without_the_file_service_is_refused() -> None:
+    with pytest.raises(SystemExit):
+        build_run_config([*WEB_VIDEO_ARGV, "--route-file", str(ROUTE_FIXTURE)])
+
+
+def test_the_secrets_file_is_resolved_by_walking_up_from_the_working_directory(tmp_path: Path) -> None:
+    root = _repository_with_secrets(tmp_path)
+    service = build_route_service(build_run_config(WEB_VIDEO_ARGV), root / "server")
+    assert repr(service) == "OpenRouteServiceClient(api_key=<set>, timeout_seconds=5.0)"
+
+
+def test_route_secrets_file_overrides_the_walk_up(tmp_path: Path) -> None:
+    # The walked-up file has no key line and would refuse. The named one has a key and is used instead.
+    root = _repository_with_secrets(tmp_path, key_line="OTHER=1\n")
+    named = tmp_path / "elsewhere" / "route_secrets"
+    named.parent.mkdir()
+    named.write_text(f"ORS_API_KEY={MADE_UP_ROUTE_KEY}\n", encoding="utf-8")
+    config = build_run_config([*WEB_VIDEO_ARGV, "--route-secrets-file", str(named)])
+    assert "<set>" in repr(build_route_service(config, root / "server"))
+    with pytest.raises(ValueError, match="no ORS_API_KEY line"):
+        build_route_service(build_run_config(WEB_VIDEO_ARGV), root / "server")
+
+
+def test_an_unprotected_secrets_file_refuses_to_start_naming_the_pattern(tmp_path: Path) -> None:
+    root = _repository_with_secrets(tmp_path, gitignore=".env\n.env.*\n")
+    with pytest.raises(ValueError, match=r"\.env_route\*"):
+        build_route_service(build_run_config(WEB_VIDEO_ARGV), root / "server")
+
+
+def test_no_secrets_file_reports_no_key_rather_than_stopping_the_run(tmp_path: Path) -> None:
+    service = build_route_service(build_run_config(WEB_VIDEO_ARGV), tmp_path)
+    assert service.walking_route(LatLon(51.82, 5.86), LatLon(51.83, 5.87)).outcome is RouteFetchOutcome.NO_KEY
+
+
+def test_the_key_never_appears_in_run_config_json(tmp_path: Path) -> None:
+    root = _repository_with_secrets(tmp_path)
+    config = build_run_config([*WEB_VIDEO_ARGV, "--route-secrets-file", str(root / ".env_route_secrets")])
+    service = build_route_service(config, root / "server")
+    written = json.dumps(_config_as_json(config))
+    assert MADE_UP_ROUTE_KEY not in written and MADE_UP_ROUTE_KEY not in repr(service)
+    # The path is there, so a replay can say where the key came from without carrying it.
+    assert ".env_route_secrets" in written
+
+
+def test_the_route_tracker_is_built_only_with_the_page(tmp_path: Path) -> None:
+    assert build_route_tracker(build_run_config(MINIMAL_VIDEO_ARGV), tmp_path) is None
+    tracker = build_route_tracker(build_run_config(WEB_VIDEO_ARGV), tmp_path)
+    assert tracker is not None
+    tracker.close()

@@ -4,7 +4,7 @@ Every knob in one place, and the two factories that turn a chosen kind into an o
 Configuration is command line only. Nothing in this package reads an environment variable, so a
 run is fully described by the arguments that started it and a log line can repeat them back.
 
-This is also the only module allowed to mention SourceKind or SinkKind. Once the parser has turned
+This is also the only module allowed to mention SourceKind, SinkKind or RouteServiceKind. Once the parser has turned
 a string into an enum, the rest of the package receives built objects and never asks what kind
 they came from. A test enforces that.
 """
@@ -20,6 +20,17 @@ from pathlib import Path
 
 # Local package imports
 from nav.planner.config import GoalMode, PlannerConfig
+from nav.route.route import RouteConfig
+from nav.route.secrets import (
+    RouteSecretsError,
+    check_secrets_location,
+    find_settings_file,
+    read_route_key,
+    repository_root,
+    secrets_file_beside,
+)
+from nav.route.service import FileRouteService, OpenRouteServiceClient, RouteService
+from nav.runtime.route_goal import RouteGoalTracker
 from nav.runtime.tap import RecordingTap
 from nav.scene.config import SceneConfig
 from nav.sinks.config import DebugWindowConfig, PhoneAppConfig, WebConfig
@@ -27,7 +38,7 @@ from nav.sinks.debug_window import DebugWindowSink
 from nav.sinks.fan_out import FanOutSink
 from nav.sinks.none import NullSink
 from nav.sinks.phone_app import PhoneAppSink
-from nav.sinks.web import WebSink
+from nav.sinks.web import RouteInput, WebSink
 from nav.sources.arcore_tcp import ArCoreTcpSource
 from nav.sources.config import (
     ArCoreConfig,
@@ -65,6 +76,13 @@ class SourceKind(Enum):
     ARCORE_TCP = "arcore_tcp"
     NEON_RECORDING = "neon_recording"
     LOGGED = "logged"
+
+
+class RouteServiceKind(Enum):
+    """Where walking routes come from. Values are the spellings the command line accepts."""
+
+    OPENROUTESERVICE = "openrouteservice"
+    FILE = "file"
 
 
 class SinkKind(Enum):
@@ -118,6 +136,14 @@ class RunConfig:
     recording_capture: str | None = None
     # Which side such a run plans on first.
     start_with: SourceMode = SourceMode.LIVE
+    # Where walking routes come from on a run that serves the page, which is where fixes arrive from.
+    route_service: RouteServiceKind = RouteServiceKind.OPENROUTESERVICE
+    # The stored service response the file service serves.
+    route_file: str | None = None
+    # Where the route key's secrets file is, when not found by walking up from the working directory.
+    # The path only. The key itself is never on this config, so it never reaches run_config.json.
+    route_secrets_file: str | None = None
+    route: RouteConfig = field(default_factory=RouteConfig)
     verbose: bool = False
     estimator_factory: Callable[[EstimatorConfig], DepthEstimatorProtocol] | None = None
     """Composition-root hook, set by tests to inject a stub estimator instead of loading a model.
@@ -300,6 +326,19 @@ def build_parser() -> argparse.ArgumentParser:
     web = parser.add_argument_group("web sink")
     web.add_argument("--web-port", type=_port_number, default=WebConfig.port)
 
+    route = parser.add_argument_group("route goal, on a run that serves the page")
+    route.add_argument(
+        "--route-service",
+        choices=[kind.value for kind in RouteServiceKind],
+        default=RouteServiceKind.OPENROUTESERVICE.value,
+        help="where walking routes come from. file serves a stored response, for tests and demos",
+    )
+    route.add_argument("--route-file", help="the stored service response the file service serves")
+    route.add_argument(
+        "--route-secrets-file",
+        help="the file holding ORS_API_KEY=. Found as .env_route_secrets beside the nearest .env_route above the working directory when not given",
+    )
+
     phone = parser.add_argument_group("phone_app sink")
     phone.add_argument(
         "--phone-port",
@@ -351,6 +390,11 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
         parser.error(f"--recording-rate only applies to {SourceKind.NEON_RECORDING.value}, not {source_kind.value}")
     if arguments.neon_replay is not None and arguments.neon_address is not None:
         parser.error("--neon-address and --neon-replay cannot be used together, a replay plays a capture in place of the glasses")
+    route_service = RouteServiceKind(arguments.route_service)
+    if route_service is RouteServiceKind.FILE and arguments.route_file is None:
+        parser.error("--route-file is required for --route-service file")
+    if arguments.route_file is not None and route_service is not RouteServiceKind.FILE:
+        parser.error("--route-file is read only by --route-service file")
     if arguments.recording_capture is not None and source_kind not in LIVE_INPUT_SOURCES:
         parser.error(f"--recording-capture only applies to {SourceKind.NEON_LIVE.value} or {SourceKind.ARCORE_TCP.value}, not {source_kind.value}")
     if arguments.recording_capture is not None and SinkKind.WEB not in sink_kinds:
@@ -459,6 +503,9 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
         realtime_replay=arguments.realtime,
         recording_capture=arguments.recording_capture,
         start_with=SourceMode(arguments.start_with),
+        route_service=route_service,
+        route_file=arguments.route_file,
+        route_secrets_file=arguments.route_secrets_file,
         verbose=arguments.verbose,
     )
 
@@ -502,7 +549,69 @@ def _build_estimator(config: RunConfig) -> DepthEstimatorProtocol:
 SOURCES_WITH_SCENE_VIDEO = frozenset({SourceKind.NEON_LIVE})
 
 
-def build_source_and_sink(config: RunConfig, on_path_sent: Callable[[float], None] | None = None) -> tuple[DepthFrameSource, PathSink]:
+def build_route_service(config: RunConfig, working_directory: Path) -> RouteService:
+    """
+    The run's route service, and the one place its key is read.
+
+    The key goes from the secrets file straight into the client and is never kept anywhere else.
+    With no secrets file the client gets no key, and every request reports no_key on the page
+    rather than stopping the run.
+
+    :param config: The run configuration.
+    :param working_directory: Where the walk up for `.env_route` starts.
+    :return: The service.
+    :rtype: RouteService
+    :raises ValueError: When the secrets file is inside the repository and nothing in its
+        .gitignore keeps it out of git, or it exists without a usable key line.
+    """
+    match config.route_service:
+        case RouteServiceKind.FILE:
+            if config.route_file is None:
+                raise ValueError("the file route service needs a route file and none was given")
+            return FileRouteService(Path(config.route_file))
+        case RouteServiceKind.OPENROUTESERVICE:
+            if config.route_secrets_file is not None:
+                secrets_file: Path | None = Path(config.route_secrets_file)
+            else:
+                settings_file = find_settings_file(working_directory)
+                secrets_file = None if settings_file is None else secrets_file_beside(settings_file)
+            if secrets_file is None or not secrets_file.is_file():
+                log.info("no route secrets file, so route requests will report no_key")
+                return OpenRouteServiceClient("")
+            root = repository_root(secrets_file.parent)
+            if root is not None:
+                refusal = check_secrets_location(root, secrets_file)
+                if refusal is not None:
+                    raise ValueError(f"refusing to read the route key: {refusal}")
+            try:
+                return OpenRouteServiceClient(read_route_key(secrets_file))
+            except RouteSecretsError as unreadable:
+                raise ValueError(f"route secrets file unusable: {unreadable}") from unreadable
+        case _:
+            raise ValueError(f"no route service for {config.route_service}")
+
+
+def build_route_tracker(config: RunConfig, working_directory: Path) -> RouteGoalTracker | None:
+    """
+    The route goal's tracker, on a run that serves the page, since the page is where fixes come from.
+
+    :return: The tracker, writing its sidecars beside the frame log when the run records. None on a
+        run without the page.
+    :rtype: RouteGoalTracker | None
+    """
+    if SinkKind.WEB not in config.sink_kinds:
+        return None
+    log_dir = None if config.tap.log_dir is None else Path(config.tap.log_dir)
+    if log_dir is not None:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    return RouteGoalTracker(build_route_service(config, working_directory), config.route, config.planner.goal_distance_meters, log_dir)
+
+
+def build_source_and_sink(
+    config: RunConfig,
+    on_path_sent: Callable[[float], None] | None = None,
+    route_input: RouteInput | None = None,
+) -> tuple[DepthFrameSource, PathSink]:
     """
     Build the run's source and its sink together, sharing what only both can use.
 
@@ -513,6 +622,7 @@ def build_source_and_sink(config: RunConfig, on_path_sent: Callable[[float], Non
 
     :param config: The run configuration.
     :param on_path_sent: As for build_sink.
+    :param route_input: As for build_sink.
     :return: The source and the sink, in that order.
     :rtype: tuple[DepthFrameSource, PathSink]
     """
@@ -523,7 +633,7 @@ def build_source_and_sink(config: RunConfig, on_path_sent: Callable[[float], Non
     source_switch = _build_source_switch(config, video_feed)
     return (
         build_source(config, video_feed=video_feed, source_switch=source_switch),
-        build_sink(config, on_path_sent=on_path_sent, video_feed=video_feed, source_switch=source_switch),
+        build_sink(config, on_path_sent=on_path_sent, video_feed=video_feed, source_switch=source_switch, route_input=route_input),
     )
 
 
@@ -639,6 +749,7 @@ def build_sink(
     on_path_sent: Callable[[float], None] | None = None,
     video_feed: SceneVideoFeed | None = None,
     source_switch: SwitchableSource | None = None,
+    route_input: RouteInput | None = None,
 ) -> PathSink:
     """
     Turn the chosen sink kinds into one sink.
@@ -653,10 +764,12 @@ def build_sink(
         when the source has no video to offer, and the page then says so.
     :param source_switch: Given to the web sink, whose page switches between the live input and the
         recording. None on a run without a recording, and the page then shows no switch.
+    :param route_input: Given to the web sink, whose page sends fixes and destinations. None on a run
+        without a route goal tracker.
     :return: A sink accepting PlannedPath objects.
     :rtype: PathSink
     """
-    sinks = [_build_one_sink(kind, config, on_path_sent, video_feed, source_switch) for kind in config.sink_kinds]
+    sinks = [_build_one_sink(kind, config, on_path_sent, video_feed, source_switch, route_input) for kind in config.sink_kinds]
     if len(sinks) == 1:
         return sinks[0]
     return FanOutSink(sinks)
@@ -668,6 +781,7 @@ def _build_one_sink(
     on_path_sent: Callable[[float], None] | None,
     video_feed: SceneVideoFeed | None,
     source_switch: SwitchableSource | None,
+    route_input: RouteInput | None = None,
 ) -> PathSink:
     match sink_kind:
         case SinkKind.DEBUG_WINDOW:
@@ -675,7 +789,7 @@ def _build_one_sink(
         case SinkKind.WEB:
             if config.web is None:
                 raise ValueError("web needs a web config and none was built")
-            return WebSink(config.web, config.scene, video_feed=video_feed, source_switch=source_switch)
+            return WebSink(config.web, config.scene, video_feed=video_feed, source_switch=source_switch, route_input=route_input)
         case SinkKind.PHONE_APP:
             if config.phone_app is None:
                 raise ValueError("phone_app needs a phone_app config and none was built")

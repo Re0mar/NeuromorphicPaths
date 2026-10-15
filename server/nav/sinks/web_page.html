@@ -44,7 +44,7 @@
   main {
     display: grid;
     grid-template-columns: 1fr;
-    grid-template-areas: "heading" "video" "plan" "depth" "sound";
+    grid-template-areas: "heading" "route" "video" "plan" "depth" "sound";
     gap: var(--space-3);
     padding: var(--space-3);
     box-sizing: border-box;
@@ -102,6 +102,11 @@
   #plan-card { grid-area: plan; align-items: center; }
   #depth-card { grid-area: depth; }
   #sound-card { grid-area: sound; }
+  #route-card { grid-area: route; }
+  #destination-row { display: flex; gap: var(--space-1); }
+  #destination { flex: 1 1 auto; min-width: 0; font: inherit; padding: 0 var(--space-1); min-height: var(--control-height); background: var(--bg); color: var(--fg); border: 1px solid var(--panel-edge); border-radius: var(--space-1); }
+  #set-destination { font: inherit; min-height: var(--control-height); padding: 0 var(--space-2); background: var(--bg); color: var(--fg); border: 1px solid var(--panel-edge); border-radius: var(--space-1); cursor: pointer; }
+  #route-state, #route-location { font-size: var(--text-s); color: var(--muted); }
   canvas, img, video { max-width: 100%; height: auto; }
   .placeholder { font-size: var(--text-s); color: var(--muted); }
   .placeholder[hidden], #depth[hidden], #rings[hidden], .help[hidden], #plan-panel[hidden], #music-label[hidden], #music-controls[hidden], #source-field[hidden], #input-link[hidden], #no-input[hidden], #live[hidden] { display: none; }
@@ -219,6 +224,15 @@
       <canvas id="arrow" width="320" height="320" aria-label="The arrow the planner chose"></canvas>
       <div id="status">Waiting for the laptop.</div>
       <div id="link">Not connected.</div>
+    </section>
+    <section class="card" id="route-card">
+      <h2>Route</h2>
+      <div id="destination-row">
+        <input type="text" id="destination" placeholder="latitude, longitude" aria-label="Destination as latitude, longitude in decimal degrees" autocomplete="off">
+        <button type="button" id="set-destination">Set</button>
+      </div>
+      <div id="route-state">No route yet.</div>
+      <div id="route-location">No location yet.</div>
     </section>
   </div>
   <section class="card" id="video-card">
@@ -1011,6 +1025,103 @@
     if (event.key === "Escape") helpButtons.forEach(closeHelp);
   });
 
+  // ---- Route -------------------------------------------------------------------------------
+  // The phone's location goes to the laptop, which pairs it with frames and turns a route into a
+  // goal. A fix is sent only when its timestamp is new, since the browser can call back several
+  // times with the same reading. A heading or speed the browser doesn't know is sent as null, never
+  // as 0, which would read as walking due north or standing still.
+  const destinationInput = document.getElementById("destination");
+  const setDestination = document.getElementById("set-destination");
+  const routeState = document.getElementById("route-state");
+  const routeLocation = document.getElementById("route-location");
+  const ROUTE_STATE_TEXT = {
+    no_route: "No route",
+    no_fix: "No recent location",
+    no_course: "Standing, or no heading yet",
+    following: "Following the route",
+    off_route: "Off the route",
+    rerouting: "Finding a new route",
+    service_failed: "Route service failed",
+  };
+  let locationWatch = null;
+  let lastSentFixTimestamp = null;
+
+  function sendToLaptop(message) {
+    if (!laptopSocket || laptopSocket.readyState !== WebSocket.OPEN) return false;
+    laptopSocket.send(JSON.stringify(message));
+    return true;
+  }
+
+  function knownOrNull(value) {
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  }
+
+  function onPosition(position) {
+    const timestamp = Math.round(position.timestamp);
+    if (timestamp === lastSentFixTimestamp) return;
+    const coords = position.coords;
+    const sent = sendToLaptop({
+      kind: "location",
+      latitude: coords.latitude,
+      longitude: coords.longitude,
+      accuracy_meters: coords.accuracy,
+      heading_degrees: knownOrNull(coords.heading),
+      speed_mps: knownOrNull(coords.speed),
+      timestamp_ms: timestamp,
+    });
+    // Unsent while the laptop is away, so the next fix after it comes back is sent.
+    if (sent) lastSentFixTimestamp = timestamp;
+    routeLocation.textContent = "Location within " + Math.round(coords.accuracy) + " m" + (sent ? ", sent." : ", not sent, no laptop.");
+  }
+
+  function onPositionError(error) {
+    routeLocation.textContent = error.code === 1 ? "Location permission denied." : "No location: " + error.message;
+  }
+
+  function watchLocation() {
+    if (!window.isSecureContext) {
+      routeLocation.textContent = "Location needs the page over https.";
+      return;
+    }
+    if (!navigator.geolocation) {
+      routeLocation.textContent = "This browser gives no location.";
+      return;
+    }
+    if (locationWatch !== null) navigator.geolocation.clearWatch(locationWatch);
+    locationWatch = navigator.geolocation.watchPosition(onPosition, onPositionError, { enableHighAccuracy: true, maximumAge: 0 });
+  }
+
+  // A locked or backgrounded phone stops watching, so watching starts again when the page is shown.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && locationWatch !== null) watchLocation();
+  });
+
+  setDestination.addEventListener("click", () => {
+    const parts = destinationInput.value.split(",").map((part) => Number(part.trim()));
+    const [latitude, longitude] = parts;
+    if (parts.length !== 2 || !Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
+      routeState.textContent = "Enter latitude, longitude in decimal degrees.";
+      return;
+    }
+    if (!sendToLaptop({ kind: "destination", latitude: latitude, longitude: longitude })) {
+      routeState.textContent = "Not sent, no laptop.";
+    }
+  });
+
+  function meters(value) {
+    return value === null ? "?" : Math.round(value) + " m";
+  }
+
+  function showRouteState(message) {
+    const tier = ROUTE_STATE_TEXT[message.state] || message.state;
+    const parts = [tier];
+    if (message.along_meters !== null) parts.push(meters(message.along_meters) + " along, " + meters(message.remaining_meters) + " to go");
+    if (message.bearing_degrees !== null) parts.push("route bears " + Math.round(message.bearing_degrees) + " degrees");
+    if (message.fix_age_seconds !== null) parts.push("fix " + message.fix_age_seconds.toFixed(1) + " s old, within " + meters(message.accuracy_meters));
+    if (message.reason) parts.push(message.reason);
+    routeState.textContent = parts.join(". ") + ".";
+  }
+
   function connect() {
     const protocol = location.protocol === "https:" ? "wss" : "ws";
     const socket = new WebSocket(protocol + "://" + location.host + "/ws");
@@ -1032,6 +1143,7 @@
         if (message.kind === "path") showPath(message);
         else if (message.kind === "plan_view") showPlanView(message);
         else if (message.kind === "source_state") showSourceState(message);
+        else if (message.kind === "route_state") showRouteState(message);
         return;
       }
       showDepth(event.data);
@@ -1184,6 +1296,7 @@
   drawArrow(0, false);
   showLiveState();
   connect();
+  watchLocation();
 </script>
 </body>
 </html>

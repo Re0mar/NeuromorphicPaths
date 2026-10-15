@@ -22,10 +22,15 @@ from nav.sinks.web_messages import (
     PictureKind,
     WebMessageKind,
     browser_choice,
+    browser_message,
     plan_view_message,
+    route_state_message,
     source_state_message,
     web_text_message,
 )
+from nav.route.course import Fix
+from nav.route.geodesy import LatLon
+from nav.route.route import RouteState
 from nav.sources.config import SourceMode
 from nav.sources.switching import InputLink, SwitchState
 from nav.types import DebugView, DepthFrame, FloorSource, ObstaclePoint, ObstacleSet, Plane, PlannedPath, Pose
@@ -311,3 +316,94 @@ def test_the_source_state_carries_the_side_and_the_live_link_as_the_page_reads_t
         "has_recording": True,
         "live_has_video": False,
     }
+
+
+# *******************************************
+# Location, destination and route state
+# *******************************************
+
+GOOD_LOCATION = {
+    "kind": "location",
+    "latitude": 51.8215,
+    "longitude": 5.865,
+    "accuracy_meters": 6.0,
+    "heading_degrees": 90.0,
+    "speed_mps": 1.2,
+    "timestamp_ms": 1_760_000_000_000,
+}
+
+
+def _location(**changes: object) -> str:
+    return json.dumps({**GOOD_LOCATION, **changes})
+
+
+def test_a_location_message_parses_to_a_fix_stamped_on_the_laptop_clock() -> None:
+    fix = browser_message(_location(), clock=lambda: 4321.5)
+    assert isinstance(fix, Fix)
+    assert fix.point == LatLon(51.8215, 5.865)
+    assert (fix.accuracy_meters, fix.heading_degrees, fix.speed_mps) == (6.0, 90.0, 1.2)
+    assert fix.timestamp_ms == 1_760_000_000_000
+    # The laptop's clock, not the phone's.
+    assert fix.received_seconds == 4321.5
+
+
+def test_a_null_heading_and_speed_stay_none() -> None:
+    fix = browser_message(_location(heading_degrees=None, speed_mps=None), clock=lambda: 0.0)
+    assert isinstance(fix, Fix)
+    assert (fix.heading_degrees, fix.speed_mps) == (None, None)
+
+
+@pytest.mark.parametrize(
+    "changes, named",
+    [
+        ({"latitude": True}, "latitude"),
+        ({"latitude": 91.0}, "latitude"),
+        ({"longitude": -181.0}, "longitude"),
+        ({"accuracy_meters": -1.0}, "accuracy_meters"),
+        ({"heading_degrees": 360.0}, "heading_degrees"),
+        ({"speed_mps": "1.2"}, "speed_mps"),
+        ({"timestamp_ms": 1_760_000_000_000.5}, "timestamp_ms"),
+        ({"timestamp_ms": True}, "timestamp_ms"),
+        ({"altitude": 12.0}, "altitude"),
+    ],
+    ids=["bool latitude", "latitude 91", "longitude -181", "negative accuracy", "heading 360", "string speed", "float timestamp", "bool timestamp", "unknown key"],
+)
+def test_a_location_breaking_a_rule_is_refused_naming_it(changes: dict, named: str) -> None:
+    with pytest.raises(ValueError, match=named):
+        browser_message(_location(**changes), clock=lambda: 0.0)
+
+
+def test_a_location_missing_a_field_is_refused() -> None:
+    message = dict(GOOD_LOCATION)
+    del message["speed_mps"]
+    with pytest.raises(ValueError, match="missing"):
+        browser_message(json.dumps(message), clock=lambda: 0.0)
+
+
+def test_a_destination_message_parses() -> None:
+    destination = browser_message(json.dumps({"kind": "destination", "latitude": 51.8245, "longitude": 5.8685}))
+    assert destination == LatLon(51.8245, 5.8685)
+
+
+@pytest.mark.parametrize("message", [{"latitude": 51.8}, {"latitude": 51.8, "longitude": "5.86"}, {"latitude": 51.8, "longitude": 5.86, "name": "home"}])
+def test_a_bad_destination_is_refused(message: dict) -> None:
+    with pytest.raises(ValueError, match="destination"):
+        browser_message(json.dumps({"kind": "destination", **message}))
+
+
+def test_a_choice_still_reads_through_browser_message() -> None:
+    assert browser_message(json.dumps({"kind": "picture", "picture": "risk"})) is PictureKind.RISK
+
+
+def test_route_state_carries_nulls_for_unknowns() -> None:
+    body = route_state_message(RouteState.NO_FIX, None, None, None, None, None, "")
+    text = web_text_message(WebMessageKind.ROUTE_STATE, body)
+    decoded = json.loads(text)
+    assert decoded["kind"] == "route_state" and decoded["state"] == "no_fix"
+    assert decoded["along_meters"] is None and decoded["fix_age_seconds"] is None
+
+
+def test_no_message_ever_contains_nan() -> None:
+    body = route_state_message(RouteState.FOLLOWING, float("nan"), 1.0, 2.0, 3.0, 4.0, "")
+    with pytest.raises(ValueError):
+        web_text_message(WebMessageKind.ROUTE_STATE, body)

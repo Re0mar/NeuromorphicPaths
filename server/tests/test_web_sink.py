@@ -11,6 +11,7 @@ import dataclasses
 import json
 import threading
 import time
+from pathlib import Path
 
 # Third party imports
 import cv2
@@ -18,7 +19,12 @@ import numpy as np
 import pytest
 
 # Local package imports
+from nav.clock import laptop_time_seconds
 from nav.config import RunConfig, SinkKind, SourceKind, build_sink, build_source_and_sink
+from nav.route import RouteFrame
+from nav.route.route import RouteConfig, RouteState
+from nav.route.service import FileRouteService
+from nav.runtime.route_goal import RouteGoalTracker
 from nav.planner.config import GoalMode
 from nav.scene.config import SceneConfig
 from nav.sinks.config import WebConfig
@@ -1110,3 +1116,101 @@ def test_closing_the_sink_stops_listening_to_the_switch() -> None:
     sink.close()
 
     assert switch.listeners == []
+
+
+# *******************************************
+# The route goal through the sink
+# *******************************************
+
+ROUTE_FIXTURE = Path(__file__).parent / "fixtures" / "ors_walking_response.json"
+LOCATION_TEXT = json.dumps(
+    {"kind": "location", "latitude": 51.8215, "longitude": 5.865, "accuracy_meters": 5.0, "heading_degrees": 0.0, "speed_mps": 1.2, "timestamp_ms": 1_760_000_000_000}
+)
+DESTINATION_TEXT = json.dumps({"kind": "destination", "latitude": 51.8245, "longitude": 5.8685})
+
+
+class RecordingRouteInput:
+    def __init__(self) -> None:
+        self.fixes: list = []
+        self.destinations: list = []
+
+    def on_fix(self, fix) -> None:
+        self.fixes.append(fix)
+
+    def on_destination(self, destination) -> None:
+        self.destinations.append(destination)
+
+
+def _route_sink(route_input) -> WebSink:
+    sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None, route_input=route_input)
+    sink.start()
+    return sink
+
+
+def test_a_fix_from_a_page_reaches_the_tracker() -> None:
+    route_input = RecordingRouteInput()
+    sink = _route_sink(route_input)
+    try:
+        asyncio.run(_say_then_receive_until_quiet(sink.port, [LOCATION_TEXT], lambda: None, 0.3))
+    finally:
+        sink.close()
+    assert len(route_input.fixes) == 1
+    assert route_input.fixes[0].timestamp_ms == 1_760_000_000_000
+
+
+def test_a_destination_from_a_page_fetches_a_route_through_the_file_service() -> None:
+    tracker = RouteGoalTracker(FileRouteService(ROUTE_FIXTURE), RouteConfig(), 4.0)
+    sink = _route_sink(tracker)
+    try:
+        asyncio.run(_say_then_receive_until_quiet(sink.port, [LOCATION_TEXT, DESTINATION_TEXT], lambda: None, 0.3))
+    finally:
+        sink.close()
+    tracker.close()
+    frame = tracker.frame(laptop_time_seconds())
+    assert frame.state is RouteState.FOLLOWING
+    assert frame.remaining_meters == pytest.approx(469.7, abs=0.5)
+
+
+def test_a_destination_before_any_fix_is_held_and_fetched_on_the_first_fix() -> None:
+    tracker = RouteGoalTracker(FileRouteService(ROUTE_FIXTURE), RouteConfig(), 4.0)
+    sink = _route_sink(tracker)
+    try:
+        asyncio.run(_say_then_receive_until_quiet(sink.port, [DESTINATION_TEXT], lambda: None, 0.3))
+        assert tracker.frame(laptop_time_seconds()).state is RouteState.NO_ROUTE
+        asyncio.run(_say_then_receive_until_quiet(sink.port, [LOCATION_TEXT], lambda: None, 0.3))
+    finally:
+        sink.close()
+    tracker.close()
+    assert tracker.frame(laptop_time_seconds()).state is RouteState.FOLLOWING
+
+
+def test_every_page_gets_route_state_after_a_frame() -> None:
+    sink = _route_sink(RecordingRouteInput())
+    frame = RouteFrame(None, RouteState.NO_FIX, None, None, None, 4.2, 6.0, "")
+    try:
+        received = asyncio.run(_receive_until_quiet(sink.port, lambda: sink.publish_route_state(frame), 0.5))
+        late_page = asyncio.run(_receive_until_quiet(sink.port, lambda: None, 0.5))
+    finally:
+        sink.close()
+    for messages in (received, late_page):
+        states = [json.loads(message) for message in messages if isinstance(message, str) and '"route_state"' in message]
+        assert states and states[-1]["state"] == "no_fix" and states[-1]["fix_age_seconds"] == 4.2
+
+
+def test_a_sink_without_a_tracker_logs_and_ignores_a_fix(sink: WebSink, caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level("WARNING", logger="nav.sinks.web"):
+        asyncio.run(_say_then_receive_until_quiet(sink.port, [LOCATION_TEXT, DESTINATION_TEXT], lambda: None, 0.3))
+    assert any("no route goal to take it" in record.getMessage() for record in caplog.records)
+
+
+def test_a_broken_location_is_logged_and_ignored(caplog: pytest.LogCaptureFixture) -> None:
+    route_input = RecordingRouteInput()
+    sink = _route_sink(route_input)
+    broken = json.dumps({**json.loads(LOCATION_TEXT), "latitude": True})
+    try:
+        with caplog.at_level("WARNING", logger="nav.sinks.web"):
+            asyncio.run(_say_then_receive_until_quiet(sink.port, [broken], lambda: None, 0.3))
+    finally:
+        sink.close()
+    assert route_input.fixes == []
+    assert any("latitude" in record.getMessage() for record in caplog.records)

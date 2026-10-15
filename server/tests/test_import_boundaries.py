@@ -31,7 +31,7 @@ ALLOWED_IMPORTERS = {
 
 # The kind enums are the command line's vocabulary. Past config.py the pipeline holds built
 # objects, so a module naming a kind is a module branching on what device it got.
-KIND_ENUM_NAMES = ("SourceKind", "SinkKind")
+KIND_ENUM_NAMES = ("SourceKind", "SinkKind", "RouteServiceKind")
 KIND_ENUM_HOME = Path("config.py")
 
 
@@ -90,4 +90,28 @@ def test_kind_enums_stay_in_config() -> None:
             if name in KIND_ENUM_NAMES:
                 line = getattr(node, "lineno", 0)
                 offenders.append(f"{relative}:{line} names {name}, which belongs to {KIND_ENUM_HOME}")
+    assert offenders == [], "\n".join(offenders)
+
+
+# The route layer is a leaf: it computes and asks one service, and never reaches into the pipeline's
+# devices or its runtime. The layering test can't see this, since it only blocks device packages.
+ROUTE_FORBIDDEN_PREFIXES = ("nav.sources", "nav.sinks", "nav.runtime")
+
+
+def test_the_route_package_imports_nothing_from_sources_sinks_or_runtime() -> None:
+    route_files = sorted((NAV_ROOT / "route").glob("*.py"))
+    # The package's seven files, so an empty glob can't pass for a clean one.
+    assert len(route_files) >= 7, [path.name for path in route_files]
+    offenders: list[str] = []
+    for path in route_files:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            modules = []
+            if isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module is not None:
+                modules = [node.module]
+            for module in modules:
+                if module.startswith(ROUTE_FORBIDDEN_PREFIXES):
+                    offenders.append(f"route/{path.name}:{node.lineno} imports {module}")
     assert offenders == [], "\n".join(offenders)

@@ -25,11 +25,34 @@ The goal has a forward component too, which goal_position clips and returns. Not
 It's kept for a term that weighs how far ahead the goal is.
 """
 
+# Standard library imports
+import math
+from dataclasses import dataclass
+
 # Third party imports
 import numpy as np
 
 # Local package imports
 from nav.planner.config import GoalMode, PlannerConfig
+
+
+@dataclass(frozen=True)
+class RouteGoal:
+    """
+    Where the route says to go this frame, in the walker's own terms. The route layer converts into this, so the planner never imports it.
+
+    relative_bearing_radians is the bearing to the route's look-ahead point minus the walker's course,
+    positive right. tolerance_meters is the route goal's own spread, already widened for a poor fix.
+    """
+
+    relative_bearing_radians: float
+    tolerance_meters: float
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.relative_bearing_radians) or abs(self.relative_bearing_radians) > math.pi:
+            raise ValueError(f"relative_bearing_radians must be within pi of zero, got {self.relative_bearing_radians}")
+        if not math.isfinite(self.tolerance_meters) or self.tolerance_meters <= 0:
+            raise ValueError(f"tolerance_meters must be above zero, got {self.tolerance_meters}")
 
 
 def goal_position(mode: GoalMode, config: PlannerConfig, gaze_ground_point: np.ndarray | None) -> np.ndarray:

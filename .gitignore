@@ -27,3 +27,6 @@ local.properties
 
 # Kotlin 2 session data beside each Gradle project.
 .kotlin/
+
+# The route service's settings and key, read by nav/route/secrets.py. Never committed.
+.env_route*

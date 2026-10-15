@@ -11,6 +11,7 @@ a browser.
 import dataclasses
 import json
 import re
+import time
 import wave
 
 # Third party imports
@@ -29,6 +30,8 @@ from browser_harness import (
     snapshot,
 )
 from nav.planner.alarm import avoidance_surprise_bits_at
+from nav.route import RouteFrame
+from nav.route.route import RouteState
 from nav.scene.config import SceneConfig
 from nav.sinks.config import WebConfig
 from nav.sinks.web import WebSink
@@ -724,7 +727,7 @@ def test_a_decoder_that_falls_behind_drops_to_a_keyframe_rather_than_growing_its
 # The two layouts
 # *******************************************
 
-CARDS_IN_PHONE_ORDER = ["heading-card", "video-card", "plan-card", "depth-card", "sound-card"]
+CARDS_IN_PHONE_ORDER = ["heading-card", "route-card", "video-card", "plan-card", "depth-card", "sound-card"]
 # Every display and control element on the page, by the id that shows it.
 FEATURE_ELEMENTS = [
     "arrow", "status", "link",
@@ -766,14 +769,17 @@ def test_the_desktop_layout_puts_sound_over_heading_on_the_left_then_the_video_t
     try:
         page = session.page
         assert page.evaluate("() => getComputedStyle(document.querySelector('main')).display") == "grid"
-        video, heading, plan, depth, sound = (_box(page, card) for card in ("video-card", "heading-card", "plan-card", "depth-card", "sound-card"))
+        video, heading, plan, depth, sound, route = (_box(page, card) for card in ("video-card", "heading-card", "plan-card", "depth-card", "sound-card", "route-card"))
         video_bottom = video["y"] + video["height"]
 
-        # The left column: Sound on top, Heading under it, half each, together the video's height.
+        # The left column: Sound on top, Heading under it, half each of what Route leaves, and Route
+        # at the bottom, together the video's height.
         assert sound["x"] + sound["width"] <= video["x"] + 1 and abs(heading["x"] - sound["x"]) <= 1, "sound and heading share the column left of the video"
+        assert abs(route["x"] - sound["x"]) <= 1, "route shares the column too"
         assert abs(sound["y"] - video["y"]) <= 1, "sound starts level with the video"
         assert heading["y"] >= sound["y"] + sound["height"] - 1, "heading sits under sound"
-        assert abs(heading["y"] + heading["height"] - video_bottom) <= 1, "heading ends where the video does"
+        assert route["y"] >= heading["y"] + heading["height"] - 1, "route sits under heading"
+        assert abs(route["y"] + route["height"] - video_bottom) <= 1, "route ends where the video does"
         assert abs(sound["height"] - heading["height"]) <= 2, "the two halves are even"
         # The right side: From above, then Depth under it at the same width.
         assert video["x"] + video["width"] <= plan["x"] + 1, "the video sits left of from above"
@@ -1049,4 +1055,173 @@ def test_no_input_clears_when_the_live_input_connects(browser) -> None:
     finally:
         session.close()
         switch_sink.close()
+    assert session.errors == [], session.errors
+
+
+# *******************************************
+# The Route card
+# *******************************************
+
+# navigator.geolocation stood in for, so a test can hand the page fixes and count its watches.
+# `denied` makes every watch fail with the permission error, as a refused prompt does.
+GEOLOCATION_STUB = """
+window.__geo = { watches: 0, cleared: 0, success: null, error: null, options: null, denied: %s };
+Object.defineProperty(navigator, "geolocation", { configurable: true, value: {
+  watchPosition(success, error, options) {
+    window.__geo.watches += 1;
+    window.__geo.success = success;
+    window.__geo.error = error;
+    window.__geo.options = options;
+    if (window.__geo.denied) setTimeout(() => error({ code: 1, message: "User denied Geolocation" }), 0);
+    return window.__geo.watches;
+  },
+  clearWatch() { window.__geo.cleared += 1; },
+  getCurrentPosition() {},
+} });
+window.__visibility = "visible";
+Object.defineProperty(document, "visibilityState", { configurable: true, get: () => window.__visibility });
+"""
+ROUTE_WAIT_SECONDS = 4.0
+
+
+class FakeRouteInput:
+    """Where the sink hands the page's fixes and destinations, kept for a test to read."""
+
+    def __init__(self) -> None:
+        self.fixes: list = []
+        self.destinations: list = []
+
+    def on_fix(self, fix) -> None:
+        self.fixes.append(fix)
+
+    def on_destination(self, destination) -> None:
+        self.destinations.append(destination)
+
+
+def _route_page(browser, denied: bool = False) -> tuple[WebSink, FakeRouteInput, PageSession]:
+    route_input = FakeRouteInput()
+    route_sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None, route_input=route_input)
+    route_sink.start()
+    session = open_page(browser, route_sink, init_script=GEOLOCATION_STUB % ("true" if denied else "false"))
+    return route_sink, route_input, session
+
+
+def _wait_until(condition, seconds: float = ROUTE_WAIT_SECONDS) -> None:
+    deadline = time.monotonic() + seconds
+    while not condition():
+        if time.monotonic() > deadline:
+            raise AssertionError("waited and it never happened")
+        time.sleep(0.02)
+
+
+def _give_fix(page, timestamp_ms: int, heading: float | None = 90.0, speed: float | None = 1.2) -> None:
+    page.evaluate(
+        "([timestamp, heading, speed]) => window.__geo.success({ timestamp: timestamp, coords: "
+        "{ latitude: 51.8215, longitude: 5.865, accuracy: 6.0, heading: heading, speed: speed } })",
+        [timestamp_ms, heading, speed],
+    )
+
+
+def test_the_route_card_shows_the_tier_and_numbers(browser) -> None:
+    route_sink, _, session = _route_page(browser)
+    try:
+        page = session.page
+        route_sink.publish_route_state(RouteFrame(None, RouteState.FOLLOWING, 120.4, 349.6, 47.0, 0.8, 6.0, ""))
+        _wait_for_text(page, "route-state", "Following the route")
+        text = page.text_content("#route-state")
+        assert "120 m along, 350 m to go" in text
+        assert "route bears 47 degrees" in text
+        assert "fix 0.8 s old, within 6 m" in text
+        route_sink.publish_route_state(RouteFrame(None, RouteState.SERVICE_FAILED, None, None, None, None, None, "the route service refused the key (HTTP 403)"))
+        _wait_for_text(page, "route-state", "Route service failed")
+        assert "refused the key" in page.text_content("#route-state")
+        assert "along" not in page.text_content("#route-state")
+    finally:
+        session.close()
+        route_sink.close()
+    assert session.errors == [], session.errors
+
+
+def test_a_fix_is_sent_only_on_a_new_timestamp(browser) -> None:
+    route_sink, route_input, session = _route_page(browser)
+    try:
+        page = session.page
+        page.wait_for_function("() => window.__geo.success !== null", timeout=ELEMENT_TIMEOUT_MS)
+        assert page.evaluate("window.__geo.options.enableHighAccuracy") is True
+        # 30 callbacks over 2 fixes, as a browser repeating each reading does.
+        for index in range(30):
+            _give_fix(page, 1_760_000_000_000 if index < 15 else 1_760_000_001_000)
+        _wait_until(lambda: len(route_input.fixes) >= 2)
+        time.sleep(0.3)
+        assert [fix.timestamp_ms for fix in route_input.fixes] == [1_760_000_000_000, 1_760_000_001_000]
+        assert route_input.fixes[0].point.latitude_degrees == pytest.approx(51.8215)
+    finally:
+        session.close()
+        route_sink.close()
+    assert session.errors == [], session.errors
+
+
+def test_a_null_heading_and_speed_are_sent_as_null(browser) -> None:
+    route_sink, route_input, session = _route_page(browser)
+    try:
+        page = session.page
+        page.wait_for_function("() => window.__geo.success !== null", timeout=ELEMENT_TIMEOUT_MS)
+        _give_fix(page, 1_760_000_000_000, heading=None, speed=None)
+        # A browser reports a heading of NaN while standing. That is unknown too.
+        page.evaluate("() => window.__geo.success({ timestamp: 1760000002000, coords: { latitude: 51.8215, longitude: 5.865, accuracy: 6.0, heading: NaN, speed: 0 } })")
+        _wait_until(lambda: len(route_input.fixes) >= 2)
+        assert (route_input.fixes[0].heading_degrees, route_input.fixes[0].speed_mps) == (None, None)
+        assert route_input.fixes[1].heading_degrees is None
+        assert route_input.fixes[1].speed_mps == 0.0
+    finally:
+        session.close()
+        route_sink.close()
+    assert session.errors == [], session.errors
+
+
+def test_denied_geolocation_shows_one_line_and_sends_nothing(browser) -> None:
+    route_sink, route_input, session = _route_page(browser, denied=True)
+    try:
+        page = session.page
+        _wait_for_text(page, "route-location", "Location permission denied.")
+        time.sleep(0.3)
+        assert route_input.fixes == []
+    finally:
+        session.close()
+        route_sink.close()
+    assert session.errors == [], session.errors
+
+
+def test_a_hidden_page_restarts_watching_when_shown(browser) -> None:
+    route_sink, _, session = _route_page(browser)
+    try:
+        page = session.page
+        page.wait_for_function("() => window.__geo.watches === 1", timeout=ELEMENT_TIMEOUT_MS)
+        page.evaluate("() => { window.__visibility = 'hidden'; document.dispatchEvent(new Event('visibilitychange')); }")
+        assert page.evaluate("window.__geo.watches") == 1
+        page.evaluate("() => { window.__visibility = 'visible'; document.dispatchEvent(new Event('visibilitychange')); }")
+        assert page.evaluate("window.__geo.watches") == 2
+        assert page.evaluate("window.__geo.cleared") == 1
+    finally:
+        session.close()
+        route_sink.close()
+    assert session.errors == [], session.errors
+
+
+def test_a_destination_is_sent_from_the_card(browser) -> None:
+    route_sink, route_input, session = _route_page(browser)
+    try:
+        page = session.page
+        page.fill("#destination", "51.8245, 5.8685")
+        page.click("#set-destination")
+        _wait_until(lambda: len(route_input.destinations) == 1)
+        assert route_input.destinations[0].latitude_degrees == pytest.approx(51.8245)
+        assert route_input.destinations[0].longitude_degrees == pytest.approx(5.8685)
+        page.fill("#destination", "north of here")
+        page.click("#set-destination")
+        _wait_for_text(page, "route-state", "Enter latitude, longitude in decimal degrees.")
+        assert len(route_input.destinations) == 1
+    finally:
+        session.close()
+        route_sink.close()
     assert session.errors == [], session.errors

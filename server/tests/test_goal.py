@@ -6,7 +6,7 @@ import pytest
 
 # Local package imports
 from nav.planner.config import GoalMode, PlannerConfig
-from nav.planner.goal import goal_position, goal_term, goal_tolerance
+from nav.planner.goal import RouteGoal, goal_position, goal_term, goal_tolerance
 from nav.planner.field import lateral_grid
 
 CONFIG = PlannerConfig()
@@ -81,3 +81,9 @@ def test_a_negative_growth_is_refused(value: float) -> None:
 def test_a_negative_or_non_finite_avoidance_surprise_is_refused(value: float) -> None:
     with pytest.raises(ValueError, match="avoidance surprise"):
         goal_tolerance(CONFIG, value)
+
+
+@pytest.mark.parametrize("bearing, tolerance, field", [(3.2, 1.0, "relative_bearing_radians"), (float("nan"), 1.0, "relative_bearing_radians"), (0.5, 0.0, "tolerance_meters")])
+def test_a_route_goal_with_impossible_numbers_is_refused_by_name(bearing: float, tolerance: float, field: str) -> None:
+    with pytest.raises(ValueError, match=field):
+        RouteGoal(bearing, tolerance)

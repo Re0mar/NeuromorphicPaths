@@ -16,13 +16,18 @@ switch the laptop announces.
 # Standard library imports
 import base64
 import json
+from collections.abc import Callable
 from enum import Enum
 
 # Third party imports
 import numpy as np
 
 # Local package imports
+from nav.clock import laptop_time_seconds
 from nav.planner.alarm import time_to_contact_from_avoidance_bits
+from nav.route.course import Fix, check_fix
+from nav.route.geodesy import LatLon
+from nav.route.route import RouteState
 from nav.scene.config import SceneConfig
 from nav.sinks.floor_geometry import floor_hidden_mask, floor_seen_mask, group_rings
 from nav.sinks.path_style import BORDER_OPACITY, GROUP_RGB, WALL_RGB, path_color_rgb, path_fill_opacity
@@ -44,6 +49,8 @@ class WebMessageKind(Enum):
     # Which side a run serving the page from a live input plans on, and how that input is. Never sent
     # on any other run.
     SOURCE_STATE = "source_state"
+    # Where the route layer stands: its tier, how far along and how far to go, and the last fix.
+    ROUTE_STATE = "route_state"
 
 
 # Every key a plan view carries, in one place. The page test checks the page reads each of these,
@@ -87,6 +94,10 @@ class BrowserMessageKind(Enum):
     PICTURE = "picture"
     # Which side every page's run should plan on, the live input or the recording, in a "source" field.
     SOURCE = "source"
+    # A phone fix from the browser's geolocation, read by parse_location.
+    LOCATION = "location"
+    # Where the walker wants to go, as latitude and longitude, read by parse_destination.
+    DESTINATION = "destination"
 
 
 # Each message a page sends, the field its choice is in, and the vocabulary that choice comes from.
@@ -177,6 +188,140 @@ def browser_choice(text: str) -> PictureKind | SourceMode:
         return BROWSER_CHOICES[message_kind](message.get(message_kind.value))
     except ValueError as unknown:
         raise ValueError(f"the page asked for a {message_kind.value} this laptop does not have: {message.get(message_kind.value)!r}") from unknown
+
+
+# The fields a location message carries besides its kind, every one required. Heading and speed may be
+# null, which the browser sends when it doesn't know them, and stay None rather than becoming 0.
+LOCATION_FIELDS = ("latitude", "longitude", "accuracy_meters", "heading_degrees", "speed_mps", "timestamp_ms")
+DESTINATION_FIELDS = ("latitude", "longitude")
+
+
+def browser_message(text: str, clock: Callable[[], float] = laptop_time_seconds) -> PictureKind | SourceMode | Fix | LatLon:
+    """
+    Whatever one text frame from a page says: a choice, a fix, or a destination.
+
+    :param text: The frame.
+    :param clock: The laptop's clock, read once when a fix arrives. Replaced only by tests.
+    :return: The choice, the fix stamped with the laptop's time, or the destination. The caller tells
+        them apart by type.
+    :rtype: PictureKind | SourceMode | Fix | LatLon
+    :raises ValueError: When the frame is not a message this laptop reads, or breaks one of its rules.
+    """
+    message = _json_object(text)
+    try:
+        kind = BrowserMessageKind(message.get("kind"))
+    except ValueError as unknown_kind:
+        raise ValueError(f"the page sent a message this laptop does not read: {text[:80]!r}") from unknown_kind
+    match kind:
+        case BrowserMessageKind.LOCATION:
+            return parse_location(message, clock())
+        case BrowserMessageKind.DESTINATION:
+            return parse_destination(message)
+        case _:
+            return browser_choice(text)
+
+
+def parse_location(message: dict, received_seconds: float) -> Fix:
+    """
+    A fix from a page's location message, stamped with when the laptop received it.
+
+    Each field's type is checked before it is converted, so a true, a string or a fractional
+    timestamp is refused rather than coerced.
+
+    :param message: The decoded message.
+    :param received_seconds: The laptop's clock now.
+    :return: The fix.
+    :rtype: Fix
+    :raises ValueError: Naming the field and the rule it broke.
+    """
+    _refuse_unknown_keys(message, LOCATION_FIELDS, "location")
+    timestamp = message["timestamp_ms"]
+    if type(timestamp) is not int:
+        raise ValueError(f"location timestamp_ms must be an integer, got {timestamp!r}")
+    fix = Fix(
+        point=_point(message, "location"),
+        accuracy_meters=_number(message, "accuracy_meters", "location"),
+        heading_degrees=_optional_number(message, "heading_degrees", "location"),
+        speed_mps=_optional_number(message, "speed_mps", "location"),
+        timestamp_ms=timestamp,
+        received_seconds=received_seconds,
+    )
+    try:
+        check_fix(fix)
+    except ValueError as broken_rule:
+        raise ValueError(f"location {broken_rule}") from broken_rule
+    return fix
+
+
+def parse_destination(message: dict) -> LatLon:
+    """
+    Where the walker wants to go, from a page's destination message.
+
+    :raises ValueError: Naming the field and the rule it broke.
+    """
+    _refuse_unknown_keys(message, DESTINATION_FIELDS, "destination")
+    return _point(message, "destination")
+
+
+def route_state_message(
+    state: RouteState,
+    along_meters: float | None,
+    remaining_meters: float | None,
+    bearing_degrees: float | None,
+    fix_age_seconds: float | None,
+    accuracy_meters: float | None,
+    reason: str,
+) -> dict:
+    """What every page shows of the route layer this frame. Unknowns are None, which JSON carries as null."""
+    return {
+        "state": state.value,
+        "along_meters": along_meters,
+        "remaining_meters": remaining_meters,
+        "bearing_degrees": bearing_degrees,
+        "fix_age_seconds": fix_age_seconds,
+        "accuracy_meters": accuracy_meters,
+        "reason": reason,
+    }
+
+
+def _json_object(text: str) -> dict:
+    try:
+        message = json.loads(text)
+    except json.JSONDecodeError as not_json:
+        raise ValueError(f"the page sent a frame that is not JSON: {not_json}") from not_json
+    if not isinstance(message, dict):
+        raise ValueError(f"the page sent a frame that is not an object: {text[:80]!r}")
+    return message
+
+
+def _refuse_unknown_keys(message: dict, fields: tuple[str, ...], kind: str) -> None:
+    unknown = sorted(set(message) - set(fields) - {"kind"})
+    if unknown:
+        raise ValueError(f"{kind} message carries fields this laptop does not read: {unknown}")
+    missing = [field for field in fields if field not in message]
+    if missing:
+        raise ValueError(f"{kind} message is missing {missing}")
+
+
+def _number(message: dict, field: str, kind: str) -> float:
+    value = message[field]
+    # bool is an int in Python, so it is refused before the number check would let it through.
+    if type(value) is bool or not isinstance(value, (int, float)):
+        raise ValueError(f"{kind} {field} must be a number, got {value!r}")
+    return float(value)
+
+
+def _optional_number(message: dict, field: str, kind: str) -> float | None:
+    return None if message[field] is None else _number(message, field, kind)
+
+
+def _point(message: dict, kind: str) -> LatLon:
+    latitude = _number(message, "latitude", kind)
+    longitude = _number(message, "longitude", kind)
+    try:
+        return LatLon(latitude, longitude)
+    except ValueError as out_of_range:
+        raise ValueError(f"{kind} {out_of_range}") from out_of_range
 
 
 def source_state_message(state: SwitchState) -> dict:

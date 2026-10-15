@@ -49,19 +49,24 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import Protocol
 
 # Third party imports
 import numpy as np
 
 # Local package imports
+from nav.route import RouteFrame
+from nav.route.course import Fix
+from nav.route.geodesy import LatLon
 from nav.scene.config import SceneConfig
 from nav.sinks.config import WebConfig
 from nav.sinks.rendering import encode_png, render_depth_view, render_risk_view
 from nav.sinks.web_messages import (
     PictureKind,
     WebMessageKind,
-    browser_choice,
+    browser_message,
     plan_view_message,
+    route_state_message,
     source_state_message,
     video_stream_message,
     video_unavailable_message,
@@ -111,6 +116,8 @@ class _Slot(Enum):
     RISK_PNG = 4
     # Which side a run serving the page from a live input plans on, and how the input is.
     SOURCE_STATE = 5
+    # The route layer's tier and numbers, after every planned frame.
+    ROUTE_STATE = 6
 
 
 # Which slot carries each picture. A browser gets the one it chose and never the other.
@@ -143,6 +150,14 @@ class _LoopVideoListener:
         self._sink._call_on_loop(self._sink._offer_unit, unit)
 
 
+class RouteInput(Protocol):
+    """What takes the page's fixes and destinations. The run's route goal tracker."""
+
+    def on_fix(self, fix: Fix) -> None: ...
+
+    def on_destination(self, destination: LatLon) -> None: ...
+
+
 class WebSink:
     """Serves the page and pushes every published path, and the depth view when given one, to every connected browser."""
 
@@ -153,6 +168,7 @@ class WebSink:
         *,
         video_feed: SceneVideoFeed | None,
         source_switch: SwitchableSource | None = None,
+        route_input: RouteInput | None = None,
     ) -> None:
         """
         :param config: The port and the certificate.
@@ -163,8 +179,11 @@ class WebSink:
             Keyword-only and without a default, so every caller says which it is.
         :param source_switch: The live input and its recording, which any page may switch between.
             None on a run with no live input, so callers that have none leave it out.
+        :param route_input: Where the page's fixes and destinations go. None on a sink built without
+            a route goal, which logs and ignores them.
         """
         self._config = config
+        self._route_input = route_input
         self._source_switch = source_switch
         self._unsubscribe_switch: Callable[[], None] | None = None
         self._scene = scene
@@ -242,6 +261,23 @@ class WebSink:
         if self._thread is None:
             self.start()
         self._enqueue(_Slot.PATH, web_text_message(WebMessageKind.PATH, path_message(path)))
+
+    def publish_route_state(self, frame: RouteFrame) -> None:
+        """Queue the route layer's state for every browser, and for any that connects later."""
+        if self._closed:
+            return
+        if self._thread is None:
+            self.start()
+        body = route_state_message(
+            frame.state,
+            frame.along_meters,
+            frame.remaining_meters,
+            frame.bearing_degrees,
+            frame.fix_age_seconds,
+            frame.accuracy_meters,
+            frame.reason,
+        )
+        self._enqueue(_Slot.ROUTE_STATE, web_text_message(WebMessageKind.ROUTE_STATE, body))
 
     def publish_debug(self, path: PlannedPath, field: np.ndarray, grid: np.ndarray, view: DebugView) -> None:
         """
@@ -516,11 +552,20 @@ class WebSink:
                 # fresh one drawn, never a picture from minutes ago.
                 latest[_Slot.RISK_PNG] = None
 
-        async def act_on_choice(socket, text: str) -> None:
+        async def act_on_message(socket, text: str) -> None:
             try:
-                choice = browser_choice(text)
+                choice = browser_message(text)
             except ValueError as unreadable:
                 log.warning("browser message ignored (caught ValueError, expected): %s", unreadable)
+                return
+            if isinstance(choice, (Fix, LatLon)):
+                if self._route_input is None:
+                    log.warning("a page sent a %s, and this run has no route goal to take it", "fix" if isinstance(choice, Fix) else "destination")
+                    return
+                if isinstance(choice, Fix):
+                    self._route_input.on_fix(choice)
+                else:
+                    self._route_input.on_destination(choice)
                 return
             if isinstance(choice, SourceMode):
                 if self._source_switch is None:
@@ -551,7 +596,7 @@ class WebSink:
                 async for received in socket:
                     # Reading also keeps the socket alive and notices when it closes.
                     if received.type == web.WSMsgType.TEXT:
-                        await act_on_choice(socket, received.data)
+                        await act_on_message(socket, received.data)
             finally:
                 sockets.pop(socket, None)
                 note_who_wants_risk()

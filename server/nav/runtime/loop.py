@@ -22,9 +22,10 @@ import numpy as np
 
 # Local package imports
 from nav.clock import laptop_time_seconds
-from nav.config import RunConfig, build_source_and_sink
+from nav.config import RunConfig, build_route_tracker, build_source_and_sink
 from nav.planner.alarm import path_red_from_bits
 from nav.planner.pipeline import PlannerPipeline
+from nav.route import RouteFrame, RouteStateSink
 from nav.runtime.textio import append_text_lf, write_text_lf
 from nav.runtime.timing import StageDurations, TimingLog, TimingRecorder
 from nav.runtime.worker import NewestFrameWorker
@@ -57,6 +58,8 @@ class FrameResult:
     field: np.ndarray
     grid: np.ndarray
     view: DebugView
+    # The route layer's state for this frame, on a run that serves the page. None on any other run.
+    route: RouteFrame | None = None
 
 
 def yaw_from_quaternion(orientation_wxyz: np.ndarray) -> float:
@@ -146,6 +149,8 @@ def run(config: RunConfig) -> int:
     # Floor sources over the frames the worker took, None for a frame skipped with no usable floor.
     # This is the live run's floor acceptance figure.
     floor_counts: Counter[FloorSource | None] = Counter()
+    # Fixes and destinations from the page, and the route goal they make. None on a run without the page.
+    route_tracker = build_route_tracker(config, Path.cwd())
     # The stretch of video the scene and the planner remember. A source that switches between the
     # glasses and a demo, or starts the demo over, moves it on.
     generation = 0
@@ -182,6 +187,10 @@ def run(config: RunConfig) -> int:
         obstacles = scene.process(frame)
         after_scene = time.perf_counter()
         gaze = gaze_on_the_ground(frame, scene)
+        # Paired on the laptop's arrival stamp, the clock fixes are stamped on. A frame with no timing
+        # record, from a source that doesn't stamp arrivals, falls back to its own timestamp.
+        arrival = frame.timing.arrival_seconds if frame.timing is not None else frame.timestamp_seconds
+        route = None if route_tracker is None else route_tracker.frame(arrival)
         path = planner.plan(obstacles, 0.0, config.goal_mode, gaze)
         after_planner = time.perf_counter()
         plan_done_seconds = laptop_time_seconds()
@@ -216,7 +225,7 @@ def run(config: RunConfig) -> int:
             body_half_width_meters=config.planner.body_half_width_meters,
             path_red_from_bits=path_red_from_bits(config.planner),
         )
-        result = FrameResult(path=path, field=field if field is not None else np.zeros((1, len(planner.grid))), grid=planner.grid, view=view)
+        result = FrameResult(path=path, field=field if field is not None else np.zeros((1, len(planner.grid))), grid=planner.grid, view=view, route=route)
         stages = StageDurations(
             scene_milliseconds=(after_scene - started) * 1000,
             planner_milliseconds=(after_planner - after_scene) * 1000,
@@ -226,7 +235,7 @@ def run(config: RunConfig) -> int:
 
     # Built together, because the glasses' video goes from the source's device to the web sink
     # without passing through here.
-    source, sink = build_source_and_sink(config, on_path_sent=timing.path_sent)
+    source, sink = build_source_and_sink(config, on_path_sent=timing.path_sent, route_input=route_tracker)
     worker: NewestFrameWorker[FrameResult] = NewestFrameWorker(process, on_dropped=timing.frame_dropped)
     worker.start()
     publisher = PublisherThread(sink, worker, on_published=timing.path_published)
@@ -297,6 +306,8 @@ def run(config: RunConfig) -> int:
         worker.stop()
         sink.close()
         source.close()
+        if route_tracker is not None:
+            route_tracker.close()
         timing.close()
         _report(worker, meter, frames_in, config, floor_counts)
 
@@ -386,6 +397,8 @@ class PublisherThread(threading.Thread):
             self._sink.publish_debug(result.path, result.field, result.grid, result.view)
         else:
             self._sink.publish(result.path)
+        if result.route is not None and isinstance(self._sink, RouteStateSink):
+            self._sink.publish_route_state(result.route)
         if self._on_published is not None:
             self._on_published(result.path.timestamp_seconds)
         with self._published:

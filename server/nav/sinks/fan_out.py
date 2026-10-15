@@ -19,6 +19,7 @@ from collections.abc import Iterable
 import numpy as np
 
 # Local package imports
+from nav.route import RouteFrame, RouteStateSink
 from nav.types import DebugSink, DebugView, PathSink, PlannedPath
 
 log = logging.getLogger(__name__)
@@ -62,6 +63,12 @@ class FanOutSink:
                 self._hand_over(sink, lambda target: target.publish_debug(path, field, grid, view))
             else:
                 self._hand_over(sink, lambda target: target.publish(path))
+
+    def publish_route_state(self, frame: RouteFrame) -> None:
+        """Hand the route layer's state to the sinks that show it. The rest never see it."""
+        for sink in tuple(self._serving):
+            if isinstance(sink, RouteStateSink):
+                self._hand_over(sink, lambda target: target.publish_route_state(frame))
 
     def close(self) -> None:
         """Close every sink, including the ones that were dropped mid-run."""

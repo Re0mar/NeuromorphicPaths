@@ -42,6 +42,14 @@ SHARED_LAYERS = (
     # beyond the dev extra.
     "nav.runtime.timing",
     "nav.runtime.timing_join",
+    # The route layer is pure computation plus one urllib call, and runs on any machine.
+    "nav.route",
+    "nav.route.geodesy",
+    "nav.route.route",
+    "nav.route.course",
+    "nav.route.bearing_filter",
+    "nav.route.service",
+    "nav.route.secrets",
 )
 # Every module of nav.evaluation, named, so the check below can't pass by importing fewer of them.
 EVALUATION_MODULES = (
