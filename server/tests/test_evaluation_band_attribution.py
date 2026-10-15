@@ -31,7 +31,7 @@ from nav.evaluation.check_planner import main
 from nav.evaluation.config import PlannerNumbersConfig
 from nav.evaluation.planner_numbers import PlannerInput
 from nav.evaluation.replay import replayed_frames
-from nav.planner.config import GoalMode, PlannerConfig
+from nav.planner.config import GoalSwitches, PlannerConfig
 from nav.planner.dynamic_programming import plan
 from nav.planner.field import lateral_grid
 from nav.types import ObstaclePoint, ObstacleSet
@@ -57,7 +57,7 @@ def wall(start: float, stop: float, forward: float, first_group: int = 0, noise:
 
 
 def replayed(obstacles: ObstacleSet):
-    return replayed_frames([PlannerInput(0.0, obstacles, None, None, None, None)], PLANNER, WALKER, GoalMode.AHEAD, keep_fields=True)
+    return replayed_frames([PlannerInput(0.0, obstacles, None, None, None, None)], PLANNER, WALKER, GoalSwitches(), keep_fields=True)
 
 
 # A wall from 3 m left to 1.5 m right, 4 m ahead: the nearest corridor point is in the band, and the
@@ -74,7 +74,7 @@ PINNED_BAND = scene(*wall(-3.0, 1.5, 4.0, noise=WALL_NOISE_METERS))
 
 def test_the_term_breakdown_adds_up_to_the_plans_cost() -> None:
     frame = replayed(PINNED_BAND)[0]
-    costs = path_term_costs(term_fields(frame, frame.input.obstacles, PLANNER, WALKER, GoalMode.AHEAD), frame.path.lateral_offsets_meters, PLANNER)
+    costs = path_term_costs(term_fields(frame, frame.input.obstacles, PLANNER, WALKER, GoalSwitches()), frame.path.lateral_offsets_meters, PLANNER)
     # The plan's cost leaves out the walker's own priors. A first frame has no previous plan, and the
     # plan ends off the goal's line here, so the goal's charge is real and is shown beside the cost.
     assert costs["previous plan"] == pytest.approx(0.0, abs=1e-12)
@@ -91,8 +91,8 @@ def test_the_breakdown_adds_up_on_a_frame_with_a_previous_plan() -> None:
     switched = scene(*wall(-1.0, 3.0, 4.0, noise=WALL_NOISE_METERS))
     second = ObstacleSet(1.0 / 30.0, switched.points, switched.groups_in_view)
     inputs = [PlannerInput(rows.timestamp_seconds, rows, None, None, None, None) for rows in (first, second)]
-    frame = replayed_frames(inputs, PLANNER, WALKER, GoalMode.AHEAD, keep_fields=True)[1]
-    fields = term_fields(frame, frame.input.obstacles, PLANNER, WALKER, GoalMode.AHEAD)
+    frame = replayed_frames(inputs, PLANNER, WALKER, GoalSwitches(), keep_fields=True)[1]
+    fields = term_fields(frame, frame.input.obstacles, PLANNER, WALKER, GoalSwitches())
     costs = path_term_costs(fields, frame.path.lateral_offsets_meters, PLANNER)
     assert costs["previous plan"] > 0.0
     without_priors = sum(value for name, value in costs.items() if name not in WALKER_PRIOR_TERMS)
@@ -106,8 +106,8 @@ def test_the_term_split_accounts_for_the_pre_scaled_goal_row() -> None:
     switched = scene(*wall(-1.0, 3.0, 4.0, noise=WALL_NOISE_METERS))
     second = ObstacleSet(1.0 / 30.0, switched.points, switched.groups_in_view)
     inputs = [PlannerInput(rows.timestamp_seconds, rows, None, None, None, None) for rows in (PINNED_BAND, second)]
-    frame = replayed_frames(inputs, PLANNER, WALKER, GoalMode.AHEAD, keep_fields=True)[1]
-    fields = term_fields(frame, frame.input.obstacles, PLANNER, WALKER, GoalMode.AHEAD)
+    frame = replayed_frames(inputs, PLANNER, WALKER, GoalSwitches(), keep_fields=True)[1]
+    fields = term_fields(frame, frame.input.obstacles, PLANNER, WALKER, GoalSwitches())
     assert np.max(np.abs(fields["previous plan"])) > 0.0, "the frame needs a previous plan to test the split with"
 
     # Not to the bit. The previous plan is what's left after the others come off, so adding them back
@@ -119,13 +119,13 @@ def test_the_term_split_accounts_for_the_pre_scaled_goal_row() -> None:
 
 def test_with_the_contact_term_off_the_breakdown_charges_nothing_to_contact() -> None:
     without_contact = dataclasses.replace(PLANNER, contact_term_enabled=False)
-    frame = replayed_frames([PlannerInput(0.0, PINNED_BAND, None, None, None, None)], without_contact, WALKER, GoalMode.AHEAD, keep_fields=True)[0]
-    fields = term_fields(frame, frame.input.obstacles, without_contact, WALKER, GoalMode.AHEAD)
+    frame = replayed_frames([PlannerInput(0.0, PINNED_BAND, None, None, None, None)], without_contact, WALKER, GoalSwitches(), keep_fields=True)[0]
+    fields = term_fields(frame, frame.input.obstacles, without_contact, WALKER, GoalSwitches())
     # A first frame has no prior, so whatever is left of the field after the other terms must be nothing.
     # Taking a contact term the planner never added would leave minus that term here, over the whole grid.
     assert np.max(np.abs(fields["previous plan"])) == pytest.approx(0.0, abs=1e-9)
     # The same holds in a re-plan, which rebuilds the real scene's terms beside the changed one.
-    joined = term_fields(frame, walls_joined(frame.input.obstacles, CELL), without_contact, WALKER, GoalMode.AHEAD)
+    joined = term_fields(frame, walls_joined(frame.input.obstacles, CELL), without_contact, WALKER, GoalSwitches())
     assert np.max(np.abs(joined["previous plan"])) == pytest.approx(0.0, abs=1e-9)
     costs = path_term_costs(fields, frame.path.lateral_offsets_meters, without_contact)
     assert costs["contact"] == 0.0
@@ -174,7 +174,7 @@ def test_rotating_the_scene_into_the_travel_direction_moves_the_obstacles_by_the
 
 
 def test_a_pinned_band_frame_is_attributed_with_its_terms() -> None:
-    attribution = band_attribution(replayed(PINNED_BAND), lambda time: 0.0, PLANNER, WALKER, GoalMode.AHEAD, CELL, CONFIG)
+    attribution = band_attribution(replayed(PINNED_BAND), lambda time: 0.0, PLANNER, WALKER, GoalSwitches(), CELL, CONFIG)
     assert attribution.band_frames == 1
     assert attribution.pinned_band_frames == 1
     frame = attribution.frames[0]
@@ -190,7 +190,7 @@ def test_a_pinned_band_frame_is_attributed_with_its_terms() -> None:
 def test_a_phone_turned_off_the_walking_direction_explains_the_frame() -> None:
     # Turned 40 degrees, the wall leaves the open floor ahead of the walker, so the arrow no longer
     # needs its limit.
-    attribution = band_attribution(replayed(PINNED_BAND), lambda time: math.radians(40.0), PLANNER, WALKER, GoalMode.AHEAD, CELL, CONFIG)
+    attribution = band_attribution(replayed(PINNED_BAND), lambda time: math.radians(40.0), PLANNER, WALKER, GoalSwitches(), CELL, CONFIG)
     assert PinCandidate.PHONE_POINTING in attribution.frames[0].explained
 
 
@@ -200,8 +200,8 @@ def test_a_sidestep_held_by_the_previous_plan_is_explained_by_it() -> None:
     centered = scene(*wall(-0.25, 0.5, 4.0, noise=WALL_NOISE_METERS))
     later = ObstacleSet(1.0 / 30.0, centered.points, centered.groups_in_view)
     inputs = [PlannerInput(rows.timestamp_seconds, rows, None, None, None, None) for rows in (PINNED_BAND, later)]
-    frames = replayed_frames(inputs, PLANNER, WALKER, GoalMode.AHEAD, keep_fields=True)
-    first, second = band_attribution(frames, lambda time: 0.0, PLANNER, WALKER, GoalMode.AHEAD, CELL, CONFIG).frames
+    frames = replayed_frames(inputs, PLANNER, WALKER, GoalSwitches(), keep_fields=True)
+    first, second = band_attribution(frames, lambda time: 0.0, PLANNER, WALKER, GoalSwitches(), CELL, CONFIG).frames
     assert PinCandidate.PREVIOUS_PLAN not in first.explained
     assert PinCandidate.PREVIOUS_PLAN in second.explained
 
@@ -249,7 +249,7 @@ def test_band_command_prints_the_attribution_on_a_recording(tmp_path: Path, caps
 
 
 def test_an_unknown_travel_direction_is_unknown_not_explained() -> None:
-    attribution = band_attribution(replayed(PINNED_BAND), lambda time: None, PLANNER, WALKER, GoalMode.AHEAD, CELL, CONFIG)
+    attribution = band_attribution(replayed(PINNED_BAND), lambda time: None, PLANNER, WALKER, GoalSwitches(), CELL, CONFIG)
     frame = attribution.frames[0]
     assert PinCandidate.PHONE_POINTING in frame.unknown
     assert PinCandidate.PHONE_POINTING not in frame.explained
@@ -259,15 +259,15 @@ def test_an_unknown_travel_direction_is_unknown_not_explained() -> None:
 def test_a_phone_pointing_sideways_is_untested_not_explained() -> None:
     # Past 90 degrees the phone points sideways or behind, which is the track's heading gone wrong.
     # At 60 degrees the same scene is explained by the phone, so the cap is what changes the answer.
-    turned = band_attribution(replayed(PINNED_BAND), lambda time: math.radians(100.0), PLANNER, WALKER, GoalMode.AHEAD, CELL, CONFIG)
+    turned = band_attribution(replayed(PINNED_BAND), lambda time: math.radians(100.0), PLANNER, WALKER, GoalSwitches(), CELL, CONFIG)
     assert PinCandidate.PHONE_POINTING in turned.frames[0].unknown
     assert PinCandidate.PHONE_POINTING not in turned.frames[0].explained
-    within = band_attribution(replayed(PINNED_BAND), lambda time: math.radians(60.0), PLANNER, WALKER, GoalMode.AHEAD, CELL, CONFIG)
+    within = band_attribution(replayed(PINNED_BAND), lambda time: math.radians(60.0), PLANNER, WALKER, GoalSwitches(), CELL, CONFIG)
     assert PinCandidate.PHONE_POINTING in within.frames[0].explained
 
 
 def test_a_frame_outside_the_band_is_not_attributed() -> None:
-    attribution = band_attribution(replayed(scene(point(0.0, 2.0, 1))), lambda time: 0.0, PLANNER, WALKER, GoalMode.AHEAD, CELL, CONFIG)
+    attribution = band_attribution(replayed(scene(point(0.0, 2.0, 1))), lambda time: 0.0, PLANNER, WALKER, GoalSwitches(), CELL, CONFIG)
     assert attribution.band_frames == 0
     assert attribution.frames == []
 
@@ -280,23 +280,23 @@ def test_wall_joining_never_joins_cells_that_do_not_touch() -> None:
 
 
 def test_term_fields_refuses_a_frame_without_its_field() -> None:
-    frame = replayed_frames([PlannerInput(0.0, PINNED_BAND, None, None, None, None)], PLANNER, WALKER, GoalMode.AHEAD)[0]
+    frame = replayed_frames([PlannerInput(0.0, PINNED_BAND, None, None, None, None)], PLANNER, WALKER, GoalSwitches())[0]
     with pytest.raises(ValueError, match="replayed without its field"):
-        term_fields(frame, frame.input.obstacles, PLANNER, WALKER, GoalMode.AHEAD)
+        term_fields(frame, frame.input.obstacles, PLANNER, WALKER, GoalSwitches())
 
 
 def test_the_attribution_counts_walls_over_every_band_frame() -> None:
-    attribution = band_attribution(replayed(PINNED_BAND), lambda time: 0.0, PLANNER, WALKER, GoalMode.AHEAD, CELL, CONFIG)
+    attribution = band_attribution(replayed(PINNED_BAND), lambda time: 0.0, PLANNER, WALKER, GoalSwitches(), CELL, CONFIG)
     assert attribution.band_frames_with_walls == 1
     assert attribution.band_wall_points == len(PINNED_BAND.points) == attribution.band_points
 
 
 def test_a_frame_keeps_its_phone_offset_and_whether_something_sits_beside_it() -> None:
-    attribution = band_attribution(replayed(PINNED_BAND), lambda time: math.radians(10.0), PLANNER, WALKER, GoalMode.AHEAD, CELL, CONFIG)
+    attribution = band_attribution(replayed(PINNED_BAND), lambda time: math.radians(10.0), PLANNER, WALKER, GoalSwitches(), CELL, CONFIG)
     frame = attribution.frames[0]
     assert frame.phone_offset_degrees == pytest.approx(10.0)
     # Every point of this wall is 4 m out, so nothing nearer than 3 m sits beside the line.
     assert frame.near_beside is False
     beside = scene(*PINNED_BAND.points, point(0.8, 2.0, 99))
-    beside_frame = band_attribution(replayed(beside), lambda time: 0.0, PLANNER, WALKER, GoalMode.AHEAD, CELL, CONFIG).frames
+    beside_frame = band_attribution(replayed(beside), lambda time: 0.0, PLANNER, WALKER, GoalSwitches(), CELL, CONFIG).frames
     assert beside_frame and beside_frame[0].near_beside is True

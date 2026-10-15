@@ -18,7 +18,6 @@ import numpy as np
 
 # Local package imports
 from nav.config import (
-    GoalMode,
     RunConfig,
     SinkKind,
     SourceKind,
@@ -42,7 +41,9 @@ from nav.sources.config import (
     VideoConfig,
 )
 from nav.planner.config import PlannerConfig
+from nav.route.course import Fix
 from nav.route.geodesy import LatLon
+from nav.route.route import RouteState
 from nav.route.service import FileRouteService, OpenRouteServiceClient, RouteFetchOutcome
 from nav.runtime.loop import _config_as_json
 from nav.runtime.tap import RecordingTap
@@ -83,7 +84,8 @@ def test_minimal_command_line_builds_a_config() -> None:
 
     assert config.source_kind is SourceKind.VIDEO_FILE
     assert config.sink_kinds == (SinkKind.NONE,)
-    assert config.goal_mode is GoalMode.AHEAD
+    # Both goal sources start off, so the goal is straight ahead until a page or a flag says otherwise.
+    assert (config.planner.gaze_goal, config.planner.route_goal) == (False, False)
     assert config.video is not None
     assert config.video.path == STREAM_URL
     assert config.estimator is not None
@@ -192,7 +194,6 @@ def _run_config_for(source_kind: SourceKind) -> RunConfig:
     return RunConfig(
         source_kind=source_kind,
         sink_kinds=(SinkKind.NONE,),
-        goal_mode=GoalMode.AHEAD,
         estimator=EstimatorConfig(),
         # Injected at the composition root, so no test ever loads 1.3 GB of weights.
         estimator_factory=lambda estimator_config: StubDepthEstimator(),
@@ -221,7 +222,6 @@ def test_the_tap_wraps_whatever_source_was_built(tmp_path) -> None:
     config = RunConfig(
         source_kind=SourceKind.LOGGED,
         sink_kinds=(SinkKind.NONE,),
-        goal_mode=GoalMode.AHEAD,
         logged=LoggedConfig(log_dir="a_log"),
         tap=TapConfig(log_dir=str(tmp_path / "recorded")),
     )
@@ -233,7 +233,6 @@ def test_without_record_to_the_source_is_not_wrapped() -> None:
     config = RunConfig(
         source_kind=SourceKind.LOGGED,
         sink_kinds=(SinkKind.NONE,),
-        goal_mode=GoalMode.AHEAD,
         logged=LoggedConfig(log_dir="a_log"),
     )
 
@@ -242,7 +241,7 @@ def test_without_record_to_the_source_is_not_wrapped() -> None:
 def test_a_built_source_refuses_a_missing_config() -> None:
     # RunConfig does not validate across its own fields, so a kind whose config was never built is
     # reachable. The factory must say which one rather than construct a source around a None.
-    config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kinds=(SinkKind.NONE,), goal_mode=GoalMode.AHEAD)
+    config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kinds=(SinkKind.NONE,))
 
     with pytest.raises(ValueError, match="video_file needs a video config"):
         build_source(config)
@@ -252,7 +251,6 @@ def test_estimator_backed_source_refuses_a_missing_estimator_config() -> None:
     config = RunConfig(
         source_kind=SourceKind.VIDEO_FILE,
         sink_kinds=(SinkKind.NONE,),
-        goal_mode=GoalMode.AHEAD,
         video=VideoConfig(path="scene.mp4"),
     )
 
@@ -274,7 +272,7 @@ def test_every_sink_kind_is_accounted_for() -> None:
 
 @pytest.mark.parametrize("sink_kind", sorted(BUILT_SINK_KINDS, key=lambda kind: kind.value))
 def test_built_sink_kinds_return_a_sink_without_opening_anything(sink_kind: SinkKind) -> None:
-    config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kinds=(sink_kind,), goal_mode=GoalMode.AHEAD, **BUILT_SINK_KINDS[sink_kind])
+    config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kinds=(sink_kind,), **BUILT_SINK_KINDS[sink_kind])
 
     sink = build_sink(config)
 
@@ -335,7 +333,7 @@ def test_naming_the_same_display_twice_is_refused(capsys: pytest.CaptureFixture[
 
 
 def test_a_built_sink_refuses_a_missing_config() -> None:
-    config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kinds=(SinkKind.PHONE_APP,), goal_mode=GoalMode.AHEAD)
+    config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kinds=(SinkKind.PHONE_APP,))
 
     with pytest.raises(ValueError, match="phone_app needs"):
         build_sink(config)
@@ -664,12 +662,12 @@ def test_out_of_range_number_is_refused(flag: str, bad_value: str, capsys: pytes
 def test_factory_refuses_a_kind_it_does_not_handle() -> None:
     # RunConfig does not validate its own fields, so this is reachable the day someone adds an
     # enum member and forgets the factory. The catch-all must say so rather than return None.
-    config = RunConfig(source_kind="not_a_kind", sink_kinds=(SinkKind.NONE,), goal_mode=GoalMode.AHEAD)
+    config = RunConfig(source_kind="not_a_kind", sink_kinds=(SinkKind.NONE,))
 
     with pytest.raises(ValueError, match="no source constructor"):
         build_source(config)
 
-    sink_config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kinds=("not_a_kind",), goal_mode=GoalMode.AHEAD)
+    sink_config = RunConfig(source_kind=SourceKind.VIDEO_FILE, sink_kinds=("not_a_kind",))
     with pytest.raises(ValueError, match="no sink constructor"):
         build_sink(sink_config)
 
@@ -833,7 +831,6 @@ def test_build_source_and_sink_gives_the_neon_source_and_the_web_sink_one_feed()
     config = RunConfig(
         source_kind=SourceKind.NEON_LIVE,
         sink_kinds=(SinkKind.WEB,),
-        goal_mode=GoalMode.AHEAD,
         neon=NeonConfig(),
         estimator=EstimatorConfig(),
         estimator_factory=lambda estimator_config: StubDepthEstimator(),
@@ -853,7 +850,6 @@ def test_a_source_without_scene_video_leaves_the_web_sink_without_a_feed() -> No
     config = RunConfig(
         source_kind=SourceKind.VIDEO_FILE,
         sink_kinds=(SinkKind.WEB,),
-        goal_mode=GoalMode.AHEAD,
         video=VideoConfig(path=STREAM_URL),
         estimator=EstimatorConfig(),
         estimator_factory=lambda estimator_config: StubDepthEstimator(),
@@ -1058,3 +1054,46 @@ def test_a_gaze_silences_alarm_value_outside_the_vocabulary_is_refused(capsys: p
         build_run_config([*MINIMAL_VIDEO_ARGV, "--gaze-silences-alarm", "yes"])
 
     assert "--gaze-silences-alarm" in capsys.readouterr().err
+
+
+# *******************************************
+# The goal switches
+# *******************************************
+
+
+def test_the_goal_switches_default_off() -> None:
+    planner = build_run_config(MINIMAL_VIDEO_ARGV).planner
+    assert (planner.gaze_goal, planner.route_goal) == (False, False)
+
+
+def test_the_goal_switches_are_set_from_the_command_line() -> None:
+    planner = build_run_config([*MINIMAL_VIDEO_ARGV, "--gaze-goal", "on", "--route-goal", "on"]).planner
+    assert (planner.gaze_goal, planner.route_goal) == (True, True)
+
+
+@pytest.mark.parametrize("flag", ["--gaze-goal", "--route-goal"])
+def test_a_goal_switch_value_outside_the_vocabulary_is_refused(flag: str) -> None:
+    with pytest.raises(SystemExit):
+        build_run_config([*MINIMAL_VIDEO_ARGV, flag, "yes"])
+
+
+def test_the_old_goal_flag_is_gone() -> None:
+    with pytest.raises(SystemExit):
+        build_run_config([*MINIMAL_VIDEO_ARGV, "--goal", "gaze"])
+
+
+def test_a_missing_secrets_file_with_the_route_goal_on_fails_at_startup_naming_the_file(tmp_path: Path) -> None:
+    config = build_run_config([*WEB_VIDEO_ARGV, "--route-goal", "on"])
+    with pytest.raises(ValueError, match=r"\.env_route_secrets"):
+        build_route_service(config, tmp_path)
+
+
+def test_toggling_the_route_goal_on_without_a_key_reports_no_key(tmp_path: Path) -> None:
+    # Off at the start, so the run starts. The page then turns it on and sets a destination.
+    tracker = build_route_tracker(build_run_config(WEB_VIDEO_ARGV), tmp_path)
+    assert tracker is not None
+    tracker.on_fix(Fix(LatLon(51.8215, 5.865), 5.0, 0.0, 1.2, 1_760_000_000_000, 100.0))
+    tracker.on_destination(LatLon(51.8245, 5.8685))
+    tracker.close()
+    frame = tracker.frame(100.1)
+    assert frame.state is RouteState.SERVICE_FAILED and "no route service key" in frame.reason

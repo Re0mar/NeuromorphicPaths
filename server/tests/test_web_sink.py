@@ -21,11 +21,11 @@ import pytest
 # Local package imports
 from nav.clock import laptop_time_seconds
 from nav.config import RunConfig, SinkKind, SourceKind, build_sink, build_source_and_sink
-from nav.planner.config import GoalMode, OnOff
+from nav.planner.config import OnOff, RunSwitchKind
 from nav.route import RouteFrame
 from nav.route.route import RouteConfig, RouteState
 from nav.route.service import FileRouteService
-from nav.runtime.gaze_silencing import GazeSilencingSwitch
+from nav.runtime.switches import RunSwitch
 from nav.runtime.route_goal import RouteGoalTracker
 from nav.scene.config import SceneConfig
 from nav.sinks.config import WebConfig
@@ -954,7 +954,6 @@ def test_a_browser_gets_the_hidden_floor_under_the_runs_scene_config() -> None:
     config = RunConfig(
         source_kind=SourceKind.LOGGED,
         sink_kinds=(SinkKind.WEB,),
-        goal_mode=GoalMode.AHEAD,
         web=WebConfig(port=0),
         scene=run_scene,
     )
@@ -1224,8 +1223,8 @@ def _gaze_states(received: list) -> list[str]:
 
 @pytest.mark.parametrize(("starting", "asked"), [(OnOff.OFF, OnOff.ON), (OnOff.ON, OnOff.OFF)])
 def test_a_page_asking_to_silence_switches_the_run_and_every_page_hears_it(starting: OnOff, asked: OnOff) -> None:
-    switch = GazeSilencingSwitch(starting is OnOff.ON)
-    sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None, gaze_switch=switch)
+    switch = RunSwitch(RunSwitchKind.GAZE_SILENCING, starting is OnOff.ON)
+    sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None, switches={RunSwitchKind.GAZE_SILENCING: switch})
     sink.start()
     try:
         choice = json.dumps({"kind": "gaze_silencing", "gaze_silencing": asked.value})
@@ -1240,8 +1239,8 @@ def test_a_page_asking_to_silence_switches_the_run_and_every_page_hears_it(start
 
 
 def test_a_page_connecting_after_the_switch_was_set_gets_the_state_on_connect() -> None:
-    switch = GazeSilencingSwitch(False)
-    sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None, gaze_switch=switch)
+    switch = RunSwitch(RunSwitchKind.GAZE_SILENCING, False)
+    sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None, switches={RunSwitchKind.GAZE_SILENCING: switch})
     sink.start()
     try:
         # Set first, with no page open, then connect.
@@ -1260,12 +1259,12 @@ def test_a_sink_without_a_switch_logs_and_ignores_the_ask(sink: WebSink, caplog:
         received = asyncio.run(_say_then_receive_until_quiet(sink.port, [choice], lambda: None, 0.5))
 
     assert _gaze_states(received) == [], "the page shows no gaze switch state"
-    assert any("has no gaze switch" in record.getMessage() for record in caplog.records)
+    assert any("gaze_silencing" in record.getMessage() and "no such switch" in record.getMessage() for record in caplog.records)
 
 
 def test_a_gaze_silencing_value_outside_the_vocabulary_changes_nothing() -> None:
-    switch = GazeSilencingSwitch(False)
-    sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None, gaze_switch=switch)
+    switch = RunSwitch(RunSwitchKind.GAZE_SILENCING, False)
+    sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None, switches={RunSwitchKind.GAZE_SILENCING: switch})
     sink.start()
     try:
         asyncio.run(_say_then_receive_until_quiet(sink.port, [json.dumps({"kind": "gaze_silencing", "gaze_silencing": "yes"})], lambda: None, 0.3))
@@ -1276,8 +1275,8 @@ def test_a_gaze_silencing_value_outside_the_vocabulary_changes_nothing() -> None
 
 
 def test_closing_the_sink_stops_listening_to_the_gaze_switch() -> None:
-    switch = GazeSilencingSwitch(False)
-    sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None, gaze_switch=switch)
+    switch = RunSwitch(RunSwitchKind.GAZE_SILENCING, False)
+    sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None, switches={RunSwitchKind.GAZE_SILENCING: switch})
     sink.start()
 
     sink.close()
@@ -1298,3 +1297,38 @@ def test_a_full_queue_drops_frames_and_keeps_a_state_announcement() -> None:
     # The newest frames are the ones kept, in order.
     assert waiting[1:] == [(_Slot.PATH, f"path {frame}") for frame in range(9, OUTGOING_QUEUE_LIMIT + 8)]
     assert sink.dropped == 9
+
+
+def _switch_states(received: list) -> dict[str, str]:
+    states = {}
+    for message in received:
+        if isinstance(message, str):
+            decoded = json.loads(message)
+            if decoded["kind"].endswith("_goal_state") or decoded["kind"] == "gaze_silencing_state":
+                states[decoded["kind"]] = decoded["state"]
+    return states
+
+
+def test_a_late_page_gets_the_goal_state_on_connect() -> None:
+    switches = {kind: RunSwitch(kind, False) for kind in RunSwitchKind}
+    sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None, switches=switches)
+    sink.start()
+    try:
+        # Set first, then a page connects.
+        switches[RunSwitchKind.ROUTE_GOAL].request(True)
+        time.sleep(0.2)
+        late_page = asyncio.run(_receive_until_quiet(sink.port, lambda: None, 0.5))
+    finally:
+        sink.close()
+    assert _switch_states(late_page) == {"gaze_silencing_state": "off", "gaze_goal_state": "off", "route_goal_state": "on"}
+
+
+def test_a_goal_switch_ask_flips_only_its_own_switch() -> None:
+    switches = {kind: RunSwitch(kind, False) for kind in RunSwitchKind}
+    sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None, switches=switches)
+    sink.start()
+    try:
+        asyncio.run(_say_then_receive_until_quiet(sink.port, [json.dumps({"kind": "gaze_goal", "gaze_goal": "on"})], lambda: None, 0.3))
+    finally:
+        sink.close()
+    assert [switches[kind].enabled for kind in (RunSwitchKind.GAZE_SILENCING, RunSwitchKind.GAZE_GOAL, RunSwitchKind.ROUTE_GOAL)] == [False, True, False]

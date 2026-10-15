@@ -17,6 +17,7 @@ switch the laptop announces.
 import base64
 import json
 from collections.abc import Callable
+from dataclasses import dataclass
 from enum import Enum
 
 # Third party imports
@@ -25,7 +26,7 @@ import numpy as np
 # Local package imports
 from nav.clock import laptop_time_seconds
 from nav.planner.alarm import time_to_contact_from_avoidance_bits
-from nav.planner.config import OnOff
+from nav.planner.config import OnOff, RunSwitchKind
 from nav.route.course import Fix, check_fix
 from nav.route.geodesy import LatLon
 from nav.route.route import RouteState
@@ -54,6 +55,9 @@ class WebMessageKind(Enum):
     ROUTE_STATE = "route_state"
     # Whether the gaze may quiet the alarm, run-wide. Sent on every change and to each page as it connects.
     GAZE_SILENCING_STATE = "gaze_silencing_state"
+    # Whether the plan leans toward where the wearer looks, and along the route. Sent like the gaze switch.
+    GAZE_GOAL_STATE = "gaze_goal_state"
+    ROUTE_GOAL_STATE = "route_goal_state"
 
 
 # Every key a plan view carries, in one place. The page test checks the page reads each of these,
@@ -103,6 +107,9 @@ class BrowserMessageKind(Enum):
     DESTINATION = "destination"
     # Whether every page's run lets the gaze quiet the alarm, "off" or "on", in a "gaze_silencing" field.
     GAZE_SILENCING = "gaze_silencing"
+    # Whether every page's run leans toward the gaze, and along the route, in fields of the same names.
+    GAZE_GOAL = "gaze_goal"
+    ROUTE_GOAL = "route_goal"
 
 
 # Each message a page sends, the field its choice is in, and the vocabulary that choice comes from.
@@ -110,7 +117,29 @@ BROWSER_CHOICES: dict[BrowserMessageKind, type[Enum]] = {
     BrowserMessageKind.PICTURE: PictureKind,
     BrowserMessageKind.SOURCE: SourceMode,
     BrowserMessageKind.GAZE_SILENCING: OnOff,
+    BrowserMessageKind.GAZE_GOAL: OnOff,
+    BrowserMessageKind.ROUTE_GOAL: OnOff,
 }
+# The messages that flip a run-wide switch, which switch each one flips, and how each switch's state is
+# announced. Every switch has all three, which a test checks.
+SWITCH_REQUESTS: dict[BrowserMessageKind, RunSwitchKind] = {
+    BrowserMessageKind.GAZE_SILENCING: RunSwitchKind.GAZE_SILENCING,
+    BrowserMessageKind.GAZE_GOAL: RunSwitchKind.GAZE_GOAL,
+    BrowserMessageKind.ROUTE_GOAL: RunSwitchKind.ROUTE_GOAL,
+}
+SWITCH_STATES: dict[RunSwitchKind, WebMessageKind] = {
+    RunSwitchKind.GAZE_SILENCING: WebMessageKind.GAZE_SILENCING_STATE,
+    RunSwitchKind.GAZE_GOAL: WebMessageKind.GAZE_GOAL_STATE,
+    RunSwitchKind.ROUTE_GOAL: WebMessageKind.ROUTE_GOAL_STATE,
+}
+
+
+@dataclass(frozen=True)
+class SwitchRequest:
+    """A page asking for one run-wide switch to be on or off. Every switch's choice is an OnOff, so it says which."""
+
+    switch: RunSwitchKind
+    enabled: bool
 
 
 def plan_view_message(path: PlannedPath, field: np.ndarray, grid: np.ndarray, view: DebugView, scene: SceneConfig) -> dict:
@@ -202,15 +231,15 @@ LOCATION_FIELDS = ("latitude", "longitude", "accuracy_meters", "heading_degrees"
 DESTINATION_FIELDS = ("latitude", "longitude")
 
 
-def browser_message(text: str, clock: Callable[[], float] = laptop_time_seconds) -> PictureKind | SourceMode | OnOff | Fix | LatLon:
+def browser_message(text: str, clock: Callable[[], float] = laptop_time_seconds) -> PictureKind | SourceMode | SwitchRequest | Fix | LatLon:
     """
     Whatever one text frame from a page says: a choice, a fix, or a destination.
 
     :param text: The frame.
     :param clock: The laptop's clock, read once when a fix arrives. Replaced only by tests.
-    :return: The choice, the fix stamped with the laptop's time, or the destination. The caller tells
-        them apart by type.
-    :rtype: PictureKind | SourceMode | OnOff | Fix | LatLon
+    :return: The choice, a switch request, the fix stamped with the laptop's time, or the destination.
+        The caller tells them apart by type.
+    :rtype: PictureKind | SourceMode | SwitchRequest | Fix | LatLon
     :raises ValueError: When the frame is not a message this laptop reads, or breaks one of its rules.
     """
     message = _json_object(text)
@@ -223,6 +252,8 @@ def browser_message(text: str, clock: Callable[[], float] = laptop_time_seconds)
             return parse_location(message, clock())
         case BrowserMessageKind.DESTINATION:
             return parse_destination(message)
+        case _ if kind in SWITCH_REQUESTS:
+            return SwitchRequest(SWITCH_REQUESTS[kind], browser_choice(text) is OnOff.ON)
         case _:
             return browser_choice(text)
 
@@ -341,8 +372,8 @@ def source_state_message(state: SwitchState) -> dict:
     }
 
 
-def gaze_silencing_state_message(enabled: bool) -> dict:
-    """Whether the run lets the gaze quiet the alarm, spelled the way the page sends it."""
+def switch_state_message(enabled: bool) -> dict:
+    """A run-wide switch's state, spelled the way the page sends it."""
     return {"state": (OnOff.ON if enabled else OnOff.OFF).value}
 
 

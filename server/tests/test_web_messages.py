@@ -12,7 +12,7 @@ import pytest
 
 # Local package imports
 from nav.planner.alarm import avoidance_surprise_bits_at
-from nav.planner.config import OnOff
+from nav.planner.config import OnOff, RunSwitchKind
 from nav.scene.config import SceneConfig
 from nav.sinks.floor_geometry import floor_hidden_mask, floor_seen_mask, group_rings
 from nav.sinks.path_style import BORDER_OPACITY, GROUP_RGB, SURPRISE_HIGH_RGB, WALL_RGB, path_color_rgb, path_fill_opacity
@@ -24,8 +24,11 @@ from nav.sinks.web_messages import (
     PictureKind,
     WebMessageKind,
     browser_choice,
+    SWITCH_REQUESTS,
+    SWITCH_STATES,
+    SwitchRequest,
     browser_message,
-    gaze_silencing_state_message,
+    switch_state_message,
     plan_view_message,
     route_state_message,
     source_state_message,
@@ -415,16 +418,21 @@ def test_a_gaze_silencing_choice_is_read_from_its_vocabulary(state: OnOff) -> No
     assert browser_choice(json.dumps({"kind": "gaze_silencing", "gaze_silencing": state.value})) is state
 
 
-def test_every_page_choice_has_a_vocabulary_of_its_own() -> None:
-    # The sink routes a choice by its type, so two messages sharing one would flip each other's switch.
-    vocabularies = list(BROWSER_CHOICES.values())
-    assert len(set(vocabularies)) == len(vocabularies)
+def test_every_page_choice_is_told_apart_from_the_others() -> None:
+    # The sink routes a choice by its type. The run-wide switches all choose an OnOff, so each comes back
+    # wrapped in a request naming its own switch, and one page's ask can't flip another switch.
+    plain = [vocabulary for kind, vocabulary in BROWSER_CHOICES.items() if kind not in SWITCH_REQUESTS]
+    assert len(set(plain)) == len(plain) and OnOff not in plain
+    for kind, switch in SWITCH_REQUESTS.items():
+        assert browser_message(json.dumps({"kind": kind.value, kind.value: "on"})) == SwitchRequest(switch, True)
+    # Every switch can be asked for and announced.
+    assert set(SWITCH_REQUESTS.values()) == set(RunSwitchKind) == set(SWITCH_STATES)
 
 
-def test_a_gaze_silencing_state_message_carries_its_state() -> None:
-    assert gaze_silencing_state_message(True) == {"state": "on"}
-    assert gaze_silencing_state_message(False) == {"state": "off"}
-    framed = json.loads(web_text_message(WebMessageKind.GAZE_SILENCING_STATE, gaze_silencing_state_message(True)))
+def test_a_switch_state_message_carries_its_state() -> None:
+    assert switch_state_message(True) == {"state": "on"}
+    assert switch_state_message(False) == {"state": "off"}
+    framed = json.loads(web_text_message(WebMessageKind.GAZE_SILENCING_STATE, switch_state_message(True)))
     assert framed == {"kind": "gaze_silencing_state", "state": "on"}
 
 

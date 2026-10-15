@@ -87,15 +87,17 @@ from nav.evaluation.replay import (
     RecordingRefused,
     UnalignedFrames,
     clone_state,
-    goal_mode_for,
+    goal_switches_for,
     replayed_frames,
     scene_config_for,
     scene_pass,
     segment_bounds,
 )
+from nav.evaluation.route_replay import recorded_route_goals
 from nav.evaluation.track import floor_heading_radians, walker_track, wrap_radians
 from nav.planner.attention import tolerance_radians
-from nav.planner.config import GoalMode, PlannerConfig
+from nav.planner.config import GoalSwitches, PlannerConfig
+from nav.route.route import RouteConfig
 from nav.sources.framecodec import FrameDecodeError
 from nav.walker import WalkerConfig
 
@@ -211,7 +213,7 @@ class SegmentReplay:
     frames: list[ReplayedFrame]
     scene_source: str
     cache_state: str
-    goal_mode: GoalMode
+    goal_switches: GoalSwitches
     cell_size_meters: float
     pose_times_seconds: np.ndarray
     pose_positions_world: np.ndarray
@@ -244,14 +246,15 @@ def segment_frames(
     except IndexError:
         raise SegmentMissing(f"{log_dir.name} has {len(bounds)} segments, so there is no segment {arguments.segment}") from None
     rows = [row for row in passed.planned if start <= row.timestamp_seconds <= end]
-    inputs = [row.planner_input() for row in rows]
-    goal_mode = goal_mode_for(log_dir)
+    route_goals = recorded_route_goals(log_dir, [row.timestamp_seconds for row in rows], RouteConfig(), planner_config.goal_distance_meters)
+    inputs = [dataclasses.replace(row.planner_input(), route_goal=goal) for row, goal in zip(rows, route_goals, strict=True)]
+    goal_switches = goal_switches_for(log_dir)
     inside = (passed.pose_times_seconds >= start) & (passed.pose_times_seconds <= end)
     return SegmentReplay(
-        frames=replayed_frames(inputs, planner_config, walker, goal_mode, keep_fields=keep_fields),
+        frames=replayed_frames(inputs, planner_config, walker, goal_switches, keep_fields=keep_fields),
         scene_source=scene_source,
         cache_state=passed.cache_state,
-        goal_mode=goal_mode,
+        goal_switches=goal_switches,
         cell_size_meters=scene_config.cell_size_meters,
         pose_times_seconds=passed.pose_times_seconds[inside],
         pose_positions_world=passed.pose_positions_world[inside],
@@ -378,7 +381,7 @@ def _run(arguments: argparse.Namespace) -> int:
             continue
         measured_any = True
         if arguments.subcommand == "band":
-            attribution = band_attribution(frames, travel_offset_lookup(replay), planner_config, WalkerConfig(), replay.goal_mode, replay.cell_size_meters, config)
+            attribution = band_attribution(frames, travel_offset_lookup(replay), planner_config, WalkerConfig(), replay.goal_switches, replay.cell_size_meters, config)
             print(format_band(log_dir.name, attribution, config), end="")
         elif arguments.subcommand == "attention":
             windows = _countable_windows(arguments.windows_seconds, gaze_carried(frames))

@@ -25,11 +25,12 @@ from nav.planner.attention import (
     tolerance_radians,
 )
 from nav.planner.audio import alarm_pan, check_audio_config, ear_gains
-from nav.planner.config import GoalMode, PlannerConfig
+from nav.planner.config import GoalSwitches, PlannerConfig, goal_switches_of
 from nav.planner.contact import ContactSurprise, check_contact_config
 from nav.planner.dynamic_programming import plan, start_cell_index
 from nav.planner.field import CostTerm, cost_field, lateral_grid, step_count
-from nav.planner.goal import check_goal_config, goal_position, goal_term, goal_tolerance, terminal_cost_as_rate
+from nav.planner.field_terms import GOAL, PREVIOUS_PLAN, SCENE, TermField, charges_left_out, last_row_only, sum_terms
+from nav.planner.goal import RouteGoal, check_goal_config, goal_for_frame, goal_term, widened_goal_tolerance
 from nav.planner.heading import lookahead_heading, lookahead_step_index
 from nav.planner.information import scene_information_bits
 from nav.planner.previous_plan import PreviousPlanPrior, check_previous_plan_config
@@ -85,6 +86,8 @@ class PlannerPipeline:
         self._danger_noticed = False
         # The run's switch. Read once a frame, so a page flipping it changes the next plan's sound.
         self._gaze_silences_alarm = config.gaze_silences_alarm
+        # Which of the goal's sources are on. Run-wide switches too, set by the loop before each plan.
+        self._goal_switches = goal_switches_of(config)
         # Whether this alarm has been under the attention floor since it went up. Once it has, it stays
         # heard until it clears, so a near danger dropping out of the picture can't quiet it.
         self._alarm_reached_floor = False
@@ -98,6 +101,14 @@ class PlannerPipeline:
         self._gaze_silences_alarm = enabled
 
     @property
+    def goal_switches(self) -> GoalSwitches:
+        return self._goal_switches
+
+    def set_goal_switches(self, switches: GoalSwitches) -> None:
+        """Choose the goal's sources for every plan from here on."""
+        self._goal_switches = switches
+
+    @property
     def grid(self) -> np.ndarray:
         return self._grid
 
@@ -105,9 +116,9 @@ class PlannerPipeline:
     def last_field(self) -> np.ndarray | None:
         """The field from the most recent plan: every cost term, the goal term on its last row, and the previous-plan prior.
 
-        Every row is a rate here, the goal row included. The plan was made from a copy of this whose goal
-        row is divided by the time step (terminal_cost_as_rate), so the goal is charged as a cost and not
-        as a rate. Everything else in that copy is the same.
+        Every row is a rate here, the goal row included. The plan was made from a copy of this in which each
+        term is charged as field_terms declares it, so the goal's row is divided by the time step and paid
+        once as a cost. Everything else in that copy is the same.
 
         For looking at, not for planning with. The runtime hands it to a DebugSink, and the evaluation's
         band breakdown reads it through replay to split a frame's cost by term. Nothing on the live path
@@ -119,18 +130,18 @@ class PlannerPipeline:
         self,
         obstacles: ObstacleSet,
         start_lateral_meters: float = 0.0,
-        goal_mode: GoalMode = GoalMode.AHEAD,
         gaze_ground_point: np.ndarray | None = None,
         gaze: GazeSamples | None = None,
+        route_goal: RouteGoal | None = None,
     ) -> PlannedPath:
         """
         Choose the path for this frame.
 
         :param obstacles: This frame's groups, walker relative.
         :param start_lateral_meters: Where the walker is on the grid. Zero, the walker is the origin.
-        :param goal_mode: Straight ahead or the gaze.
-        :param gaze_ground_point: The gaze on the floor, when the mode wants it.
+        :param gaze_ground_point: The gaze on the floor, read when the gaze goal is on.
         :param gaze: The gaze samples the frame carried, for whether the alarm is heard. None without gaze.
+        :param route_goal: The route layer's goal this frame, read when the route goal is on.
         :return: The chosen path, its heading at the lookahead, and the alarm.
         :rtype: PlannedPath
         """
@@ -138,55 +149,44 @@ class PlannerPipeline:
         started = time.perf_counter()
 
         scene_field = cost_field(obstacles, self._grid, config, self._walker, self._terms)
-        goal = goal_position(goal_mode, config, gaze_ground_point)
         # The goal gives way to something in the corridor: its spread widens with the course's avoidance
         # surprise, so the sooner contact is, the less ending off the goal's line costs.
         avoidance_nats = avoidance_surprise_nats(obstacles, config)
-        goal_row = goal_term(self._grid, goal, goal_tolerance(config, avoidance_nats))
-        previous_plan_field = None
+        goal, combined_tolerance = goal_for_frame(self._goal_switches, gaze_ground_point, route_goal, config)
+        steps = len(self._times)
+        goal_row = goal_term(self._grid, goal, widened_goal_tolerance(combined_tolerance, config, avoidance_nats))
+        # With nothing in view the corridor is empty, so the prior's goal is the same goal at its unwidened
+        # tolerance. The goal giving way to something seen is the scene's doing and counts as information.
+        prior_goal_row = goal_term(self._grid, goal, widened_goal_tolerance(combined_tolerance, config, 0.0))
+        terms = [
+            TermField(SCENE, scene_field, None),
+            TermField(GOAL, last_row_only(goal_row, steps), last_row_only(prior_goal_row, steps)),
+        ]
         if self._previous_plan is not None:
             previous_plan_field = self._previous_plan.field(self._grid, obstacles.timestamp_seconds, goal)
-        # Two copies of one field. The kept one has every row as a rate, the goal row too, so the band
-        # breakdown and the drawings read one unit throughout. The planned one has the goal row
-        # divided by the time step, so the dynamic program's multiplication charges it in full.
-        field = scene_field.copy()
-        field[-1] += goal_row
-        field_for_plan = scene_field
-        field_for_plan[-1] += terminal_cost_as_rate(goal_row, config)
-        if previous_plan_field is not None:
-            field += previous_plan_field
-            field_for_plan += previous_plan_field
-        self._last_field = field
+            if previous_plan_field is not None:
+                # The walker's memory, not something seen this frame, so the prior keeps it too and
+                # holding a side doesn't count as scene information.
+                terms.append(TermField(PREVIOUS_PLAN, previous_plan_field, previous_plan_field))
+        summed = sum_terms(terms, config)
+        self._last_field = summed.kept
         after_field = time.perf_counter()
 
-        offsets, cost = plan(field_for_plan, start_lateral_meters, self._grid, config)
+        offsets, cost = plan(summed.planned, start_lateral_meters, self._grid, config)
         after_plan = time.perf_counter()
-        # The user model's work figure reads this cost. Where the walker wants to go and the side they
-        # were holding are the walker's own, not work the scene imposed, so both priors' charges along
-        # the chosen path come off. The goal's spread widens near danger, and left in, its falling
-        # charge would read as the path getting cheaper as a post comes closer.
-        cells = np.argmin(np.abs(self._grid[None, :] - offsets[:, None]), axis=1)
-        cost -= float(terminal_cost_as_rate(goal_row, config)[cells[-1]] * config.time_step_seconds)
-        if previous_plan_field is not None:
-            cost -= float(np.sum(previous_plan_field[np.arange(len(offsets)), cells]) * config.time_step_seconds)
+        # The user model's work figure reads this cost. The walker's own priors are not work the scene
+        # imposed, so their charges along the chosen path come off, one by one in the terms' order.
+        for charge in charges_left_out(terms, offsets, self._grid, config):
+            cost -= charge
         # Everything above sums natural logs. Here they become the bits the course quotes, once, after
-        # the prior's charge came off in the same units. Nothing before this line is in bits.
+        # the priors' charges came off in the same units. Nothing before this line is in bits.
         cost_bits = float(bits_from_nats(cost))
         if self._previous_plan is not None:
             self._previous_plan.remember(offsets, obstacles.timestamp_seconds, goal)
 
-        # The KL comparison's prior is the planner with nothing in view. It keeps the goal, or the scene gets
-        # credit for a turn the gaze caused. It keeps the previous-plan prior too, since that's the walker's
-        # memory and not something seen this frame, so holding a side doesn't count as scene information.
-        # Both sides of the comparison get the goal at the same scaling, or the goal alone would read as information.
-        # With nothing in view the corridor is empty, so the prior's goal has the base tolerance. The goal
-        # giving way to something seen is the scene's doing and counts as information.
-        prior_field = np.zeros_like(field_for_plan)
-        prior_field[-1] += terminal_cost_as_rate(goal_term(self._grid, goal, goal_tolerance(config, 0.0)), config)
-        if previous_plan_field is not None:
-            prior_field += previous_plan_field
+        # The KL comparison's prior is the planner with nothing in view: every term's declared prior.
         start_cell = start_cell_index(self._grid, start_lateral_meters)
-        information = scene_information_bits(field_for_plan, prior_field, start_cell, self._grid, config, self._lookahead_index)
+        information = scene_information_bits(summed.planned, summed.prior, start_cell, self._grid, config, self._lookahead_index)
         avoidance = float(bits_from_nats(avoidance_nats))
         after_information = time.perf_counter()
 

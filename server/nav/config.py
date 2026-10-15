@@ -13,15 +13,17 @@ they came from. A test enforces that.
 import argparse
 import logging
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
 # Local package imports
-from nav.planner.config import GoalMode, OnOff, PlannerConfig
+from nav.planner.config import OnOff, PlannerConfig, RunSwitchKind
 from nav.route.route import RouteConfig
 from nav.route.secrets import (
+    SECRETS_FILENAME,
+    SETTINGS_FILENAME,
     RouteSecretsError,
     check_secrets_location,
     find_settings_file,
@@ -111,7 +113,6 @@ class RunConfig:
 
     source_kind: SourceKind
     sink_kinds: tuple[SinkKind, ...]
-    goal_mode: GoalMode
     scene: SceneConfig = field(default_factory=SceneConfig)
     planner: PlannerConfig = field(default_factory=PlannerConfig)
     usermodel: UserModelConfig = field(default_factory=UserModelConfig)
@@ -227,12 +228,23 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[kind.value for kind in SinkKind],
         help="where the path goes. Repeat it for more than one display, as in --sink phone_app --sink web",
     )
-    pipeline.add_argument("--goal", choices=[mode.value for mode in GoalMode], default=GoalMode.AHEAD.value)
     pipeline.add_argument(
         "--gaze-silences-alarm",
         choices=[state.value for state in OnOff],
         default=OnOff.OFF.value,
         help="whether the glasses' gaze on the danger may quiet the alarm, at the start. A page can flip it for the whole run",
+    )
+    pipeline.add_argument(
+        "--gaze-goal",
+        choices=[state.value for state in OnOff],
+        default=OnOff.OFF.value,
+        help="whether the plan leans toward where the wearer looks, at the start. A page can flip it for the whole run",
+    )
+    pipeline.add_argument(
+        "--route-goal",
+        choices=[state.value for state in OnOff],
+        default=OnOff.OFF.value,
+        help="whether the plan leans along the walking route the page asked for, at the start. A page can flip it for the whole run",
     )
 
     video = parser.add_argument_group("video_file source")
@@ -376,7 +388,6 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
 
     source_kind = SourceKind(arguments.source)
     sink_kinds = tuple(SinkKind(name) for name in arguments.sink)
-    goal_mode = GoalMode(arguments.goal)
 
     # Two of the same display is two servers on one port, or two windows with one name. The
     # second would fail at start with a bind error that reads as another program holding it.
@@ -492,9 +503,12 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
     return RunConfig(
         source_kind=source_kind,
         sink_kinds=sink_kinds,
-        goal_mode=goal_mode,
         # The page and the command line spell it as OnOff, and the planner holds the bool.
-        planner=PlannerConfig(gaze_silences_alarm=OnOff(arguments.gaze_silences_alarm) is OnOff.ON),
+        planner=PlannerConfig(
+            gaze_silences_alarm=OnOff(arguments.gaze_silences_alarm) is OnOff.ON,
+            gaze_goal=OnOff(arguments.gaze_goal) is OnOff.ON,
+            route_goal=OnOff(arguments.route_goal) is OnOff.ON,
+        ),
         scene=SceneConfig(floor_max_tilt_degrees=arguments.floor_max_tilt, floor_max_offset_meters=arguments.floor_max_height),
         walker=WalkerConfig(radius_meters=arguments.walker_radius),
         tap=TapConfig(log_dir=arguments.record_to),
@@ -584,6 +598,11 @@ def build_route_service(config: RunConfig, working_directory: Path) -> RouteServ
                 settings_file = find_settings_file(working_directory)
                 secrets_file = None if settings_file is None else secrets_file_beside(settings_file)
             if secrets_file is None or not secrets_file.is_file():
+                # Asked for from the start, a missing key is a mistake in setting up the walk, so it stops
+                # here. Off at the start, the page may still turn it on, and every request then says no_key.
+                if config.planner.route_goal:
+                    looked_for = secrets_file if secrets_file is not None else f"{SECRETS_FILENAME} beside a {SETTINGS_FILENAME} above {working_directory}"
+                    raise ValueError(f"the route goal is on and there is no route key: no {looked_for}")
                 log.info("no route secrets file, so route requests will report no_key")
                 return OpenRouteServiceClient("")
             root = repository_root(secrets_file.parent)
@@ -618,7 +637,7 @@ def build_route_tracker(config: RunConfig, working_directory: Path) -> RouteGoal
 def build_source_and_sink(
     config: RunConfig,
     on_path_sent: Callable[[float], None] | None = None,
-    gaze_switch: OnOffSwitch | None = None,
+    switches: Mapping[RunSwitchKind, OnOffSwitch] | None = None,
     route_input: RouteInput | None = None,
 ) -> tuple[DepthFrameSource, PathSink]:
     """
@@ -631,7 +650,7 @@ def build_source_and_sink(
 
     :param config: The run configuration.
     :param on_path_sent: As for build_sink.
-    :param gaze_switch: As for build_sink.
+    :param switches: As for build_sink.
     :param route_input: As for build_sink.
     :return: The source and the sink, in that order.
     :rtype: tuple[DepthFrameSource, PathSink]
@@ -643,7 +662,7 @@ def build_source_and_sink(
     source_switch = _build_source_switch(config, video_feed)
     return (
         build_source(config, video_feed=video_feed, source_switch=source_switch),
-        build_sink(config, on_path_sent=on_path_sent, video_feed=video_feed, source_switch=source_switch, gaze_switch=gaze_switch, route_input=route_input),
+        build_sink(config, on_path_sent=on_path_sent, video_feed=video_feed, source_switch=source_switch, switches=switches, route_input=route_input),
     )
 
 
@@ -759,7 +778,7 @@ def build_sink(
     on_path_sent: Callable[[float], None] | None = None,
     video_feed: SceneVideoFeed | None = None,
     source_switch: SwitchableSource | None = None,
-    gaze_switch: OnOffSwitch | None = None,
+    switches: Mapping[RunSwitchKind, OnOffSwitch] | None = None,
     route_input: RouteInput | None = None,
 ) -> PathSink:
     """
@@ -775,13 +794,13 @@ def build_sink(
         when the source has no video to offer, and the page then says so.
     :param source_switch: Given to the web sink, whose page switches between the live input and the
         recording. None on a run without a recording, and the page then shows no switch.
-    :param gaze_switch: Given to the web sink, whose page may flip whether the gaze quiets the alarm.
+    :param switches: Given to the web sink, whose page may flip the run-wide switches.
     :param route_input: Given to the web sink, whose page sends fixes and destinations. None on a run
         without a route goal tracker.
     :return: A sink accepting PlannedPath objects.
     :rtype: PathSink
     """
-    sinks = [_build_one_sink(kind, config, on_path_sent, video_feed, source_switch, gaze_switch, route_input) for kind in config.sink_kinds]
+    sinks = [_build_one_sink(kind, config, on_path_sent, video_feed, source_switch, switches, route_input) for kind in config.sink_kinds]
     if len(sinks) == 1:
         return sinks[0]
     return FanOutSink(sinks)
@@ -793,7 +812,7 @@ def _build_one_sink(
     on_path_sent: Callable[[float], None] | None,
     video_feed: SceneVideoFeed | None,
     source_switch: SwitchableSource | None,
-    gaze_switch: OnOffSwitch | None = None,
+    switches: Mapping[RunSwitchKind, OnOffSwitch] | None = None,
     route_input: RouteInput | None = None,
 ) -> PathSink:
     match sink_kind:
@@ -802,7 +821,7 @@ def _build_one_sink(
         case SinkKind.WEB:
             if config.web is None:
                 raise ValueError("web needs a web config and none was built")
-            return WebSink(config.web, config.scene, video_feed=video_feed, source_switch=source_switch, gaze_switch=gaze_switch, route_input=route_input)
+            return WebSink(config.web, config.scene, video_feed=video_feed, source_switch=source_switch, switches=switches, route_input=route_input)
         case SinkKind.PHONE_APP:
             if config.phone_app is None:
                 raise ValueError("phone_app needs a phone_app config and none was built")

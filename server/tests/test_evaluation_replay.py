@@ -35,13 +35,14 @@ from nav.evaluation.replay import (
     cache_key,
     clone_state,
     evaluate_walk,
+    goal_switches_for,
     planner_pass,
     scene_pass,
     segment_bounds,
 )
 from nav.evaluation.track import floor_heading_radians
 from nav.evaluation.turns import TurnTag
-from nav.planner.config import GoalMode, PlannerConfig
+from nav.planner.config import GoalSwitches, PlannerConfig
 from nav.planner.pipeline import PlannerPipeline
 from nav.scene.config import SceneConfig
 from nav.types import FloorSource
@@ -84,9 +85,9 @@ def test_replay_through_real_planner_finds_both_turns(recording: Path, capsys) -
     assert "right +90, left -90" in out
     # The arrows it scored are the planner's own: plan the same frames with a fresh planner directly.
     scene = scene_pass(recording, SceneConfig(), WalkerConfig(), None)
-    frames = planner_pass(scene, PlannerConfig(), WalkerConfig(), GoalMode.AHEAD)
+    frames = planner_pass(scene, PlannerConfig(), WalkerConfig(), GoalSwitches())
     planner = PlannerPipeline(PlannerConfig(), WalkerConfig())
-    direct = [planner.plan(row.obstacles, 0.0, GoalMode.AHEAD, row.gaze_ground_point).lookahead_heading_radians for row in scene.planned]
+    direct = [planner.plan(row.obstacles, 0.0, row.gaze_ground_point).lookahead_heading_radians for row in scene.planned]
     assert [frame.arrow_radians for frame in frames] == pytest.approx(direct)
     assert len(frames) == len(scene.planned) > 100
 
@@ -99,7 +100,7 @@ def test_replay_calls_plan_like_the_loop() -> None:
 
     (loop_call,) = plan_calls(NAV_DIR / "runtime" / "loop.py")
     (replay_call,) = plan_calls(NAV_DIR / "evaluation" / "replay.py")
-    # The obstacles, the start, the goal mode, the gaze on the floor, and the gaze samples.
+    # The obstacles, the start, the gaze on the floor, the gaze samples, and the route goal.
     assert len(loop_call.args) == len(replay_call.args) == 5
     assert not loop_call.keywords and not replay_call.keywords
     assert isinstance(loop_call.args[1], ast.Constant) and loop_call.args[1].value == 0.0
@@ -111,7 +112,7 @@ def test_cached_pass_matches_a_cold_pass(recording: Path, tmp_path: Path) -> Non
     written = scene_pass(recording, SceneConfig(), WalkerConfig(), tmp_path)
     read = scene_pass(recording, SceneConfig(), WalkerConfig(), tmp_path)
     assert written.cache_state.startswith("miss") and read.cache_state.startswith("hit")
-    arrows = [[frame.arrow_radians for frame in planner_pass(each, PlannerConfig(), WalkerConfig(), GoalMode.AHEAD)] for each in (cold, read)]
+    arrows = [[frame.arrow_radians for frame in planner_pass(each, PlannerConfig(), WalkerConfig(), GoalSwitches())] for each in (cold, read)]
     assert arrows[0] == arrows[1]
     np.testing.assert_array_equal(cold.pose_positions_world, read.pose_positions_world)
 
@@ -147,8 +148,8 @@ def test_planner_override_moves_only_arrow_scores(recording: Path, cache_dir: Pa
     # The positive control: the override did reach the planner. Without this the test above could
     # pass with the override ignored.
     scene = scene_pass(recording, scene_config, WalkerConfig(), cache_dir)
-    plain_arrows = [frame.arrow_radians for frame in planner_pass(scene, PlannerConfig(), WalkerConfig(), GoalMode.AHEAD)]
-    tuned_arrows = [frame.arrow_radians for frame in planner_pass(scene, tuned_config, WalkerConfig(), GoalMode.AHEAD)]
+    plain_arrows = [frame.arrow_radians for frame in planner_pass(scene, PlannerConfig(), WalkerConfig(), GoalSwitches())]
+    tuned_arrows = [frame.arrow_radians for frame in planner_pass(scene, tuned_config, WalkerConfig(), GoalSwitches())]
     assert plain_arrows != tuned_arrows
 
 
@@ -517,3 +518,25 @@ def test_a_cache_entry_in_the_old_row_shape_is_rebuilt_not_misread(recording: Pa
 
     assert rebuilt.cache_state.startswith("miss") and "unreadable entry (TypeError)" in rebuilt.cache_state
     assert [row.camera_height_meters for row in rebuilt.planned] == [row.camera_height_meters for row in fresh.planned]
+
+
+def test_an_old_run_config_with_goal_mode_replays_through_the_mapping(recording: Path, tmp_path: Path) -> None:
+    # The synthetic walk's run_config.json names goal_mode as every recording before the switches did.
+    assert json.loads((recording / "run_config.json").read_text(encoding="utf-8"))["goal_mode"] == "ahead"
+    assert goal_switches_for(recording) == GoalSwitches()
+    gaze = tmp_path / "gaze"
+    shutil.copytree(recording, gaze)
+    content = json.loads((gaze / "run_config.json").read_text(encoding="utf-8"))
+    content["goal_mode"] = "gaze"
+    (gaze / "run_config.json").write_bytes(json.dumps(content).encode("utf-8"))
+    assert goal_switches_for(gaze) == GoalSwitches(gaze_goal=True)
+
+
+def test_a_new_run_config_reads_the_switches_from_its_planner(recording: Path, tmp_path: Path) -> None:
+    new = tmp_path / "new"
+    shutil.copytree(recording, new)
+    content = json.loads((new / "run_config.json").read_text(encoding="utf-8"))
+    del content["goal_mode"]
+    content["planner"] = {"gaze_goal": False, "route_goal": True}
+    (new / "run_config.json").write_bytes(json.dumps(content).encode("utf-8"))
+    assert goal_switches_for(new) == GoalSwitches(route_goal=True)

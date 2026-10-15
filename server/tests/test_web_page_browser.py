@@ -30,9 +30,10 @@ from browser_harness import (
     snapshot,
 )
 from nav.planner.alarm import avoidance_surprise_bits_at
+from nav.planner.config import RunSwitchKind
 from nav.route import RouteFrame
 from nav.route.route import RouteState
-from nav.runtime.gaze_silencing import GazeSilencingSwitch
+from nav.runtime.switches import RunSwitch
 from nav.scene.config import SceneConfig
 from nav.sinks.config import WebConfig
 from nav.sinks.web import WebSink
@@ -67,8 +68,8 @@ def sink():
 @pytest.fixture
 def gaze_switch_sink():
     """A sink with the run's gaze switch, starting off, the way the runtime always builds it."""
-    switch = GazeSilencingSwitch(False)
-    sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None, gaze_switch=switch)
+    switch = RunSwitch(RunSwitchKind.GAZE_SILENCING, False)
+    sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None, switches={RunSwitchKind.GAZE_SILENCING: switch})
     sink.start()
     yield sink, switch
     sink.close()
@@ -1631,8 +1632,8 @@ def test_the_route_card_shows_the_tier_and_numbers(browser) -> None:
         _wait_for_text(page, "route-state", "Following the route")
         text = page.text_content("#route-state")
         assert "120 m along, 350 m to go" in text
-        assert "route bears 47 degrees" in text
-        assert "fix 0.8 s old, within 6 m" in text
+        assert "Route bears 47 degrees" in text
+        assert "Fix 0.8 s old, within 6 m" in text
         route_sink.publish_route_state(RouteFrame(None, RouteState.SERVICE_FAILED, None, None, None, None, None, "the route service refused the key (HTTP 403)"))
         _wait_for_text(page, "route-state", "Route service failed")
         assert "refused the key" in page.text_content("#route-state")
@@ -1875,7 +1876,7 @@ def test_a_run_without_a_gaze_switch_shows_no_gaze_radio(browser_page: PageSessi
     assert not page.is_visible("#gaze-silencing-field")
 
 
-def _wait_for_switch(switch: GazeSilencingSwitch, enabled: bool) -> None:
+def _wait_for_switch(switch: RunSwitch, enabled: bool) -> None:
     """Polls the laptop's switch, since the click reaches it over the socket after the radio moves."""
     deadline = time.monotonic() + ELEMENT_TIMEOUT_MS / 1000
     while switch.enabled != enabled and time.monotonic() < deadline:
@@ -1926,3 +1927,32 @@ def test_the_eyes_line_and_the_gaze_switch_fit_inside_the_sound_card(browser, ga
     finally:
         session.close()
     assert session.errors == [], session.errors
+
+
+@pytest.mark.parametrize("toggle, kind", [("gaze-goal", RunSwitchKind.GAZE_GOAL), ("route-goal", RunSwitchKind.ROUTE_GOAL)])
+def test_the_goal_toggles_send_and_follow_state(browser, toggle: str, kind: RunSwitchKind) -> None:
+    switches = {each: RunSwitch(each, False) for each in RunSwitchKind}
+    switch_sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None, switches=switches)
+    switch_sink.start()
+    session = open_page(browser, switch_sink)
+    try:
+        page = session.page
+        page.wait_for_selector(f"#{toggle}-field", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+
+        _choose(page, toggle, "on")
+        _wait_for_switch(switches[kind], True)
+        # Only this toggle's switch moved.
+        assert [switches[each].enabled for each in RunSwitchKind if each is not kind] == [False, False]
+
+        # Another page turns it off. This page follows.
+        switches[kind].request(False)
+        page.wait_for_function(f"() => document.querySelector(\"#{toggle} input[value='off']\").checked", timeout=ELEMENT_TIMEOUT_MS)
+    finally:
+        session.close()
+        switch_sink.close()
+    assert session.errors == [], session.errors
+
+
+def test_a_run_without_the_goal_switches_shows_no_goal_toggles(browser_page: PageSession) -> None:
+    page = browser_page.page
+    assert page.is_hidden("#gaze-goal-field") and page.is_hidden("#route-goal-field")

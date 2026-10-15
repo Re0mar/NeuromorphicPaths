@@ -78,7 +78,7 @@ def format_spread(pooled: PooledSpread, log_names: list[str], config: Evaluation
 
 def _walk_section(result: WalkResult, config: EvaluationConfig) -> list[str]:
     lines = [f"## {result.name}", ""]
-    lines.append(f"- Scene settings: {result.scene_source}. Goal mode: {result.goal_mode.value}")
+    lines.append(f"- Scene settings: {result.scene_source}. Gaze goal: {_on_off(result.goal_switches.gaze_goal)}, route goal: {_on_off(result.goal_switches.route_goal)}")
     lines.append(f"- Frames: {result.frames}, planned {result.planned_frames}, refused by the scene {result.refused_frames}")
     for reason, count in sorted(result.refusal_reasons.items(), key=lambda item: -item[1]):
         lines.append(f"  - {count} refused: {reason}")
@@ -179,3 +179,7 @@ def _config_line(config: object, overridden: frozenset[str]) -> str:
 def _cache_summary(results: list[WalkResult]) -> str:
     states = {state.split(" ")[0] for result in results for state in result.cache_states}
     return ", ".join(sorted(states)) or "none"
+
+
+def _on_off(enabled: bool) -> str:
+    return "on" if enabled else "off"

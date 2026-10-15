@@ -33,7 +33,7 @@ from nav.evaluation.fixture import (
 )
 from nav.evaluation.planner_numbers import ClearanceBand, PlannerInput, whole_walk_numbers
 from nav.evaluation.replay import replayed_frames
-from nav.planner.config import GoalMode, PlannerConfig
+from nav.planner.config import GoalSwitches, PlannerConfig
 from nav.types import ObstaclePoint, ObstacleSet
 from nav.walker import WalkerConfig
 from synthetic_walks import write_recording
@@ -148,7 +148,7 @@ def test_writing_the_same_slice_twice_gives_the_same_bytes(tmp_path: Path) -> No
 def test_a_hand_built_slice_gives_the_numbers_worked_out_by_hand(tmp_path: Path) -> None:
     write_fixture(tmp_path / "golden_hand.json.gz", hand_built_slice(), PROVENANCE)
     golden = read_fixture(tmp_path / "golden_hand.json.gz")
-    frames = replayed_frames(golden.inputs, PLANNER, WalkerConfig(), GoalMode.AHEAD)
+    frames = replayed_frames(golden.inputs, PLANNER, WalkerConfig(), GoalSwitches())
     numbers = whole_walk_numbers(frames, PLANNER, PlannerNumbersConfig())
     # Nine empty frames are clear, the three with the wall 0.5 m out are close.
     assert numbers.frames_by_band[ClearanceBand.CLEAR] == 9
@@ -247,7 +247,7 @@ def test_the_cutter_refuses_rounding_that_changes_a_plan(monkeypatch) -> None:
 
     monkeypatch.setattr(fixture_module, "rounded_input", too_coarse)
     with pytest.raises(FixtureRefused, match="rounding changes the plan on 4 frames, first at t = 0.375"):
-        check_rounding(hand_built_slice(), PLANNER, WalkerConfig(), GoalMode.AHEAD)
+        check_rounding(hand_built_slice(), PLANNER, WalkerConfig(), GoalSwitches())
 
 
 def test_the_cutter_refuses_rounding_that_changes_only_the_offsets(monkeypatch) -> None:
@@ -268,11 +268,11 @@ def test_the_cutter_refuses_rounding_that_changes_only_the_offsets(monkeypatch) 
 
     monkeypatch.setattr(fixture_module, "replayed_frames", nudged)
     with pytest.raises(FixtureRefused, match="rounding changes the plan on 1 frames"):
-        check_rounding(hand_built_slice(), PLANNER, WalkerConfig(), GoalMode.AHEAD)
+        check_rounding(hand_built_slice(), PLANNER, WalkerConfig(), GoalSwitches())
 
 
 def test_the_real_rounding_leaves_the_hand_built_slice_alone() -> None:
-    check_rounding(hand_built_slice(), PLANNER, WalkerConfig(), GoalMode.AHEAD)
+    check_rounding(hand_built_slice(), PLANNER, WalkerConfig(), GoalSwitches())
 
 
 def test_the_cutter_refuses_a_fixture_set_over_the_size_cap(tmp_path: Path) -> None:

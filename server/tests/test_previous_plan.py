@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 # Local package imports
-from nav.planner.config import GoalMode, PlannerConfig
+from nav.planner.config import PlannerConfig
 from nav.planner.field import lateral_grid, step_count
 from nav.planner.pipeline import PlannerPipeline
 from nav.planner.previous_plan import PreviousPlanPrior
@@ -193,11 +193,11 @@ def test_a_goal_that_moved_only_nearer_or_farther_keeps_the_plan() -> None:
 def test_a_gaze_moving_nearer_and_farther_keeps_a_near_tie_on_its_side() -> None:
     # A post wobbling a millimeter, and a gaze straight ahead that alternates between 2 m and 4 m out,
     # as gaze on the floor does. Forgetting on every forward move would flip the plan every frame.
-    pipeline = PlannerPipeline(CONFIG, WALKER)
+    pipeline = PlannerPipeline(replace(CONFIG, gaze_goal=True), WALKER)
     sides = []
     for index, scene in enumerate(alternating_posts(12)):
         gaze = np.array([0.0, 2.0 if index % 2 else 4.0])
-        sides.append(float(np.sign(pipeline.plan(scene, 0.0, GoalMode.GAZE, gaze).lateral_offsets_meters[-1])))
+        sides.append(float(np.sign(pipeline.plan(scene, 0.0, gaze).lateral_offsets_meters[-1])))
     assert len(set(sides)) == 1
 
 

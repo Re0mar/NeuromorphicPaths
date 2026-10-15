@@ -46,8 +46,6 @@ class RouteConfig:
     bearing_time_constant_seconds: float = 2.0
     # The route goal's tolerance with an exact fix. A poor fix widens it.
     route_goal_tolerance_meters: float = 1.0
-    # Past this relative bearing the goal sits at the grid's edge. Chosen by eye, for the outdoor walk to move.
-    route_goal_max_bearing_degrees: float = 60.0
     # A fix implying a faster walk than this from the previous one is a GPS jump, not a walker.
     max_plausible_speed_mps: float = 5.0
     # A heading turning faster than this is a GPS glitch, not a walker.
@@ -80,9 +78,6 @@ def check_route_config(config: RouteConfig) -> None:
         value = getattr(config, name)
         if not math.isfinite(value) or value < 0:
             raise ValueError(f"{name} must be zero or more, got {value}")
-    bearing_cutoff = config.route_goal_max_bearing_degrees
-    if not math.isfinite(bearing_cutoff) or not 0.0 < bearing_cutoff < 90.0:
-        raise ValueError(f"route_goal_max_bearing_degrees must be between 0 and 90, got {bearing_cutoff}")
 
 
 class Route:

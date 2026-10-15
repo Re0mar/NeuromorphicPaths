@@ -23,6 +23,7 @@ import numpy as np
 from nav.evaluation.config import PlannerNumbersConfig
 from nav.planner.alarm import corridor_points
 from nav.planner.config import PlannerConfig
+from nav.planner.goal import RouteGoal
 from nav.types import ObstacleSet, PlannedPath
 
 
@@ -53,6 +54,8 @@ class PlannerInput:
     intrinsics: np.ndarray | None = None
     # The one gaze sample nearest the stamp, at the same resolution. None on a frame without gaze.
     gaze_pixel: np.ndarray | None = None
+    # The route goal the frame was paired with, from the recording's fixes and routes. None without one.
+    route_goal: RouteGoal | None = None
 
 
 @dataclass(frozen=True)

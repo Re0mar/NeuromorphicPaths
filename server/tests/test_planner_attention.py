@@ -15,10 +15,10 @@ import numpy as np
 import pytest
 
 # Local package imports
-from nav.config import GoalMode, RunConfig, SinkKind, SourceKind
+from nav.config import RunConfig, SinkKind, SourceKind
 from nav.planner.alarm import nearest_corridor_point
 from nav.planner.attention import alarm_audible, check_attention_config
-from nav.planner.config import PlannerConfig
+from nav.planner.config import GoalSwitches, PlannerConfig, RunSwitchKind
 from nav.planner.pipeline import PlannerPipeline
 from nav.runtime.loop import run
 from nav.runtime.tap import RecordingTap
@@ -302,7 +302,6 @@ def _published_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, planner_co
     config = RunConfig(
         source_kind=SourceKind.LOGGED,
         sink_kinds=(SinkKind.NONE,),
-        goal_mode=GoalMode.AHEAD,
         logged=LoggedConfig(log_dir=str(log_dir)),
         planner=planner_config,
     )
@@ -325,9 +324,16 @@ def test_a_logged_frame_with_gaze_on_the_danger_is_published_with_alarm_audible_
 # *******************************************
 
 
-def _run_capturing_switch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frames: list[DepthFrame], flip_after: int) -> tuple[list, int]:
+def _run_capturing_switch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    frames: list[DepthFrame],
+    flip_after: int,
+    flip: RunSwitchKind = RunSwitchKind.GAZE_SILENCING,
+    goal_switches_seen: list | None = None,
+) -> tuple[list, int]:
     """
-    Run the frames through run(), turning the run's gaze switch on after flip_after plans.
+    Run the frames through run(), turning one of the run's switches on after flip_after plans.
 
     The frames reach the loop as given rather than through a frame log, which keeps no source
     generation, so a change of stretch in them really rebuilds the planner.
@@ -340,9 +346,9 @@ def _run_capturing_switch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frame
     paths = []
     planners_built = [0]
 
-    class CapturedSwitch(loop_module.GazeSilencingSwitch):
-        def __init__(self, enabled: bool) -> None:
-            super().__init__(enabled)
+    class CapturedSwitches(loop_module.RunSwitches):
+        def __init__(self, config) -> None:
+            super().__init__(config)
             switches.append(self)
 
     class RecordingPlanner(PlannerPipeline):
@@ -351,14 +357,16 @@ def _run_capturing_switch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frame
             super().__init__(*args, **kwargs)
 
         def plan(self, *args, **kwargs):
+            if goal_switches_seen is not None:
+                goal_switches_seen.append(self.goal_switches)
             path = super().plan(*args, **kwargs)
             paths.append(path)
             if len(paths) == flip_after:
                 # What a page's ask does, on the sink's thread in a live run.
-                switches[0].request(True)
+                switches[0][flip].request(True)
             return path
 
-    monkeypatch.setattr(loop_module, "GazeSilencingSwitch", CapturedSwitch)
+    monkeypatch.setattr(loop_module, "RunSwitches", CapturedSwitches)
     monkeypatch.setattr(loop_module, "PlannerPipeline", RecordingPlanner)
 
     class ListSource:
@@ -385,7 +393,7 @@ def _run_capturing_switch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frame
     monkeypatch.setattr(loop_module, "build_source_and_sink", with_these_frames)
     log_dir = tmp_path / "unused_log"
     log_dir.mkdir()
-    config = RunConfig(source_kind=SourceKind.LOGGED, sink_kinds=(SinkKind.NONE,), goal_mode=GoalMode.AHEAD, logged=LoggedConfig(log_dir=str(log_dir)), planner=PLANNER)
+    config = RunConfig(source_kind=SourceKind.LOGGED, sink_kinds=(SinkKind.NONE,), logged=LoggedConfig(log_dir=str(log_dir)), planner=PLANNER)
     assert run(config) == 0
     assert len(switches) == 1, "one switch for the whole run"
     return paths, planners_built[0]
@@ -406,3 +414,10 @@ def test_the_switch_state_survives_a_new_stretch_of_video(tmp_path: Path, monkey
 
     assert planners_built == 2, "the second stretch must really rebuild the planner for this to test anything"
     assert [path.alarm_audible for path in paths[2:]] == [False, False], "the rebuilt planner reads the run's switch"
+
+
+def test_a_route_goal_flip_reaches_the_planner_on_the_next_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # What the planner itself holds, not just the switch object, so wiring that never reads the switch fails.
+    seen: list = []
+    _run_capturing_switch(tmp_path, monkeypatch, _scene_frames(4), flip_after=2, flip=RunSwitchKind.ROUTE_GOAL, goal_switches_seen=seen)
+    assert seen == [GoalSwitches(), GoalSwitches(), GoalSwitches(route_goal=True), GoalSwitches(route_goal=True)]

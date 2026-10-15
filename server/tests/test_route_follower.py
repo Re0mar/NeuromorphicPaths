@@ -106,7 +106,7 @@ def test_a_route_that_does_not_move_on_is_refused() -> None:
 
 @pytest.mark.parametrize(
     "name, value",
-    [("lookahead_meters", 0.0), ("off_route_meters", -1.0), ("off_route_seconds", -0.1), ("course_min_speed_mps", 0.0), ("route_goal_max_bearing_degrees", 90.0)],
+    [("lookahead_meters", 0.0), ("off_route_meters", -1.0), ("off_route_seconds", -0.1), ("course_min_speed_mps", 0.0), ("max_plausible_speed_mps", 0.0)],
 )
 def test_a_bad_route_constant_is_refused_by_name(name: str, value: float) -> None:
     with pytest.raises(ValueError, match=name):

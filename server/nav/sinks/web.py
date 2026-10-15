@@ -45,7 +45,7 @@ import logging
 import ssl
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -55,7 +55,7 @@ from typing import Protocol
 import numpy as np
 
 # Local package imports
-from nav.planner.config import OnOff
+from nav.planner.config import RunSwitchKind
 from nav.route import RouteFrame
 from nav.route.course import Fix
 from nav.route.geodesy import LatLon
@@ -63,10 +63,12 @@ from nav.scene.config import SceneConfig
 from nav.sinks.config import WebConfig
 from nav.sinks.rendering import encode_png, render_depth_view, render_risk_view
 from nav.sinks.web_messages import (
+    SWITCH_STATES,
     PictureKind,
+    SwitchRequest,
     WebMessageKind,
     browser_message,
-    gaze_silencing_state_message,
+    switch_state_message,
     plan_view_message,
     route_state_message,
     source_state_message,
@@ -122,15 +124,24 @@ class _Slot(Enum):
     GAZE_SILENCING_STATE = 6
     # The route layer's tier and numbers, after every planned frame.
     ROUTE_STATE = 7
+    # The goal's two switches, sent like the gaze one.
+    GAZE_GOAL_STATE = 8
+    ROUTE_GOAL_STATE = 9
 
 
+# Which slot carries each run-wide switch's state.
+SWITCH_SLOTS = {
+    RunSwitchKind.GAZE_SILENCING: _Slot.GAZE_SILENCING_STATE,
+    RunSwitchKind.GAZE_GOAL: _Slot.GAZE_GOAL_STATE,
+    RunSwitchKind.ROUTE_GOAL: _Slot.ROUTE_GOAL_STATE,
+}
 # Slots sent once per change rather than every frame. Dropping one leaves every page, and every page
 # that joins later, showing the old state, so a full queue drops a frame instead.
-STATE_SLOTS = frozenset({_Slot.SOURCE_STATE, _Slot.GAZE_SILENCING_STATE})
+STATE_SLOTS = frozenset({_Slot.SOURCE_STATE, *SWITCH_SLOTS.values()})
 
 
 class OnOffSwitch(Protocol):
-    """A run-wide on or off that any page may flip, told to every page. The gaze switch is one."""
+    """A run-wide on or off that any page may flip, told to every page. The gaze and goal switches are such."""
 
     def request(self, enabled: bool) -> None: ...
 
@@ -185,7 +196,7 @@ class WebSink:
         *,
         video_feed: SceneVideoFeed | None,
         source_switch: SwitchableSource | None = None,
-        gaze_switch: OnOffSwitch | None = None,
+        switches: Mapping[RunSwitchKind, OnOffSwitch] | None = None,
         route_input: RouteInput | None = None,
     ) -> None:
         """
@@ -197,8 +208,8 @@ class WebSink:
             Keyword-only and without a default, so every caller says which it is.
         :param source_switch: The live input and its recording, which any page may switch between.
             None on a run with no live input, so callers that have none leave it out.
-        :param gaze_switch: Whether the gaze may quiet the alarm, which any page may flip for the
-            whole run. None on a sink built without one, which then ignores the ask.
+        :param switches: The run-wide switches, which any page may flip for the whole run. A switch
+            left out is one the run doesn't have, and a page's ask for it is logged and ignored.
         :param route_input: Where the page's fixes and destinations go. None on a sink built without
             a route goal, which logs and ignores them.
         """
@@ -206,8 +217,8 @@ class WebSink:
         self._route_input = route_input
         self._source_switch = source_switch
         self._unsubscribe_switch: Callable[[], None] | None = None
-        self._gaze_switch = gaze_switch
-        self._unsubscribe_gaze_switch: Callable[[], None] | None = None
+        self._switches = dict(switches or {})
+        self._unsubscribe_switches: list[Callable[[], None]] = []
         self._scene = scene
         self._video_feed = video_feed
         self._thread: threading.Thread | None = None
@@ -275,14 +286,15 @@ class WebSink:
             self._unsubscribe_switch = self._source_switch.subscribe(
                 lambda state: self._enqueue(_Slot.SOURCE_STATE, web_text_message(WebMessageKind.SOURCE_STATE, source_state_message(state)))
             )
-        if self._gaze_switch is not None:
+        for kind, switch in self._switches.items():
             # Fills its slot at once, so a page that connects later is sent the state as it joins.
-            self._unsubscribe_gaze_switch = self._gaze_switch.subscribe(
-                lambda enabled: self._enqueue(
-                    _Slot.GAZE_SILENCING_STATE,
-                    web_text_message(WebMessageKind.GAZE_SILENCING_STATE, gaze_silencing_state_message(enabled)),
-                )
-            )
+            self._unsubscribe_switches.append(switch.subscribe(self._announcer(kind)))
+
+    def _announcer(self, kind: RunSwitchKind) -> Callable[[bool], None]:
+        """What tells every page of one switch's state. Called on whichever thread flipped it, so it only queues."""
+        slot = SWITCH_SLOTS[kind]
+        message_kind = SWITCH_STATES[kind]
+        return lambda enabled: self._enqueue(slot, web_text_message(message_kind, switch_state_message(enabled)))
 
     def publish(self, path: PlannedPath) -> None:
         """Queue the path for every browser. Starts the server on the first call, and does nothing once closed."""
@@ -331,9 +343,9 @@ class WebSink:
         if self._unsubscribe_switch is not None:
             self._unsubscribe_switch()
             self._unsubscribe_switch = None
-        if self._unsubscribe_gaze_switch is not None:
-            self._unsubscribe_gaze_switch()
-            self._unsubscribe_gaze_switch = None
+        for unsubscribe in self._unsubscribe_switches:
+            unsubscribe()
+        self._unsubscribe_switches = []
         if self._unsubscribe_video is not None:
             # First, so no unit is handed to a loop that is about to stop.
             self._unsubscribe_video()
@@ -617,12 +629,13 @@ class WebSink:
                 # For every page at once. The switch announces the new state to all of them.
                 self._source_switch.request(choice)
                 return
-            if isinstance(choice, OnOff):
-                if self._gaze_switch is None:
-                    log.warning("a page asked to turn the gaze switch %s, and this run has no gaze switch", choice.value)
+            if isinstance(choice, SwitchRequest):
+                switch = self._switches.get(choice.switch)
+                if switch is None:
+                    log.warning("a page asked to turn %s %s, and this run has no such switch", choice.switch.value, "on" if choice.enabled else "off")
                     return
                 # Run-wide too, like the side above: one page's choice is every page's.
-                self._gaze_switch.request(choice is OnOff.ON)
+                switch.request(choice.enabled)
                 return
             sockets[socket] = choice
             note_who_wants_risk()

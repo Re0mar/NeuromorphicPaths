@@ -114,7 +114,7 @@
   #route-state, #route-location { font-size: var(--text-s); color: var(--muted); }
   canvas, img, video { max-width: 100%; height: auto; }
   .placeholder { font-size: var(--text-s); color: var(--muted); }
-  .placeholder[hidden], #depth[hidden], #rings[hidden], .help[hidden], #plan-panel[hidden], #music-label[hidden], #music-controls[hidden], #alarm-sound-field[hidden], #volume-field[hidden], #source-field[hidden], #gaze-silencing-field[hidden], #input-link[hidden], #no-input[hidden], #live[hidden] { display: none; }
+  .placeholder[hidden], #depth[hidden], #rings[hidden], .help[hidden], #plan-panel[hidden], #music-label[hidden], #music-controls[hidden], #alarm-sound-field[hidden], #volume-field[hidden], #source-field[hidden], #gaze-silencing-field[hidden], #gaze-goal-field[hidden], #route-goal-field[hidden], #input-link[hidden], #no-input[hidden], #live[hidden] { display: none; }
   /* How the live input is doing, on a run that serves the page from one. */
   #input-link { font-size: var(--text-s); color: var(--muted); }
   #input-link.connected { color: var(--accent); }
@@ -270,6 +270,21 @@
       <div id="destination-row">
         <input type="text" id="destination" placeholder="latitude, longitude" aria-label="Destination as latitude, longitude in decimal degrees" autocomplete="off">
         <button type="button" id="set-destination">Set</button>
+      </div>
+      <!-- Shown once the laptop says it has the switch. Each one switches every page's run. -->
+      <div class="toggle-field" id="gaze-goal-field" hidden>
+        <span class="toggle-name" id="gaze-goal-name">Gaze goal</span>
+        <div id="gaze-goal" class="toggle" role="radiogroup" aria-labelledby="gaze-goal-name">
+          <label><input type="radio" name="gaze-goal" value="off" checked> Off</label>
+          <label><input type="radio" name="gaze-goal" value="on"> On</label>
+        </div>
+      </div>
+      <div class="toggle-field" id="route-goal-field" hidden>
+        <span class="toggle-name" id="route-goal-name">Route goal</span>
+        <div id="route-goal" class="toggle" role="radiogroup" aria-labelledby="route-goal-name">
+          <label><input type="radio" name="route-goal" value="off" checked> Off</label>
+          <label><input type="radio" name="route-goal" value="on"> On</label>
+        </div>
       </div>
       <div id="route-state">No route yet.</div>
       <div id="route-location">No location yet.</div>
@@ -1425,6 +1440,21 @@
     }
   });
 
+  // The goal's two switches, run-wide like the gaze one. The radio only follows what the laptop says
+  // back, so every page agrees whoever flipped it, and a click with the laptop gone changes nothing.
+  function showGoalSwitch(toggleId, message) {
+    document.getElementById(toggleId + "-field").hidden = false;
+    const chosenState = document.getElementById(toggleId).querySelector('input[value="' + message.state + '"]');
+    if (chosenState) chosenState.checked = true;
+  }
+
+  for (const [toggleId, kind] of [["gaze-goal", "gaze_goal"], ["route-goal", "route_goal"]]) {
+    const toggle = document.getElementById(toggleId);
+    toggle.addEventListener("change", () => {
+      sendToLaptop({ kind: kind, [kind]: chosen(toggle) });
+    });
+  }
+
   function meters(value) {
     return value === null ? "?" : Math.round(value) + " m";
   }
@@ -1436,7 +1466,8 @@
     if (message.bearing_degrees !== null) parts.push("route bears " + Math.round(message.bearing_degrees) + " degrees");
     if (message.fix_age_seconds !== null) parts.push("fix " + message.fix_age_seconds.toFixed(1) + " s old, within " + meters(message.accuracy_meters));
     if (message.reason) parts.push(message.reason);
-    routeState.textContent = parts.join(". ") + ".";
+    // Each part is its own sentence, so each starts with a capital.
+    routeState.textContent = parts.map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(". ") + ".";
   }
 
   function connect() {
@@ -1461,6 +1492,8 @@
         else if (message.kind === "plan_view") showPlanView(message);
         else if (message.kind === "source_state") showSourceState(message);
         else if (message.kind === "route_state") showRouteState(message);
+        else if (message.kind === "gaze_goal_state") showGoalSwitch("gaze-goal", message);
+        else if (message.kind === "route_goal_state") showGoalSwitch("route-goal", message);
         else if (message.kind === "gaze_silencing_state") showGazeSilencing(message);
         return;
       }

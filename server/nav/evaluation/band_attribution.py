@@ -44,11 +44,12 @@ from nav.evaluation.planner_numbers import (
     sidestep_limit_degrees,
 )
 from nav.planner.alarm import avoidance_surprise_nats
-from nav.planner.config import GoalMode, PlannerConfig
+from nav.planner.config import GoalSwitches, PlannerConfig
 from nav.planner.contact import ContactSurprise
 from nav.planner.dynamic_programming import plan
 from nav.planner.field import cost_field, lateral_grid
-from nav.planner.goal import goal_position, goal_term, goal_tolerance, terminal_cost_as_rate
+from nav.planner.field_terms import GOAL, PREVIOUS_PLAN, WorkFigure, as_planned
+from nav.planner.goal import goal_for_frame, goal_term, terminal_cost_as_rate, widened_goal_tolerance
 from nav.planner.heading import lookahead_heading, lookahead_step_index
 from nav.planner.surprise import CollisionSurprise
 from nav.planner.units import bits_from_nats
@@ -57,7 +58,10 @@ from nav.walker import WalkerConfig
 
 TERM_NAMES = ("surprise", "contact", "goal", "previous plan", "kinetic")
 # The walker's own priors. The plan's cost leaves them out, since they are not work the scene imposed.
-WALKER_PRIOR_TERMS = frozenset({"goal", "previous plan"})
+# How the pipeline declares the two terms the breakdown can't tell from the scene. The rest are rates it counts.
+TERM_DECLARATIONS = {GOAL.name: GOAL, PREVIOUS_PLAN.name: PREVIOUS_PLAN}
+# The terms the plan's cost leaves out, as the pipeline declares them.
+WALKER_PRIOR_TERMS = frozenset(name for name, declaration in TERM_DECLARATIONS.items() if declaration.work_figure is WorkFigure.LEFT_OUT)
 # Where the slowest clearing sidestep is looked for, across the planner's grid.
 CLEARING_SEARCH_STEP_METERS = 0.05
 # Points this far beyond the nearest one still count as part of what has to be passed. Two scene cells.
@@ -133,7 +137,7 @@ def term_fields(
     obstacles: ObstacleSet,
     planner_config: PlannerConfig,
     walker: WalkerConfig,
-    goal_mode: GoalMode,
+    goal_switches: GoalSwitches,
 ) -> dict[str, np.ndarray]:
     """
     The frame's field split by term, each (steps, cells), for the given obstacles.
@@ -151,13 +155,13 @@ def term_fields(
     surprise = cost_field(obstacles, grid, planner_config, walker, (CollisionSurprise(),))
     contact = cost_field(obstacles, grid, planner_config, walker, (ContactSurprise(),)) if planner_config.contact_term_enabled else np.zeros_like(surprise)
     # The goal's spread depends on the scene, so the re-planned scene gets its own goal, and the real
-    # one comes off the kept field, as the surprise and contact terms do.
-    goal_point = goal_position(goal_mode, planner_config, frame.input.gaze_ground_point)
+    # one comes off the kept field, as the surprise and contact terms do. Built the pipeline's way.
+    goal_point, combined_tolerance = goal_for_frame(goal_switches, frame.input.gaze_ground_point, None, planner_config)
     goal = np.zeros_like(surprise)
-    goal[-1] = goal_term(grid, goal_point, goal_tolerance(planner_config, avoidance_surprise_nats(obstacles, planner_config)))
+    goal[-1] = goal_term(grid, goal_point, widened_goal_tolerance(combined_tolerance, planner_config, avoidance_surprise_nats(obstacles, planner_config)))
     real_goal = goal if obstacles is real else np.zeros_like(surprise)
     if obstacles is not real:
-        real_goal[-1] = goal_term(grid, goal_point, goal_tolerance(planner_config, avoidance_surprise_nats(real, planner_config)))
+        real_goal[-1] = goal_term(grid, goal_point, widened_goal_tolerance(combined_tolerance, planner_config, avoidance_surprise_nats(real, planner_config)))
     real_surprise = surprise if obstacles is real else cost_field(real, grid, planner_config, walker, (CollisionSurprise(),))
     if obstacles is real:
         real_contact = contact
@@ -182,23 +186,16 @@ def path_term_costs(fields: dict[str, np.ndarray], offsets: np.ndarray, planner_
     rows = np.arange(len(offsets))
     dt = planner_config.time_step_seconds
     priced = dict(fields)
-    priced["goal"] = goal_as_planned(fields["goal"], planner_config)
+    priced["goal"] = as_planned(fields["goal"], GOAL, planner_config)
     nats = {name: float(np.sum(field[rows, cells]) * dt) for name, field in priced.items()}
     lateral_speed = np.diff(np.asarray(offsets)) / dt
     nats["kinetic"] = float(np.sum(0.5 * planner_config.lateral_kinetic_weight * lateral_speed**2) * dt)
     return {name: float(bits_from_nats(value)) for name, value in nats.items()}
 
 
-def goal_as_planned(goal: np.ndarray, planner_config: PlannerConfig) -> np.ndarray:
-    """The goal field from term_fields with its last row divided by the time step, as the pipeline plans it."""
-    scaled = goal.copy()
-    scaled[-1] = terminal_cost_as_rate(goal[-1], planner_config)
-    return scaled
-
-
 def field_as_planned(fields: dict[str, np.ndarray], planner_config: PlannerConfig) -> np.ndarray:
     """The terms summed into the field the pipeline hands its dynamic program."""
-    return sum(goal_as_planned(field, planner_config) if name == "goal" else field for name, field in fields.items())
+    return sum(as_planned(field, TERM_DECLARATIONS[name], planner_config) if name in TERM_DECLARATIONS else field for name, field in fields.items())
 
 
 def replan_pinned(field: np.ndarray, planner_config: PlannerConfig, config: PlannerNumbersConfig) -> bool:
@@ -297,7 +294,7 @@ def band_attribution(
     travel_offset_at: Callable[[float], float | None],
     planner_config: PlannerConfig,
     walker: WalkerConfig,
-    goal_mode: GoalMode,
+    goal_switches: GoalSwitches,
     cell_size_meters: float,
     config: PlannerNumbersConfig,
 ) -> BandAttribution:
@@ -327,7 +324,7 @@ def band_attribution(
         heading = float(np.degrees(frame.path.lookahead_heading_radians))
         if not is_pinned(heading, limit, config):
             continue
-        fields = term_fields(frame, obstacles, planner_config, walker, goal_mode)
+        fields = term_fields(frame, obstacles, planner_config, walker, goal_switches)
         chosen = path_term_costs(fields, frame.path.lateral_offsets_meters, planner_config)
         straight = path_term_costs(fields, np.zeros_like(frame.path.lateral_offsets_meters), planner_config)
         difference = {name: chosen[name] - straight[name] for name in TERM_NAMES}
@@ -337,9 +334,9 @@ def band_attribution(
         offset = travel_offset_at(frame.input.timestamp_seconds)
         if offset is None or abs(np.degrees(offset)) > MAX_PHONE_OFFSET_DEGREES:
             unknown.add(PinCandidate.PHONE_POINTING)
-        elif not replan_pinned(field_as_planned(term_fields(frame, turned_into_travel(obstacles, offset), planner_config, walker, goal_mode), planner_config), planner_config, config):
+        elif not replan_pinned(field_as_planned(term_fields(frame, turned_into_travel(obstacles, offset), planner_config, walker, goal_switches), planner_config), planner_config, config):
             explained.add(PinCandidate.PHONE_POINTING)
-        if not replan_pinned(field_as_planned(term_fields(frame, walls_joined(obstacles, cell_size_meters), planner_config, walker, goal_mode), planner_config), planner_config, config):
+        if not replan_pinned(field_as_planned(term_fields(frame, walls_joined(obstacles, cell_size_meters), planner_config, walker, goal_switches), planner_config), planner_config, config):
             explained.add(PinCandidate.WALL_CELLS)
         # The goal's whole cost, spread evenly over every row instead of paid on the last one.
         without_goal = {name: field for name, field in fields.items() if name != "goal"}

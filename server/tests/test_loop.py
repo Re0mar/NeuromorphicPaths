@@ -22,12 +22,18 @@ import numpy as np
 import pytest
 
 # Local package imports
-from nav.config import GoalMode, RunConfig, SinkKind, SourceKind, build_run_config, build_sink, build_source
+from nav.config import RunConfig, SinkKind, SourceKind, build_run_config, build_sink, build_source
 from nav.main import main
+from nav.clock import laptop_time_seconds
 from nav.planner.config import PlannerConfig
+from nav.planner.pipeline import PlannerPipeline
+from nav.route.course import Fix
+from nav.route.route import RouteFollower
+from nav.route.service import parse_walking_response
 from nav.runtime.loop import EPISODES_FILENAME, RUN_CONFIG_FILENAME, FrameResult, PublisherThread, _latency_shares, _report, run
 from nav.runtime.tap import RecordingTap
 from nav.runtime.worker import NewestFrameWorker
+from nav.sinks.config import WebConfig
 from nav.sources.config import ArCoreConfig, LoggedConfig, TapConfig
 from nav.sources.framecodec import INDEX_FILENAME
 from nav.types import DebugView, DepthFrame, FloorSource, FrameTiming, ObstacleSet, Plane, PlannedPath, Pose
@@ -127,7 +133,7 @@ def test_a_sink_that_raises_an_unexpected_error_ends_the_run_with_exit_one_and_a
 
     log_dir = tmp_path / "log"
     _record_synthetic_log(log_dir, count=3)
-    config = RunConfig(source_kind=SourceKind.LOGGED, sink_kinds=(SinkKind.NONE,), goal_mode=GoalMode.AHEAD, logged=LoggedConfig(log_dir=str(log_dir)))
+    config = RunConfig(source_kind=SourceKind.LOGGED, sink_kinds=(SinkKind.NONE,), logged=LoggedConfig(log_dir=str(log_dir)))
 
     # The sink is swapped under the factory by building the config the loop would build, then
     # running with a sink the factory cannot produce. The loop takes what build_source_and_sink
@@ -164,7 +170,6 @@ def test_reconnect_with_a_recording_keeps_one_log_and_the_totals_across_connecti
     config = RunConfig(
         source_kind=SourceKind.ARCORE_TCP,
         sink_kinds=(SinkKind.NONE,),
-        goal_mode=GoalMode.AHEAD,
         # Short enough that the run ends soon after the second sender, long enough for both.
         arcore=ArCoreConfig(port=port, bind_address="127.0.0.1", accept_timeout_seconds=2.0),
         tap=TapConfig(log_dir=str(log_dir)),
@@ -216,7 +221,7 @@ def test_one_planner_serves_every_frame_of_a_run(tmp_path: Path, monkeypatch: py
     monkeypatch.setattr(loop_module, "PlannerPipeline", CountingPlanner)
     log_dir = tmp_path / "log"
     _record_synthetic_log(log_dir, count=6)
-    config = RunConfig(source_kind=SourceKind.LOGGED, sink_kinds=(SinkKind.NONE,), goal_mode=GoalMode.AHEAD, logged=LoggedConfig(log_dir=str(log_dir)))
+    config = RunConfig(source_kind=SourceKind.LOGGED, sink_kinds=(SinkKind.NONE,), logged=LoggedConfig(log_dir=str(log_dir)))
 
     assert run(config) == 0
 
@@ -259,7 +264,7 @@ def test_a_new_stretch_of_video_starts_the_scene_and_the_planner_afresh(tmp_path
     monkeypatch.setattr(loop_module, "PlannerPipeline", CountingPlanner)
     log_dir = tmp_path / "log"
     _record_synthetic_log(log_dir, count=6)
-    config = RunConfig(source_kind=SourceKind.LOGGED, sink_kinds=(SinkKind.NONE,), goal_mode=GoalMode.AHEAD, logged=LoggedConfig(log_dir=str(log_dir)))
+    config = RunConfig(source_kind=SourceKind.LOGGED, sink_kinds=(SinkKind.NONE,), logged=LoggedConfig(log_dir=str(log_dir)))
     monkeypatch.setattr(loop_module, "build_source_and_sink", lambda config, **hooks: (TwoStretchSource(build_source(config)), build_sink(config, **hooks)))
 
     assert run(config) == 0
@@ -295,7 +300,6 @@ def test_the_views_red_point_is_the_runs_alarm_threshold_in_bits(tmp_path: Path,
     config = RunConfig(
         source_kind=SourceKind.LOGGED,
         sink_kinds=(SinkKind.NONE,),
-        goal_mode=GoalMode.AHEAD,
         planner=planner,
         logged=LoggedConfig(log_dir=str(log_dir)),
     )
@@ -456,3 +460,67 @@ def test_verbose_raises_only_the_pipelines_loggers(tmp_path: Path) -> None:
     assert logging.getLogger("nav").level == logging.DEBUG
     assert logging.getLogger().level == root_level_before
     logging.getLogger("nav").setLevel(logging.NOTSET)
+
+
+# *******************************************
+# The route goal through run()
+# *******************************************
+
+ROUTE_FIXTURE = Path(__file__).parent / "fixtures" / "ors_walking_response.json"
+
+
+def test_a_run_with_a_logged_fix_stream_and_the_file_service_plans_toward_the_route(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    The real composition and the real loop, with only the page's messages handed straight to the tracker.
+
+    The route service is the file one over the recorded route, built by the command line's own path. The
+    walker stands at the route's start heading 30 degrees left of where the route goes, so the goal the
+    planner is handed must point 30 degrees right.
+    """
+    import nav.runtime.loop as loop_module
+
+    log_dir = tmp_path / "log"
+    _record_synthetic_log(log_dir, count=6)
+    config = build_run_config(
+        [
+            "--source", "logged", "--log-dir", str(log_dir), "--sink", "web",
+            "--route-goal", "on", "--route-service", "file", "--route-file", str(ROUTE_FIXTURE),
+        ]
+    )
+    # Any free port, so the test never holds the page's own 8765. The command line only takes real ports.
+    config = dataclasses.replace(config, web=WebConfig(port=0))
+    route = parse_walking_response(ROUTE_FIXTURE.read_text(encoding="utf-8"))
+    assert route is not None
+    start = route.points[0]
+    route_heading = RouteFollower(route, config.route).bearing_to_lookahead(start)
+    real_build = loop_module.build_route_tracker
+
+    def with_a_walker_on_the_route(run_config, working_directory):
+        # What the page sends, handed over before the first frame: a destination, then a fix walking
+        # 30 degrees left of the route. Received now, on the laptop's clock, so it is fresh for every frame.
+        tracker = real_build(run_config, working_directory)
+        tracker.on_destination(route.destination)
+        tracker.on_fix(Fix(start, 6.0, (route_heading - 30.0) % 360.0, 1.3, 1_760_000_000_000, laptop_time_seconds()))
+        tracker.close()
+        return tracker
+
+    handed: list = []
+
+    class RecordingPlanner(PlannerPipeline):
+        def plan(self, *args, **kwargs):
+            handed.append((self.goal_switches.route_goal, args[4] if len(args) > 4 else kwargs.get("route_goal")))
+            return super().plan(*args, **kwargs)
+
+    monkeypatch.setattr(loop_module, "build_route_tracker", with_a_walker_on_the_route)
+    monkeypatch.setattr(loop_module, "PlannerPipeline", RecordingPlanner)
+
+    assert run(config) == 0
+
+    assert handed, "the run planned nothing"
+    switched_on = [route_goal for switch, route_goal in handed if switch]
+    assert len(switched_on) == len(handed), "the route goal switch started on, from the command line"
+    goals = [goal for goal in switched_on if goal is not None]
+    assert goals, "no frame was handed a route goal"
+    # 30 degrees right is 0.5236 radians. The tolerance is the fix's 6 m at the 4 m goal over a 20 m look-ahead.
+    assert goals[0].relative_bearing_radians == pytest.approx(0.5236, abs=1e-3)
+    assert goals[0].tolerance_meters == pytest.approx(6.0 * 4.0 / 20.0)

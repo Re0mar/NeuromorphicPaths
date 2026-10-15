@@ -13,6 +13,7 @@ evidence that it still does.
 
 # Standard library imports
 import dataclasses
+import logging
 import hashlib
 import json
 import os
@@ -34,6 +35,7 @@ from nav.evaluation.config import EvaluationConfig
 from nav.evaluation.frames import PlannedFrame
 from nav.evaluation.overrides import apply_overrides
 from nav.evaluation.planner_numbers import PlannerInput, ReplayedFrame
+from nav.evaluation.route_replay import recorded_route_goals
 from nav.evaluation.scoring import (
     LaggedCorrelation,
     TurnScore,
@@ -47,7 +49,9 @@ from nav.evaluation.scoring import (
 from nav.evaluation.track import WalkerTrack, walker_track
 from nav.evaluation.turns import StraightSpread, Turn, TurnTag, detect_turns, straight_stretch_spread, tag_turn
 from nav.planner.alarm import alarm_raised
-from nav.planner.config import GoalMode, PlannerConfig
+from nav.planner.config import GoalSwitches, PlannerConfig, goal_switches_from_legacy_mode
+from nav.planner.goal import RouteGoal
+from nav.route.route import RouteConfig
 from nav.planner.pipeline import PlannerPipeline
 from nav.runtime.loop import RUN_CONFIG_FILENAME, gaze_on_the_ground
 from nav.scene.config import SceneConfig
@@ -98,6 +102,8 @@ class UnalignedFrames(Enum):
     # report that only reads the camera-frame floor, and counts these frames apart.
     PROCESS = "process"
 
+
+log = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class PlannedScene:
@@ -183,7 +189,7 @@ class PassResult:
 class WalkResult:
     name: str
     scene_source: str
-    goal_mode: GoalMode
+    goal_switches: GoalSwitches
     frames: int
     planned_frames: int
     refused_frames: int
@@ -256,20 +262,28 @@ def scene_config_for(log_dir: Path, scene_defaults: bool, scene_overrides: list[
     return config, f"{RUN_CONFIG_FILENAME}{set_by_flag}"
 
 
-def goal_mode_for(log_dir: Path) -> GoalMode:
+def goal_switches_for(log_dir: Path) -> GoalSwitches:
     """
-    The goal mode the live run used, ahead when the recording doesn't say.
+    The goal switches the live run started with. Both off when the recording doesn't say.
 
-    :raises RecordingRefused: On a goal mode this code doesn't know.
+    A recording from before the two switches names a goal_mode instead, read through the one legacy mapping.
+
+    :raises RecordingRefused: On a goal mode this code never had.
     """
     run_config_path = Path(log_dir) / RUN_CONFIG_FILENAME
     if not run_config_path.is_file():
-        return GoalMode.AHEAD
-    spelling = _read_run_config(run_config_path).get("goal_mode", GoalMode.AHEAD.value)
+        return GoalSwitches()
+    recorded = _read_run_config(run_config_path)
+    planner = recorded.get("planner", {})
+    if isinstance(planner, dict) and "gaze_goal" in planner:
+        return GoalSwitches(gaze_goal=bool(planner["gaze_goal"]), route_goal=bool(planner.get("route_goal", False)))
+    spelling = recorded.get("goal_mode", "ahead")
     try:
-        return GoalMode(spelling)
-    except ValueError:
-        raise RecordingRefused(f"{run_config_path} names goal mode {spelling!r}, which this code doesn't have") from None
+        switches = goal_switches_from_legacy_mode(spelling)
+    except ValueError as unknown:
+        raise RecordingRefused(f"{run_config_path}: {unknown}") from None
+    log.info("%s names goal_mode %r, read as gaze goal %s, route goal %s", run_config_path, spelling, switches.gaze_goal, switches.route_goal)
+    return switches
 
 
 def scene_pass(
@@ -428,7 +442,7 @@ def replayed_frames(
     inputs: Sequence[PlannerInput],
     planner_config: PlannerConfig,
     walker: WalkerConfig,
-    goal_mode: GoalMode,
+    goal_switches: GoalSwitches,
     keep_fields: bool = False,
 ) -> list[ReplayedFrame]:
     """
@@ -443,23 +457,35 @@ def replayed_frames(
     :rtype: list[ReplayedFrame]
     """
     planner = PlannerPipeline(planner_config, walker)
+    planner.set_goal_switches(goal_switches)
     frames = []
     for row in inputs:
         samples = GazeSamples.of(row.gaze_pixels, row.gaze_sample_offsets_seconds, row.intrinsics)
-        path = planner.plan(row.obstacles, 0.0, goal_mode, row.gaze_ground_point, samples)
+        path = planner.plan(row.obstacles, 0.0, row.gaze_ground_point, samples, row.route_goal)
         field = planner.last_field.copy() if keep_fields else None
         frames.append(ReplayedFrame(input=row, path=path, raise_decision=alarm_raised(row.obstacles, planner_config), field=field))
     return frames
 
 
-def planner_pass(scene: ScenePass, planner_config: PlannerConfig, walker: WalkerConfig, goal_mode: GoalMode) -> list[PlannedFrame]:
+def planner_pass(
+    scene: ScenePass,
+    planner_config: PlannerConfig,
+    walker: WalkerConfig,
+    goal_switches: GoalSwitches,
+    route_goals: Sequence[RouteGoal | None] | None = None,
+) -> list[PlannedFrame]:
     """
     Plan every frame the scene accepted, with one planner for the whole log, the way the loop does.
 
+    :param route_goals: Each planned frame's route goal, from recorded_route_goals. None for a walk
+        recorded without fixes and routes.
     :return: Each frame with the planner's own arrow.
     :rtype: list[PlannedFrame]
     """
-    replayed = replayed_frames([row.planner_input() for row in scene.planned], planner_config, walker, goal_mode)
+    inputs = [row.planner_input() for row in scene.planned]
+    if route_goals is not None:
+        inputs = [dataclasses.replace(row, route_goal=goal) for row, goal in zip(inputs, route_goals, strict=True)]
+    replayed = replayed_frames(inputs, planner_config, walker, goal_switches)
     frames = []
     for row, replayed_frame in zip(scene.planned, replayed, strict=True):
         path = replayed_frame.path
@@ -552,7 +578,7 @@ def evaluate_walk(
     all. Tags and every arrow figure are recomputed per pass.
     """
     walker = WalkerConfig()
-    goal_mode = goal_mode_for(log_dir)
+    goal_switches = goal_switches_for(log_dir)
     pass_results = []
     cache_states = []
     first: ScenePass | None = None
@@ -567,13 +593,14 @@ def evaluate_walk(
             all_segments, segments = segment_tracks(scene, config)
             defined = sum(int(np.count_nonzero(np.isfinite(segment.track.heading_radians))) for segment in segments)
             scored_seconds = defined * config.resample_step_seconds
-        frames = planner_pass(scene, planner_config, walker, goal_mode)
+        route_goals = recorded_route_goals(log_dir, [row.timestamp_seconds for row in scene.planned], RouteConfig(), planner_config.goal_distance_meters)
+        frames = planner_pass(scene, planner_config, walker, goal_switches, route_goals)
         pass_results.append(score_pass(segments, frames, config))
     spreads = [straight_stretch_spread(segment.track, config) for segment in segments]
     return WalkResult(
         name=Path(log_dir).name,
         scene_source=scene_source,
-        goal_mode=goal_mode,
+        goal_switches=goal_switches,
         frames=int(first.pose_times_seconds.shape[0]),
         planned_frames=len(first.planned),
         refused_frames=first.refused_frames,

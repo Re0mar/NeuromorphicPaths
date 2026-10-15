@@ -40,7 +40,7 @@ from nav.evaluation.planner_numbers import (
 )
 from nav.evaluation.replay import replayed_frames
 from nav.planner.alarm import alarm_raised
-from nav.planner.config import GoalMode, PlannerConfig
+from nav.planner.config import GoalSwitches, PlannerConfig
 from nav.planner.pipeline import PlannerPipeline
 from nav.scene.floor import ground_axes
 from nav.types import WORLD_UP, ObstaclePoint, ObstacleSet, Plane, PlannedPath
@@ -259,10 +259,10 @@ def test_disagreement_percentiles_cover_every_pair() -> None:
 
 def test_replayed_frames_make_the_loops_call() -> None:
     inputs = [planned_input(0.0, (point(0.0, 1.2, 0.85),)), planned_input(0.1, (point(0.0, 1.1, 0.75),))]
-    frames = replayed_frames(inputs, PLANNER, WalkerConfig(), GoalMode.AHEAD)
+    frames = replayed_frames(inputs, PLANNER, WalkerConfig(), GoalSwitches())
     planner = PlannerPipeline(PLANNER, WalkerConfig())
     for row, replayed in zip(inputs, frames, strict=True):
-        direct = planner.plan(row.obstacles, 0.0, GoalMode.AHEAD, row.gaze_ground_point)
+        direct = planner.plan(row.obstacles, 0.0, row.gaze_ground_point)
         assert replayed.path.lookahead_heading_radians == direct.lookahead_heading_radians
         assert np.array_equal(replayed.path.lateral_offsets_meters, direct.lateral_offsets_meters)
         assert replayed.path.alarm == direct.alarm
@@ -280,7 +280,7 @@ def test_a_replayed_frame_holds_the_path_plan_returned(monkeypatch) -> None:
         return path
 
     monkeypatch.setattr(PlannerPipeline, "plan", recording_plan)
-    frames = replayed_frames([planned_input(0.0), planned_input(0.1)], PLANNER, WalkerConfig(), GoalMode.AHEAD)
+    frames = replayed_frames([planned_input(0.0), planned_input(0.1)], PLANNER, WalkerConfig(), GoalSwitches())
     assert [frame.path for frame in frames] == returned
     assert all(frame.path is path for frame, path in zip(frames, returned))
 
@@ -694,18 +694,18 @@ def test_the_travel_offset_is_positive_when_the_walker_heads_right_of_the_phone(
     times = np.arange(0.0, 4.0, 1.0 / 30.0)
     positions = 1.4 * times[:, None] * travel[None, :]
     frames = [frame(2.0, axes=(right, phone_forward))]
-    replay = SegmentReplay(frames, "test", "test", GoalMode.AHEAD, 0.25, times, positions)
+    replay = SegmentReplay(frames, "test", "test", GoalSwitches(), 0.25, times, positions)
     assert math.degrees(travel_offset_lookup(replay)(2.0)) == pytest.approx(20.0, abs=1.0)
 
 
 def test_the_travel_offset_is_unknown_when_standing_or_without_a_world_pose() -> None:
     times = np.arange(0.0, 4.0, 1.0 / 30.0)
     standing = np.zeros((len(times), 3))
-    replay = SegmentReplay([frame(2.0)], "test", "test", GoalMode.AHEAD, 0.25, times, standing)
+    replay = SegmentReplay([frame(2.0)], "test", "test", GoalSwitches(), 0.25, times, standing)
     # Standing still gives the track no heading, so there's no direction of travel to compare with.
     assert travel_offset_lookup(replay)(2.0) is None
     walking = 1.4 * times[:, None] * np.array([0.0, 0.0, 1.0])[None, :]
-    no_pose = SegmentReplay([frame(2.0, origin=None)], "test", "test", GoalMode.AHEAD, 0.25, times, walking)
+    no_pose = SegmentReplay([frame(2.0, origin=None)], "test", "test", GoalSwitches(), 0.25, times, walking)
     assert travel_offset_lookup(no_pose)(2.0) is None
 
 

@@ -25,9 +25,10 @@ from nav.clock import laptop_time_seconds
 from nav.config import RunConfig, build_route_tracker, build_source_and_sink
 from nav.planner.alarm import path_red_from_bits
 from nav.planner.attention import pixel_ray
+from nav.planner.config import RunSwitchKind
 from nav.planner.pipeline import PlannerPipeline
 from nav.route import RouteFrame, RouteStateSink
-from nav.runtime.gaze_silencing import GazeSilencingSwitch
+from nav.runtime.switches import RunSwitches
 from nav.runtime.textio import append_text_lf, write_text_lf
 from nav.runtime.timing import StageDurations, TimingLog, TimingRecorder
 from nav.runtime.worker import NewestFrameWorker
@@ -144,7 +145,7 @@ def run(config: RunConfig) -> int:
     scene = ScenePipeline(config.scene, config.walker)
     planner = PlannerPipeline(config.planner, config.walker)
     # Run-wide, outliving the planner that a new stretch of video rebuilds. A page may flip it.
-    gaze_switch = GazeSilencingSwitch(config.planner.gaze_silences_alarm)
+    switches = RunSwitches(config.planner)
     meter = WorkMeter(config.usermodel)
     baseline = HeadingBaseline(HEADING_BASELINE_SECONDS)
     timing = TimingRecorder(_timing_log(config))
@@ -190,13 +191,17 @@ def run(config: RunConfig) -> int:
         after_scene = time.perf_counter()
         gaze = gaze_on_the_ground(frame, scene)
         # Paired on the laptop's arrival stamp, the clock fixes are stamped on. A frame with no timing
-        # record, from a source that doesn't stamp arrivals, falls back to its own timestamp.
-        arrival = frame.timing.arrival_seconds if frame.timing is not None else frame.timestamp_seconds
-        route = None if route_tracker is None else route_tracker.frame(arrival)
+        # record comes from a logged recording, whose own timestamp is the recording's clock, not the
+        # laptop's. Fixes still arrive live from the page, so it pairs on the moment it is planned.
+        route = None
+        if route_tracker is not None:
+            arrival = frame.timing.arrival_seconds if frame.timing is not None else laptop_time_seconds()
+            route = route_tracker.frame(arrival)
         samples = GazeSamples.of(frame.gaze_pixels, frame.gaze_sample_offsets_seconds, frame.intrinsics)
         # Read before every plan, so a page's flip reaches the very next path, and a rebuilt planner too.
-        planner.set_gaze_silences_alarm(gaze_switch.enabled)
-        path = planner.plan(obstacles, 0.0, config.goal_mode, gaze, samples)
+        planner.set_gaze_silences_alarm(switches[RunSwitchKind.GAZE_SILENCING].enabled)
+        planner.set_goal_switches(switches.goal_switches())
+        path = planner.plan(obstacles, 0.0, gaze, samples, None if route is None else route.goal)
         after_planner = time.perf_counter()
         plan_done_seconds = laptop_time_seconds()
         observed = baseline.observed(yaw_from_quaternion(frame.pose.orientation), frame.timestamp_seconds)
@@ -240,7 +245,7 @@ def run(config: RunConfig) -> int:
 
     # Built together, because the glasses' video goes from the source's device to the web sink
     # without passing through here.
-    source, sink = build_source_and_sink(config, on_path_sent=timing.path_sent, gaze_switch=gaze_switch, route_input=route_tracker)
+    source, sink = build_source_and_sink(config, on_path_sent=timing.path_sent, switches=switches.as_mapping(), route_input=route_tracker)
     worker: NewestFrameWorker[FrameResult] = NewestFrameWorker(process, on_dropped=timing.frame_dropped)
     worker.start()
     publisher = PublisherThread(sink, worker, on_published=timing.path_published)

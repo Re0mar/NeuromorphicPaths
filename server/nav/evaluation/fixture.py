@@ -45,8 +45,8 @@ from nav.evaluation.planner_numbers import (
     plan_disagreement,
     plan_forward_distances,
 )
-from nav.evaluation.replay import RecordingRefused, clone_state, goal_mode_for, replayed_frames, scene_config_for, scene_pass, segment_bounds
-from nav.planner.config import GoalMode, PlannerConfig
+from nav.evaluation.replay import RecordingRefused, clone_state, goal_switches_for, replayed_frames, scene_config_for, scene_pass, segment_bounds
+from nav.planner.config import GoalSwitches, PlannerConfig
 from nav.sources.framecodec import FrameDecodeError
 from nav.types import ObstaclePoint, ObstacleSet
 from nav.walker import WalkerConfig
@@ -262,9 +262,9 @@ def _run(arguments: argparse.Namespace) -> int:
     except IndexError:
         raise UsageError(f"{arguments.log_dir.name} has {len(bounds)} segments, so there is no segment {arguments.segment}") from None
     inputs = [row.planner_input() for row in passed.planned if segment_start <= row.timestamp_seconds <= segment_end]
-    goal_mode = goal_mode_for(arguments.log_dir)
+    goal_switches = goal_switches_for(arguments.log_dir)
     if arguments.subcommand == "find":
-        return _find(arguments, inputs, planner_config, config, walker, goal_mode)
+        return _find(arguments, inputs, planner_config, config, walker, goal_switches)
 
     if arguments.start > arguments.end:
         print(f"the window starts at {arguments.start} s, after it ends at {arguments.end} s", file=sys.stderr)
@@ -281,7 +281,7 @@ def _run(arguments: argparse.Namespace) -> int:
     needed = config.min_frames_for_a_share
     if band_frames < needed or clear_frames < needed:
         raise FixtureRefused(f"the window holds {band_frames} band and {clear_frames} clear frames, and a slice needs {needed} of each")
-    check_rounding(window, planner_config, walker, goal_mode)
+    check_rounding(window, planner_config, walker, goal_switches)
     provenance = {
         "walk": arguments.log_dir.name,
         "segment": arguments.segment,
@@ -290,7 +290,8 @@ def _run(arguments: argparse.Namespace) -> int:
             "clone_state": clone_state(),
             "scene_config": dataclasses.asdict(scene_config),
             "scene_config_source": scene_source,
-            "goal_mode": goal_mode.value,
+            "gaze_goal": goal_switches.gaze_goal,
+            "route_goal": goal_switches.route_goal,
         },
         "walker": dataclasses.asdict(walker),
     }
@@ -337,7 +338,7 @@ def _find(
     planner_config: PlannerConfig,
     config: PlannerNumbersConfig,
     walker: WalkerConfig,
-    goal_mode: GoalMode,
+    goal_switches: GoalSwitches,
 ) -> int:
     bands = frame_bands(inputs, planner_config, config)
     windows = shortest_windows(bands, config.min_frames_for_a_share)
@@ -350,7 +351,7 @@ def _find(
         )
         return EXIT_NO_WINDOW
     # The pairs the flip check is about, so the pinned numbers include them where the length allows.
-    frames = replayed_frames(inputs, planner_config, walker, goal_mode)
+    frames = replayed_frames(inputs, planner_config, walker, goal_switches)
     forward_distances = plan_forward_distances(planner_config)
     gaps = np.full(len(frames), np.nan)
     for index in range(1, len(frames)):
@@ -372,7 +373,7 @@ def _find(
     return EXIT_DONE
 
 
-def check_rounding(window: Sequence[PlannerInput], planner_config: PlannerConfig, walker: WalkerConfig, goal_mode: GoalMode) -> None:
+def check_rounding(window: Sequence[PlannerInput], planner_config: PlannerConfig, walker: WalkerConfig, goal_switches: GoalSwitches) -> None:
     """
     Refuse a slice whose rounding changes any plan, so the slice pins what the recording gives.
 
@@ -380,8 +381,8 @@ def check_rounding(window: Sequence[PlannerInput], planner_config: PlannerConfig
 
     :raises FixtureRefused: Naming how many frames changed and the first few timestamps.
     """
-    exact = replayed_frames(window, planner_config, walker, goal_mode)
-    stored = replayed_frames([rounded_input(row) for row in window], planner_config, walker, goal_mode)
+    exact = replayed_frames(window, planner_config, walker, goal_switches)
+    stored = replayed_frames([rounded_input(row) for row in window], planner_config, walker, goal_switches)
     changed = [
         f"{a.input.timestamp_seconds!r}"
         for a, b in zip(exact, stored, strict=True)

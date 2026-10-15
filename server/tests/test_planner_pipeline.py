@@ -9,11 +9,11 @@ import pytest
 
 # Local package imports
 from nav.planner.alarm import avoidance_surprise_nats
-from nav.planner.config import GoalMode, PlannerConfig
+from nav.planner.config import PlannerConfig
 from nav.planner.contact import ContactSurprise
 from nav.planner.dynamic_programming import plan
 from nav.planner.field import cost_field
-from nav.planner.goal import goal_position, goal_term, goal_tolerance, terminal_cost_as_rate
+from nav.planner.goal import RouteGoal, goal_term, goal_tolerance, terminal_cost_as_rate
 from nav.planner.heading import lookahead_step_index
 from nav.planner.pipeline import PlannerPipeline, planner_terms
 from nav.planner.surprise import CollisionSurprise, surprise_field
@@ -23,6 +23,8 @@ from nav.types import ObstaclePoint, ObstacleSet, PlannedPath
 from nav.walker import WalkerConfig
 
 CONFIG = PlannerConfig()
+# The same planner with the gaze goal switched on, for the tests about where the wearer looks.
+GAZE_CONFIG = replace(CONFIG, gaze_goal=True)
 WALKER = WalkerConfig(radius_meters=0.35)
 
 
@@ -135,20 +137,16 @@ def test_the_gaze_goal_picks_the_gap_on_the_gaze_side_when_two_gaps_are_equal() 
     two_gaps = _wall_across(2.5, gap=None)
     points = [p for p in two_gaps.points if not (1.0 <= abs(p.lateral_meters) <= 1.5)]
     scene = _set(*points)
-    pipeline = PlannerPipeline(CONFIG, WALKER)
-
-    left = pipeline.plan(scene, goal_mode=GoalMode.GAZE, gaze_ground_point=np.array([-1.25, 4.0]))
-    right = pipeline.plan(scene, goal_mode=GoalMode.GAZE, gaze_ground_point=np.array([1.25, 4.0]))
+    left = PlannerPipeline(GAZE_CONFIG, WALKER).plan(scene, gaze_ground_point=np.array([-1.25, 4.0]))
+    right = PlannerPipeline(GAZE_CONFIG, WALKER).plan(scene, gaze_ground_point=np.array([1.25, 4.0]))
 
     assert left.lateral_offsets_meters[-1] < 0.0
     assert right.lateral_offsets_meters[-1] > 0.0
 
 
 def test_the_gaze_goal_falls_back_to_ahead_without_a_gaze() -> None:
-    pipeline = PlannerPipeline(CONFIG, WALKER)
-
-    ahead = pipeline.plan(_set(), goal_mode=GoalMode.AHEAD)
-    no_gaze = pipeline.plan(_set(), goal_mode=GoalMode.GAZE, gaze_ground_point=None)
+    ahead = PlannerPipeline(CONFIG, WALKER).plan(_set())
+    no_gaze = PlannerPipeline(GAZE_CONFIG, WALKER).plan(_set(), gaze_ground_point=None)
 
     assert no_gaze.lateral_offsets_meters == pytest.approx(ahead.lateral_offsets_meters)
 
@@ -204,14 +202,15 @@ def test_last_field_is_the_field_the_plan_was_made_from() -> None:
     # row divided by the time step. Planning that copy has to give back the pipeline's own path and cost.
     gaze = np.array([0.9, 4.0])
     scene = _set(_point(0.0, 3.0, group=1))
-    pipeline = PlannerPipeline(CONFIG, WALKER)
+    pipeline = PlannerPipeline(GAZE_CONFIG, WALKER)
     assert pipeline.last_field is None
 
-    path = pipeline.plan(scene, goal_mode=GoalMode.GAZE, gaze_ground_point=gaze)
+    path = pipeline.plan(scene, gaze_ground_point=gaze)
 
     assert pipeline.last_field is not None
     assert pipeline.last_field.shape == (len(path.times_seconds), len(pipeline.grid))
-    goal_row = goal_term(pipeline.grid, goal_position(GoalMode.GAZE, CONFIG, gaze), goal_tolerance(CONFIG, avoidance_surprise_nats(scene, CONFIG)))
+    # The gaze point is inside the grid and at the goal distance, so it is the goal as it is.
+    goal_row = goal_term(pipeline.grid, gaze, goal_tolerance(CONFIG, avoidance_surprise_nats(scene, CONFIG)))
     scene_only = cost_field(scene, pipeline.grid, CONFIG, WALKER, planner_terms(CONFIG))
     np.testing.assert_array_equal(pipeline.last_field[:-1], scene_only[:-1])
     np.testing.assert_array_equal(pipeline.last_field[-1], scene_only[-1] + goal_row)
@@ -230,9 +229,9 @@ GOAL_REACH_METERS = 1.0
 
 
 def test_a_goal_to_the_side_moves_the_plan_in_an_empty_field() -> None:
-    pipeline = PlannerPipeline(CONFIG, WALKER)
+    pipeline = PlannerPipeline(GAZE_CONFIG, WALKER)
 
-    path = pipeline.plan(_set(), goal_mode=GoalMode.GAZE, gaze_ground_point=np.array([1.5, 4.0]))
+    path = pipeline.plan(_set(), gaze_ground_point=np.array([1.5, 4.0]))
 
     assert path.lateral_offsets_meters[-1] >= GOAL_REACH_METERS, path.lateral_offsets_meters[-1]
     assert path.lookahead_heading_radians > 0.0
@@ -241,9 +240,9 @@ def test_a_goal_to_the_side_moves_the_plan_in_an_empty_field() -> None:
 def test_the_goal_adds_no_scene_information_in_an_empty_field() -> None:
     # The goal is in the information measure's prior at the same scaling as in the plan, so with
     # nothing in view the two are one distribution, wherever the gaze is.
-    pipeline = PlannerPipeline(CONFIG, WALKER)
+    pipeline = PlannerPipeline(GAZE_CONFIG, WALKER)
     for lateral in (-2.2, 0.0, 0.7, 1.5):
-        path = pipeline.plan(_set(), goal_mode=GoalMode.GAZE, gaze_ground_point=np.array([lateral, 4.0]))
+        path = pipeline.plan(_set(), gaze_ground_point=np.array([lateral, 4.0]))
         assert path.scene_information_bits == pytest.approx(0.0, abs=1e-12), lateral
 
 
@@ -284,7 +283,8 @@ def test_with_contact_off_the_plan_is_what_his_field_alone_gives(scene: Obstacle
     pipeline = PlannerPipeline(config, WALKER)
     field = surprise_field(scene, pipeline.grid, config, WALKER)
     tolerance = goal_tolerance(config, avoidance_surprise_nats(scene, config))
-    goal_row = goal_term(pipeline.grid, goal_position(GoalMode.AHEAD, config, None), tolerance)
+    # Both goal sources off: straight ahead at the goal distance.
+    goal_row = goal_term(pipeline.grid, np.array([0.0, config.goal_distance_meters]), tolerance)
     field[-1] += terminal_cost_as_rate(goal_row, config)
     expected_offsets, planned_cost = plan(field, 0.0, pipeline.grid, config)
     expected_cost = planned_cost - goal_row[int(np.argmin(np.abs(pipeline.grid - expected_offsets[-1])))]
@@ -559,3 +559,28 @@ def test_a_wall_walked_toward_is_passed_at_its_open_end(right_end: float, noise:
 @pytest.mark.parametrize("right_end", [1.5, 2.0, 2.5])
 def test_a_wide_steady_wall_is_passed_at_its_open_end(right_end: float) -> None:
     assert _sidestep_on_reaching_the_wall(right_end, 0.03) > right_end + WALKER.radius_meters
+
+
+def test_the_previous_plan_prior_forgets_against_its_own_distance_not_the_combined_tolerance() -> None:
+    # A sure route goal, 0.3 m of tolerance, whose sideways place jitters 0.7 m between two frames, as GPS
+    # noise moves it. Past the combined tolerance and well short of the 1.5 m forget distance, so the
+    # prior must hold, which shows as the kept field being more than the scene and the goal.
+    config = replace(CONFIG, route_goal=True)
+    pipeline = PlannerPipeline(config, WALKER)
+    scene = _set(_point(0.0, 3.0, group=1))
+    pipeline.plan(scene, route_goal=RouteGoal(0.0, 0.3))
+    second = ObstacleSet(1.0 / 30.0, scene.points, scene.groups_in_view)
+    # 4 m x tan b = 0.7 m sideways.
+    pipeline.plan(second, route_goal=RouteGoal(float(np.arctan(0.7 / config.goal_distance_meters)), 0.3))
+    scene_only = cost_field(second, pipeline.grid, config, WALKER, planner_terms(config))
+    first_second = pipeline.last_field[1:11] - scene_only[1:11]
+    assert np.max(first_second) > 0.0, "the prior was forgotten on a sideways move under its own distance"
+
+
+def test_the_route_goal_reaches_the_plan_only_with_its_switch_on() -> None:
+    # A route 20 degrees right at a tolerance sharp enough to steer an empty field, 0.3 m.
+    route = RouteGoal(float(np.radians(20.0)), 0.3)
+    off = PlannerPipeline(CONFIG, WALKER).plan(_set(), route_goal=route)
+    on = PlannerPipeline(replace(CONFIG, route_goal=True), WALKER).plan(_set(), route_goal=route)
+    assert off.lateral_offsets_meters[-1] == 0.0
+    assert on.lateral_offsets_meters[-1] > 0.5

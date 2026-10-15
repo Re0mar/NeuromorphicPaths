@@ -28,6 +28,7 @@ import numpy as np
 
 # Local package imports
 from nav.planner.config import PlannerConfig
+from nav.planner.spread import spread_variance
 
 
 def check_previous_plan_config(config: PlannerConfig) -> None:
@@ -102,7 +103,7 @@ class PreviousPlanPrior:
         prior = np.zeros((len(self._times), len(grid)), dtype=np.float64)
         # The older the plan, the less precisely it says where the walker will be, so its spread
         # widens with the time since it was made. Still half of (distance over spread) squared.
-        spread_squared = self._config.previous_plan_spread_meters**2 + self._config.previous_plan_spread_growth_square_meters_per_second * elapsed
+        spread_squared = spread_variance(self._config.previous_plan_spread_meters, [(self._config.previous_plan_spread_growth_square_meters_per_second, elapsed)])
         prior[rows] = 0.5 * (grid[None, :] - expected[rows, None]) ** 2 / spread_squared
         return prior
 

@@ -12,18 +12,19 @@ from dataclasses import dataclass
 from enum import Enum
 
 
-class GoalMode(Enum):
-    """What the planner aims at when nothing is in the way. Values are the command line spellings."""
-
-    AHEAD = "ahead"
-    GAZE = "gaze"
-
-
 class OnOff(Enum):
     """A run-wide switch as the page and the command line spell it. The config holds it as a bool."""
 
     OFF = "off"
     ON = "on"
+
+
+class RunSwitchKind(Enum):
+    """The run-wide switches any page may flip. Values are the message kinds the page sends."""
+
+    GAZE_SILENCING = "gaze_silencing"  # Whether the eyes on the danger may quiet the alarm.
+    GAZE_GOAL = "gaze_goal"  # Whether the plan leans toward where the wearer looks.
+    ROUTE_GOAL = "route_goal"  # Whether the plan leans along the walking route.
 
 
 @dataclass(frozen=True)
@@ -120,6 +121,14 @@ class PlannerConfig:
     # steer. A narrower goal tolerance would have made every glance forget, and the flips come back.
     previous_plan_forget_on_goal_move_meters: float = 1.5
     goal_distance_meters: float = 4.0  # Old file's goal_dist.
+    # The goal's two sources, each a run-wide switch the page can flip. These are the starting states.
+    # With both off, or neither with anything to say this frame, the goal is straight ahead.
+    gaze_goal: bool = False
+    route_goal: bool = False
+    # Ours, by eye, for the outdoor walk to move. Past this bearing off the walker's course, the route goal
+    # sits at the grid's edge on that side rather than at the goal distance times its tangent, which runs
+    # off to infinity toward 90 degrees and turns back past it.
+    route_goal_max_bearing_degrees: float = 60.0
     # Ours. How far from the goal the plan may end before the goal counts it as surprising, with nothing in
     # the corridor. It was 1.5 m, and the goal couldn't move an empty-field plan at any tolerance while it
     # was charged as a rate. As a cost it moves the plan's end only while one more 0.1 m sidestep, 0.325
@@ -174,3 +183,34 @@ class PlannerConfig:
     # Under this time to contact the alarm is heard whatever the gaze says, because looking at
     # something is not avoiding it. Half the alarm's threshold, a starting value for the live walk.
     attention_floor_seconds: float = 0.35
+
+
+@dataclass(frozen=True)
+class GoalSwitches:
+    """Which of the goal's sources are on. Both off is straight ahead."""
+
+    gaze_goal: bool = False
+    route_goal: bool = False
+
+
+def goal_switches_of(config: PlannerConfig) -> GoalSwitches:
+    """The switches a config starts a run with."""
+    return GoalSwitches(gaze_goal=config.gaze_goal, route_goal=config.route_goal)
+
+
+# The goal's one setting before the two switches, as every recording made until then spells it.
+LEGACY_GOAL_MODES = {"ahead": GoalSwitches(), "gaze": GoalSwitches(gaze_goal=True)}
+
+
+def goal_switches_from_legacy_mode(spelling: str) -> GoalSwitches:
+    """
+    The switches an old `goal_mode` setting stands for. The one mapping every reader of the old key calls.
+
+    example: "gaze" -> gaze goal on, route goal off
+
+    :raises ValueError: When the spelling was never a goal mode.
+    """
+    try:
+        return LEGACY_GOAL_MODES[spelling]
+    except KeyError as unknown:
+        raise ValueError(f"goal_mode {spelling!r} was never a goal mode, the old ones are {sorted(LEGACY_GOAL_MODES)}") from unknown

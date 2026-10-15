@@ -43,10 +43,10 @@ from nav.evaluation.config import PlannerNumbersConfig
 from nav.evaluation.fixture import read_fixture
 from nav.evaluation.planner_numbers import ClearanceBand, PlannerNumbers, whole_walk_numbers
 from nav.evaluation.replay import replayed_frames
-from nav.planner.config import GoalMode, PlannerConfig
+from nav.planner.config import GoalSwitches, PlannerConfig, goal_switches_from_legacy_mode
 from nav.planner.dynamic_programming import plan
 from nav.planner.field import lateral_grid, step_count
-from nav.planner.goal import goal_position, goal_term, goal_tolerance, terminal_cost_as_rate
+from nav.planner.goal import goal_term, goal_tolerance, terminal_cost_as_rate
 from nav.walker import WalkerConfig
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -131,11 +131,17 @@ EXPECTED = {
 SLICES = {name: read_fixture(FIXTURES / name) for name in EXPECTED}
 
 
+def slice_goal_switches(cut_from: dict) -> GoalSwitches:
+    """The goal switches a slice was cut with. The committed slices predate the switches and name a goal_mode."""
+    if "gaze_goal" in cut_from:
+        return GoalSwitches(gaze_goal=bool(cut_from["gaze_goal"]), route_goal=bool(cut_from.get("route_goal", False)))
+    return goal_switches_from_legacy_mode(cut_from["goal_mode"])
+
+
 def numbers_for(name: str) -> PlannerNumbers:
     golden = SLICES[name]
     golden.require_walker(WalkerConfig())
-    goal_mode = GoalMode(golden.provenance["cut_from"]["goal_mode"])
-    frames = replayed_frames(golden.inputs, PlannerConfig(), WalkerConfig(), goal_mode)
+    frames = replayed_frames(golden.inputs, PlannerConfig(), WalkerConfig(), slice_goal_switches(golden.provenance["cut_from"]))
     return whole_walk_numbers(frames, PlannerConfig(), PlannerNumbersConfig())
 
 
@@ -199,10 +205,18 @@ def test_the_goal_cost_on_the_chosen_path_matches_a_hand_sum() -> None:
     config = replace(PlannerConfig(), goal_tolerance_meters=0.4, lateral_kinetic_weight=6.5)
     grid = lateral_grid(config)
     field = np.zeros((step_count(config), len(grid)))
-    goal = goal_position(GoalMode.GAZE, config, np.array([1.5, 4.0]))
+    goal = np.array([1.5, 4.0])
     field[-1] += terminal_cost_as_rate(goal_term(grid, goal, goal_tolerance(config, 0.0)), config)
 
     offsets, cost = plan(field, 0.0, grid, config)
 
     assert offsets[-1] == pytest.approx(1.0)
     assert cost == pytest.approx(4.03125, abs=1e-9)
+
+
+@pytest.mark.parametrize("name", sorted(EXPECTED))
+def test_the_committed_golden_slices_still_load_their_legacy_goal_mode(name: str) -> None:
+    # Cut before the two switches, so each names goal_mode "ahead", which is both switches off.
+    cut_from = SLICES[name].provenance["cut_from"]
+    assert cut_from["goal_mode"] == "ahead"
+    assert slice_goal_switches(cut_from) == GoalSwitches()
