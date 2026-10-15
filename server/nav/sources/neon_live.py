@@ -235,6 +235,14 @@ class NeonLiveRgbSource:
                 # Undistorted with the image, or it points at a different scene point. None when
                 # the crop cut it off.
                 gaze_pixel = undistorter.undistort_pixel(np.array([matched.gaze.x, matched.gaze.y]))
+            # The same for every sample near the stamp. A sample the crop cut off goes with its offset.
+            raw_samples = np.array(
+                [(sample.x, sample.y) for sample in matched.gaze_samples], dtype=np.float64,
+            ).reshape(-1, 2)
+            gaze_pixels, kept = undistorter.undistort_pixels(raw_samples)
+            gaze_sample_offsets_seconds = np.array(
+                [sample.offset_seconds for sample in matched.gaze_samples], dtype=np.float64,
+            )[kept]
 
             pose = self._pose_for(matched, device)
 
@@ -249,6 +257,8 @@ class NeonLiveRgbSource:
                 pose=pose,
                 camera_matrix=undistorter.camera_matrix,
                 timing=FrameTiming(capture_seconds=capture_seconds, arrival_seconds=arrival_seconds, depth_ready_seconds=None),
+                gaze_pixels=gaze_pixels,
+                gaze_sample_offsets_seconds=gaze_sample_offsets_seconds,
             )
 
     def _receive_matched(self, device: NeonDeviceProcess) -> DeviceMatched:

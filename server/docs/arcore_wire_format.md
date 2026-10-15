@@ -73,6 +73,21 @@ All three are on the laptop's clock: wall time since the Unix epoch, read once w
 started and advanced by a clock that never runs backwards. Depth ready can never come before
 arrival, and a frame that says so is refused by name.
 
+### Gaze samples, which the app does not send either
+
+Two more keys belong to the eye tracking glasses. The phone has no gaze, so the app never sends
+them, and the laptop reads a frame without them exactly as before. They're here because the same
+header is the frame log's format, and a frame from the glasses writes them there.
+
+| Field | Type | Unit | Notes |
+|---|---|---|---|
+| `gaze_pixels` | list of `[x, y]` pairs, or absent | pixels | Every gaze sample within 0.2 s of the frame's stamp, at the depth image's resolution like `intrinsics`. Can be an empty list, which means the glasses had gaze but none that near |
+| `gaze_sample_offsets_seconds` | list of numbers, or absent | seconds | One per pair in `gaze_pixels`, how far that sample was from `timestamp_seconds`, negative for before |
+
+Both are present or both are absent, and the two lists are the same length. `gaze_pixel` above is
+still the one nearest sample. The laptop reads these to tell whether the wearer looked at the thing
+the alarm is about.
+
 ---
 
 ## Depth values
@@ -163,9 +178,12 @@ instant, and the next frame produces the next one within a frame interval.
   "cumulative_cost_bits": 18.4,
   "scene_information_bits": 0.37,
   "avoidance_surprise_bits": 0.51,
+  "time_to_contact_seconds": 1.1892884018741279,
   "alarm_pan": null,
   "ear_gain_left": 1.0,
-  "ear_gain_right": 1.0
+  "ear_gain_right": 1.0,
+  "danger_noticed": false,
+  "alarm_audible": false
 }
 ```
 
@@ -178,17 +196,21 @@ instant, and the next frame produces the next one within a frame interval.
 | `cumulative_cost_bits` | Total cost of the chosen path: the surprise of how unsure the readings of near things are, plus the surprise of the body touching something, plus the costs of moving sideways and of ending away from the goal. In bits: the planner adds these up as natural logs and divides the total by ln 2 once before sending it. For display and logging, not for steering |
 | `scene_information_bits` | How far what the camera saw moved the plan from what the planner would do with nothing in view, measured where the arrow reads the path. 0 for an empty scene. It is not a confidence: an empty corridor gives a plan the planner is completely sure of and 0 bits. Drives how solid the drawn path looks |
 | `avoidance_surprise_bits` | How soon the walker reaches the nearest thing in its way, as the course's avoidance surprise: (1 s over the time to contact) squared, over 2 ln 2. 0 with nothing in the way, 0.72 at one second to contact. Drives the drawn path's color, blue at 0 and fully red from the alarm's threshold, 1.47 bits with the laptop's current settings |
-| `alarm_pan` | Where the danger is while the alarm is up, from -1 (left) to +1 (right), full at the edge of the walker's corridor. `null` while the alarm is down. The web page pans its alarm tone with it |
-| `ear_gain_left`, `ear_gain_right` | How loud each ear should be, from a floor set on the laptop up to 1. The ear on the far side from the heading goes quieter by the course's surprise of the heading error, and the danger's ear drops to the floor while the alarm is up. 1 and 1 is no cue. The web page's noise-cancellation mode applies them to the music it plays |
+| `time_to_contact_seconds` | The same thing in seconds: how long until the walker reaches the nearest thing in its corridor at walking pace, read back from `avoidance_surprise_bits` on the laptop. `null` with nothing in the way. The web page's pulse alarm quickens as it shrinks |
+| `alarm_pan` | Where the danger is while the alarm is up, from -1 (left) to +1 (right), full at the edge of the walker's corridor. `null` while the alarm is down. The web page pans its alarm sound with it |
+| `ear_gain_left`, `ear_gain_right` | How loud each ear should be, from a floor set on the laptop up to 1. The ear on the far side from the heading goes quieter by the course's surprise of the heading error, and the danger's ear drops to the floor while the alarm is heard (`alarm_audible`). 1 and 1 is no cue. The web page's noise-cancellation mode applies them to the music it plays |
+| `danger_noticed` | The glasses' wearer has their eyes on the thing in the corridor, or had in the last two seconds while it stayed within 0.5 m of where the look left it. It means the eyes are toward it rather than down or away, not that the wearer picked it out: a danger in the corridor sits where resting eyes are. Always `false` from the phone, which has no gaze |
+| `alarm_audible` | Whether to make the alarm heard. Equal to `alarm`, except `false` while a switch on the laptop lets the gaze quiet the alarm, `danger_noticed` is true, and contact has stayed further off than a floor set on the laptop since the alarm went up. Turn the display red from `alarm` and sound from this |
 
 `times_seconds` and `lateral_offsets_meters` always have the same length.
 
-Every number is finite. The app does not read `scene_information_bits`, `avoidance_surprise_bits`
-or the three sound keys yet, and it can ignore them safely, because it checks only the keys it
-reads. The first two are there for the path drawing on the phone, which will use them the way the
-laptop's web page does. The sound keys are the only ones a reader may find absent: a laptop from
-before they existed sends a path without them, which reads as no cue. Per field, who produces it
-and who checks it:
+Every number is finite. The app does not read `scene_information_bits`, `avoidance_surprise_bits`,
+`time_to_contact_seconds` or the five sound and gaze keys yet, and it can ignore them safely,
+because it checks only the keys it reads. The first two are there for the path drawing on the
+phone, which will use them the way the laptop's web page does. `time_to_contact_seconds` and the
+sound and gaze keys are the only ones a reader may find absent: a laptop from before they existed
+sends a path without them, which reads as no contact time, no cue, `danger_noticed` false and
+`alarm_audible` equal to `alarm`. Per field, who produces it and who checks it:
 
 | Field | Produced by | On the wire | Read by | Value domain | Who enforces it |
 |---|---|---|---|---|---|
@@ -200,9 +222,12 @@ and who checks it:
 | `cumulative_cost_bits` | planner | JSON number | display, logging | finite, zero or more | both sides |
 | `scene_information_bits` | planner, from the cheapest path through each cell at the arrow's lookahead | JSON number | the web page now, the phone's path drawing later | finite, zero or more. No fixed upper bound. It can't exceed minus log2 of the prior's least likely reachable cell, which is 7.3 bits when the prior is the goal alone. The pull toward the previous plan narrows the prior, so the bound moves frame to frame. The highest seen on `pixel_walk_3` is 22.2 bits | laptop refuses a negative or non-finite value before encoding |
 | `avoidance_surprise_bits` | planner, from the nearest group in the walker's corridor | JSON number | the web page now, the phone's path drawing later | finite, zero or more | laptop refuses a negative or non-finite value before encoding |
-| `alarm_pan` | planner, from the lateral position of the corridor group that raised the alarm, kept through the alarm's hold | JSON number or `null` | the web page's alarm tone | -1 to 1, `null` whenever `alarm` is false | laptop refuses a value outside the range, or one present while the alarm is down |
+| `time_to_contact_seconds` | laptop, from `avoidance_surprise_bits` through the inverse in `alarm.py` | JSON number or `null` | the web page's pulse alarm | above zero, `null` at 0 bits | laptop refuses a negative surprise before encoding, the decoder refuses a non-number or a value at or below zero |
+| `alarm_pan` | planner, from the lateral position of the corridor group that raised the alarm, kept through the alarm's hold | JSON number or `null` | the web page's alarm sound | -1 to 1, `null` whenever `alarm` is false | laptop refuses a value outside the range, or one present while the alarm is down |
 | `ear_gain_left` | planner, from the heading and the alarm | JSON number | the web page's music | the laptop's floor to 1 | laptop refuses a value outside 0 to 1 |
 | `ear_gain_right` | planner, from the heading and the alarm | JSON number | the web page's music | the laptop's floor to 1 | laptop refuses a value outside 0 to 1 |
+| `danger_noticed` | planner's attention, from the glasses' gaze on the corridor group nearest the walker and the pieces joined to it, kept through the alarm's hold | JSON boolean | the web page's sound card | `true` or `false` | laptop refuses a non-boolean on decode |
+| `alarm_audible` | planner, from `alarm`, `danger_noticed`, the time to contact and the laptop's gaze switch | JSON boolean | the web page's beep, noise-cancellation cut and the danger ear | `true` or `false`, never `true` while `alarm` is `false` | laptop refuses that combination before encoding, and a non-boolean on decode |
 
 ---
 

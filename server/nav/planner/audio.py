@@ -81,7 +81,7 @@ def ear_gains(heading_radians: float, alarm: bool, alarm_pan_value: float | None
     The left and right ear gains for one frame.
 
     :param heading_radians: The planned heading, positive right.
-    :param alarm: Whether the alarm is up this frame, hold included.
+    :param alarm: Whether the alarm is heard this frame, hold included. The pipeline passes alarm_audible.
     :param alarm_pan_value: Where the danger is while the alarm is up, from alarm_pan, or None.
     :return: (left, right), each from the floor to 1.
     :rtype: tuple[float, float]

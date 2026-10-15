@@ -56,6 +56,7 @@ EVALUATION_MODULES = (
     "nav.evaluation",
     "nav.evaluation.__main__",
     "nav.evaluation.arguments",
+    "nav.evaluation.attention_count",
     "nav.evaluation.band_attribution",
     "nav.evaluation.check_planner",
     "nav.evaluation.config",

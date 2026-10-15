@@ -41,6 +41,7 @@ from nav.sources.config import (
     TapConfig,
     VideoConfig,
 )
+from nav.planner.config import PlannerConfig
 from nav.route.geodesy import LatLon
 from nav.route.service import FileRouteService, OpenRouteServiceClient, RouteFetchOutcome
 from nav.runtime.loop import _config_as_json
@@ -1040,3 +1041,20 @@ def test_the_route_tracker_is_built_only_with_the_page(tmp_path: Path) -> None:
     tracker = build_route_tracker(build_run_config(WEB_VIDEO_ARGV), tmp_path)
     assert tracker is not None
     tracker.close()
+def test_gaze_silences_alarm_defaults_to_off() -> None:
+    assert build_run_config(MINIMAL_VIDEO_ARGV).planner.gaze_silences_alarm is False
+
+
+def test_gaze_silences_alarm_on_is_read_as_the_bool() -> None:
+    config = build_run_config([*MINIMAL_VIDEO_ARGV, "--gaze-silences-alarm", "on"])
+
+    assert config.planner.gaze_silences_alarm is True
+    # Only the switch moves. Every other planner value is its default.
+    assert dataclasses.replace(config.planner, gaze_silences_alarm=False) == PlannerConfig()
+
+
+def test_a_gaze_silences_alarm_value_outside_the_vocabulary_is_refused(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        build_run_config([*MINIMAL_VIDEO_ARGV, "--gaze-silences-alarm", "yes"])
+
+    assert "--gaze-silences-alarm" in capsys.readouterr().err

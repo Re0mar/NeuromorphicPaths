@@ -25,6 +25,7 @@ import numpy as np
 # Local package imports
 from nav.clock import laptop_time_seconds
 from nav.planner.alarm import time_to_contact_from_avoidance_bits
+from nav.planner.config import OnOff
 from nav.route.course import Fix, check_fix
 from nav.route.geodesy import LatLon
 from nav.route.route import RouteState
@@ -51,6 +52,8 @@ class WebMessageKind(Enum):
     SOURCE_STATE = "source_state"
     # Where the route layer stands: its tier, how far along and how far to go, and the last fix.
     ROUTE_STATE = "route_state"
+    # Whether the gaze may quiet the alarm, run-wide. Sent on every change and to each page as it connects.
+    GAZE_SILENCING_STATE = "gaze_silencing_state"
 
 
 # Every key a plan view carries, in one place. The page test checks the page reads each of these,
@@ -98,12 +101,15 @@ class BrowserMessageKind(Enum):
     LOCATION = "location"
     # Where the walker wants to go, as latitude and longitude, read by parse_destination.
     DESTINATION = "destination"
+    # Whether every page's run lets the gaze quiet the alarm, "off" or "on", in a "gaze_silencing" field.
+    GAZE_SILENCING = "gaze_silencing"
 
 
 # Each message a page sends, the field its choice is in, and the vocabulary that choice comes from.
 BROWSER_CHOICES: dict[BrowserMessageKind, type[Enum]] = {
     BrowserMessageKind.PICTURE: PictureKind,
     BrowserMessageKind.SOURCE: SourceMode,
+    BrowserMessageKind.GAZE_SILENCING: OnOff,
 }
 
 
@@ -165,13 +171,13 @@ def plan_view_message(path: PlannedPath, field: np.ndarray, grid: np.ndarray, vi
     return message
 
 
-def browser_choice(text: str) -> PictureKind | SourceMode:
+def browser_choice(text: str) -> PictureKind | SourceMode | OnOff:
     """
-    What a page asked for, read from one text frame it sent: a picture, or a side to plan on.
+    What a page asked for, read from one text frame it sent: a picture, a side to plan on, or the gaze switch.
 
-    :param text: The frame, JSON with a kind of "picture" or "source" and the field of the same name.
-    :return: The picture or the side asked for. The caller tells them apart by type.
-    :rtype: PictureKind | SourceMode
+    :param text: The frame, JSON with a kind of "picture", "source" or "gaze_silencing" and the field of the same name.
+    :return: The choice. The caller tells them apart by type, OnOff being the gaze switch's alone.
+    :rtype: PictureKind | SourceMode | OnOff
     :raises ValueError: When the frame is not JSON, not a message this laptop reads, or names a
         choice that isn't one.
     """
@@ -196,7 +202,7 @@ LOCATION_FIELDS = ("latitude", "longitude", "accuracy_meters", "heading_degrees"
 DESTINATION_FIELDS = ("latitude", "longitude")
 
 
-def browser_message(text: str, clock: Callable[[], float] = laptop_time_seconds) -> PictureKind | SourceMode | Fix | LatLon:
+def browser_message(text: str, clock: Callable[[], float] = laptop_time_seconds) -> PictureKind | SourceMode | OnOff | Fix | LatLon:
     """
     Whatever one text frame from a page says: a choice, a fix, or a destination.
 
@@ -204,7 +210,7 @@ def browser_message(text: str, clock: Callable[[], float] = laptop_time_seconds)
     :param clock: The laptop's clock, read once when a fix arrives. Replaced only by tests.
     :return: The choice, the fix stamped with the laptop's time, or the destination. The caller tells
         them apart by type.
-    :rtype: PictureKind | SourceMode | Fix | LatLon
+    :rtype: PictureKind | SourceMode | OnOff | Fix | LatLon
     :raises ValueError: When the frame is not a message this laptop reads, or breaks one of its rules.
     """
     message = _json_object(text)
@@ -333,6 +339,11 @@ def source_state_message(state: SwitchState) -> dict:
         "has_recording": state.has_recording,
         "live_has_video": state.live_has_video,
     }
+
+
+def gaze_silencing_state_message(enabled: bool) -> dict:
+    """Whether the run lets the gaze quiet the alarm, spelled the way the page sends it."""
+    return {"state": (OnOff.ON if enabled else OnOff.OFF).value}
 
 
 def video_stream_message(description: VideoDescription) -> dict:

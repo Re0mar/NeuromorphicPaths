@@ -67,6 +67,14 @@ class EstimatedDepthSource:
             # image-up for it.
             pose = rgb_frame.pose if rgb_frame.pose is not None else identity_pose()
 
+            # Same scaling as the one pixel, so the samples and the intrinsics share the depth's resolution.
+            gaze_pixels = _gaze_in_depth_pixels(
+                rgb_frame.gaze_pixels,
+                scene_shape=rgb_frame.image_rgb.shape[:2],
+                depth_shape=depth_meters.shape,
+            )
+            gaze_sample_offsets_seconds = None if gaze_pixels is None else rgb_frame.gaze_sample_offsets_seconds
+
             yield DepthFrame(
                 timestamp_seconds=rgb_frame.timestamp_seconds,
                 depth_meters=depth_meters,
@@ -81,6 +89,8 @@ class EstimatedDepthSource:
                     depth_shape=depth_meters.shape,
                 ),
                 timing=timing,
+                gaze_pixels=gaze_pixels,
+                gaze_sample_offsets_seconds=gaze_sample_offsets_seconds,
             )
 
     def close(self) -> None:
@@ -141,7 +151,7 @@ def _gaze_in_depth_pixels(
     scene_shape: tuple[int, int],
     depth_shape: tuple[int, int],
 ) -> np.ndarray | None:
-    """Rescale a gaze point from scene camera pixels to depth image pixels.
+    """Rescale a gaze point, (2,), or several, (N, 2), from scene camera pixels to depth image pixels.
 
     The model works at its own process resolution, so the depth image is rarely the same size as
     the frame it came from. Skipping this puts the gaze goal in the wrong place by the ratio
@@ -155,9 +165,6 @@ def _gaze_in_depth_pixels(
     if scene_height == 0 or scene_width == 0:
         return None
 
-    return np.array(
-        [
-            gaze_pixel[0] * (depth_width / scene_width),
-            gaze_pixel[1] * (depth_height / scene_height),
-        ]
-    )
+    # The last axis is x then y, so one scale serves a single pixel and a stack of them.
+    scale = np.array([depth_width / scene_width, depth_height / scene_height])
+    return np.asarray(gaze_pixel, dtype=np.float64) * scale

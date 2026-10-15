@@ -12,6 +12,7 @@ Run from server/ with its venv:
     python -m nav.evaluation.check_planner floor-lean frame_logs/neon_walk_2_before --capture frame_logs/captures/neon_walk_2 --replay-shift-seconds 197905.21935606003
 
     python -m nav.evaluation.check_planner floor frame_logs/neon_walk_2_replay
+    python -m nav.evaluation.check_planner attention frame_logs/neon_walk_2_attention --tolerances-degrees 2,4,6,8,10 --windows-seconds nearest,0.05,0.1,0.2
     python -m nav.evaluation.check_planner floor frame_logs/a_plugin_run --scene-set floor_max_offset_meters=10
 
 `numbers` prints every whole-walk figure the heading and alarm are judged by, each with the frame
@@ -25,6 +26,11 @@ and why fits were refused. A median camera height near eye level is the check th
 is in meters. Its second form lifts the floor check's height limit. Without it, floors too far down
 are refused and show only as a median under "too far". With it, they're fitted and counted in the
 camera heights, so a source whose depth is too large shows up in the median itself.
+`attention` counts, over the frames the alarm was up on, how often the wearer had looked at the
+thing that raised it, for each credit, tolerance and window asked for. A look is on the thing when it
+falls on the part of the picture the thing covers, the thing being every piece chained to the danger
+within `--link-meters` on the floor. Beside it a control table pairs each frame's
+danger with gaze from a frame `--shift-seconds` away, which is what chance looks like.
 `floor-lean` refits a glasses replay's own frames with the pose they were logged with and with the
 pose from the capture's IMU at each frame's capture, and prints how far each floor leans from up.
 
@@ -51,6 +57,17 @@ import numpy as np
 
 # Local package imports
 from nav.evaluation.arguments import add_replay_arguments, add_scene_arguments
+from nav.evaluation.attention_count import (
+    NEAREST,
+    AttentionCount,
+    AttentionSetting,
+    AttentionWindow,
+    GazeCarried,
+    LookCounts,
+    attention_count,
+    check_windows,
+    gaze_carried,
+)
 from nav.evaluation.band_attribution import FIXABLE, ON_HOLD, TERM_NAMES, BandAttribution, PinCandidate, band_attribution
 from nav.evaluation.config import EvaluationConfig, PlannerNumbersConfig
 from nav.evaluation.floor_lean import NothingToCompare, StampsDoNotMatch, floor_lean, format_floor_lean
@@ -77,6 +94,7 @@ from nav.evaluation.replay import (
     segment_bounds,
 )
 from nav.evaluation.track import floor_heading_radians, walker_track, wrap_radians
+from nav.planner.attention import tolerance_radians
 from nav.planner.config import GoalMode, PlannerConfig
 from nav.sources.framecodec import FrameDecodeError
 from nav.walker import WalkerConfig
@@ -85,6 +103,9 @@ EXIT_PRINTED = 0
 EXIT_REFUSED = 1
 EXIT_USAGE = 2
 EXIT_NOTHING_MEASURED = 3
+
+# A share over fewer frames than this moves in steps too large to read as a rate.
+ATTENTION_FEW_FRAMES = 30
 
 BAND_LABELS = {
     ClearanceBand.CLOSE: "nearer than {close:.2f} m",
@@ -104,7 +125,8 @@ def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     numbers = subcommands.add_parser("numbers", help="every whole-walk heading and alarm figure, with pass or fail")
     flips = subcommands.add_parser("flips", help="what the consecutive plan pairs at or above a disagreement percentile are")
     band = subcommands.add_parser("band", help="what holds the arrow at its limit with something 3 to 5.32 m ahead")
-    for subcommand in (numbers, flips, band):
+    attention = subcommands.add_parser("attention", help="how often the gaze was on the danger while the alarm was up, against chance")
+    for subcommand in (numbers, flips, band, attention):
         subcommand.add_argument("log_dirs", type=Path, nargs="+", help="frame logs written by --record-to")
         subcommand.add_argument("--segment", type=int, default=-1, help="which segment to plan, counted from zero, negative from the end. The last by default")
         add_replay_arguments(subcommand)
@@ -112,6 +134,14 @@ def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
         # the planner: a full swing across a gap longer than swing_max_gap_seconds isn't counted, and
         # the glasses plan 0.5 to 1.4 s apart.
         subcommand.add_argument("--eval-set", action="append", default=[], metavar="FIELD=VALUE", help="override a PlannerNumbersConfig field")
+    # The count's own sweep, never the planner's setting, so tuning the planner can't move it.
+    attention.add_argument("--tolerances-degrees", type=_tolerances, default=(2.0, 4.0, 6.0, 8.0, 10.0), help="angles to count at, comma separated, 2,4,6,8,10 by default")
+    attention.add_argument("--windows-seconds", type=_windows, default=_windows("nearest,0.05,0.1,0.2"), help="windows around each frame's stamp, comma separated, 'nearest' for the one nearest sample, nearest,0.05,0.1,0.2 by default")
+    attention.add_argument("--credits-seconds", type=_credits, default=(0.0, 2.0), help="how long a look counts for, comma separated, 0 for the looking frame only, 0,2 by default")
+    attention.add_argument("--match-meters", type=float, default=0.5, help="how near a later danger must be to where the looked-at one would be by then, 0.5 by default")
+    attention.add_argument("--link-meters", type=float, default=0.4, help="how near neighboring pieces must be on the floor to be one object with the danger, 0.4 by default")
+    attention.add_argument("--cap-meters", type=float, default=0.6, help="the furthest a piece may be from the danger and still be part of its object, 0.6 by default")
+    attention.add_argument("--shift-seconds", type=float, default=5.0, help="how far the control's gaze is taken from, 5 by default")
     flips.add_argument("--percentile", type=float, default=90.0, help="pairs at or above this percentile of disagreement, 90 by default")
     flips.add_argument("--largest", type=int, default=10, help="how many of the largest pairs to list, 10 by default")
     # The floor is a whole-walk figure and nothing is planned, so it takes no segment and no planner override.
@@ -133,6 +163,26 @@ def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     arguments = parser.parse_args(argv)
     if arguments.subcommand == "flips" and not 0.0 <= arguments.percentile <= 100.0:
         parser.error(f"--percentile is from 0 to 100, got {arguments.percentile}")
+    if arguments.subcommand == "attention":
+        try:
+            check_windows(arguments.windows_seconds)
+        except ValueError as unanswerable:
+            parser.error(f"--windows-seconds: {unanswerable}")
+        for degrees in arguments.tolerances_degrees:
+            try:
+                tolerance_radians(degrees)
+            except ValueError as out_of_range:
+                parser.error(f"--tolerances-degrees: {out_of_range}")
+        if not np.isfinite(arguments.shift_seconds) or arguments.shift_seconds <= 0.0:
+            parser.error(f"--shift-seconds is above zero, got {arguments.shift_seconds}")
+        if not np.isfinite(arguments.match_meters) or arguments.match_meters <= 0.0:
+            parser.error(f"--match-meters is above zero, got {arguments.match_meters}")
+        if not np.isfinite(arguments.link_meters) or arguments.link_meters <= 0.0:
+            parser.error(f"--link-meters is above zero, got {arguments.link_meters}")
+        if not np.isfinite(arguments.cap_meters) or arguments.cap_meters <= 0.0:
+            parser.error(f"--cap-meters is above zero, got {arguments.cap_meters}")
+        if any(not np.isfinite(credit) or credit < 0.0 for credit in arguments.credits_seconds):
+            parser.error(f"--credits-seconds are zero or more, got {arguments.credits_seconds}")
     return arguments
 
 
@@ -165,26 +215,36 @@ class SegmentReplay:
     cell_size_meters: float
     pose_times_seconds: np.ndarray
     pose_positions_world: np.ndarray
+    # Planned frames in the segment whose orientation wasn't gravity aligned. 0 unless they were kept.
+    unaligned_frames: int = 0
 
 
-def segment_frames(log_dir: Path, arguments: argparse.Namespace, planner_config: PlannerConfig, keep_fields: bool = False) -> SegmentReplay:
+def segment_frames(
+    log_dir: Path,
+    arguments: argparse.Namespace,
+    planner_config: PlannerConfig,
+    keep_fields: bool = False,
+    unaligned_frames: UnalignedFrames = UnalignedFrames.REFUSE,
+) -> SegmentReplay:
     """
     Replay one segment of a walk: one scene pass over the whole log, then the segment's frames planned.
 
     :param keep_fields: Keep each frame's field, for the band breakdown.
+    :param unaligned_frames: Whether a frame without gravity refuses the walk or is kept as the live run kept it.
     :return: The segment's replayed frames and poses, where the scene config came from, and how the cache was used.
     :rtype: SegmentReplay
     :raises SegmentMissing: When the walk has no segment at that index.
     """
     walker = WalkerConfig()
     scene_config, scene_source = scene_config_for(log_dir, arguments.scene_defaults, arguments.scene_set)
-    passed = scene_pass(log_dir, scene_config, walker, arguments.cache_dir if arguments.cached else None)
+    passed = scene_pass(log_dir, scene_config, walker, arguments.cache_dir if arguments.cached else None, unaligned_frames=unaligned_frames)
     bounds = segment_bounds(passed.pose_times_seconds, EvaluationConfig())
     try:
         start, end = bounds[arguments.segment]
     except IndexError:
         raise SegmentMissing(f"{log_dir.name} has {len(bounds)} segments, so there is no segment {arguments.segment}") from None
-    inputs = [row.planner_input() for row in passed.planned if start <= row.timestamp_seconds <= end]
+    rows = [row for row in passed.planned if start <= row.timestamp_seconds <= end]
+    inputs = [row.planner_input() for row in rows]
     goal_mode = goal_mode_for(log_dir)
     inside = (passed.pose_times_seconds >= start) & (passed.pose_times_seconds <= end)
     return SegmentReplay(
@@ -195,6 +255,7 @@ def segment_frames(log_dir: Path, arguments: argparse.Namespace, planner_config:
         cell_size_meters=scene_config.cell_size_meters,
         pose_times_seconds=passed.pose_times_seconds[inside],
         pose_positions_world=passed.pose_positions_world[inside],
+        unaligned_frames=sum(1 for row in rows if not row.gravity_aligned),
     )
 
 
@@ -306,7 +367,10 @@ def _run(arguments: argparse.Namespace) -> int:
         print(f"  evaluation {name} = {getattr(config, name)}  <- --eval-set")
     measured_any = False
     for log_dir in arguments.log_dirs:
-        replay = segment_frames(log_dir, arguments, planner_config, keep_fields=arguments.subcommand == "band")
+        # The attention test is an angle in the camera's own frame, so it needs no gravity. A walk whose
+        # IMU sent only zeros is kept, planned against the picture's own up as the live run planned it.
+        unaligned = UnalignedFrames.PROCESS if arguments.subcommand == "attention" else UnalignedFrames.REFUSE
+        replay = segment_frames(log_dir, arguments, planner_config, keep_fields=arguments.subcommand == "band", unaligned_frames=unaligned)
         frames, scene_source, cache_state = replay.frames, replay.scene_source, replay.cache_state
         print(f"\n{log_dir.name}, segment {arguments.segment}: {len(frames)} planned frames. Scene settings from {scene_source}. Scene cache {cache_state}")
         if not frames:
@@ -316,6 +380,22 @@ def _run(arguments: argparse.Namespace) -> int:
         if arguments.subcommand == "band":
             attribution = band_attribution(frames, travel_offset_lookup(replay), planner_config, WalkerConfig(), replay.goal_mode, replay.cell_size_meters, config)
             print(format_band(log_dir.name, attribution, config), end="")
+        elif arguments.subcommand == "attention":
+            windows = _countable_windows(arguments.windows_seconds, gaze_carried(frames))
+            counted = attention_count(
+                frames,
+                planner_config,
+                arguments.credits_seconds,
+                arguments.tolerances_degrees,
+                windows,
+                arguments.match_meters,
+                arguments.link_meters,
+                arguments.cap_meters,
+                arguments.shift_seconds,
+            )
+            if replay.unaligned_frames:
+                print(f"{replay.unaligned_frames} of the frames had no gravity and were planned against the picture's own up, as live")
+            print(format_attention(log_dir.name, counted), end="")
         elif arguments.subcommand == "flips":
             threshold, pairs = disagreement_pairs(frames, planner_config, config, arguments.percentile)
             print(format_flips(log_dir.name, threshold, pairs, arguments.percentile, arguments.largest), end="")
@@ -386,6 +466,85 @@ def format_band(name: str, attribution: BandAttribution, config: PlannerNumbersC
         if unexplained:
             lines.append("unexplained frames, to open in the recording: " + ", ".join(f"{frame.timestamp_seconds:.3f}" for frame in unexplained))
     return f"=== {name}\n" + "\n".join(lines) + "\n"
+
+
+def format_attention(name: str, counted: AttentionCount) -> str:
+    """Both tables, each cell with its numerator, its denominator and its unknowns, and what a log couldn't count."""
+    lines = [
+        f"{counted.frames} planned frames, alarm up on {counted.alarm_frames} with the hold, raised on {counted.raised_frames} before it",
+        f"alarm frames with nothing left in the corridor, so nothing to look at: {counted.held_without_danger}",
+    ]
+    if counted.gaze is GazeCarried.NONE:
+        lines.append("this log has no gaze at all, so nothing was counted")
+        return f"=== {name}\n" + "\n".join(lines) + "\n"
+    if counted.gaze is GazeCarried.NEAREST_ONLY:
+        lines.append("this log was written before frames carried their gaze samples, so only the nearest sample could be counted")
+    looked_back = f", {counted.control_looked_back} of them looking back because forward ran off the end" if counted.control_looked_back else ""
+    if counted.control_unpaired:
+        looked_back += f", {counted.control_unpaired} with no frame half the shift away, so unknown in the control"
+    for credit in counted.credits_seconds:
+        lines.append("")
+        credit_text = "the looking frame only" if credit == 0 else f"a look counts for {credit:g} s, matched within {counted.match_meters:g} m"
+        lines.append(f"gaze on the danger's object, pieces chained within {counted.link_meters:g} m and {counted.cap_meters:g} m of it, {credit_text}: noticed / alarm frames with something to go on, then frames with nothing in brackets")
+        lines.extend(_attention_table(counted, counted.real, credit))
+        lines.append(f"control, the gaze taken from the frame {counted.shift_seconds:g} s away{looked_back}:")
+        lines.extend(_attention_table(counted, counted.control, credit))
+    lines.append("")
+    lines.append(f"a * marks a share over fewer than {ATTENTION_FEW_FRAMES} frames. It's a position on a coarse grid, not a rate")
+    return f"=== {name}\n" + "\n".join(lines) + "\n"
+
+
+def _attention_table(counted: AttentionCount, cells: dict[AttentionSetting, LookCounts], credit: float) -> list[str]:
+    width = 24
+    rows = ["  tolerance " + "".join(f"{window.label:<{width}}" for window in counted.windows)]
+    for degrees in counted.tolerances_degrees:
+        entries = [_attention_cell(cells[AttentionSetting(credit, degrees, window)]) for window in counted.windows]
+        rows.append(f"  {degrees:>5g} deg " + "".join(f"{entry:<{width}}" for entry in entries))
+    return rows
+
+
+def _attention_cell(counts: LookCounts) -> str:
+    if counts.with_a_sample == 0:
+        # Never 0 %, which would read as "nobody looked" when nothing was seen at all.
+        return f"no sample [{counts.unknown}]"
+    marker = "*" if counts.with_a_sample < ATTENTION_FEW_FRAMES else ""
+    percent = 100.0 * counts.noticed / counts.with_a_sample
+    return f"{counts.noticed}/{counts.with_a_sample} {percent:.0f}%{marker} [{counts.unknown}]"
+
+
+def _countable_windows(windows: tuple[AttentionWindow, ...], gaze: GazeCarried) -> tuple[AttentionWindow, ...]:
+    """Every window asked for, or only the nearest sample when the log holds nothing else."""
+    if gaze is GazeCarried.NEAREST_ONLY:
+        return (NEAREST,)
+    return windows
+
+
+def _tolerances(text: str) -> tuple[float, ...]:
+    try:
+        # Each once, in the order given, so a repeat doesn't print a row twice.
+        return tuple(dict.fromkeys(float(part) for part in text.split(",")))
+    except ValueError as malformed:
+        raise argparse.ArgumentTypeError(f"tolerances are numbers in degrees, comma separated, got {text!r}") from malformed
+
+
+def _credits(text: str) -> tuple[float, ...]:
+    try:
+        return tuple(dict.fromkeys(float(part) for part in text.split(",")))
+    except ValueError as malformed:
+        raise argparse.ArgumentTypeError(f"credits are numbers in seconds, comma separated, got {text!r}") from malformed
+
+
+def _windows(text: str) -> tuple[AttentionWindow, ...]:
+    windows = []
+    for part in text.split(","):
+        if part.strip() == "nearest":
+            windows.append(NEAREST)
+            continue
+        try:
+            windows.append(AttentionWindow(float(part)))
+        except ValueError as malformed:
+            raise argparse.ArgumentTypeError(f"windows are seconds or 'nearest', comma separated, got {part!r}") from malformed
+    return tuple(dict.fromkeys(windows))
 
 
 def _share_text(count: int, total: int) -> str:

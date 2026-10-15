@@ -46,6 +46,7 @@ import numpy as np
 from nav.pose.imu_orientation import is_usable_orientation, orientation_at
 from nav.sources.config import NeonConfig
 from nav.sources.scene_video import AccessUnit, AccessUnitAssembler, SceneVideoListener
+from nav.types import GAZE_CARRY_WINDOW_SECONDS
 
 log = logging.getLogger(__name__)
 
@@ -61,9 +62,12 @@ IMU_FIELDS = ("t", "w", "x", "y", "z")
 
 # How far a gaze sample may be from a frame and still count as that frame's gaze. A frame is 33 ms.
 GAZE_MATCH_TOLERANCE_SECONDS = 0.05
-GAZE_HISTORY = 400  # About two seconds of gaze at 200 Hz.
-# Three seconds of usable IMU readings at about 110 Hz. A frame can reach the pipeline 1.6 s after it
-# was captured (the worst seen on the 2026-10-05 walk), and its orientation has to still be in here.
+# The latest a frame has reached the pipeline after it was captured, the worst seen on the
+# 2026-10-05 walk. Both histories have to reach back this far from the newest sample.
+WORST_HANDOVER_LAG_SECONDS = 1.6
+# Two seconds of gaze at 200 Hz. A late frame's carry window starts the lag plus the window back.
+GAZE_HISTORY = 400
+# Three seconds of usable IMU readings at about 110 Hz, so a late frame's orientation is still here.
 IMU_HISTORY = 330
 # Decoder threads. Frame threading would add a frame of delay per thread. Slice threading costs
 # nothing, and helps whenever the phone's encoder splits a frame into slices.
@@ -120,6 +124,15 @@ class StreamGaze:
 
 
 @dataclass(frozen=True)
+class StreamGazeSample:
+    """One gaze sample carried with a frame, stamped relative to the frame's capture stamp."""
+
+    offset_seconds: float
+    x: float
+    y: float
+
+
+@dataclass(frozen=True)
 class StreamQuaternion:
     w: float
     x: float
@@ -133,6 +146,9 @@ class StreamMatched:
     gaze: StreamGaze | None
     # The usable IMU reading nearest the frame's capture stamp, or None when none was near enough.
     orientation: StreamQuaternion | None
+    # Every gaze sample within GAZE_CARRY_WINDOW_SECONDS of the frame's stamp, oldest first.
+    # Live, the samples after the stamp may not all have arrived yet when the frame is handed over.
+    gaze_samples: tuple[StreamGazeSample, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -322,6 +338,7 @@ class NeonStreamDevice:
             frame, timestamp = self._newest_frame
             self._frames_served = self._frames_decoded
             gaze = self._gaze_near(timestamp)
+            gaze_samples = self._gaze_within(timestamp)
             # From when the frame was captured, not from now. The frame handed over is the newest
             # decoded one, which can be 1.6 s old by the time it's asked for, and the head has moved.
             orientation = self._orientation_at(timestamp)
@@ -329,7 +346,7 @@ class NeonStreamDevice:
                 self._frames_without_orientation += 1
         # Converted here, once, for the one frame that is used.
         pixels = frame.to_ndarray(format="bgr24")
-        return StreamMatched(StreamFrame(pixels, timestamp), gaze, orientation)
+        return StreamMatched(StreamFrame(pixels, timestamp), gaze, orientation, gaze_samples)
 
     def imu_status(self) -> StreamImuStatus:
         """What the IMU has sent so far: readings, how many were empty, and frames left without one."""
@@ -672,17 +689,34 @@ class NeonStreamDevice:
             return None
         return StreamQuaternion(*(float(component) for component in orientation))
 
+    def _gaze_sorted(self) -> list[tuple[float, float, float]]:
+        """
+        The gaze history by stamp. Caller holds the lock.
+
+        Sorted here rather than trusted, for the same reason as the IMU history in _orientation_at.
+        """
+        return sorted(self._gaze, key=lambda sample: sample[0])
+
     def _gaze_near(self, timestamp: float) -> StreamGaze | None:
         """The gaze sample nearest the frame's stamp, within a frame and a half. Caller holds the lock."""
         if not self._gaze:
             return None
-        stamps = [sample[0] for sample in self._gaze]
+        history = self._gaze_sorted()
+        stamps = [sample[0] for sample in history]
         index = bisect.bisect_left(stamps, timestamp)
-        candidates = [self._gaze[i] for i in (index - 1, index) if 0 <= i < len(self._gaze)]
+        candidates = [history[i] for i in (index - 1, index) if 0 <= i < len(history)]
         nearest = min(candidates, key=lambda sample: abs(sample[0] - timestamp))
         if abs(nearest[0] - timestamp) > GAZE_MATCH_TOLERANCE_SECONDS:
             return None
         return StreamGaze(nearest[1], nearest[2])
+
+    def _gaze_within(self, timestamp: float) -> tuple[StreamGazeSample, ...]:
+        """Every gaze sample within the carry window of the frame's stamp, oldest first. Caller holds the lock."""
+        history = self._gaze_sorted()
+        stamps = [sample[0] for sample in history]
+        first = bisect.bisect_left(stamps, timestamp - GAZE_CARRY_WINDOW_SECONDS)
+        last = bisect.bisect_right(stamps, timestamp + GAZE_CARRY_WINDOW_SECONDS)
+        return tuple(StreamGazeSample(stamp - timestamp, x, y) for stamp, x, y in history[first:last])
 
     def _raise_if_failed(self) -> None:
         if self._failure is not None:
