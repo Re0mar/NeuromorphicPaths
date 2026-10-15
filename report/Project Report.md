@@ -4,6 +4,17 @@
 - Introduction (Daniël)
     - Explain the problem
     - General approach idea?
+
+In recent years, the problem of distracted people taking part in trafic has been on the rise, caused for the most part by increased usage of mobile phones and similar devices.
+The effects of this have been pretty clear, causing many traffic accidents which would've been preventable [(Rijniers, 2017)](#references).
+In an effort to reduce these collisions our group set out to research a potential aid based upon surprise theory, 
+where the user is either alerted or has the distractions on the phone muted whilst their environment is to surprising, 
+as this increase in surprise should correlate with an increased risk for accidents.
+Put into practice, our team will work with an camera device to generate a map of the surroundings, 
+after which Fitt's Law is used to identify areas of high surprise.
+These high surprise areas will then be used to alert the user, whilst also steering them clear of it.
+
+
         
 - Background (Kars)
     Why the problem?
