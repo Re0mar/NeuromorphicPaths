@@ -367,6 +367,8 @@ def test_path_round_trip() -> None:
     assert decoded.avoidance_surprise_bits == pytest.approx(0.51)
 
 
+# time_to_contact_seconds and the three sound keys are optional on decode, so a path from an older
+# laptop still reads back. They are left out of this list on purpose.
 @pytest.mark.parametrize(
     "missing",
     [
@@ -476,6 +478,77 @@ def test_a_null_pan_on_the_wire_is_none_and_a_pan_with_the_alarm_down_is_refused
 
     message["alarm_pan"] = -0.5
     with pytest.raises(FrameDecodeError, match="alarm_pan must be None while the alarm is down"):
+        decode_path(json.dumps(message).encode("utf-8"))
+
+
+def _path_at(avoidance_surprise_bits: float) -> PlannedPath:
+    return PlannedPath(1.0, np.array([0.0]), np.array([0.0]), 0.0, False, 0.0, scene_information_bits=0.0, avoidance_surprise_bits=avoidance_surprise_bits)
+
+
+def _minimal_path_message() -> dict:
+    return {
+        "timestamp_seconds": 1.0,
+        "times_seconds": [0.0, 0.1],
+        "lateral_offsets_meters": [0.0, 0.05],
+        "lookahead_heading_radians": 0.0,
+        "alarm": False,
+        "cumulative_cost_bits": 0.0,
+        "scene_information_bits": 0.0,
+        "avoidance_surprise_bits": 0.0,
+    }
+
+
+def test_a_path_message_carries_the_time_to_contact_read_back_from_its_avoidance_surprise() -> None:
+    # 0.72 bits is one second to contact, the figure the alarm's docstring states.
+    written = json.loads(encode_path(_path_at(0.72)))
+
+    assert written["time_to_contact_seconds"] == pytest.approx(1.0, abs=0.01)
+
+
+def test_a_path_with_an_empty_corridor_carries_a_null_time_to_contact() -> None:
+    written = json.loads(encode_path(_path_at(0.0)))
+
+    assert "time_to_contact_seconds" in written
+    assert written["time_to_contact_seconds"] is None
+
+
+def test_a_path_message_without_a_time_to_contact_still_decodes() -> None:
+    decoded = decode_path(json.dumps(_minimal_path_message()).encode("utf-8"))
+
+    assert decoded.avoidance_surprise_bits == 0.0
+
+
+def test_a_null_time_to_contact_decodes() -> None:
+    message = _minimal_path_message()
+    message["time_to_contact_seconds"] = None
+
+    assert decode_path(json.dumps(message).encode("utf-8")).avoidance_surprise_bits == 0.0
+
+
+@pytest.mark.parametrize("value", ["1.2", True, [1.2]])
+def test_a_time_to_contact_that_is_not_a_number_is_refused(value: object) -> None:
+    message = _minimal_path_message()
+    message["time_to_contact_seconds"] = value
+
+    with pytest.raises(FrameDecodeError, match="time_to_contact_seconds must be a number"):
+        decode_path(json.dumps(message).encode("utf-8"))
+
+
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "1e999"])
+def test_a_non_finite_time_to_contact_is_refused(literal: str) -> None:
+    # Python's json reads NaN and Infinity, which no laptop writes since it encodes with allow_nan=False.
+    text = json.dumps(_minimal_path_message())[:-1] + f', "time_to_contact_seconds": {literal}}}'
+
+    with pytest.raises(FrameDecodeError, match="time_to_contact_seconds must be finite"):
+        decode_path(text.encode("utf-8"))
+
+
+@pytest.mark.parametrize("value", [0.0, -1.0])
+def test_a_time_to_contact_at_or_below_zero_is_refused(value: float) -> None:
+    message = _minimal_path_message()
+    message["time_to_contact_seconds"] = value
+
+    with pytest.raises(FrameDecodeError, match="time_to_contact_seconds must be above zero"):
         decode_path(json.dumps(message).encode("utf-8"))
 
 
@@ -593,11 +666,15 @@ def test_the_format_document_carries_the_path_field_table() -> None:
     # name is a key the app will not read.
     document = (Path(__file__).parent.parent / "docs" / "arcore_wire_format.md").read_text(encoding="utf-8")
     path_section = document.split("## What the laptop sends back", 1)[1].split("\n## ", 1)[0]
-    assert "| Field | Produced by | On the wire | Read by | Value domain | Who enforces it |" in path_section
+    header = "| Field | Produced by | On the wire | Read by | Value domain | Who enforces it |"
+    assert header in path_section
+    # Only the rows of that table. The meaning table above it names the same keys, so a search of the
+    # whole section passes with a row missing from this one.
+    table_rows = path_section.split(header, 1)[1].split("\n\n", 1)[0]
 
     written = json.loads(encode_path(PlannedPath(1.0, np.array([0.0]), np.array([0.0]), 0.0, False, 0.0, scene_information_bits=0.0, avoidance_surprise_bits=0.0)))
     for key in written:
-        assert f"| `{key}` |" in path_section, key
+        assert f"| `{key}` |" in table_rows, key
 
 
 @pytest.mark.parametrize(

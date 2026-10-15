@@ -29,10 +29,12 @@ from browser_harness import (
     snapshot,
 )
 from nav.planner.alarm import avoidance_surprise_bits_at
+from nav.runtime.gaze_silencing import GazeSilencingSwitch
 from nav.scene.config import SceneConfig
 from nav.sinks.config import WebConfig
 from nav.sinks.web import WebSink
 from nav.sinks.web_messages import WebMessageKind
+from nav.sources.framecodec import path_message
 from nav.sources.config import SourceMode
 from nav.sources.scene_video import AccessUnit, AccessUnitAssembler, SceneVideoFeed, VideoDescription
 from nav.sources.switching import InputLink
@@ -621,6 +623,495 @@ def test_the_indicator_is_visible_in_every_sound_mode(browser_page: PageSession)
         assert page.is_visible("#nc"), f"the indicator in mode {sound_mode}"
 
 
+# ---- The alarm's sound and volume -----------------------------------------------------------
+# Headless Chrome may have no speaker, so these read the audio graph through the page's
+# window.__audio(), never whether anything was heard. Audibility is checked by ear on the phone.
+
+
+def _audio(page) -> dict:
+    return page.evaluate("() => window.__audio()")
+
+
+def _wait_for_audio(page, condition: str, arg: object = None) -> None:
+    """Wait until a JavaScript condition on `state`, the hook's snapshot, holds."""
+    page.wait_for_function(f"(arg) => {{ const state = window.__audio(); return state !== null && ({condition}); }}", arg=arg, timeout=ELEMENT_TIMEOUT_MS)
+
+
+def test_the_alarm_sound_and_volume_controls_show_only_in_alarm_mode(browser_page: PageSession) -> None:
+    page = browser_page.page
+
+    for sound_mode in ("off", "alarm", "cancel", "alarm"):
+        _choose(page, "mode", sound_mode)
+        page.wait_for_timeout(100)
+        assert page.is_visible("#alarm-sound-field") == (sound_mode == "alarm"), f"the sound control in mode {sound_mode}"
+        assert page.is_visible("#volume-field") == (sound_mode == "alarm"), f"the volume control in mode {sound_mode}"
+        assert page.is_visible("#music-label") == (sound_mode == "cancel"), f"the music picker in mode {sound_mode}"
+
+
+# The page's audio as the browser built it, recorded by test code rather than reported by the page.
+# Every oscillator the page starts, with the type and pitch it really has, and the merger where
+# every beep and the music join before the master, so a test can measure what reaches each ear.
+AUDIO_PROBE_SCRIPT = """
+window.__started = [];
+const originalStart = OscillatorNode.prototype.start;
+OscillatorNode.prototype.start = function (...args) {
+  window.__started.push([this.type, Math.round(this.frequency.value)]);
+  return originalStart.apply(this, args);
+};
+const originalMerger = AudioContext.prototype.createChannelMerger;
+AudioContext.prototype.createChannelMerger = function (...args) {
+  const merger = originalMerger.apply(this, args);
+  window.__merger = merger;
+  return merger;
+};
+// The loudest sample in each ear over a window, as [left, right].
+window.__loudestPerEarOver = (milliseconds) => new Promise((resolve) => {
+  const context = window.__merger.context;
+  const splitter = context.createChannelSplitter(2);
+  window.__merger.connect(splitter);
+  const ears = [0, 1].map((channel) => {
+    const analyser = context.createAnalyser();
+    analyser.fftSize = 2048;
+    splitter.connect(analyser, channel);
+    return { analyser, samples: new Float32Array(analyser.fftSize), loudest: 0 };
+  });
+  const started = performance.now();
+  const read = () => {
+    for (const ear of ears) {
+      ear.analyser.getFloatTimeDomainData(ear.samples);
+      for (const sample of ear.samples) ear.loudest = Math.max(ear.loudest, Math.abs(sample));
+    }
+    if (performance.now() - started < milliseconds) setTimeout(read, 10);
+    else { window.__merger.disconnect(splitter); resolve(ears.map((ear) => ear.loudest)); }
+  };
+  read();
+});
+window.__loudestOver = async (milliseconds) => Math.max(...(await window.__loudestPerEarOver(milliseconds)));
+"""
+
+# How long to listen so a window holds at least one whole beep of each kind.
+LISTEN_MS = {"tone": 700, "chime": 900, "pulse": 700, "steering": 1600}
+
+
+def _open_with_probe(browser, sink: WebSink) -> PageSession:
+    return open_page(browser, sink, init_script=AUDIO_PROBE_SCRIPT)
+
+
+def _next_oscillators(page, count: int) -> list[list]:
+    """The first `count` oscillators the page starts after this call, with their real type and pitch."""
+    page.evaluate("() => { window.__started = []; }")
+    handle = page.wait_for_function("(count) => window.__started.length >= count ? window.__started.slice(0, count) : null", arg=count, timeout=ELEMENT_TIMEOUT_MS)
+    return handle.json_value()
+
+
+def _publish_for(sink: WebSink, sound: str, **overrides) -> None:
+    """A path that makes the page play this sound: the alarm up for the three alarm sounds, down for the tick."""
+    if sound == "steering":
+        sink.publish(sample_path(alarm=False, **overrides))
+    else:
+        sink.publish(sample_path(alarm=True, time_to_contact_seconds=0.5, **overrides))
+
+
+@pytest.mark.parametrize(
+    ("sound", "oscillators", "interval_ms"),
+    [
+        ("tone", [["sine", 990]], 160),
+        # One play starts both notes, each a fundamental and its octave.
+        ("chime", [["sine", 880], ["sine", 1760], ["sine", 660], ["sine", 1320]], 500),
+        # At 0.5 s to contact, three fifths of the way from 0.2 s to 0.7 s: 100 + 0.6 * 150 ms.
+        ("pulse", [["triangle", 330]], 190),
+    ],
+)
+def test_each_alarm_sound_starts_the_oscillators_its_table_says(browser, sink: WebSink, sound: str, oscillators: list[list], interval_ms: int) -> None:
+    session = _open_with_probe(browser, sink)
+    try:
+        page = session.page
+        _choose(page, "mode", "alarm")
+        _choose(page, "alarm-sound", sound)
+        _publish_for(sink, sound)
+        _wait_for_audio(page, "state.lastPlayed !== null && state.lastPlayed.sound === arg", sound)
+        started = _next_oscillators(page, len(oscillators))
+        _wait_for_audio(page, "state.lastIntervalMs === arg", interval_ms)
+    finally:
+        session.close()
+    assert session.errors == [], session.errors
+    assert started == oscillators
+
+
+@pytest.mark.parametrize("sound", ["tone", "chime", "pulse"])
+def test_with_the_alarm_down_every_sound_plays_the_steering_tick(browser, sink: WebSink, sound: str) -> None:
+    # A time to contact that would quicken the Pulse, so a tick that took the chosen sound's
+    # interval instead of its own 700 ms would show.
+    session = _open_with_probe(browser, sink)
+    try:
+        page = session.page
+        _choose(page, "mode", "alarm")
+        _choose(page, "alarm-sound", sound)
+        sink.publish(sample_path(alarm=False, time_to_contact_seconds=0.1))
+        _wait_for_audio(page, "state.lastPlayed !== null && state.lastPlayed.sound === 'steering'")
+        started = _next_oscillators(page, 1)
+        _wait_for_audio(page, "state.lastIntervalMs === 700")
+    finally:
+        session.close()
+    assert session.errors == [], session.errors
+    assert started == [["triangle", 220]]
+
+
+@pytest.mark.parametrize("sound", ["tone", "chime", "pulse"])
+def test_each_alarm_sound_is_heard_after_the_steering_tick(browser, sink: WebSink, sound: str) -> None:
+    # The shared envelope is built at 0 and only Tone ramps it. A sound fed through it would start
+    # its oscillators and report itself played while nothing reached the ears, which is why this
+    # measures the signal rather than reading what the page says it did.
+    session = _open_with_probe(browser, sink)
+    try:
+        page = session.page
+        _choose(page, "mode", "alarm")
+        _choose(page, "alarm-sound", sound)
+        sink.publish(sample_path(alarm=False))
+        _wait_for_audio(page, "state.lastPlayed !== null && state.lastPlayed.sound === 'steering'")
+        page.wait_for_timeout(300)
+        sink.publish(sample_path(alarm=True, time_to_contact_seconds=0.5))
+        _wait_for_audio(page, "state.lastPlayed !== null && state.lastPlayed.sound === arg", sound)
+        loudest = page.evaluate("(ms) => window.__loudestOver(ms)", LISTEN_MS[sound])
+    finally:
+        session.close()
+    assert session.errors == [], session.errors
+    # Pan gains are at most 1 per channel and the default volume is 0.5, so a heard beep peaks
+    # around 0.3 to 0.5 here. Silence is 0.
+    assert loudest > 0.05, f"{sound} reached the merger at {loudest}"
+
+
+def test_the_steering_tick_is_quieter_than_the_alarm(browser, sink: WebSink) -> None:
+    # Asked for in the listening session on 2026-10-14: the beep with nothing in the way was still
+    # too loud. Measured at the merger, both at the same volume preset and the same pan.
+    session = _open_with_probe(browser, sink)
+    try:
+        page = session.page
+        _choose(page, "mode", "alarm")
+        _choose(page, "alarm-sound", "pulse")
+        sink.publish(sample_path(heading=0.0, alarm=False))
+        _wait_for_audio(page, "state.lastPlayed !== null && state.lastPlayed.sound === 'steering'")
+        steering = page.evaluate("(ms) => window.__loudestOver(ms)", LISTEN_MS["steering"])
+        sink.publish(sample_path(heading=0.0, alarm=True, time_to_contact_seconds=0.5))
+        _wait_for_audio(page, "state.lastPlayed !== null && state.lastPlayed.sound === 'pulse'")
+        alarm = page.evaluate("(ms) => window.__loudestOver(ms)", LISTEN_MS["pulse"])
+    finally:
+        session.close()
+    assert session.errors == [], session.errors
+    assert steering > 0.01, f"the steering tick is silent, {steering}"
+    # 0.4 of the alarm's peak by design. Its lower pitch loses a little more through the lowpass.
+    assert steering < 0.6 * alarm, f"steering {steering} against alarm {alarm}"
+
+
+@pytest.mark.parametrize("sound", ["tone", "chime", "pulse", "steering"])
+def test_every_beep_follows_the_volume_preset_at_the_merger(browser, sink: WebSink, sound: str) -> None:
+    # Measured at the output rather than read off the volume gain, so a sound wired around that
+    # gain fails here even though the gain itself moves.
+    session = _open_with_probe(browser, sink)
+    try:
+        page = session.page
+        _choose(page, "mode", "alarm")
+        _choose(page, "alarm-sound", "tone" if sound == "steering" else sound)
+        _publish_for(sink, sound)
+        _wait_for_audio(page, "state.lastPlayed !== null && state.lastPlayed.sound === arg", sound)
+        levels = {}
+        for preset, gain in (("low", 0.25), ("high", 1.0)):
+            _choose(page, "volume", preset)
+            _wait_for_audio(page, "Math.abs(state.beepVolume - arg) < 0.001", gain)
+            # A fresh path before each listen. The page goes quiet 1.5 s after the last one, its
+            # stale rule, and the first listen alone takes most of that.
+            _publish_for(sink, sound)
+            levels[preset] = page.evaluate("(ms) => window.__loudestOver(ms)", LISTEN_MS[sound])
+    finally:
+        session.close()
+    assert session.errors == [], session.errors
+    assert levels["low"] > 0.0, f"{sound} is silent at low"
+    assert 20 * np.log10(levels["high"] / levels["low"]) == pytest.approx(12.0, abs=1.5), levels
+
+
+@pytest.mark.parametrize("sound", ["tone", "chime", "pulse", "steering"])
+def test_every_beep_sits_on_its_side(browser, sink: WebSink, sound: str) -> None:
+    # The alarm sounds sit on the danger's side, here fully right. The tick sits where the arrow
+    # points, here past the full-pan angle to the right. The left ear hears next to nothing.
+    session = _open_with_probe(browser, sink)
+    try:
+        page = session.page
+        _choose(page, "mode", "alarm")
+        _choose(page, "alarm-sound", "tone" if sound == "steering" else sound)
+        if sound == "steering":
+            sink.publish(sample_path(heading=1.2, alarm=False))
+        else:
+            sink.publish(dataclasses.replace(sample_path(alarm=True, time_to_contact_seconds=0.5), alarm_pan=1.0))
+        _wait_for_audio(page, "state.lastPlayed !== null && state.lastPlayed.sound === arg", sound)
+        page.wait_for_timeout(200)
+        left, right = page.evaluate("(ms) => window.__loudestPerEarOver(ms)", LISTEN_MS[sound])
+    finally:
+        session.close()
+    assert session.errors == [], session.errors
+    assert right > 0.01, f"{sound} is silent on the right"
+    assert left < 0.05 * right, f"{sound} left {left} right {right}"
+
+
+def test_the_volume_presets_set_the_beep_gain_and_leave_the_bed_alone(browser_page: PageSession, sink: WebSink) -> None:
+    page = browser_page.page
+    _choose(page, "mode", "alarm")
+
+    for preset, gain in (("low", 0.25), ("med", 0.5), ("high", 1.0)):
+        _choose(page, "volume", preset)
+        # Settled, not ramping toward it. A wait that accepts the ramp passes a wrong preset too.
+        _wait_for_audio(page, "Math.abs(state.beepVolume - arg) < 0.001", gain)
+        # The master carries the music too, so a preset that moved it would move the music.
+        assert _audio(page)["master"] == pytest.approx(0.5), f"preset {preset} moved the master"
+
+    # In alarm mode the bed is stopped and its gains sit at 0, so a check there compares 0 with 0.
+    # In noise cancellation the bed has a real gain to compare: the laptop's ear gain times 0.35.
+    _choose(page, "mode", "cancel")
+    sink.publish(sample_path(ear_gain_left=0.62, ear_gain_right=1.0))
+    _wait_for_audio(page, "Math.abs(state.bedLeft - 0.35 * 0.62) < 0.01 && Math.abs(state.bedRight - 0.35) < 0.01")
+
+    state = _audio(page)
+    assert state["beepVolume"] == pytest.approx(1.0, abs=0.01), "the bed's mode moved the beep volume"
+    assert state["bedLeft"] == pytest.approx(0.35 * 0.62, abs=0.01), "the volume preset reached the music"
+
+
+def test_minus_six_decibels_is_a_factor_of_one_half(browser_page: PageSession) -> None:
+    # Pins the comment's decibels to the code's factors, read off the node rather than the table.
+    # Compared in decibels, the unit the comment states. Halving is -6.02 dB, which everyone calls
+    # 6 dB, and the node is still settling by a few thousandths, so 0.1 dB covers both.
+    page = browser_page.page
+    _choose(page, "mode", "alarm")
+    levels = {}
+    for preset, gain in (("low", 0.25), ("med", 0.5), ("high", 1.0)):
+        _choose(page, "volume", preset)
+        _wait_for_audio(page, "Math.abs(state.beepVolume - arg) < 0.001", gain)
+        levels[preset] = _audio(page)["beepVolume"]
+
+    assert 20 * np.log10(levels["med"] / levels["high"]) == pytest.approx(-6.0, abs=0.1)
+    assert 20 * np.log10(levels["low"] / levels["high"]) == pytest.approx(-12.0, abs=0.1)
+
+
+def test_the_pulse_quickens_with_time_to_contact(browser_page: PageSession, sink: WebSink) -> None:
+    # Through the real sink, so this is the feature end to end: path message, showPath, tick().
+    # Each row expects a different interval from the row before, or its wait passes on the last
+    # row's value before the new path is ticked.
+    page = browser_page.page
+    _choose(page, "mode", "alarm")
+    _choose(page, "alarm-sound", "pulse")
+
+    for seconds, interval_ms in ((0.9, 250), (0.45, 175), (0.1, 100), (0.7, 250), (0.2, 100), (None, 250)):
+        sink.publish(sample_path(alarm=True, time_to_contact_seconds=seconds))
+        _wait_for_audio(page, "state.lastIntervalMs !== null && Math.abs(state.lastIntervalMs - arg) < 0.5", interval_ms)
+
+
+def test_a_path_without_a_time_to_contact_pulses_at_the_slow_rate(browser_page: PageSession, sink: WebSink) -> None:
+    # A laptop from before the key existed. Without the page's number check the interval is NaN,
+    # which setTimeout reads as 0, a timer loop with no gap.
+    page = browser_page.page
+    _choose(page, "mode", "alarm")
+    _choose(page, "alarm-sound", "pulse")
+    sink.publish(sample_path(alarm=True, time_to_contact_seconds=0.2))
+    _wait_for_audio(page, "state.lastIntervalMs === 100")
+
+    message = path_message(sample_path(alarm=True, time_to_contact_seconds=0.2))
+    del message["time_to_contact_seconds"]
+    send_text(sink, json.dumps({"kind": WebMessageKind.PATH.value, **message}))
+
+    _wait_for_audio(page, "state.lastIntervalMs === 250")
+    assert browser_page.errors == [], browser_page.errors
+
+
+def test_every_radio_reaches_its_sound_and_its_volume(browser_page: PageSession, sink: WebSink) -> None:
+    # Driven from the page's own radios, so a fourth sound or volume added to the markup without an
+    # entry in its table fails here.
+    page = browser_page.page
+    _choose(page, "mode", "alarm")
+    sounds = page.evaluate("() => [...document.querySelectorAll('#alarm-sound input')].map((input) => input.value)")
+    volumes = page.evaluate("() => [...document.querySelectorAll('#volume input')].map((input) => input.value)")
+    assert sounds and volumes
+
+    sink.publish(sample_path(alarm=True, time_to_contact_seconds=0.5))
+    for sound in sounds:
+        _choose(page, "alarm-sound", sound)
+        _wait_for_audio(page, "state.lastPlayed !== null && state.lastPlayed.sound === arg", sound)
+    for volume in volumes:
+        _choose(page, "volume", volume)
+        page.wait_for_timeout(500)
+        assert 0.0 < _audio(page)["beepVolume"] <= 1.0, volume
+    assert browser_page.errors == [], browser_page.errors
+
+
+def _open_with_stored(browser, sink: WebSink, sound: str, volume: str) -> PageSession:
+    return open_page(browser, sink, init_script=f"localStorage.setItem('alarm_sound', {json.dumps(sound)}); localStorage.setItem('alarm_volume', {json.dumps(volume)});")
+
+
+def _checked(page, toggle_id: str) -> str:
+    return page.evaluate("(id) => document.querySelector('#' + id + ' input:checked').value", toggle_id)
+
+
+def test_a_stored_choice_is_restored_on_load(browser, sink: WebSink) -> None:
+    # Not the defaults on purpose, so a page that ignores storage fails here.
+    session = _open_with_stored(browser, sink, "chime", "high")
+    try:
+        page = session.page
+        assert (_checked(page, "alarm-sound"), _checked(page, "volume")) == ("chime", "high")
+        _choose(page, "mode", "alarm")
+        _wait_for_audio(page, "Math.abs(state.beepVolume - 1.0) < 0.01")
+        sink.publish(sample_path(alarm=True, time_to_contact_seconds=0.5))
+        _wait_for_audio(page, "state.lastPlayed !== null && state.lastPlayed.sound === 'chime'")
+    finally:
+        session.close()
+    assert session.errors == [], session.errors
+
+
+@pytest.mark.parametrize(("sound", "volume"), [("siren", "loud"), ("constructor", "toString")])
+def test_a_bad_stored_choice_falls_back_to_the_default(browser, sink: WebSink, sound: str, volume: str) -> None:
+    # "constructor" and "toString" are on every object through its prototype, so a check that
+    # only asks whether the key is "in" the table lets them through.
+    session = _open_with_stored(browser, sink, sound, volume)
+    try:
+        assert (_checked(session.page, "alarm-sound"), _checked(session.page, "volume")) == ("pulse", "med")
+    finally:
+        session.close()
+    assert session.errors == [], session.errors
+
+
+def test_changing_a_control_writes_the_choice(browser_page: PageSession) -> None:
+    # Neither is a default, since clicking the checked radio fires no change and writes nothing.
+    page = browser_page.page
+    _choose(page, "mode", "alarm")
+    _choose(page, "alarm-sound", "chime")
+    _choose(page, "volume", "low")
+
+    stored = page.evaluate("() => [localStorage.getItem('alarm_sound'), localStorage.getItem('alarm_volume')]")
+    assert stored == ["chime", "low"]
+
+
+# Storage refuses the way a private window or blocked site data does, and every warning the page
+# prints is counted from before its first line runs.
+BLOCKED_STORAGE_SCRIPT = """
+for (const name of ["getItem", "setItem"]) {
+  Storage.prototype[name] = () => { throw new DOMException("blocked", "SecurityError"); };
+}
+window.__warnings = [];
+const originalWarn = console.warn;
+console.warn = (...parts) => { window.__warnings.push(parts.join(" ")); originalWarn(...parts); };
+"""
+
+
+def test_blocked_storage_leaves_the_page_on_its_defaults(browser, sink: WebSink) -> None:
+    session = open_page(browser, sink, init_script=BLOCKED_STORAGE_SCRIPT)
+    try:
+        page = session.page
+        assert (_checked(page, "alarm-sound"), _checked(page, "volume")) == ("pulse", "med")
+        # A change still applies, and its refused write adds no second warning.
+        _choose(page, "mode", "alarm")
+        _choose(page, "volume", "high")
+        _wait_for_audio(page, "Math.abs(state.beepVolume - 1.0) < 0.01")
+        _choose(page, "alarm-sound", "chime")
+        page.wait_for_timeout(100)
+        warnings = page.evaluate("() => window.__warnings")
+    finally:
+        session.close()
+    assert session.errors == [], session.errors
+    assert len([text for text in warnings if "won't keep the alarm sound" in text]) == 1, warnings
+
+
+# Storage that refuses on write only, the way a full one does, with every warning counted.
+FULL_STORAGE_SCRIPT = """
+Storage.prototype.setItem = () => { throw new DOMException("full", "QuotaExceededError"); };
+window.__warnings = [];
+const originalWarn = console.warn;
+console.warn = (...parts) => { window.__warnings.push(parts.join(" ")); originalWarn(...parts); };
+"""
+
+
+def test_a_full_storage_keeps_the_choice_for_this_load(browser, sink: WebSink) -> None:
+    session = open_page(browser, sink, init_script=FULL_STORAGE_SCRIPT)
+    try:
+        page = session.page
+        _choose(page, "mode", "alarm")
+        _choose(page, "alarm-sound", "chime")
+        _choose(page, "volume", "high")
+        sink.publish(sample_path(alarm=True, time_to_contact_seconds=0.5))
+        _wait_for_audio(page, "state.lastPlayed !== null && state.lastPlayed.sound === 'chime' && Math.abs(state.beepVolume - 1.0) < 0.01")
+        warnings = page.evaluate("() => window.__warnings")
+    finally:
+        session.close()
+    assert session.errors == [], session.errors
+    assert len([text for text in warnings if "won't keep the alarm sound" in text]) == 1, warnings
+
+
+# Storage switched off, which Firefox gives as a null localStorage rather than an error.
+NULL_STORAGE_SCRIPT = """
+Object.defineProperty(window, "localStorage", { get: () => null, configurable: true });
+window.__warnings = [];
+const originalWarn = console.warn;
+console.warn = (...parts) => { window.__warnings.push(parts.join(" ")); originalWarn(...parts); };
+"""
+
+
+def test_storage_switched_off_leaves_the_page_connected_on_its_defaults(browser, sink: WebSink) -> None:
+    # open_page waits for the socket, so a page stopped at load fails before any assertion here.
+    session = open_page(browser, sink, init_script=NULL_STORAGE_SCRIPT)
+    try:
+        page = session.page
+        assert (_checked(page, "alarm-sound"), _checked(page, "volume")) == ("pulse", "med")
+        _choose(page, "mode", "alarm")
+        _choose(page, "alarm-sound", "chime")
+        sink.publish(sample_path(heading=0.3))
+        _wait_for_text(page, "status", "Heading +17 degrees")
+        warnings = page.evaluate("() => window.__warnings")
+    finally:
+        session.close()
+    assert session.errors == [], session.errors
+    assert len([text for text in warnings if "won't keep the alarm sound" in text]) == 1, warnings
+
+
+# Storage failing in a way no browser is known to, from both reads and writes.
+BROKEN_STORAGE_SCRIPT = """
+for (const name of ["getItem", "setItem"]) {
+  Storage.prototype[name] = () => { throw new TypeError("storage broke"); };
+}
+window.__warnings = [];
+const originalWarn = console.warn;
+console.warn = (...parts) => { window.__warnings.push(parts.join(" ")); originalWarn(...parts); };
+"""
+
+
+def test_an_unexpected_storage_error_is_reported_as_unexpected_and_the_page_runs_on(browser, sink: WebSink) -> None:
+    # Not rethrown, since this runs before the page connects and would take the arrow with it. Not
+    # swallowed as the expected case either: it gets the console error that says nobody predicted it.
+    session = open_page(browser, sink, init_script=BROKEN_STORAGE_SCRIPT)
+    try:
+        page = session.page
+        assert (_checked(page, "alarm-sound"), _checked(page, "volume")) == ("pulse", "med")
+        _choose(page, "mode", "alarm")
+        _choose(page, "volume", "high")
+        _wait_for_audio(page, "Math.abs(state.beepVolume - 1.0) < 0.01")
+        sink.publish(sample_path(heading=0.3))
+        _wait_for_text(page, "status", "Heading +17 degrees")
+        warnings = page.evaluate("() => window.__warnings")
+    finally:
+        session.close()
+    unexpected = [error for error in session.errors if "UNEXPECTED storage error" in error]
+    assert len(unexpected) == 1, session.errors
+    assert [error for error in session.errors if error not in unexpected] == []
+    assert [text for text in warnings if "won't keep the alarm sound" in text] == [], warnings
+
+@pytest.mark.parametrize(("width", "height"), [(1650, 1080), (1920, 1080), (1536, 960)])
+def test_the_desktop_layout_still_fits_one_screen_with_the_alarm_controls_shown(browser, sink: WebSink, width: int, height: int) -> None:
+    # The existing one-screen test runs with the sound off, when these two controls are hidden.
+    session = open_page(browser, sink, width=width, height=height)
+    try:
+        page = session.page
+        _choose(page, "mode", "alarm")
+        assert page.is_visible("#volume-field")
+        assert page.evaluate("() => document.documentElement.scrollHeight <= window.innerHeight"), "the page scrolls with the alarm controls shown"
+    finally:
+        session.close()
+    assert session.errors == [], session.errors
+
+
 def test_hidden_floor_draws_in_the_second_gray(browser_page: PageSession, sink: WebSink) -> None:
     from nav.sinks.web_messages import plan_view_message, web_text_message
 
@@ -1049,4 +1540,142 @@ def test_no_input_clears_when_the_live_input_connects(browser) -> None:
     finally:
         session.close()
         switch_sink.close()
+    assert session.errors == [], session.errors
+
+
+# ---- The gaze switch ------------------------------------------------------------------------
+# The page turns red from alarm and plays from alarm_audible. The two differ only while the
+# laptop's gaze switch is on and the eyes are on the danger.
+
+
+def test_a_quiet_alarm_keeps_the_page_red_and_the_beep_steering(browser, sink: WebSink) -> None:
+    session = _open_with_probe(browser, sink)
+    try:
+        page = session.page
+        _choose(page, "mode", "alarm")
+        sink.publish(sample_path(alarm=True, alarm_audible=False, danger_noticed=True, time_to_contact_seconds=0.5))
+        page.wait_for_function("() => document.body.classList.contains('alarm')", timeout=ELEMENT_TIMEOUT_MS)
+        _wait_for_audio(page, "state.lastPlayed !== null && state.lastPlayed.sound === 'steering'")
+        _wait_for_audio(page, "state.lastIntervalMs === 700")
+    finally:
+        session.close()
+    assert session.errors == [], session.errors
+
+
+def test_an_audible_alarm_beeps_the_alarm(browser, sink: WebSink) -> None:
+    # The positive control for the test above: the same path with the alarm heard plays Pulse.
+    session = _open_with_probe(browser, sink)
+    try:
+        page = session.page
+        _choose(page, "mode", "alarm")
+        _choose(page, "alarm-sound", "pulse")
+        sink.publish(sample_path(alarm=True, alarm_audible=True, danger_noticed=True, time_to_contact_seconds=0.5))
+        _wait_for_audio(page, "state.lastPlayed !== null && state.lastPlayed.sound === 'pulse'")
+    finally:
+        session.close()
+    assert session.errors == [], session.errors
+
+
+def test_an_older_path_without_alarm_audible_beeps_on_alarm(browser, sink: WebSink) -> None:
+    # A laptop from before the gaze switch sends neither key. Its alarm sounds whenever it is up.
+    session = _open_with_probe(browser, sink)
+    try:
+        page = session.page
+        _choose(page, "mode", "alarm")
+        _choose(page, "alarm-sound", "pulse")
+        message = path_message(sample_path(alarm=True, time_to_contact_seconds=0.5))
+        del message["alarm_audible"]
+        del message["danger_noticed"]
+        send_text(sink, json.dumps({"kind": WebMessageKind.PATH.value, **message}))
+        _wait_for_audio(page, "state.lastPlayed !== null && state.lastPlayed.sound === 'pulse'")
+        assert not page.is_visible("#danger-noticed")
+    finally:
+        session.close()
+    assert session.errors == [], session.errors
+
+
+def test_the_nc_label_follows_alarm_audible_not_alarm(browser_page: PageSession, sink: WebSink) -> None:
+    page = browser_page.page
+
+    sink.publish(sample_path(alarm=True, alarm_audible=False, danger_noticed=True))
+    page.wait_for_function("() => document.body.classList.contains('alarm')", timeout=ELEMENT_TIMEOUT_MS)
+    _wait_for_text(page, "nc", "NC ON")
+
+    sink.publish(sample_path(alarm=True, alarm_audible=True))
+    _wait_for_text(page, "nc", "NC OFF")
+
+
+def test_the_danger_noticed_line_shows_and_goes_stale(browser, sink: WebSink) -> None:
+    session = open_page(browser, sink, fake_clock=True)
+    try:
+        page = session.page
+        sink.publish(sample_path(alarm=True, danger_noticed=True))
+        page.wait_for_selector("#danger-noticed", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+        assert page.text_content("#danger-noticed") == "Eyes on danger"
+
+        sink.publish(sample_path(alarm=True, danger_noticed=False))
+        page.wait_for_selector("#danger-noticed", state="hidden", timeout=ELEMENT_TIMEOUT_MS)
+
+        sink.publish(sample_path(alarm=True, danger_noticed=True))
+        page.wait_for_selector("#danger-noticed", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+        page.clock.fast_forward(PAST_STALE_MS)
+        page.wait_for_selector("#danger-noticed", state="hidden", timeout=ELEMENT_TIMEOUT_MS)
+    finally:
+        session.close()
+    assert session.errors == [], session.errors
+
+
+def test_the_danger_noticed_line_and_the_switch_show_in_every_sound_mode(browser_page: PageSession, sink: WebSink) -> None:
+    page = browser_page.page
+    sink.publish(sample_path(alarm=True, danger_noticed=True))
+    page.wait_for_selector("#danger-noticed", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+
+    for sound_mode in ("off", "alarm", "cancel"):
+        _choose(page, "mode", sound_mode)
+        sink.publish(sample_path(alarm=True, danger_noticed=True))
+        page.wait_for_timeout(100)
+        assert page.is_visible("#danger-noticed"), f"the line in mode {sound_mode}"
+        assert page.is_visible("#gaze-silencing-field"), f"the switch in mode {sound_mode}"
+
+
+def test_the_gaze_silencing_radio_sends_its_choice_and_follows_the_state(browser) -> None:
+    switch = GazeSilencingSwitch(False)
+    switch_sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None, gaze_switch=switch)
+    switch_sink.start()
+    session = open_page(browser, switch_sink)
+    try:
+        page = session.page
+        page.wait_for_function("() => document.querySelector(\"#gaze-silencing input[value='off']\").checked", timeout=ELEMENT_TIMEOUT_MS)
+
+        _choose(page, "gaze-silencing", "on")
+
+        page.wait_for_function("() => document.querySelector(\"#gaze-silencing input[value='on']\").checked", timeout=ELEMENT_TIMEOUT_MS)
+        assert switch.enabled, "the click reached the laptop's switch"
+
+        # Another page, or the command line's start, turns it back off. This page follows.
+        switch.request(False)
+        page.wait_for_function("() => document.querySelector(\"#gaze-silencing input[value='off']\").checked", timeout=ELEMENT_TIMEOUT_MS)
+    finally:
+        session.close()
+        switch_sink.close()
+    assert session.errors == [], session.errors
+
+
+@pytest.mark.parametrize(("width", "height"), [*DESKTOP_VIEWPORTS, (PHONE_WIDTH, 900)])
+def test_the_eyes_line_and_the_gaze_switch_fit_inside_the_sound_card(browser, sink: WebSink, width: int, height: int) -> None:
+    # The left column is 220 px on a laptop. A line or a segment that ran past it would be cut off,
+    # which no layout test of the cards' own boxes would notice.
+    session = open_page(browser, sink, width=width, height=height)
+    try:
+        page = session.page
+        sink.publish(sample_path(alarm=True, alarm_audible=False, danger_noticed=True))
+        page.wait_for_selector("#danger-noticed", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+        card = _box(page, "sound-card")
+        for element in ("danger-noticed", "nc", "gaze-silencing"):
+            box = _box(page, element)
+            assert box["x"] >= card["x"] and box["x"] + box["width"] <= card["x"] + card["width"], f"{element} runs past the card at {width} wide"
+        # The readouts each keep to one line.
+        assert _box(page, "nc")["height"] == pytest.approx(_box(page, "readout-row")["height"], abs=2)
+    finally:
+        session.close()
     assert session.errors == [], session.errors
