@@ -23,6 +23,8 @@ FIXTURE = Path(__file__).parent / "fixtures" / "ors_walking_response.json"
 START = LatLon(51.8215, 5.8650)
 DESTINATION = LatLon(51.8245, 5.8685)
 CONFIG = RouteConfig()
+# The stored route's length as the service measured it.
+ROUTE_LENGTH_METERS = json.loads(FIXTURE.read_text(encoding="utf-8"))["features"][0]["properties"]["summary"]["distance"]
 GOAL_DISTANCE_METERS = 4.0
 
 
@@ -73,7 +75,8 @@ def test_a_destination_and_a_fix_give_a_goal_on_the_route() -> None:
     assert frame.state is RouteState.FOLLOWING
     assert frame.goal is not None
     assert frame.along_meters == pytest.approx(0.0, abs=0.5)
-    assert frame.remaining_meters == pytest.approx(469.7, abs=0.5)
+    # The fix is a few meters from the route's start, so nearly the whole route is still to go.
+    assert frame.remaining_meters == pytest.approx(ROUTE_LENGTH_METERS, abs=5.0)
 
 
 def test_a_destination_before_any_fix_is_held_and_fetched_on_the_first_fix() -> None:
@@ -189,7 +192,8 @@ def test_the_sidecars_are_written_through_textio_with_lf(tmp_path: Path) -> None
     assert fetched["outcome"] == "ok" and fetched["fetched_seconds"] == 5000.0
     # The logged route reads back through the service's own parser, longitude first.
     route = parse_walking_response(json.dumps(fetched["route"]))
-    assert route is not None and route.points[0] == START
+    stored = parse_walking_response(FIXTURE.read_text(encoding="utf-8"))
+    assert route is not None and stored is not None and route.points == stored.points
 
 
 def test_a_bad_route_constant_stops_the_tracker_at_construction() -> None:

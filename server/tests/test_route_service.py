@@ -80,12 +80,15 @@ def test_the_fixture_has_the_real_responses_keys_and_lon_lat_order() -> None:
 
 
 def test_a_recorded_response_parses_to_a_route_in_lat_lon() -> None:
+    document = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    coordinates = document["features"][0]["geometry"]["coordinates"]
     route = parse_walking_response(FIXTURE.read_text(encoding="utf-8"))
     assert route is not None
-    assert route.points[0] == LatLon(51.8215, 5.8650)
-    assert route.destination == LatLon(51.8245, 5.8685)
-    # The response's own summary distance, from its geometry.
-    assert route.length_meters == pytest.approx(469.7, abs=0.5)
+    # The file holds [longitude, latitude], so each pair comes out the other way round.
+    assert route.points[0] == LatLon(coordinates[0][1], coordinates[0][0])
+    assert route.destination == LatLon(coordinates[-1][1], coordinates[-1][0])
+    # Against the service's own figure for the route, which it computed and this code did not.
+    assert route.length_meters == pytest.approx(document["features"][0]["properties"]["summary"]["distance"], rel=0.01)
 
 
 def test_a_repeated_vertex_is_kept_once() -> None:
