@@ -164,7 +164,9 @@ every mode, then the mode toggle, the alarm sound and volume toggles in alarm mo
 picker in noise-cancellation mode. The readouts are
 a head with five arcs an ear, one lit per 20 % of that ear's gain as the laptop sent it, and
 `NC ON` or `NC OFF`, the driving guide's rule, off while the alarm is up and back on 2 s after it
-clears, both reading unknown after 1.5 s without a path. The alarm still turns the whole page red.
+clears, both reading unknown after 1.5 s without a path. Beside `NC` an eye drawn in lines shows
+while the alarm is up, green with the wearer's eyes on the danger and red off it, so always red on
+a run without the glasses. The alarm still turns the whole page red.
 A page tab open across a laptop restart keeps the HTML it loaded, so a page change shows only
 after a reload.
 
@@ -587,9 +589,11 @@ still ends when its device or its capture does, which is what recording a walk r
 **With the glasses, the alarm can go quiet while the wearer's eyes are on the danger.** It's off
 unless asked for. `--gaze-silences-alarm on` starts a run with it on, and the page's Sound card can
 flip it for every page at once. The page still turns red. Only the sound, the noise-cancellation
-cut and the drop in the danger's ear are held back. Once an alarm has been under 0.35 s from
-contact it sounds whatever the eyes are doing until it clears, because looking at something isn't
-the same as stepping around it.
+cut and the drop in the danger's ear are held back, at any distance. `--gaze-floor-seconds 0.35`
+puts a floor under it: once an alarm has been under that time to contact it sounds whatever the
+eyes are doing until it clears, on the view that looking at something isn't stepping around it.
+There is no floor by default, since on a manual test indoors a desk inside the footprint kept the
+floor sounding the alarm the whole run.
 
 What the gaze can tell is whether the eyes are toward the danger or away from it, down at the floor
 or off to the side. It can't tell that the wearer singled the thing out. The alarm only looks at

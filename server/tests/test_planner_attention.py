@@ -31,11 +31,14 @@ from synthetic_depth import clean_scene
 
 PLANNER = PlannerConfig()
 SWITCH_ON = dataclasses.replace(PLANNER, gaze_silences_alarm=True)
+# The shipped default has no floor. The floor's own tests put one back at the old 0.35 s.
+FLOORED = dataclasses.replace(PLANNER, attention_floor_seconds=0.35)
+SWITCH_ON_FLOORED = dataclasses.replace(FLOORED, gaze_silences_alarm=True)
 WALKER = WalkerConfig()
 FOCAL = 500.0
 INTRINSICS = np.array([[FOCAL, 0.0, 320.0], [0.0, FOCAL, 240.0], [0.0, 0.0, 1.0]])
-# Clearance over the planner's 1.4 m/s: 0.70 m is 0.5 s to contact, under the 0.7 s alarm and over the
-# 0.35 s floor. 0.30 m is 0.21 s, under the floor.
+# Clearance over the planner's 1.4 m/s: 0.70 m is 0.5 s to contact, under the 0.7 s alarm and over
+# FLOORED's 0.35 s floor. 0.30 m is 0.21 s, under that floor.
 ABOVE_FLOOR = 0.70
 UNDER_FLOOR = 0.30
 ON_THE_DANGER = GazeSamples(np.array([[320.0, 240.0]]), np.zeros(1), INTRINSICS)
@@ -58,20 +61,27 @@ def _at(timestamp: float, *points: ObstaclePoint) -> ObstacleSet:
 
 
 def test_alarm_audible_is_the_alarm_unless_every_condition_holds() -> None:
-    assert alarm_audible(True, True, 0.5, False, PLANNER)
-    assert not alarm_audible(True, True, 0.5, True, PLANNER)
-    assert alarm_audible(True, False, 0.5, True, PLANNER)
-    assert alarm_audible(True, True, 0.2, True, PLANNER)
-    assert not alarm_audible(False, False, None, False, PLANNER)
+    assert alarm_audible(True, True, 0.5, False, FLOORED)
+    assert not alarm_audible(True, True, 0.5, True, FLOORED)
+    assert alarm_audible(True, False, 0.5, True, FLOORED)
+    assert alarm_audible(True, True, 0.2, True, FLOORED)
+    assert not alarm_audible(False, False, None, False, FLOORED)
 
 
 def test_the_floor_itself_is_above_it() -> None:
-    assert not alarm_audible(True, True, PLANNER.attention_floor_seconds, True, PLANNER)
-    assert alarm_audible(True, True, PLANNER.attention_floor_seconds - 1e-9, True, PLANNER)
+    assert not alarm_audible(True, True, FLOORED.attention_floor_seconds, True, FLOORED)
+    assert alarm_audible(True, True, FLOORED.attention_floor_seconds - 1e-9, True, FLOORED)
+
+
+def test_without_a_floor_the_gaze_quiets_the_alarm_at_any_distance() -> None:
+    assert PLANNER.attention_floor_seconds == 0.0
+    for contact in (0.5, 0.2, 0.01, 0.0, None):
+        assert not alarm_audible(True, True, contact, True, PLANNER), f"heard at {contact}"
+    assert alarm_audible(True, False, 0.0, True, PLANNER)
 
 
 def test_a_held_alarm_with_an_empty_corridor_counts_as_above_the_floor() -> None:
-    assert not alarm_audible(True, True, None, True, PLANNER)
+    assert not alarm_audible(True, True, None, True, FLOORED)
 
 
 # *******************************************
@@ -96,11 +106,20 @@ def test_a_noticed_danger_above_the_floor_is_quiet_with_the_switch_on() -> None:
 def test_a_noticed_danger_under_the_floor_still_sounds() -> None:
     # The same fixture both sides of the floor, so the quiet half proves the gaze arrived and only
     # the floor is holding on the other.
-    above = PlannerPipeline(SWITCH_ON, WALKER).plan(_at(0.0, _danger(ABOVE_FLOOR)), gaze=ON_THE_DANGER)
-    under = PlannerPipeline(SWITCH_ON, WALKER).plan(_at(0.0, _danger(UNDER_FLOOR)), gaze=ON_THE_DANGER)
+    above = PlannerPipeline(SWITCH_ON_FLOORED, WALKER).plan(_at(0.0, _danger(ABOVE_FLOOR)), gaze=ON_THE_DANGER)
+    under = PlannerPipeline(SWITCH_ON_FLOORED, WALKER).plan(_at(0.0, _danger(UNDER_FLOOR)), gaze=ON_THE_DANGER)
 
     assert not above.alarm_audible
     assert under.danger_noticed and under.alarm_audible
+
+
+def test_the_shipped_default_quiets_a_noticed_danger_however_close() -> None:
+    # No floor by default, so the same close fixture that sounds above is quiet here.
+    under = PlannerPipeline(SWITCH_ON, WALKER).plan(_at(0.0, _danger(UNDER_FLOOR)), gaze=ON_THE_DANGER)
+    touching = PlannerPipeline(SWITCH_ON, WALKER).plan(_at(0.0, _danger(0.0)), gaze=ON_THE_DANGER)
+
+    assert under.alarm and under.danger_noticed and not under.alarm_audible
+    assert touching.alarm and touching.danger_noticed and not touching.alarm_audible
 
 
 def test_gaze_clearly_off_the_danger_never_silences_the_alarm() -> None:
@@ -162,7 +181,7 @@ def test_the_path_never_changes_with_the_switch_on() -> None:
 def test_a_hold_that_started_under_the_floor_stays_heard_when_the_corridor_empties() -> None:
     # A close low object drops out of the bottom of the picture. The eyes were on it, and the hold
     # keeps the alarm up with nothing in the corridor. It was under the floor, so it stays heard.
-    planner = PlannerPipeline(SWITCH_ON, WALKER)
+    planner = PlannerPipeline(SWITCH_ON_FLOORED, WALKER)
     under = planner.plan(_at(0.0, _danger(UNDER_FLOOR)), gaze=ON_THE_DANGER)
 
     held = planner.plan(_at(0.1), gaze=ON_THE_DANGER)
@@ -173,7 +192,7 @@ def test_a_hold_that_started_under_the_floor_stays_heard_when_the_corridor_empti
 
 
 def test_a_farther_danger_looked_at_during_the_hold_does_not_quiet_an_alarm_that_was_under_the_floor() -> None:
-    planner = PlannerPipeline(SWITCH_ON, WALKER)
+    planner = PlannerPipeline(SWITCH_ON_FLOORED, WALKER)
     planner.plan(_at(0.0, _danger(UNDER_FLOOR)), gaze=ON_THE_DANGER)
 
     farther = planner.plan(_at(0.1, _danger(ABOVE_FLOOR)), gaze=ON_THE_DANGER)
@@ -184,7 +203,7 @@ def test_a_farther_danger_looked_at_during_the_hold_does_not_quiet_an_alarm_that
 
 def test_the_floor_is_forgotten_once_the_alarm_clears() -> None:
     # The positive control for the two above: a new alarm, raised above the floor and looked at, is quiet.
-    planner = PlannerPipeline(SWITCH_ON, WALKER)
+    planner = PlannerPipeline(SWITCH_ON_FLOORED, WALKER)
     planner.plan(_at(0.0, _danger(UNDER_FLOOR)), gaze=ON_THE_DANGER)
     cleared = planner.plan(_at(1.0))
 
@@ -214,7 +233,7 @@ def test_a_look_carries_to_the_next_frame_in_credit() -> None:
     "field, value, named",
     [
         ("attention_floor_seconds", 0.7, "attention_floor_seconds"),
-        ("attention_floor_seconds", 0.0, "attention_floor_seconds"),
+        ("attention_floor_seconds", -0.1, "attention_floor_seconds"),
         ("attention_window_seconds", 0.25, "attention_window_seconds"),
         ("attention_window_seconds", -0.01, "attention_window_seconds"),
         ("attention_link_meters", 0.0, "attention_link_meters"),
@@ -232,6 +251,7 @@ def test_an_attention_setting_out_of_range_stops_the_planner_at_construction(fie
 
 def test_the_shipped_attention_settings_pass_their_check() -> None:
     check_attention_config(PLANNER)
+    check_attention_config(FLOORED)
 
 
 @pytest.mark.parametrize(

@@ -150,6 +150,13 @@ def _finite_positive_float(text: str) -> float:
     return value
 
 
+def _zero_or_positive_float(text: str) -> float:
+    value = float(text)
+    if not value >= 0.0:
+        raise argparse.ArgumentTypeError(f"must be zero or more, got {value}")
+    return value
+
+
 def _recording_captures(parser: argparse.ArgumentParser, arguments: argparse.Namespace) -> tuple[str, ...]:
     """
     Every capture the run can switch to: each --recording-capture, then every capture folder in --recordings-dir.
@@ -234,6 +241,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[state.value for state in OnOff],
         default=OnOff.OFF.value,
         help="whether the glasses' gaze on the danger may quiet the alarm, at the start. A page can flip it for the whole run",
+    )
+    pipeline.add_argument(
+        "--gaze-floor-seconds",
+        type=_zero_or_positive_float,
+        default=PlannerConfig.attention_floor_seconds,
+        help="under this time to contact the alarm sounds whatever the gaze says. 0, the default, is no floor",
     )
 
     video = parser.add_argument_group("video_file source")
@@ -483,7 +496,10 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
         sink_kinds=sink_kinds,
         goal_mode=goal_mode,
         # The page and the command line spell it as OnOff, and the planner holds the bool.
-        planner=PlannerConfig(gaze_silences_alarm=OnOff(arguments.gaze_silences_alarm) is OnOff.ON),
+        planner=PlannerConfig(
+            gaze_silences_alarm=OnOff(arguments.gaze_silences_alarm) is OnOff.ON,
+            attention_floor_seconds=arguments.gaze_floor_seconds,
+        ),
         scene=SceneConfig(floor_max_tilt_degrees=arguments.floor_max_tilt, floor_max_offset_meters=arguments.floor_max_height),
         walker=WalkerConfig(radius_meters=arguments.walker_radius),
         tap=TapConfig(log_dir=arguments.record_to),
