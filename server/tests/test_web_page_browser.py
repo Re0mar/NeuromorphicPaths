@@ -1599,7 +1599,8 @@ def test_an_older_path_without_alarm_audible_beeps_on_alarm(browser, sink: WebSi
         del message["danger_noticed"]
         send_text(sink, json.dumps({"kind": WebMessageKind.PATH.value, **message}))
         _wait_for_audio(page, "state.lastPlayed !== null && state.lastPlayed.sound === 'pulse'")
-        assert not page.is_visible("#danger-noticed")
+        # The alarm is up, so the eye shows, and such a laptop never has the eyes on the danger.
+        page.wait_for_selector("#danger-noticed.away", state="visible", timeout=ELEMENT_TIMEOUT_MS)
     finally:
         session.close()
     assert session.errors == [], session.errors
@@ -1656,15 +1657,24 @@ def test_a_quiet_alarm_leaves_the_tick_where_the_arrow_points(browser, sink: Web
     assert right < 0.05 * left, f"left {left} right {right}"
 
 
-def test_the_danger_noticed_line_shows_and_goes_stale(browser, sink: WebSink) -> None:
+def test_the_eye_is_green_on_the_danger_red_off_it_and_gone_with_the_alarm_or_stale(browser, sink: WebSink) -> None:
     session = open_page(browser, sink, fake_clock=True)
     try:
         page = session.page
         sink.publish(sample_path(alarm=True, danger_noticed=True))
-        page.wait_for_selector("#danger-noticed", state="visible", timeout=ELEMENT_TIMEOUT_MS)
-        assert page.text_content("#danger-noticed") == "Eyes on danger"
+        page.wait_for_selector("#danger-noticed.looking", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+        assert page.get_attribute("#danger-noticed", "aria-label") == "Eyes on the danger"
+        # Lines only: nothing in the eye is filled.
+        assert page.evaluate("() => getComputedStyle(document.querySelector('#danger-noticed')).fill") == "none"
+        assert page.evaluate("() => getComputedStyle(document.querySelector('#danger-noticed')).color") == "rgb(63, 223, 95)"
 
         sink.publish(sample_path(alarm=True, danger_noticed=False))
+        page.wait_for_selector("#danger-noticed.away", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+        assert page.get_attribute("#danger-noticed", "aria-label") == "Eyes off the danger"
+        assert page.evaluate("() => getComputedStyle(document.querySelector('#danger-noticed')).color") == "rgb(255, 80, 80)"
+
+        # No alarm, so there is no danger to be on or off.
+        sink.publish(sample_path(alarm=False, danger_noticed=False))
         page.wait_for_selector("#danger-noticed", state="hidden", timeout=ELEMENT_TIMEOUT_MS)
 
         sink.publish(sample_path(alarm=True, danger_noticed=True))

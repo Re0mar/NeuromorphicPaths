@@ -956,6 +956,17 @@ def test_gaze_silences_alarm_defaults_to_off() -> None:
     assert build_run_config(MINIMAL_VIDEO_ARGV).planner.gaze_silences_alarm is False
 
 
+def test_the_gaze_floor_defaults_to_none_and_is_read_in_seconds() -> None:
+    assert build_run_config(MINIMAL_VIDEO_ARGV).planner.attention_floor_seconds == 0.0
+    assert build_run_config([*MINIMAL_VIDEO_ARGV, "--gaze-floor-seconds", "0.35"]).planner.attention_floor_seconds == 0.35
+
+
+def test_a_negative_gaze_floor_is_refused_as_a_usage_error(capsys) -> None:
+    with pytest.raises(SystemExit):
+        build_run_config([*MINIMAL_VIDEO_ARGV, "--gaze-floor-seconds", "-0.1"])
+    assert "must be zero or more" in capsys.readouterr().err
+
+
 def test_gaze_silences_alarm_on_is_read_as_the_bool() -> None:
     config = build_run_config([*MINIMAL_VIDEO_ARGV, "--gaze-silences-alarm", "on"])
 
