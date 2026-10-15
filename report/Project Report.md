@@ -1,17 +1,18 @@
 # THE PLAN
 - Abstract
-- Introduction
+  
+- Introduction (Daniël)
     - Explain the problem
     - General approach idea?
         
-- Background
+- Background (Kars)
     Why the problem?
     - Motivation
     - Explain Depth Map
        - Explain Surprise Equations
         
     
-- Methods
+- Methods (Nolan & Dirk)
     
     - Formulation of Depth map from surroundings
     - Explain pipeline
@@ -29,6 +30,7 @@
 	    - What is implemented, but not rigurously tested (and not part of the current prototype)
         - Usage of magic numbers
         - Inclusion of accelerometer and gps?
+    - Presentation mentions
         
     
 - References
