@@ -110,7 +110,9 @@ drops.
 **The plain idea.** Start the spring at the error the arrow asked for, at rest, and count 1 ms steps
 until the error is inside 0.05 rad. That count is the model's guess for how long the turn takes. If the
 error is already inside the tolerance, the answer is 0. If it hasn't settled after 10 s, the answer is
-"never", stored as infinity.
+"never", stored as infinity. The heading baseline the error is measured against starts over on every
+new stretch of video, not only at the first frame, and an avoidance still open when the run ends is
+logged as unfinished rather than scored.
 
 ```math
 T_{\text{pred}} = \begin{cases} 0 & |s_0| \le \theta_{\text{tol}} \\ \min\{\, n\,\Delta t : |s_n| \le \theta_{\text{tol}},\ n\,\Delta t < T_{\max} \,\} & \text{otherwise} \\ \infty & \text{if no such } n \end{cases}

@@ -157,7 +157,8 @@ toward north, minus z, and 12 degrees below level, the camera's tilt. A reading 
 gives the same answer after step 1.
 
 **Readings that aren't rotations.** A quaternion that's nearly zero, or not a number, is a dropped
-reading. The code skips it and keeps the last good one.
+reading. The code skips it and takes the usable reading nearest the frame's stamp, before or after
+it, within 0.05 s. With none that close the frame has no orientation, never an older one.
 
 ```math
 \text{usable when } \lVert q\rVert \text{ is finite and } \lVert q\rVert \ge 0.5

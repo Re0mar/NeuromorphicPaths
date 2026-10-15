@@ -183,7 +183,10 @@ know. In the course's terms that's its surprise. A beep about a chair the walker
 at carries little, because the chair is already in what they expect. So with the glasses, and a
 switch turned on, the alarm can go quiet while the eyes are on the danger. The page stays red. The
 alarm's own decision, the professor's surprise and the planned path are all untouched. Attention
-only decides whether the alarm is heard.
+only decides whether the alarm is heard. The switch is `--gaze-silences-alarm on`, off by default,
+and any page can flip it for the whole run. Every path carries the two decisions as
+`danger_noticed` and `alarm_audible`, so a display turns red on the alarm and plays sound on the
+second.
 
 The test is an angle. Each gaze sample is a ray out of the camera. The danger is the part of the
 picture its object covers: the scene hands over 0.25 m pieces, the alarm's danger is the nearest
@@ -194,13 +197,16 @@ outline is at 0 degrees. A look counts on the frame it happened and for 2 s afte
 remembered position moved toward the walker at walking pace and matched within 0.5 m. There is
 no floor by default: the gaze on the danger quiets the alarm at any distance. A run can set one
 with `--gaze-floor-seconds`, and once an alarm has been under that time to contact it sounds
-whatever the gaze says, until it clears.
+whatever the gaze says, until it clears. A floor has to be zero or more and under the alarm's
+0.7 s, or the run refuses to start. Only samples within 0.1 s of the frame's stamp count, and one
+is enough, since the dwell is 0. No gaze at all, or a danger with no outline, reads as not on it,
+so the alarm stays heard.
 
 What it measures is narrower than "the walker noticed this". The alarm looks only at the strip
 straight ahead, the camera is on the head, and resting eyes sit near the middle of the picture, so
 anything in that strip sits where the eyes already are, near or far. On three recorded walks a
 walker whose eyes never moved would have counted as looking about as often as the real one did. On
-a scripted 44 s walk, counting frames above the 0.35 s floor, the eyes counted as on the danger on
+a scripted 44 s walk, counting frames above a 0.35 s floor, the one shipped then, the eyes counted as on the danger on
 30 of 35 frames where the wearer looked at it and 4 of 36 where they looked down or away. With the
 switch on, the alarm went quiet on 29 of the 33 alarm frames of the first kind and none of the 12
 of the second. So it separates eyes toward the danger from eyes away, and that's the behavior the
@@ -209,7 +215,8 @@ switch has.
 ## The stereo cue
 
 The arrow and the alarm, as sound. The laptop works out how loud each ear should be and sends the
-two numbers with every path, so the page and the phone only apply them.
+two numbers with every path, as `ear_gain_left` and `ear_gain_right`, so the page and the phone
+only apply them.
 
 Picture walking with music on and one ear going a little quiet. You drift away from the quiet ear
 without thinking about it, which is the steering cue. Then something gets close on your left and
@@ -233,7 +240,8 @@ of the heading error, with the goal tolerance seen as an angle for its spread:
 g_{\text{far}} = \max\!\left(g_{\min},\ e^{-{\color{purple}{U}}}\right), \qquad g_{\text{near}} = 1
 ```
 
-**The danger cue.** While the alarm is up, the ear on the danger's side drops to the floor. The
+**The danger cue.** While the alarm is heard, the ear on the danger's side drops to the floor. An
+alarm the gaze has quieted leaves the ear up, as it leaves the sound off. The
 side is the lateral position $`x_d`$ of the corridor point that raised the alarm, over the corridor's
 half-width $`h`$, so it reaches full at the corridor's edge:
 

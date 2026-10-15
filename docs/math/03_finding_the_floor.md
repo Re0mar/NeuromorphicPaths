@@ -30,7 +30,8 @@ it to sit as close as it can to everything that touched it.
 >   flagged gravity-aligned, the picture's up otherwise.
 > - **Last frame's floor.** Used again when this frame's guess is refused.
 > - **ARCore's plane, on the Pixel.** When the phone supplies a floor plane, it goes through the
->   same level and height checks as a fitted one (`server/nav/scene/pipeline.py`).
+>   same level and height checks as a fitted one, and when it passes it is taken before any search
+>   runs (`server/nav/scene/pipeline.py`).
 
 A plane is written $`\mathbf{n}\cdot\mathbf{p} + d = 0`$. $`\mathbf{n}`$ is the direction straight out
 of the plane, length 1, and $`d`$ is the offset. Everything in this section is in the camera frame,
@@ -355,7 +356,8 @@ The checks run in this order, and the first one broken is the reason given:
 | 0.3, 2.2 | Lowest and highest camera height allowed, the second set by `--floor-max-height` | m | none | `server/nav/scene/config.py` |
 
 The tilt is measured against $`\mathbf{u}_{\text{cam}}`$, so against gravity whenever the pose is
-gravity-aligned. The live Pixel runs and the phone video runs used $`\varphi_{\max} = 50`$. The Neon
+gravity-aligned. With gravity the floor comes from the level route at its own 8°, so the flag
+reaches only a supplied plane and the fit on frames without gravity. The live Pixel runs and the phone video runs used $`\varphi_{\max} = 50`$. The Neon
 commands pass no tilt flag, so they ran at 35. The evaluation replays take the tilt from each
 recording's own `run_config.json`, so the Neon replay ran at 35 too. In dot products, 35
 degrees needs $`\mathbf{n}\cdot\mathbf{u} \ge \cos 35^\circ = 0.8192`$, and 50 degrees needs

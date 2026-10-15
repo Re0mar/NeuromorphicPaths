@@ -18,7 +18,7 @@ things before his formulas could be fed at all. The section
 [How we stick to the professor's math](15_professors_math.md) collects all of that in
 one place.
 
-This describes the code at commit `9503037` of `PlannerSnake`. If the code has moved on, the
+This describes the code on `master` as of 2026-10-15, with pull requests 40 and 41 in. If the code has moved on, the
 constants quoted here may have too, and the file named in each table is where to check.
 
 ## Contents
