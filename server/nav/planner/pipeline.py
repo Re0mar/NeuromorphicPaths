@@ -84,8 +84,9 @@ class PlannerPipeline:
         self._danger_noticed = False
         # The run's switch. Read once a frame, so a page flipping it changes the next plan's sound.
         self._gaze_silences_alarm = config.gaze_silences_alarm
-        # The credit runs on frame stamps. A frame planned twice must not age or renew it twice.
-        self._last_attention_stamp: float | None = None
+        # Whether this alarm has been under the attention floor since it went up. Once it has, it stays
+        # heard until it clears, so a near danger dropping out of the picture can't quiet it.
+        self._alarm_reached_floor = False
 
     @property
     def gaze_silences_alarm(self) -> bool:
@@ -228,27 +229,30 @@ class PlannerPipeline:
         """
         config = self._config
         danger = nearest_corridor_point(obstacles, config)
-        stamp = obstacles.timestamp_seconds
-        if stamp != self._last_attention_stamp:
-            looked = False
-            if danger is not None and gaze is not None:
-                pieces = danger_object(danger, obstacles.points, config.attention_link_meters, config.attention_cap_meters)
-                looked = gaze_on_outlines(
-                    gaze.pixels,
-                    gaze.offsets_seconds,
-                    config.attention_window_seconds,
-                    gaze.intrinsics,
-                    [piece.camera_outline for piece in pieces],
-                    self._attention_tolerance,
-                    config.attention_dwell_seconds,
-                )
-            # No gaze is not looked, which keeps the alarm heard. Unknown fails safe.
-            noticed_now = self._attention.update(danger, looked, stamp)
-            if danger is not None:
-                self._danger_noticed = noticed_now
-            elif not alarm:
-                self._danger_noticed = False
-            # Otherwise the hold with an empty corridor, which keeps the last answer like the pan.
-            self._last_attention_stamp = stamp
+        looked = False
+        if danger is not None and gaze is not None:
+            pieces = danger_object(danger, obstacles.points, config.attention_link_meters, config.attention_cap_meters)
+            looked = gaze_on_outlines(
+                gaze.pixels,
+                gaze.offsets_seconds,
+                config.attention_window_seconds,
+                gaze.intrinsics,
+                [piece.camera_outline for piece in pieces],
+                self._attention_tolerance,
+                config.attention_dwell_seconds,
+            )
+        # No gaze is not looked, which keeps the alarm heard. Unknown fails safe.
+        noticed_now = self._attention.update(danger, looked, obstacles.timestamp_seconds)
+        if danger is not None:
+            self._danger_noticed = noticed_now
+        elif not alarm:
+            self._danger_noticed = False
+        # Otherwise the hold with an empty corridor, which keeps the last answer like the pan.
         contact = corridor_time_to_contact(obstacles, config)
-        return alarm_audible(alarm, self._danger_noticed, contact, self._gaze_silences_alarm, config)
+        if not alarm:
+            self._alarm_reached_floor = False
+        elif contact is not None and contact < config.attention_floor_seconds:
+            self._alarm_reached_floor = True
+        # The hold, or a farther danger looked at during it, never quiets an alarm that was under the floor.
+        effective_contact = 0.0 if self._alarm_reached_floor else contact
+        return alarm_audible(alarm, self._danger_noticed, effective_contact, self._gaze_silences_alarm, config)

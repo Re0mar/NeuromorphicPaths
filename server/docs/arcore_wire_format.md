@@ -199,8 +199,8 @@ instant, and the next frame produces the next one within a frame interval.
 | `time_to_contact_seconds` | The same thing in seconds: how long until the walker reaches the nearest thing in its corridor at walking pace, read back from `avoidance_surprise_bits` on the laptop. `null` with nothing in the way. The web page's pulse alarm quickens as it shrinks |
 | `alarm_pan` | Where the danger is while the alarm is up, from -1 (left) to +1 (right), full at the edge of the walker's corridor. `null` while the alarm is down. The web page pans its alarm sound with it |
 | `ear_gain_left`, `ear_gain_right` | How loud each ear should be, from a floor set on the laptop up to 1. The ear on the far side from the heading goes quieter by the course's surprise of the heading error, and the danger's ear drops to the floor while the alarm is heard (`alarm_audible`). 1 and 1 is no cue. The web page's noise-cancellation mode applies them to the music it plays |
-| `danger_noticed` | The glasses' wearer has their eyes on the thing in the corridor, or had in the last two seconds. It means the eyes are toward it rather than down or away, not that the wearer picked it out: a danger in the corridor sits where resting eyes are. Always `false` from the phone, which has no gaze |
-| `alarm_audible` | Whether to make the alarm heard. Equal to `alarm`, except `false` while a switch on the laptop lets the gaze quiet the alarm, `danger_noticed` is true, and contact is further off than a floor set on the laptop. Turn the display red from `alarm` and sound from this |
+| `danger_noticed` | The glasses' wearer has their eyes on the thing in the corridor, or had in the last two seconds while it stayed within 0.5 m of where the look left it. It means the eyes are toward it rather than down or away, not that the wearer picked it out: a danger in the corridor sits where resting eyes are. Always `false` from the phone, which has no gaze |
+| `alarm_audible` | Whether to make the alarm heard. Equal to `alarm`, except `false` while a switch on the laptop lets the gaze quiet the alarm, `danger_noticed` is true, and contact has stayed further off than a floor set on the laptop since the alarm went up. Turn the display red from `alarm` and sound from this |
 
 `times_seconds` and `lateral_offsets_meters` always have the same length.
 
@@ -210,8 +210,7 @@ because it checks only the keys it reads. The first two are there for the path d
 phone, which will use them the way the laptop's web page does. `time_to_contact_seconds` and the
 sound and gaze keys are the only ones a reader may find absent: a laptop from before they existed
 sends a path without them, which reads as no contact time, no cue, `danger_noticed` false and
-`alarm_audible` equal to `alarm`. Per field, who produces it
-and who checks it:
+`alarm_audible` equal to `alarm`. Per field, who produces it and who checks it:
 
 | Field | Produced by | On the wire | Read by | Value domain | Who enforces it |
 |---|---|---|---|---|---|

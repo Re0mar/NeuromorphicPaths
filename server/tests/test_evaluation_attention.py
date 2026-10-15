@@ -50,6 +50,7 @@ def frame(
     offsets: list | None = None,
     nearest: list | None = None,
     points: tuple[ObstaclePoint, ...] | None = None,
+    intrinsics: np.ndarray = INTRINSICS,
 ) -> ReplayedFrame:
     """A replayed frame with the alarm up or down and the gaze given."""
     points = (danger(),) if points is None else points
@@ -64,7 +65,7 @@ def frame(
         gaze_ground_point=None,
         gaze_pixels=pixels,
         gaze_sample_offsets_seconds=offset_array,
-        intrinsics=INTRINSICS,
+        intrinsics=intrinsics,
         gaze_pixel=None if nearest is None else np.array(nearest, dtype=np.float64),
     )
     path = PlannedPath(time, np.zeros(2), np.zeros(2), 0.0, alarm, 0.0, scene_information_bits=0.0, avoidance_surprise_bits=0.0)
@@ -180,6 +181,46 @@ def test_control_partner_looks_forward_and_back_at_the_end() -> None:
     assert control_partner(timestamps, 0, 5.0) == (3, False)
     # 9 s plus 5 is past the end, so it looks back to the stamp nearest 4 s, which is 5 s.
     assert control_partner(timestamps, 5, 5.0) == (3, True)
+
+
+def test_control_partner_has_none_when_both_sides_are_nearer_than_half_the_shift() -> None:
+    # Forward lands on 2 s and back on 0 s, both 1 s away, so neither is shifted at all.
+    assert control_partner(np.array([0.0, 1.0, 2.0]), 1, 5.0) == (None, True)
+
+
+def test_a_walk_too_short_for_a_partner_counts_the_control_unknown_and_says_how_many() -> None:
+    frames = [frame(0.0, samples=[ON_THE_DANGER]), frame(1.0, samples=[ON_THE_DANGER]), frame(2.0, samples=[ON_THE_DANGER])]
+
+    counted = count(frames, windows=(AttentionWindow(0.05),))
+
+    real, control = cell(counted.real, AttentionWindow(0.05)), cell(counted.control, AttentionWindow(0.05))
+    assert real.noticed == 3
+    # Borrowing gaze from a second earlier would read as the wearer's own look in the control.
+    assert (control.noticed, control.unknown) == (0, 3)
+    assert (counted.control_unpaired, counted.control_looked_back) == (3, 0)
+    assert "3 with no frame half the shift away" in format_attention("short_walk", counted)
+
+
+def test_the_control_turns_the_partners_gaze_into_rays_with_the_partners_own_matrix() -> None:
+    # The partner's camera has its centre 80 px right, so its sample at x 400 is straight ahead.
+    # Read through the danger frame's matrix it would sit about 9 degrees off, outside 5.
+    shifted = INTRINSICS.copy()
+    shifted[0, 2] = 400.0
+    frames = [
+        frame(0.0, samples=[OFF_THE_DANGER]),
+        frame(5.0, alarm=False, samples=[[400.0, 240.0]], intrinsics=shifted),
+    ]
+
+    counted = count(frames, windows=(AttentionWindow(0.05),))
+
+    assert cell(counted.control, AttentionWindow(0.05)).noticed == 1
+
+
+def test_a_walk_whose_every_window_is_empty_has_no_gaze() -> None:
+    # Live glasses with the gaze stream stopped carry empty windows, not None.
+    counted = count([frame(0.0, samples=[]), frame(1.0, samples=[])])
+
+    assert counted.gaze is GazeCarried.NONE
 
 
 def test_a_window_wider_than_the_carry_window_is_refused() -> None:

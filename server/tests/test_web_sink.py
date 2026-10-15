@@ -19,12 +19,12 @@ import pytest
 
 # Local package imports
 from nav.config import RunConfig, SinkKind, SourceKind, build_sink, build_source_and_sink
-from nav.planner.config import GoalMode
+from nav.planner.config import GoalMode, OnOff
 from nav.runtime.gaze_silencing import GazeSilencingSwitch
 from nav.scene.config import SceneConfig
 from nav.sinks.config import WebConfig
 from nav.sinks.floor_geometry import floor_hidden_mask
-from nav.sinks.web import OUTGOING_QUEUE_LIMIT, WebSink, _quiet_client_resets
+from nav.sinks.web import OUTGOING_QUEUE_LIMIT, WebSink, _quiet_client_resets, _Slot
 from nav.sinks.web_messages import OBSTACLE_KEYS, PLAN_VIEW_KEYS, RING_KEYS, PictureKind, WebMessageKind
 from nav.sources.config import SourceMode
 from nav.sources.framecodec import path_message
@@ -1118,20 +1118,21 @@ def _gaze_states(received: list) -> list[str]:
     return [text["state"] for text in texts if text["kind"] == WebMessageKind.GAZE_SILENCING_STATE.value]
 
 
-def test_a_page_asking_to_silence_switches_the_run_and_every_page_hears_it() -> None:
-    switch = GazeSilencingSwitch(False)
+@pytest.mark.parametrize(("starting", "asked"), [(OnOff.OFF, OnOff.ON), (OnOff.ON, OnOff.OFF)])
+def test_a_page_asking_to_silence_switches_the_run_and_every_page_hears_it(starting: OnOff, asked: OnOff) -> None:
+    switch = GazeSilencingSwitch(starting is OnOff.ON)
     sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None, gaze_switch=switch)
     sink.start()
     try:
-        choice = json.dumps({"kind": "gaze_silencing", "gaze_silencing": "on"})
+        choice = json.dumps({"kind": "gaze_silencing", "gaze_silencing": asked.value})
         received = asyncio.run(_say_then_receive_until_quiet(sink.port, [choice], lambda: None, 0.5))
     finally:
         sink.close()
 
-    assert switch.enabled
+    assert switch.enabled == (asked is OnOff.ON)
     states = _gaze_states(received)
-    assert states[0] == "off", "on connect"
-    assert states[-1] == "on", "the new state reaches the page that asked"
+    assert states[0] == starting.value, "on connect"
+    assert states[-1] == asked.value, "the new state reaches the page that asked"
 
 
 def test_a_page_connecting_after_the_switch_was_set_gets_the_state_on_connect() -> None:
@@ -1178,3 +1179,18 @@ def test_closing_the_sink_stops_listening_to_the_gaze_switch() -> None:
     sink.close()
 
     assert switch._listeners == []
+
+
+def test_a_full_queue_drops_frames_and_keeps_a_state_announcement() -> None:
+    sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None)
+    sink._outgoing = asyncio.Queue(maxsize=OUTGOING_QUEUE_LIMIT)
+    sink._offer(_Slot.GAZE_SILENCING_STATE, "on")
+    for frame in range(OUTGOING_QUEUE_LIMIT + 8):
+        sink._offer(_Slot.PATH, f"path {frame}")
+
+    waiting = [sink._outgoing.get_nowait() for _ in range(sink._outgoing.qsize())]
+
+    assert waiting[0] == (_Slot.GAZE_SILENCING_STATE, "on")
+    # The newest frames are the ones kept, in order.
+    assert waiting[1:] == [(_Slot.PATH, f"path {frame}") for frame in range(9, OUTGOING_QUEUE_LIMIT + 8)]
+    assert sink.dropped == 9

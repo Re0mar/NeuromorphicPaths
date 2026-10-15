@@ -393,14 +393,15 @@ def test_conversion_averages_the_two_focal_lengths_and_keeps_dropped_pixels_drop
 
 
 def test_the_samples_are_rescaled_with_the_one_pixel() -> None:
-    stub = StubDepthEstimator(height=24, width=32)
+    # 64 by 48 down to 16 by 24 halves y and quarters x, so a swapped scale gives other numbers.
+    stub = StubDepthEstimator(height=24, width=16)
     samples = np.array([[32.0, 24.0], [0.0, 48.0]])
     offsets = np.array([-0.1, 0.05])
     rgb_frame = _rgb_frame(gaze_pixel=np.array([32.0, 24.0]), gaze_pixels=samples, gaze_sample_offsets_seconds=offsets)
 
     frame = next(iter(EstimatedDepthSource(ListRgbSource([rgb_frame]), stub, EstimatorConfig()).frames()))
 
-    assert frame.gaze_pixels == pytest.approx(np.array([[16.0, 12.0], [0.0, 24.0]]))
+    assert frame.gaze_pixels == pytest.approx(np.array([[8.0, 12.0], [0.0, 24.0]]))
     assert frame.gaze_pixels[0] == pytest.approx(frame.gaze_pixel)
     assert np.array_equal(frame.gaze_sample_offsets_seconds, offsets)
 
@@ -415,17 +416,18 @@ def test_no_samples_stay_no_samples() -> None:
 def test_the_same_geometry_at_two_resolutions_gives_one_angle() -> None:
     # The angle to a gaze sample needs the pixels and the intrinsics at one resolution. Both depth
     # sizes must give the angle the scene camera itself gives, 30 degrees right at a 40 px focal.
+    # The third size changes the aspect ratio, so x and y scale differently.
     camera_matrix = np.array([[40.0, 0.0, 30.0], [0.0, 40.0, 20.0], [0.0, 0.0, 1.0]])
     thirty_right = np.array([[30.0 + 40.0 * np.tan(np.radians(30.0)), 20.0]])
     rgb_frame = _rgb_frame(camera_matrix=camera_matrix, gaze_pixels=thirty_right, gaze_sample_offsets_seconds=np.zeros(1))
     angles = []
-    for height, width in ((24, 32), (36, 48)):
+    for height, width in ((24, 32), (36, 48), (24, 16)):
         source = EstimatedDepthSource(ListRgbSource([rgb_frame]), StubDepthEstimator(height=height, width=width), EstimatorConfig())
         frame = next(iter(source.frames()))
         ray = pixel_ray(frame.gaze_pixels[0], frame.intrinsics)
         angles.append(np.degrees(float(angle_between_radians(ray, np.array([0.0, 0.0, 1.0])))))
 
-    assert angles == pytest.approx([30.0, 30.0], abs=1e-6)
+    assert angles == pytest.approx([30.0, 30.0, 30.0], abs=1e-6)
 
 
 @pytest.mark.parametrize(

@@ -615,6 +615,24 @@ def test_a_supplied_floor_counts_as_the_recent_floor() -> None:
     assert height == pytest.approx(CAMERA_HEIGHT_METERS, abs=0.01)
 
 
+def test_an_outline_covers_its_own_group_and_not_a_box_beside_it() -> None:
+    # Two boxes either side of the walker, 3 m out. The nearer surface of the two single-box scenes
+    # is the scene with both. Each point's outline stays on its own box's side of the picture.
+    left = clean_scene(box_lateral_meters=-0.6, box_forward_meters=3.0, box_height_meters=1.0, box_half_width_meters=0.1)
+    right = clean_scene(box_lateral_meters=0.6, box_forward_meters=3.0, box_height_meters=1.0, box_half_width_meters=0.1)
+    both = np.fmin(left.depth_meters, right.depth_meters)
+
+    obstacles = ScenePipeline(CONFIG, WALKER).process(_frame(left, depth=both))
+
+    sides = {np.sign(point.camera_point[0]) for point in obstacles.points}
+    assert sides == {-1.0, 1.0}, "the fixture needs a point on each box"
+    for point in obstacles.points:
+        if point.camera_point[0] < 0:
+            assert point.camera_outline.right_tangent < 0
+        else:
+            assert point.camera_outline.left_tangent > 0
+
+
 def test_each_obstacle_point_carries_the_outline_of_its_whole_group() -> None:
     # A box a meter tall, 3 m ahead. Its nearest point is low down by the floor, and the outline
     # reaches up its side, which is what a look at the box's body is tested against.

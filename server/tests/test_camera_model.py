@@ -287,11 +287,21 @@ def test_undistorter_for_refuses_coefficients_no_camera_model_has() -> None:
 
 def test_several_pixels_undistort_each_as_one_does_and_the_crop_drops_with_a_mask() -> None:
     undistorter = Undistorter(_calibration())
-    pixels = np.array([[WIDTH / 2.0, HEIGHT / 2.0], [0.0, 0.0], [WIDTH / 3.0, HEIGHT / 4.0]])
+    # The corner falls outside both ways. Top and bottom centre stay near x 320 and fall outside only
+    # vertically, so each bound is checked on its own.
+    pixels = np.array(
+        [
+            [WIDTH / 2.0, HEIGHT / 2.0],
+            [0.0, 0.0],
+            [WIDTH / 3.0, HEIGHT / 4.0],
+            [WIDTH / 2.0, 0.0],
+            [WIDTH / 2.0, HEIGHT - 0.1],
+        ],
+    )
 
     kept_pixels, kept = undistorter.undistort_pixels(pixels)
 
-    assert kept.tolist() == [True, False, True]
+    assert kept.tolist() == [True, False, True, False, False]
     assert np.array_equal(kept_pixels[0], undistorter.undistort_pixel(pixels[0]))
     assert np.array_equal(kept_pixels[1], undistorter.undistort_pixel(pixels[2]))
 

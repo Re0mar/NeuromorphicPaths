@@ -203,17 +203,21 @@ def summarize_groups(
     return summaries
 
 
-def camera_outline(member_points_camera: np.ndarray) -> CameraOutline:
+def camera_outline(member_points_camera: np.ndarray) -> CameraOutline | None:
     """
     The part of the picture one group's points cover, edge to edge.
 
-    :param member_points_camera: (M, 3) the group's points in the camera frame, M at least 1, each
-        in front of the camera.
-    :return: The outline as tangents, so it means the same at any image resolution.
-    :rtype: CameraOutline
+    :param member_points_camera: (M, 3) the group's points in the camera frame.
+    :return: The outline as tangents, so it means the same at any image resolution. None when no
+        point is in front of the camera, which only a scene setting of min_depth_meters 0 lets through.
+    :rtype: CameraOutline | None
     """
-    across = member_points_camera[:, 0] / member_points_camera[:, 2]
-    down = member_points_camera[:, 1] / member_points_camera[:, 2]
+    # A point at depth 0 has no direction on the picture, and dividing by it gives infinite edges.
+    in_front = member_points_camera[member_points_camera[:, 2] > 0]
+    if len(in_front) == 0:
+        return None
+    across = in_front[:, 0] / in_front[:, 2]
+    down = in_front[:, 1] / in_front[:, 2]
     return CameraOutline(
         left_tangent=float(across.min()),
         right_tangent=float(across.max()),

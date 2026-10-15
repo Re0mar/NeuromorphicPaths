@@ -62,7 +62,7 @@ from nav.walker import WalkerConfig
 NAV_DIR = Path(nav.__file__).resolve().parent
 CLONE_DIR = NAV_DIR.parent.parent
 # Bumped whenever the pickled layout changes, so an old cache entry is rebuilt rather than misread.
-CACHE_FORMAT = "cache-format-4"
+CACHE_FORMAT = "cache-format-5"
 # Beside the server code, not in whatever folder the command happens to run from, so it always lands
 # where .gitignore covers it.
 DEFAULT_CACHE_DIR = NAV_DIR.parent / ".replay_cache"
@@ -73,6 +73,8 @@ REFUSAL_NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
 # The modules whose code decides what a scene pass produces. Changing any of them changes the key.
 SCENE_PASS_SOURCES = (
     "scene/*.py",
+    # The gaze's ground point is cast through attention.pixel_ray in the scene pass.
+    "planner/attention.py",
     "types.py",
     "walker.py",
     "sources/framecodec.py",

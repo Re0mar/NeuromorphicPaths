@@ -115,6 +115,9 @@ class AttentionCount:
     shift_seconds: float
     # Control pairs that had to look back by the shift because looking forward ran off the end.
     control_looked_back: int
+    # Alarm frames with no partner at least half the shift away either side, on a walk too short for
+    # one. Their control reads unknown rather than borrowing gaze from a moment ago.
+    control_unpaired: int = 0
 
 
 def check_windows(windows: Sequence[AttentionWindow]) -> None:
@@ -136,8 +139,13 @@ def check_windows(windows: Sequence[AttentionWindow]) -> None:
 
 
 def gaze_carried(frames: Sequence[ReplayedFrame]) -> GazeCarried:
-    """Whether a walk's frames carry samples, only the nearest one, or no gaze at all."""
-    if any(frame.input.gaze_pixels is not None for frame in frames):
+    """
+    Whether a walk's frames carry samples, only the nearest one, or no gaze at all.
+
+    A walk whose every window is empty has no gaze. The live glasses carry empty windows when their
+    gaze stream is missing or stopped, and counting those as samples would print tables of unknowns.
+    """
+    if any(frame.input.gaze_pixels is not None and len(frame.input.gaze_pixels) > 0 for frame in frames):
         return GazeCarried.SAMPLES
     if any(frame.input.gaze_pixel is not None for frame in frames):
         return GazeCarried.NEAREST_ONLY
@@ -147,17 +155,21 @@ def gaze_carried(frames: Sequence[ReplayedFrame]) -> GazeCarried:
 def look(
     gaze_frame: ReplayedFrame,
     outlines: Sequence[CameraOutline | None],
-    intrinsics: np.ndarray,
     window: AttentionWindow,
     tolerance: float,
 ) -> Look:
     """
     One frame's gaze against one danger's object, under one window and one tolerance in radians. No credit.
 
+    The gaze's pixels become rays through the camera matrix of the frame they came with. The outlines
+    are tangents, which need no matrix, so a partner's gaze is compared fairly with another frame's danger.
+
     :param gaze_frame: The frame whose gaze is read. The danger's own frame, or the control's partner.
     :param outlines: The danger's object, one outline per piece, as seen in the frame it was found in.
-    :param intrinsics: That frame's camera matrix.
     """
+    intrinsics = gaze_frame.input.intrinsics
+    if intrinsics is None:
+        return Look.UNKNOWN
     if window.seconds is None:
         if gaze_frame.input.gaze_pixel is None:
             return Look.UNKNOWN
@@ -174,19 +186,23 @@ def look(
     return Look.NOTICED if noticed else Look.NOT_NOTICED
 
 
-def control_partner(timestamps: np.ndarray, index: int, shift_seconds: float) -> tuple[int, bool]:
+def control_partner(timestamps: np.ndarray, index: int, shift_seconds: float) -> tuple[int | None, bool]:
     """
     The frame nearest this one's stamp plus the shift, or minus it where plus runs off the end.
 
-    :return: The partner's index, and whether it looked back.
-    :rtype: tuple[int, bool]
+    :return: The partner's index, or None when neither side has a frame at least half the shift
+        away, and whether it looked back.
+    :rtype: tuple[int | None, bool]
     """
     stamp = timestamps[index]
     forward = int(np.argmin(np.abs(timestamps - (stamp + shift_seconds))))
     # A partner nearer than half the shift isn't shifted at all, it's the end of the walk.
     if abs(timestamps[forward] - stamp) >= shift_seconds / 2:
         return forward, False
-    return int(np.argmin(np.abs(timestamps - (stamp - shift_seconds)))), True
+    backward = int(np.argmin(np.abs(timestamps - (stamp - shift_seconds))))
+    if abs(timestamps[backward] - stamp) >= shift_seconds / 2:
+        return backward, True
+    return None, True
 
 
 class _Cell:
@@ -200,17 +216,17 @@ class _Cell:
 
     def step(
         self,
-        gaze_frame: ReplayedFrame,
+        gaze_frame: ReplayedFrame | None,
         danger: ObstaclePoint | None,
         outlines: Sequence[CameraOutline | None],
-        intrinsics: np.ndarray | None,
         timestamp: float,
         alarm: bool,
     ) -> None:
-        if danger is None or intrinsics is None:
+        """One frame: the gaze of gaze_frame, None for a control with no partner, against this frame's danger."""
+        if danger is None:
             self.credit.update(None, False, timestamp)
             return
-        seen = look(gaze_frame, outlines, intrinsics, self.setting.window, self.tolerance)
+        seen = Look.UNKNOWN if gaze_frame is None else look(gaze_frame, outlines, self.setting.window, self.tolerance)
         noticed = self.credit.update(danger, seen is Look.NOTICED, timestamp)
         if not alarm:
             return
@@ -270,23 +286,25 @@ def attention_count(
     real = [_Cell(setting, match_meters, planner_config.walking_speed_mps) for setting in settings]
     control = [_Cell(setting, match_meters, planner_config.walking_speed_mps) for setting in settings]
     timestamps = np.array([frame.input.timestamp_seconds for frame in frames], dtype=np.float64)
-    alarm_frames = held_without_danger = looked_back = 0
+    alarm_frames = held_without_danger = looked_back = unpaired = 0
     for index, frame in enumerate(frames):
         danger = nearest_corridor_point(frame.input.obstacles, planner_config)
         alarm = frame.path.alarm
         if alarm:
             alarm_frames += 1
-            if danger is None or frame.input.intrinsics is None:
+            if danger is None:
                 held_without_danger += 1
         outlines: tuple[CameraOutline | None, ...] = ()
         if danger is not None:
             outlines = tuple(piece.camera_outline for piece in danger_object(danger, frame.input.obstacles.points, link_meters, cap_meters))
         partner, back = control_partner(timestamps, index, shift_seconds)
         if alarm and danger is not None:
-            looked_back += back
+            looked_back += back and partner is not None
+            unpaired += partner is None
+        partner_frame = None if partner is None else frames[partner]
         for real_cell, control_cell in zip(real, control):
-            real_cell.step(frame, danger, outlines, frame.input.intrinsics, frame.input.timestamp_seconds, alarm)
-            control_cell.step(frames[partner], danger, outlines, frame.input.intrinsics, frame.input.timestamp_seconds, alarm)
+            real_cell.step(frame, danger, outlines, frame.input.timestamp_seconds, alarm)
+            control_cell.step(partner_frame, danger, outlines, frame.input.timestamp_seconds, alarm)
     return AttentionCount(
         frames=len(frames),
         alarm_frames=alarm_frames,
@@ -303,4 +321,5 @@ def attention_count(
         control={cell.setting: cell.result() for cell in control},
         shift_seconds=shift_seconds,
         control_looked_back=looked_back,
+        control_unpaired=unpaired,
     )

@@ -109,7 +109,7 @@
   #sound-card { grid-area: sound; }
   canvas, img, video { max-width: 100%; height: auto; }
   .placeholder { font-size: var(--text-s); color: var(--muted); }
-  .placeholder[hidden], #depth[hidden], #rings[hidden], .help[hidden], #plan-panel[hidden], #music-label[hidden], #music-controls[hidden], #alarm-sound-field[hidden], #volume-field[hidden], #source-field[hidden], #input-link[hidden], #no-input[hidden], #live[hidden] { display: none; }
+  .placeholder[hidden], #depth[hidden], #rings[hidden], .help[hidden], #plan-panel[hidden], #music-label[hidden], #music-controls[hidden], #alarm-sound-field[hidden], #volume-field[hidden], #source-field[hidden], #gaze-silencing-field[hidden], #input-link[hidden], #no-input[hidden], #live[hidden] { display: none; }
   /* How the live input is doing, on a run that serves the page from one. */
   #input-link { font-size: var(--text-s); color: var(--muted); }
   #input-link.connected { color: var(--accent); }
@@ -235,8 +235,9 @@
             <label><input type="radio" name="volume" value="high"> High</label>
           </div>
         </div>
-        <!-- The laptop's switch, not this browser's: one page's choice is every page's. Shown in every mode. -->
-        <div class="toggle-field" id="gaze-silencing-field">
+        <!-- The laptop's switch, not this browser's: one page's choice is every page's. Shown in every
+             mode, once the laptop says it has the switch. -->
+        <div class="toggle-field" id="gaze-silencing-field" hidden>
           <span class="toggle-name" id="gaze-silencing-name">Gaze silences alarm</span>
           <div id="gaze-silencing" class="toggle" role="radiogroup" aria-labelledby="gaze-silencing-name">
             <label><input type="radio" name="gaze-silencing" value="off" checked> Off</label>
@@ -413,6 +414,7 @@
   const ringCanvas = document.getElementById("rings");
   const depthTitle = document.getElementById("depth-title");
   const gazeSilencingField = document.getElementById("gaze-silencing");
+  const gazeSilencingSwitchField = document.getElementById("gaze-silencing-field");
   const dangerNoticedLine = document.getElementById("danger-noticed");
   const sourceField = document.getElementById("source-field");
   const sourceMode = document.getElementById("source-mode");
@@ -1245,8 +1247,10 @@
   showRings.addEventListener("change", drawRings);
 
   // Whether the laptop lets the gaze quiet the alarm, run-wide. Every page's radio follows what the
-  // laptop says, so they agree whoever flipped it. Until the laptop says, the radio reads Off.
+  // laptop says, so they agree whoever flipped it. Until the laptop says, the radio stays hidden,
+  // since a run without the switch would ignore it.
   function showGazeSilencing(message) {
+    gazeSilencingSwitchField.hidden = false;
     const chosenState = gazeSilencingField.querySelector('input[value="' + message.state + '"]');
     if (chosenState) chosenState.checked = true;
   }

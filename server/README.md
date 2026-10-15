@@ -581,21 +581,24 @@ still ends when its device or its capture does, which is what recording a walk r
 **With the glasses, the alarm can go quiet while the wearer's eyes are on the danger.** It's off
 unless asked for. `--gaze-silences-alarm on` starts a run with it on, and the page's Sound card can
 flip it for every page at once. The page still turns red. Only the sound, the noise-cancellation
-cut and the drop in the danger's ear are held back. Under 0.35 s from contact the alarm sounds
-whatever the eyes are doing, because looking at something isn't the same as stepping around it.
+cut and the drop in the danger's ear are held back. Once an alarm has been under 0.35 s from
+contact it sounds whatever the eyes are doing until it clears, because looking at something isn't
+the same as stepping around it.
 
 What the gaze can tell is whether the eyes are toward the danger or away from it, down at the floor
 or off to the side. It can't tell that the wearer singled the thing out. The alarm only looks at
 the strip straight ahead, the camera sits on the head, and resting eyes sit near the middle of the
 picture, so something in that strip is where the eyes already are. On a scripted 44 s walk, with
 the switch on, the alarm went quiet on 29 of the 33 alarm frames where the wearer looked at the
-danger, and on none of the 12 where they looked away. A look keeps counting for 2 s, but it's carried toward the walker at 1.4 m/s,
-and indoors people walk slower than that, so it mostly lapses sooner.
+danger, and on none of the 12 where they looked away. A look keeps counting for 2 s while the
+danger stays within 0.5 m of where the look left it, carried toward the walker at 1.4 m/s. Indoors
+people walk slower than that, so it mostly lapses sooner.
 
 The path says what was decided in two keys beside `alarm`: `danger_noticed`, whether the eyes are
 on the danger, and `alarm_audible`, whether to make the alarm heard. The laptop works both out on
 every run, switch or not, so a recording can be counted afterwards with
-`python -m nav.evaluation.check_planner attention <frame log>`.
+`python -m nav.evaluation.check_planner attention <frame log>`. `run_config.json` records the switch
+as the run started. A flip from the page goes to the run's log only.
 
 ## Checking the planner on a recording
 

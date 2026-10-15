@@ -37,7 +37,8 @@ MAXIMUM_TOLERANCE_DEGREES = 45.0
 
 def tolerance_radians(tolerance_degrees: float) -> float:
     """
-    An angular tolerance in degrees, checked and converted. The one place degrees become radians.
+    An angular tolerance in degrees, checked and converted. The one place the attention code turns
+    degrees into radians.
 
     :param tolerance_degrees: Above zero and under MAXIMUM_TOLERANCE_DEGREES.
     :return: The same angle in radians.
@@ -161,7 +162,9 @@ def samples_in_window(offsets_seconds: np.ndarray, window_seconds: float) -> np.
 
 def angle_to_outline_radians(rays: np.ndarray, outline: CameraOutline) -> np.ndarray:
     """
-    The angle from each ray to the nearest part of an outline. Zero for a ray inside it.
+    The angle from each ray to an outline's point nearest it on the z = 1 plane. Zero for a ray inside it.
+
+    Off the axis that runs a little over the true nearest angle, so it errs toward not noticed.
 
     :param rays: (N, 3) from pixel_ray, z equal to 1.
     :param outline: The group's outline.
@@ -226,12 +229,16 @@ def longest_dwell_seconds(offsets_seconds: np.ndarray, on_object: np.ndarray, ga
     A stretch breaks at a sample off the object, or at a gap between samples longer than gap_seconds,
     since a dropout says nothing about where the eye was.
 
-    :param offsets_seconds: (N,) ascending.
+    :param offsets_seconds: (N,) in any order.
     :param on_object: (N,) whether each sample was on it.
     :param gap_seconds: The longest gap a stretch survives.
     :return: Seconds, 0.0 for a single sample on it, None when no sample is on it.
     :rtype: float | None
     """
+    # Sorted here rather than trusted, since decoded logs aren't checked and a stretch read out of
+    # order measures from the wrong end.
+    order = np.argsort(offsets_seconds, kind="stable")
+    offsets_seconds, on_object = offsets_seconds[order], on_object[order]
     longest: float | None = None
     run_start: float | None = None
     previous: float | None = None

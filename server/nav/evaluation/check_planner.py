@@ -480,6 +480,8 @@ def format_attention(name: str, counted: AttentionCount) -> str:
     if counted.gaze is GazeCarried.NEAREST_ONLY:
         lines.append("this log was written before frames carried their gaze samples, so only the nearest sample could be counted")
     looked_back = f", {counted.control_looked_back} of them looking back because forward ran off the end" if counted.control_looked_back else ""
+    if counted.control_unpaired:
+        looked_back += f", {counted.control_unpaired} with no frame half the shift away, so unknown in the control"
     for credit in counted.credits_seconds:
         lines.append("")
         credit_text = "the looking frame only" if credit == 0 else f"a look counts for {credit:g} s, matched within {counted.match_meters:g} m"
@@ -519,14 +521,15 @@ def _countable_windows(windows: tuple[AttentionWindow, ...], gaze: GazeCarried) 
 
 def _tolerances(text: str) -> tuple[float, ...]:
     try:
-        return tuple(float(part) for part in text.split(","))
+        # Each once, in the order given, so a repeat doesn't print a row twice.
+        return tuple(dict.fromkeys(float(part) for part in text.split(",")))
     except ValueError as malformed:
         raise argparse.ArgumentTypeError(f"tolerances are numbers in degrees, comma separated, got {text!r}") from malformed
 
 
 def _credits(text: str) -> tuple[float, ...]:
     try:
-        return tuple(float(part) for part in text.split(","))
+        return tuple(dict.fromkeys(float(part) for part in text.split(",")))
     except ValueError as malformed:
         raise argparse.ArgumentTypeError(f"credits are numbers in seconds, comma separated, got {text!r}") from malformed
 
@@ -541,7 +544,7 @@ def _windows(text: str) -> tuple[AttentionWindow, ...]:
             windows.append(AttentionWindow(float(part)))
         except ValueError as malformed:
             raise argparse.ArgumentTypeError(f"windows are seconds or 'nearest', comma separated, got {part!r}") from malformed
-    return tuple(windows)
+    return tuple(dict.fromkeys(windows))
 
 
 def _share_text(count: int, total: int) -> str:

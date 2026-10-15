@@ -921,6 +921,16 @@ def test_a_sample_on_the_window_edge_is_carried() -> None:
     assert [sample.x for sample in matched.gaze_samples] == [1.0, 2.0]
 
 
+def test_gaze_arriving_out_of_order_is_carried_and_matched_by_its_stamp() -> None:
+    # The sample at the stamp arrives last, after two that bracket the window's edges.
+    gaze = [(10.1, 2.0, 2.0), (9.9, 1.0, 1.0), (10.3, 9.0, 9.0), (10.0, 5.0, 5.0)]
+
+    matched = _holding_gaze(10.0, gaze).receive_matched_scene_video_frame_and_gaze(timeout_seconds=0.0)
+
+    assert [sample.x for sample in matched.gaze_samples] == [1.0, 5.0, 2.0]
+    assert matched.gaze is not None and matched.gaze.x == 5.0
+
+
 def test_no_samples_in_the_window_gives_an_empty_tuple() -> None:
     matched = _holding_gaze(10.0, []).receive_matched_scene_video_frame_and_gaze(timeout_seconds=0.0)
 
@@ -938,5 +948,7 @@ def test_a_gap_longer_than_the_window_mid_stream_gives_an_empty_tuple_not_an_err
 
 
 def test_the_carry_window_fits_in_the_gaze_history() -> None:
-    # The window both sides of the stamp, at 200 Hz, must still be in the deque.
-    assert 2 * neon_stream.GAZE_CARRY_WINDOW_SECONDS * 200 <= neon_stream.GAZE_HISTORY
+    # A frame handed over at the worst lag reads gaze from the lag plus the window behind the newest
+    # sample, so at 200 Hz that much has to still be in the deque.
+    reach_back_seconds = neon_stream.WORST_HANDOVER_LAG_SECONDS + neon_stream.GAZE_CARRY_WINDOW_SECONDS
+    assert reach_back_seconds * 200 <= neon_stream.GAZE_HISTORY

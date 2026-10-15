@@ -35,7 +35,8 @@ class RgbFrame:
     # because no depth exists yet.
     timing: FrameTiming | None
     # Every gaze sample near the frame's stamp, (N, 2) pixels in image_rgb with (N,) offsets in
-    # seconds from the stamp. None when the device has no gaze.
+    # seconds from the stamp. None from a device that never carries gaze. Empty when no sample came
+    # near this frame, which on the live glasses also covers a gaze stream that is missing or stopped.
     gaze_pixels: np.ndarray | None = None
     gaze_sample_offsets_seconds: np.ndarray | None = None
 

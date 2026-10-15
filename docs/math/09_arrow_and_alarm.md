@@ -188,11 +188,11 @@ only decides whether the alarm is heard.
 The test is an angle. Each gaze sample is a ray out of the camera. The danger is the part of the
 picture its object covers: the scene hands over 0.25 m pieces, the alarm's danger is the nearest
 piece, and the object is that piece plus every piece within 0.4 m of the next, no further than
-0.6 m from it. A sample is on the danger when the angle between its ray and the nearest edge of
-any piece's outline is under 2 degrees, about the Neon's own 1.8 degree accuracy. A look counts on
-the frame it happened and for 2 s after, at the danger's remembered position moved toward the
-walker at walking pace and matched within 0.5 m. Under 0.35 s from contact the alarm sounds whatever
-the gaze says.
+0.6 m from it. A sample is on the danger when the angle between its ray and the nearest point of
+any piece's outline is under 2 degrees, about the Neon's own 1.8 degree accuracy. A ray inside an
+outline is at 0 degrees. A look counts on the frame it happened and for 2 s after, at the danger's
+remembered position moved toward the walker at walking pace and matched within 0.5 m. Once an alarm
+has been under 0.35 s from contact it sounds whatever the gaze says, until it clears.
 
 What it measures is narrower than "the walker noticed this". The alarm looks only at the strip
 straight ahead, the camera is on the head, and resting eyes sit near the middle of the picture, so

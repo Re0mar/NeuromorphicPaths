@@ -118,6 +118,11 @@ class _Slot(Enum):
     GAZE_SILENCING_STATE = 6
 
 
+# Slots sent once per change rather than every frame. Dropping one leaves every page, and every page
+# that joins later, showing the old state, so a full queue drops a frame instead.
+STATE_SLOTS = frozenset({_Slot.SOURCE_STATE, _Slot.GAZE_SILENCING_STATE})
+
+
 class OnOffSwitch(Protocol):
     """A run-wide on or off that any page may flip, told to every page. The gaze switch is one."""
 
@@ -461,17 +466,27 @@ class WebSink:
 
         Runs on the server's loop, which is the only thread allowed to touch the queue. Dropping
         the oldest rather than refusing the newest is what a display wants: a frame nobody has
-        managed to send yet is already out of date, and the next one replaces it anyway. A None
-        message is the shutdown sentinel.
+        managed to send yet is already out of date, and the next one replaces it anyway. The oldest
+        frame goes, not a state announcement, unless the queue holds nothing else. A None message
+        is the shutdown sentinel.
         """
         if self._outgoing is None:
             return
-        while self._outgoing.full():
-            try:
-                self._outgoing.get_nowait()
-            except asyncio.QueueEmpty:
-                break
+        if self._outgoing.full():
+            waiting = []
+            while not self._outgoing.empty():
+                waiting.append(self._outgoing.get_nowait())
+            oldest_frame = next(
+                (
+                    index for index, item in enumerate(waiting)
+                    if item is not None and item[0] not in STATE_SLOTS
+                ),
+                0,
+            )
+            del waiting[oldest_frame]
             self._dropped += 1
+            for item in waiting:
+                self._outgoing.put_nowait(item)
         self._outgoing.put_nowait(None if message is None else (slot, message))
 
     def _serve(self) -> None:

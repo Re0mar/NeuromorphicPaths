@@ -234,6 +234,17 @@ def test_a_groups_outline_runs_edge_to_edge_over_its_points_as_tangents() -> Non
     assert (outline.top_tangent, outline.bottom_tangent) == pytest.approx((-0.2, 0.3))
 
 
+def test_a_point_at_depth_zero_is_left_out_of_the_outline() -> None:
+    outline = camera_outline(np.array([[0.1, 0.2, 0.0], [0.5, 0.25, 2.0]]))
+
+    assert outline is not None
+    assert (outline.left_tangent, outline.right_tangent) == pytest.approx((0.25, 0.25))
+
+
+def test_a_group_with_no_point_in_front_of_the_camera_has_no_outline() -> None:
+    assert camera_outline(np.array([[0.1, 0.2, 0.0], [0.3, 0.1, -1.0]])) is None
+
+
 def test_a_one_point_group_has_an_outline_of_no_size() -> None:
     outline = camera_outline(np.array([[0.5, 0.25, 2.0]]))
 

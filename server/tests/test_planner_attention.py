@@ -159,16 +159,39 @@ def test_the_path_never_changes_with_the_switch_on() -> None:
     assert off.alarm == on.alarm and off.avoidance_surprise_bits == on.avoidance_surprise_bits
 
 
-def test_the_same_frame_planned_twice_updates_once() -> None:
-    # The second plan of the same stamp carries no gaze. Counted again it would be a new frame with no
-    # look and could clear the answer. It keeps the first one instead.
-    planner = PlannerPipeline(dataclasses.replace(SWITCH_ON, attention_credit_seconds=0.0), WALKER)
-    obstacles = _at(5.0, _danger(ABOVE_FLOOR))
-    planner.plan(obstacles, gaze=ON_THE_DANGER)
+def test_a_hold_that_started_under_the_floor_stays_heard_when_the_corridor_empties() -> None:
+    # A close low object drops out of the bottom of the picture. The eyes were on it, and the hold
+    # keeps the alarm up with nothing in the corridor. It was under the floor, so it stays heard.
+    planner = PlannerPipeline(SWITCH_ON, WALKER)
+    under = planner.plan(_at(0.0, _danger(UNDER_FLOOR)), gaze=ON_THE_DANGER)
 
-    again = planner.plan(obstacles)
+    held = planner.plan(_at(0.1), gaze=ON_THE_DANGER)
 
-    assert again.danger_noticed and not again.alarm_audible
+    assert under.alarm_audible
+    assert held.alarm and held.danger_noticed
+    assert held.alarm_audible
+
+
+def test_a_farther_danger_looked_at_during_the_hold_does_not_quiet_an_alarm_that_was_under_the_floor() -> None:
+    planner = PlannerPipeline(SWITCH_ON, WALKER)
+    planner.plan(_at(0.0, _danger(UNDER_FLOOR)), gaze=ON_THE_DANGER)
+
+    farther = planner.plan(_at(0.1, _danger(ABOVE_FLOOR)), gaze=ON_THE_DANGER)
+
+    assert farther.alarm and farther.danger_noticed
+    assert farther.alarm_audible
+
+
+def test_the_floor_is_forgotten_once_the_alarm_clears() -> None:
+    # The positive control for the two above: a new alarm, raised above the floor and looked at, is quiet.
+    planner = PlannerPipeline(SWITCH_ON, WALKER)
+    planner.plan(_at(0.0, _danger(UNDER_FLOOR)), gaze=ON_THE_DANGER)
+    cleared = planner.plan(_at(1.0))
+
+    fresh = planner.plan(_at(1.1, _danger(ABOVE_FLOOR)), gaze=ON_THE_DANGER)
+
+    assert not cleared.alarm
+    assert fresh.alarm and not fresh.alarm_audible
 
 
 def test_a_look_carries_to_the_next_frame_in_credit() -> None:
@@ -209,6 +232,25 @@ def test_an_attention_setting_out_of_range_stops_the_planner_at_construction(fie
 
 def test_the_shipped_attention_settings_pass_their_check() -> None:
     check_attention_config(PLANNER)
+
+
+@pytest.mark.parametrize(
+    "pixels, offsets, camera_matrix, named",
+    [
+        (np.zeros((1, 3)), np.zeros(1), INTRINSICS, r"must be \(N, 2\)"),
+        (np.zeros((1, 2)), np.zeros(2), INTRINSICS, "to match gaze_pixels"),
+        (np.array([[np.nan, 1.0]]), np.zeros(1), INTRINSICS, "finite"),
+        (np.zeros((1, 2)), np.zeros(1), np.eye(3)[:2], r"intrinsics must be \(3, 3\)"),
+    ],
+)
+def test_gaze_samples_refuse_what_cannot_be_turned_into_rays(pixels, offsets, camera_matrix, named: str) -> None:
+    with pytest.raises(ValueError, match=named):
+        GazeSamples(pixels, offsets, camera_matrix)
+
+
+def test_gaze_samples_of_anything_missing_is_no_gaze() -> None:
+    assert GazeSamples.of(np.zeros((1, 2)), np.zeros(1), None) is None
+    assert GazeSamples.of(None, None, INTRINSICS) is None
 
 
 # *******************************************

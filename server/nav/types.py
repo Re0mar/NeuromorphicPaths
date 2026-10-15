@@ -150,7 +150,9 @@ class DepthFrame:
     # source without a switch.
     source_generation: int = 0
     # Every gaze sample near the frame's stamp, (N, 2) pixels at the resolution of depth_meters and
-    # intrinsics, with (N,) offsets in seconds from the stamp. None when the source has no gaze.
+    # intrinsics, with (N,) offsets in seconds from the stamp. None from a source that never carries
+    # gaze, such as the Pixel. Empty when no sample came near this frame, which on the live glasses
+    # also covers a gaze stream that is missing or stopped, since a frame can't tell the two apart.
     # gaze_pixel above is the one nearest sample and stays for the goal.
     gaze_pixels: np.ndarray | None = None
     gaze_sample_offsets_seconds: np.ndarray | None = None

@@ -330,6 +330,12 @@ def test_a_dropout_longer_than_the_gap_breaks_a_steady_look() -> None:
     assert longest_dwell_seconds(offsets, on_object, 0.2) == pytest.approx(0.105)
 
 
+def test_offsets_out_of_order_give_the_same_dwell_as_sorted() -> None:
+    offsets = np.array([0.015, 0.010, 0.005, 0.0])
+
+    assert longest_dwell_seconds(offsets, np.ones(4, dtype=bool), 0.02) == pytest.approx(0.015)
+
+
 def test_one_sample_on_the_object_is_a_dwell_of_zero_and_none_on_it_is_none() -> None:
     offsets = np.array([0.0, 0.005])
 
