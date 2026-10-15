@@ -73,7 +73,12 @@
     #sound-panel .toggle label + label { border-left: none; border-top: 1px solid var(--panel-edge); }
     #sound-panel input[type="file"] { width: 100%; box-sizing: border-box; }
     #ears { align-self: center; }
-    #nc { align-self: center; }
+    #readout-row { align-self: center; }
+    /* The gaze switch has two short choices, so they sit side by side under its name, to keep Sound
+       and Heading even halves of the column. */
+    #sound-panel #gaze-silencing { flex-direction: row; }
+    #sound-panel #gaze-silencing label { flex: 1 1 0; }
+    #sound-panel #gaze-silencing label + label { border-top: none; border-left: 1px solid var(--panel-edge); }
   }
   /* One screen, no scrolling, for a laptop or a projector in full screen, tuned on 1650 by 1080.
      From above takes what its contents need, and the second row takes the rest of the screen,
@@ -104,7 +109,7 @@
   #sound-card { grid-area: sound; }
   canvas, img, video { max-width: 100%; height: auto; }
   .placeholder { font-size: var(--text-s); color: var(--muted); }
-  .placeholder[hidden], #depth[hidden], #rings[hidden], .help[hidden], #plan-panel[hidden], #music-label[hidden], #music-controls[hidden], #alarm-sound-field[hidden], #volume-field[hidden], #source-field[hidden], #input-link[hidden], #no-input[hidden], #live[hidden] { display: none; }
+  .placeholder[hidden], #depth[hidden], #rings[hidden], .help[hidden], #plan-panel[hidden], #music-label[hidden], #music-controls[hidden], #alarm-sound-field[hidden], #volume-field[hidden], #source-field[hidden], #gaze-silencing-field[hidden], #input-link[hidden], #no-input[hidden], #live[hidden] { display: none; }
   /* How the live input is doing, on a run that serves the page from one. */
   #input-link { font-size: var(--text-s); color: var(--muted); }
   #input-link.connected { color: var(--accent); }
@@ -144,6 +149,11 @@
   #nc.on { color: var(--accent); }
   #nc.off { color: var(--alarm-fg); }
   #nc.unknown { color: var(--muted); }
+  #readout-row { display: flex; align-items: center; gap: var(--space-2); }
+  #readout-row > span { white-space: nowrap; }
+  #danger-noticed { color: var(--accent); font-weight: bold; font-size: var(--text-s); }
+  /* Keeps its line while hidden, so the card doesn't grow and shrink as the eyes come and go. */
+  #danger-noticed[hidden] { display: inline; visibility: hidden; }
   /* The ear-volume display: a head from above, five arcs a side, one lit per 20 % of that ear's gain. */
   #ears { width: 180px; height: 90px; }
   #ears .head { fill: var(--head); }
@@ -195,7 +205,11 @@
           <circle class="head" cx="100" cy="50" r="18"></circle>
           <path class="head" d="M93 34 L100 24 L107 34 Z"></path>
         </svg>
-        <span id="nc" class="unknown">NC ?</span>
+        <!-- What the laptop decided, side by side: the noise-cancelling rule, and whether the eyes are on the danger. -->
+        <div id="readout-row">
+          <span id="nc" class="unknown">NC ?</span>
+          <span id="danger-noticed" hidden>Eyes on danger</span>
+        </div>
         <div class="toggle-field">
           <span class="toggle-name" id="mode-name">Sound</span>
           <div id="mode" class="toggle" role="radiogroup" aria-labelledby="mode-name">
@@ -219,6 +233,15 @@
             <label><input type="radio" name="volume" value="low"> Low</label>
             <label><input type="radio" name="volume" value="med" checked> Med</label>
             <label><input type="radio" name="volume" value="high"> High</label>
+          </div>
+        </div>
+        <!-- The laptop's switch, not this browser's: one page's choice is every page's. Shown in every
+             mode, once the laptop says it has the switch. -->
+        <div class="toggle-field" id="gaze-silencing-field" hidden>
+          <span class="toggle-name" id="gaze-silencing-name">Gaze silences alarm</span>
+          <div id="gaze-silencing" class="toggle" role="radiogroup" aria-labelledby="gaze-silencing-name">
+            <label><input type="radio" name="gaze-silencing" value="off" checked> Off</label>
+            <label><input type="radio" name="gaze-silencing" value="on"> On</label>
           </div>
         </div>
         <label id="music-label" hidden>Music <input type="file" id="music" accept="audio/*"></label>
@@ -390,6 +413,9 @@
   const showRings = document.getElementById("show-rings");
   const ringCanvas = document.getElementById("rings");
   const depthTitle = document.getElementById("depth-title");
+  const gazeSilencingField = document.getElementById("gaze-silencing");
+  const gazeSilencingSwitchField = document.getElementById("gaze-silencing-field");
+  const dangerNoticedLine = document.getElementById("danger-noticed");
   const sourceField = document.getElementById("source-field");
   const sourceMode = document.getElementById("source-mode");
   const inputLink = document.getElementById("input-link");
@@ -416,6 +442,10 @@
   const BEHIND_MARGIN_METERS = 0.3;
 
   // ---- Audio -------------------------------------------------------------------------------
+  // Two booleans from the laptop. alarm turns the page red. alarmAudible decides what is heard:
+  // the alarm sound, the beep's pan toward the danger, and the NC label. They differ only while
+  // the laptop's gaze switch is on and the eyes are on the danger, when the page stays red and the
+  // steering tick carries on.
   // Heading 0 (straight ahead) is centered, equal in both ears. Heading at or beyond this angle
   // to either side is fully in that ear. Lower it for a more dramatic swing.
   const FULL_PAN_RADIANS = Math.PI / 3;
@@ -486,8 +516,8 @@
   let audio = null;  // Built on the first mode change, because browsers refuse sound before a gesture.
   let mode = "off";
   let musicUrl = null;  // The picked file, as the player's source. Null plays the built-in bed.
-  let latest = { heading: 0, alarm: false, alarmPan: null, earGainLeft: 1, earGainRight: 1, timeToContactSeconds: null, receivedAt: -Infinity };
-  // When the alarm last went from up to down, for the 2 s return. Never while it has not.
+  let latest = { heading: 0, alarm: false, alarmAudible: false, dangerNoticed: false, alarmPan: null, earGainLeft: 1, earGainRight: 1, timeToContactSeconds: null, receivedAt: -Infinity };
+  // When the heard alarm last went from up to down, for the 2 s return. Never while it has not.
   let alarmClearedAt = -Infinity;
 
   function buildAudio() {
@@ -545,7 +575,7 @@
   function beepPan() {
     // While the alarm is up the beep sits where the danger is, which the laptop sends as a pan.
     // Otherwise it sits where the arrow points.
-    if (latest.alarm && latest.alarmPan !== null) return latest.alarmPan;
+    if (latest.alarmAudible && latest.alarmPan !== null) return latest.alarmPan;
     return panFromHeading(latest.heading);
   }
 
@@ -612,12 +642,12 @@
   }
 
   function showNoiseCancellation() {
-    // Off while the alarm is up, and for NC_RETURN_MS after it clears. Unknown when the laptop
+    // Off while the alarm is heard, and for NC_RETURN_MS after it clears. Unknown when the laptop
     // has gone quiet. The page can switch no headphones, so this says what the rule would do.
     if (isStale()) {
       ncLabel.textContent = "NC ?";
       ncLabel.className = "unknown";
-    } else if (latest.alarm || performance.now() - alarmClearedAt < NC_RETURN_MS) {
+    } else if (latest.alarmAudible || performance.now() - alarmClearedAt < NC_RETURN_MS) {
       ncLabel.textContent = "NC OFF";
       ncLabel.className = "off";
     } else {
@@ -626,9 +656,15 @@
     }
   }
 
+  function showDangerNoticed() {
+    // In every sound mode, so a demo can show the gaze working with the sound off. Stale hides it.
+    dangerNoticedLine.hidden = isStale() || !latest.dangerNoticed;
+  }
+
   function refreshReadouts() {
     showEarGains();
     showNoiseCancellation();
+    showDangerNoticed();
   }
 
   // A flat-topped sine through the shared envelope, the page's first beep. Tone uses it.
@@ -741,7 +777,7 @@
   function beep() {
     setBeepPan(beepPan());
     const start = audio.audioContext.currentTime;
-    if (latest.alarm) ALARM_SOUNDS[alarmSound].play(start);
+    if (latest.alarmAudible) ALARM_SOUNDS[alarmSound].play(start);
     else steeringTick(start);
   }
 
@@ -749,7 +785,7 @@
     if (!audio) return;
     if (mode === "alarm") {
       if (performance.now() - latest.receivedAt < STALE_MS) beep();
-      audio.lastIntervalMs = latest.alarm ? ALARM_SOUNDS[alarmSound].intervalMs(latest.timeToContactSeconds) : STEERING_INTERVAL_MS;
+      audio.lastIntervalMs = latest.alarmAudible ? ALARM_SOUNDS[alarmSound].intervalMs(latest.timeToContactSeconds) : STEERING_INTERVAL_MS;
       audio.timer = setTimeout(tick, audio.lastIntervalMs);
     } else if (mode === "cancel") {
       // Only to notice a laptop that went quiet. Fresh paths apply their gains as they arrive.
@@ -994,10 +1030,15 @@
     document.body.classList.toggle("alarm", Boolean(message.alarm));
     drawArrow(message.lookahead_heading_radians, message.alarm);
     status.textContent = (message.alarm ? "Obstacle close. " : "") + "Heading " + (degrees >= 0 ? "+" : "") + degrees + " degrees.";
-    if (latest.alarm && !message.alarm) alarmClearedAt = performance.now();
+    // A laptop from before the gaze switch sends neither key. Its alarm is then heard whenever it
+    // is up, as before, and the eyes are never on the danger.
+    const alarmAudible = typeof message.alarm_audible === "boolean" ? message.alarm_audible : Boolean(message.alarm);
+    if (latest.alarmAudible && !alarmAudible) alarmClearedAt = performance.now();
     latest = {
       heading: message.lookahead_heading_radians,
       alarm: Boolean(message.alarm),
+      alarmAudible,
+      dangerNoticed: message.danger_noticed === true,
       // The cue's numbers, decided on the laptop. A path from an older laptop has none, which
       // reads as no cue: beeps by heading, both ears at full.
       alarmPan: typeof message.alarm_pan === "number" ? message.alarm_pan : null,
@@ -1205,6 +1246,15 @@
   });
   showRings.addEventListener("change", drawRings);
 
+  // Whether the laptop lets the gaze quiet the alarm, run-wide. Every page's radio follows what the
+  // laptop says, so they agree whoever flipped it. Until the laptop says, the radio stays hidden,
+  // since a run without the switch would ignore it.
+  function showGazeSilencing(message) {
+    gazeSilencingSwitchField.hidden = false;
+    const chosenState = gazeSilencingField.querySelector('input[value="' + message.state + '"]');
+    if (chosenState) chosenState.checked = true;
+  }
+
   // On a run serving the page from a live input, the laptop says which side it plans on and how the
   // input is. The toggle only follows what the laptop says, so every page shows the same side
   // whoever switched it.
@@ -1231,6 +1281,14 @@
     noInput.classList.toggle("quiet", noVideo);
     if (nothingComing) status.textContent = "No Input";
   }
+
+  // The laptop's switch for every page. The radio only follows what the laptop says back, so a
+  // click with the laptop gone changes nothing that stays.
+  gazeSilencingField.addEventListener("change", () => {
+    if (laptopSocket && laptopSocket.readyState === WebSocket.OPEN) {
+      laptopSocket.send(JSON.stringify({ kind: "gaze_silencing", gaze_silencing: chosen(gazeSilencingField) }));
+    }
+  });
 
   sourceMode.addEventListener("change", () => {
     if (laptopSocket && laptopSocket.readyState === WebSocket.OPEN) {
@@ -1291,6 +1349,7 @@
         if (message.kind === "path") showPath(message);
         else if (message.kind === "plan_view") showPlanView(message);
         else if (message.kind === "source_state") showSourceState(message);
+        else if (message.kind === "gaze_silencing_state") showGazeSilencing(message);
         return;
       }
       showDepth(event.data);

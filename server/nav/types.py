@@ -102,6 +102,36 @@ class FrameTiming:
             )
 
 
+# Every gaze sample this close to a frame's capture stamp travels with the frame, for the attention
+# test. The widest window the attention count sweeps, so a frame log holds enough for every column.
+# The planner's own window picks from these by their offsets.
+GAZE_CARRY_WINDOW_SECONDS = 0.2
+
+
+def check_gaze_samples(gaze_pixels: np.ndarray | None, offsets_seconds: np.ndarray | None) -> None:
+    """
+    Refuse a frame's carried gaze samples unless they are well formed, or both absent.
+
+    :param gaze_pixels: (N, 2) pixels, or None.
+    :param offsets_seconds: (N,) seconds from the frame's stamp, one per pixel, or None.
+    :raises ValueError: For one present without the other, a wrong shape, unequal lengths, or a
+        value that is not finite.
+    """
+    if gaze_pixels is None and offsets_seconds is None:
+        return
+    if gaze_pixels is None or offsets_seconds is None:
+        raise ValueError("gaze_pixels and gaze_sample_offsets_seconds are both present or both None")
+    if gaze_pixels.ndim != 2 or gaze_pixels.shape[1] != 2:
+        raise ValueError(f"gaze_pixels must be (N, 2), got shape {gaze_pixels.shape}")
+    if offsets_seconds.shape != (gaze_pixels.shape[0],):
+        raise ValueError(
+            f"gaze_sample_offsets_seconds must be ({gaze_pixels.shape[0]},) to match gaze_pixels, "
+            f"got shape {offsets_seconds.shape}"
+        )
+    if not (np.all(np.isfinite(gaze_pixels)) and np.all(np.isfinite(offsets_seconds))):
+        raise ValueError("gaze_pixels and gaze_sample_offsets_seconds must be finite")
+
+
 @dataclass(frozen=True)
 class DepthFrame:
     """One frame of depth in meters, with everything the scene layer needs to place it in space."""
@@ -119,6 +149,13 @@ class DepthFrame:
     # a recording. The loop starts the scene and the planner afresh when it changes. 0 for every
     # source without a switch.
     source_generation: int = 0
+    # Every gaze sample near the frame's stamp, (N, 2) pixels at the resolution of depth_meters and
+    # intrinsics, with (N,) offsets in seconds from the stamp. None from a source that never carries
+    # gaze, such as the Pixel. Empty when no sample came near this frame, which on the live glasses
+    # also covers a gaze stream that is missing or stopped, since a frame can't tell the two apart.
+    # gaze_pixel above is the one nearest sample and stays for the goal.
+    gaze_pixels: np.ndarray | None = None
+    gaze_sample_offsets_seconds: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         # Every source builds one of these, and a wrongly shaped array from any of them would
@@ -133,6 +170,30 @@ class DepthFrame:
             raise ValueError(f"intrinsics must be (3, 3), got shape {self.intrinsics.shape}")
         if self.gaze_pixel is not None and self.gaze_pixel.shape != (2,):
             raise ValueError(f"gaze_pixel must be (2,) when present, got shape {self.gaze_pixel.shape}")
+        check_gaze_samples(self.gaze_pixels, self.gaze_sample_offsets_seconds)
+
+
+@dataclass(frozen=True)
+class CameraOutline:
+    """
+    How much of the picture one group covers, as the camera saw it.
+
+    Each edge is a tangent: x over z for left and right, y over z for top and bottom, in the
+    camera frame (x right, y down, z forward). That is where a pixel lands once the camera matrix
+    is taken off, so the outline means the same at any resolution.
+    """
+
+    left_tangent: float
+    right_tangent: float
+    top_tangent: float
+    bottom_tangent: float
+
+    def __post_init__(self) -> None:
+        edges = (self.left_tangent, self.right_tangent, self.top_tangent, self.bottom_tangent)
+        if not all(np.isfinite(edge) for edge in edges):
+            raise ValueError(f"an outline's edges must be finite, got {edges}")
+        if self.left_tangent > self.right_tangent or self.top_tangent > self.bottom_tangent:
+            raise ValueError(f"an outline's left and top must not pass its right and bottom, got {edges}")
 
 
 @dataclass(frozen=True)
@@ -155,6 +216,35 @@ class ObstaclePoint:
     # The nearest point as the camera saw it, (3,) camera frame. For the depth view only. The
     # planner never reads it, and a test that builds a point by hand gives it zeros.
     camera_point: np.ndarray
+    # The whole group as the camera saw it, for the attention test. A look at a chair's seat is a
+    # look at the chair, though its nearest point is down by the floor. None on a point built by
+    # hand, which is never noticed.
+    camera_outline: CameraOutline | None = None
+
+
+@dataclass(frozen=True)
+class GazeSamples:
+    """
+    The gaze a frame carried, for the planner's attention test.
+
+    Every sample near the frame's stamp, at the resolution of the camera matrix beside them.
+    """
+
+    pixels: np.ndarray
+    offsets_seconds: np.ndarray
+    intrinsics: np.ndarray
+
+    def __post_init__(self) -> None:
+        check_gaze_samples(self.pixels, self.offsets_seconds)
+        if self.intrinsics.shape != (3, 3):
+            raise ValueError(f"intrinsics must be (3, 3), got shape {self.intrinsics.shape}")
+
+    @classmethod
+    def of(cls, pixels: np.ndarray | None, offsets_seconds: np.ndarray | None, intrinsics: np.ndarray | None) -> "GazeSamples | None":
+        """The samples a frame carried, or None when it carried none or has no camera matrix."""
+        if pixels is None or offsets_seconds is None or intrinsics is None:
+            return None
+        return cls(pixels, offsets_seconds, intrinsics)
 
 
 @dataclass(frozen=True)
@@ -215,8 +305,20 @@ class PlannedPath:
     alarm_pan: float | None = None
     ear_gain_left: float = 1.0
     ear_gain_right: float = 1.0
+    # Whether the walker's eyes are on the danger, credit included, held through the alarm's hold.
+    # It shows the eyes toward the danger rather than away, not that the walker singled it out.
+    danger_noticed: bool = False
+    # Whether the display should make the alarm heard. False only while the alarm is up and quieted
+    # by the gaze switch. None resolves to alarm, so a path built without it sounds as before.
+    alarm_audible: bool | None = None
 
     def __post_init__(self) -> None:
+        if self.alarm_audible is None:
+            # The dataclass is frozen, so the default is filled in through object.__setattr__.
+            object.__setattr__(self, "alarm_audible", self.alarm)
+        if self.alarm_audible and not self.alarm:
+            # A heard alarm that isn't up would beep with the page still showing the way clear.
+            raise ValueError("alarm_audible must be False while the alarm is down")
         # This is the last shape before a sink serializes it, so a non-finite value caught here
         # is one that never reaches a JSON encoder that would have written a bare NaN.
         if self.times_seconds.shape != self.lateral_offsets_meters.shape:

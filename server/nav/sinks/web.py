@@ -49,11 +49,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import Protocol
 
 # Third party imports
 import numpy as np
 
 # Local package imports
+from nav.planner.config import OnOff
 from nav.scene.config import SceneConfig
 from nav.sinks.config import WebConfig
 from nav.sinks.rendering import encode_png, render_depth_view, render_risk_view
@@ -61,6 +63,7 @@ from nav.sinks.web_messages import (
     PictureKind,
     WebMessageKind,
     browser_choice,
+    gaze_silencing_state_message,
     plan_view_message,
     source_state_message,
     video_stream_message,
@@ -111,6 +114,21 @@ class _Slot(Enum):
     RISK_PNG = 4
     # Which side a run serving the page from a live input plans on, and how the input is.
     SOURCE_STATE = 5
+    # Whether the gaze may quiet the alarm. Sent to every page, so their switches agree.
+    GAZE_SILENCING_STATE = 6
+
+
+# Slots sent once per change rather than every frame. Dropping one leaves every page, and every page
+# that joins later, showing the old state, so a full queue drops a frame instead.
+STATE_SLOTS = frozenset({_Slot.SOURCE_STATE, _Slot.GAZE_SILENCING_STATE})
+
+
+class OnOffSwitch(Protocol):
+    """A run-wide on or off that any page may flip, told to every page. The gaze switch is one."""
+
+    def request(self, enabled: bool) -> None: ...
+
+    def subscribe(self, listener: Callable[[bool], None]) -> Callable[[], None]: ...
 
 
 # Which slot carries each picture. A browser gets the one it chose and never the other.
@@ -153,6 +171,7 @@ class WebSink:
         *,
         video_feed: SceneVideoFeed | None,
         source_switch: SwitchableSource | None = None,
+        gaze_switch: OnOffSwitch | None = None,
     ) -> None:
         """
         :param config: The port and the certificate.
@@ -163,10 +182,14 @@ class WebSink:
             Keyword-only and without a default, so every caller says which it is.
         :param source_switch: The live input and its recording, which any page may switch between.
             None on a run with no live input, so callers that have none leave it out.
+        :param gaze_switch: Whether the gaze may quiet the alarm, which any page may flip for the
+            whole run. None on a sink built without one, which then ignores the ask.
         """
         self._config = config
         self._source_switch = source_switch
         self._unsubscribe_switch: Callable[[], None] | None = None
+        self._gaze_switch = gaze_switch
+        self._unsubscribe_gaze_switch: Callable[[], None] | None = None
         self._scene = scene
         self._video_feed = video_feed
         self._thread: threading.Thread | None = None
@@ -234,6 +257,14 @@ class WebSink:
             self._unsubscribe_switch = self._source_switch.subscribe(
                 lambda state: self._enqueue(_Slot.SOURCE_STATE, web_text_message(WebMessageKind.SOURCE_STATE, source_state_message(state)))
             )
+        if self._gaze_switch is not None:
+            # Fills its slot at once, so a page that connects later is sent the state as it joins.
+            self._unsubscribe_gaze_switch = self._gaze_switch.subscribe(
+                lambda enabled: self._enqueue(
+                    _Slot.GAZE_SILENCING_STATE,
+                    web_text_message(WebMessageKind.GAZE_SILENCING_STATE, gaze_silencing_state_message(enabled)),
+                )
+            )
 
     def publish(self, path: PlannedPath) -> None:
         """Queue the path for every browser. Starts the server on the first call, and does nothing once closed."""
@@ -265,6 +296,9 @@ class WebSink:
         if self._unsubscribe_switch is not None:
             self._unsubscribe_switch()
             self._unsubscribe_switch = None
+        if self._unsubscribe_gaze_switch is not None:
+            self._unsubscribe_gaze_switch()
+            self._unsubscribe_gaze_switch = None
         if self._unsubscribe_video is not None:
             # First, so no unit is handed to a loop that is about to stop.
             self._unsubscribe_video()
@@ -432,17 +466,27 @@ class WebSink:
 
         Runs on the server's loop, which is the only thread allowed to touch the queue. Dropping
         the oldest rather than refusing the newest is what a display wants: a frame nobody has
-        managed to send yet is already out of date, and the next one replaces it anyway. A None
-        message is the shutdown sentinel.
+        managed to send yet is already out of date, and the next one replaces it anyway. The oldest
+        frame goes, not a state announcement, unless the queue holds nothing else. A None message
+        is the shutdown sentinel.
         """
         if self._outgoing is None:
             return
-        while self._outgoing.full():
-            try:
-                self._outgoing.get_nowait()
-            except asyncio.QueueEmpty:
-                break
+        if self._outgoing.full():
+            waiting = []
+            while not self._outgoing.empty():
+                waiting.append(self._outgoing.get_nowait())
+            oldest_frame = next(
+                (
+                    index for index, item in enumerate(waiting)
+                    if item is not None and item[0] not in STATE_SLOTS
+                ),
+                0,
+            )
+            del waiting[oldest_frame]
             self._dropped += 1
+            for item in waiting:
+                self._outgoing.put_nowait(item)
         self._outgoing.put_nowait(None if message is None else (slot, message))
 
     def _serve(self) -> None:
@@ -528,6 +572,13 @@ class WebSink:
                     return
                 # For every page at once. The switch announces the new state to all of them.
                 self._source_switch.request(choice)
+                return
+            if isinstance(choice, OnOff):
+                if self._gaze_switch is None:
+                    log.warning("a page asked to turn the gaze switch %s, and this run has no gaze switch", choice.value)
+                    return
+                # Run-wide too, like the side above: one page's choice is every page's.
+                self._gaze_switch.request(choice is OnOff.ON)
                 return
             sockets[socket] = choice
             note_who_wants_risk()

@@ -11,6 +11,7 @@ a browser.
 import dataclasses
 import json
 import re
+import time
 import wave
 
 # Third party imports
@@ -29,6 +30,7 @@ from browser_harness import (
     snapshot,
 )
 from nav.planner.alarm import avoidance_surprise_bits_at
+from nav.runtime.gaze_silencing import GazeSilencingSwitch
 from nav.scene.config import SceneConfig
 from nav.sinks.config import WebConfig
 from nav.sinks.web import WebSink
@@ -57,6 +59,16 @@ def sink():
     sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None)
     sink.start()
     yield sink
+    sink.close()
+
+
+@pytest.fixture
+def gaze_switch_sink():
+    """A sink with the run's gaze switch, starting off, the way the runtime always builds it."""
+    switch = GazeSilencingSwitch(False)
+    sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None, gaze_switch=switch)
+    sink.start()
+    yield sink, switch
     sink.close()
 
 
@@ -1539,4 +1551,207 @@ def test_no_input_clears_when_the_live_input_connects(browser) -> None:
     finally:
         session.close()
         switch_sink.close()
+    assert session.errors == [], session.errors
+
+
+# ---- The gaze switch ------------------------------------------------------------------------
+# The page turns red from alarm and plays from alarm_audible. The two differ only while the
+# laptop's gaze switch is on and the eyes are on the danger.
+
+
+def test_a_quiet_alarm_keeps_the_page_red_and_the_beep_steering(browser, sink: WebSink) -> None:
+    session = _open_with_probe(browser, sink)
+    try:
+        page = session.page
+        _choose(page, "mode", "alarm")
+        sink.publish(sample_path(alarm=True, alarm_audible=False, danger_noticed=True, time_to_contact_seconds=0.5))
+        page.wait_for_function("() => document.body.classList.contains('alarm')", timeout=ELEMENT_TIMEOUT_MS)
+        _wait_for_audio(page, "state.lastPlayed !== null && state.lastPlayed.sound === 'steering'")
+        _wait_for_audio(page, "state.lastIntervalMs === 700")
+    finally:
+        session.close()
+    assert session.errors == [], session.errors
+
+
+def test_an_audible_alarm_beeps_the_alarm(browser, sink: WebSink) -> None:
+    # The positive control for the test above: the same path with the alarm heard plays Pulse.
+    session = _open_with_probe(browser, sink)
+    try:
+        page = session.page
+        _choose(page, "mode", "alarm")
+        _choose(page, "alarm-sound", "pulse")
+        sink.publish(sample_path(alarm=True, alarm_audible=True, danger_noticed=True, time_to_contact_seconds=0.5))
+        _wait_for_audio(page, "state.lastPlayed !== null && state.lastPlayed.sound === 'pulse'")
+    finally:
+        session.close()
+    assert session.errors == [], session.errors
+
+
+def test_an_older_path_without_alarm_audible_beeps_on_alarm(browser, sink: WebSink) -> None:
+    # A laptop from before the gaze switch sends neither key. Its alarm sounds whenever it is up.
+    session = _open_with_probe(browser, sink)
+    try:
+        page = session.page
+        _choose(page, "mode", "alarm")
+        _choose(page, "alarm-sound", "pulse")
+        message = path_message(sample_path(alarm=True, time_to_contact_seconds=0.5))
+        del message["alarm_audible"]
+        del message["danger_noticed"]
+        send_text(sink, json.dumps({"kind": WebMessageKind.PATH.value, **message}))
+        _wait_for_audio(page, "state.lastPlayed !== null && state.lastPlayed.sound === 'pulse'")
+        assert not page.is_visible("#danger-noticed")
+    finally:
+        session.close()
+    assert session.errors == [], session.errors
+
+
+def test_the_nc_label_follows_alarm_audible_not_alarm(browser_page: PageSession, sink: WebSink) -> None:
+    page = browser_page.page
+
+    sink.publish(sample_path(alarm=True, alarm_audible=False, danger_noticed=True))
+    page.wait_for_function("() => document.body.classList.contains('alarm')", timeout=ELEMENT_TIMEOUT_MS)
+    _wait_for_text(page, "nc", "NC ON")
+
+    sink.publish(sample_path(alarm=True, alarm_audible=True))
+    _wait_for_text(page, "nc", "NC OFF")
+
+
+def test_the_nc_return_starts_when_the_alarm_goes_quiet_while_still_up(browser, sink: WebSink) -> None:
+    # The eyes find the danger, so the alarm stays up and stops being heard. NC comes back 2 s after
+    # the sound stopped, as it would if the alarm had cleared, not the moment it went quiet.
+    session = open_page(browser, sink, fake_clock=True)
+    try:
+        page = session.page
+        sink.publish(sample_path(alarm=True, alarm_audible=True))
+        _wait_for_text(page, "nc", "NC OFF")
+
+        sink.publish(sample_path(alarm=True, alarm_audible=False, danger_noticed=True))
+        page.wait_for_timeout(100)
+        assert page.text_content("#nc") == "NC OFF", "off just after the alarm went quiet"
+        for _ in range(4):
+            page.clock.fast_forward(550)
+            sink.publish(sample_path(alarm=True, alarm_audible=False, danger_noticed=True))
+            page.wait_for_timeout(100)
+        _wait_for_text(page, "nc", "NC ON")
+    finally:
+        session.close()
+    assert session.errors == [], session.errors
+
+
+def test_a_quiet_alarm_leaves_the_tick_where_the_arrow_points(browser, sink: WebSink) -> None:
+    # The danger is fully right and the arrow past full pan to the left. Not heard, so the steering
+    # tick plays, and it sits on the arrow's side rather than the danger's.
+    session = _open_with_probe(browser, sink)
+    try:
+        page = session.page
+        _choose(page, "mode", "alarm")
+        sink.publish(dataclasses.replace(sample_path(heading=-1.2, alarm=True, alarm_audible=False), alarm_pan=1.0))
+        _wait_for_audio(page, "state.lastPlayed !== null && state.lastPlayed.sound === arg", "steering")
+        page.wait_for_timeout(200)
+        left, right = page.evaluate("(ms) => window.__loudestPerEarOver(ms)", LISTEN_MS["steering"])
+    finally:
+        session.close()
+    assert session.errors == [], session.errors
+    assert left > 0.01, "the tick is silent on the left"
+    assert right < 0.05 * left, f"left {left} right {right}"
+
+
+def test_the_danger_noticed_line_shows_and_goes_stale(browser, sink: WebSink) -> None:
+    session = open_page(browser, sink, fake_clock=True)
+    try:
+        page = session.page
+        sink.publish(sample_path(alarm=True, danger_noticed=True))
+        page.wait_for_selector("#danger-noticed", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+        assert page.text_content("#danger-noticed") == "Eyes on danger"
+
+        sink.publish(sample_path(alarm=True, danger_noticed=False))
+        page.wait_for_selector("#danger-noticed", state="hidden", timeout=ELEMENT_TIMEOUT_MS)
+
+        sink.publish(sample_path(alarm=True, danger_noticed=True))
+        page.wait_for_selector("#danger-noticed", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+        page.clock.fast_forward(PAST_STALE_MS)
+        page.wait_for_selector("#danger-noticed", state="hidden", timeout=ELEMENT_TIMEOUT_MS)
+    finally:
+        session.close()
+    assert session.errors == [], session.errors
+
+
+def test_the_danger_noticed_line_and_the_switch_show_in_every_sound_mode(browser, gaze_switch_sink) -> None:
+    sink, _ = gaze_switch_sink
+    session = open_page(browser, sink)
+    try:
+        page = session.page
+        sink.publish(sample_path(alarm=True, danger_noticed=True))
+        page.wait_for_selector("#danger-noticed", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+        page.wait_for_selector("#gaze-silencing-field", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+
+        for sound_mode in ("off", "alarm", "cancel"):
+            _choose(page, "mode", sound_mode)
+            sink.publish(sample_path(alarm=True, danger_noticed=True))
+            page.wait_for_timeout(100)
+            assert page.is_visible("#danger-noticed"), f"the line in mode {sound_mode}"
+            assert page.is_visible("#gaze-silencing-field"), f"the switch in mode {sound_mode}"
+    finally:
+        session.close()
+    assert session.errors == [], session.errors
+
+
+def test_a_run_without_a_gaze_switch_shows_no_gaze_radio(browser_page: PageSession, sink: WebSink) -> None:
+    page = browser_page.page
+    sink.publish(sample_path(alarm=True, danger_noticed=True))
+    page.wait_for_selector("#danger-noticed", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+
+    assert not page.is_visible("#gaze-silencing-field")
+
+
+def _wait_for_switch(switch: GazeSilencingSwitch, enabled: bool) -> None:
+    """Polls the laptop's switch, since the click reaches it over the socket after the radio moves."""
+    deadline = time.monotonic() + ELEMENT_TIMEOUT_MS / 1000
+    while switch.enabled != enabled and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert switch.enabled == enabled, f"the click didn't turn the laptop's switch {'on' if enabled else 'off'}"
+
+
+def test_the_gaze_silencing_radio_sends_its_choice_and_follows_the_state(browser, gaze_switch_sink) -> None:
+    switch_sink, switch = gaze_switch_sink
+    session = open_page(browser, switch_sink)
+    try:
+        page = session.page
+        page.wait_for_selector("#gaze-silencing-field", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+        page.wait_for_function("() => document.querySelector(\"#gaze-silencing input[value='off']\").checked", timeout=ELEMENT_TIMEOUT_MS)
+
+        _choose(page, "gaze-silencing", "on")
+        page.wait_for_function("() => document.querySelector(\"#gaze-silencing input[value='on']\").checked", timeout=ELEMENT_TIMEOUT_MS)
+        _wait_for_switch(switch, True)
+
+        _choose(page, "gaze-silencing", "off")
+        _wait_for_switch(switch, False)
+
+        # Another page, or the command line's start, turns it on. This page follows.
+        switch.request(True)
+        page.wait_for_function("() => document.querySelector(\"#gaze-silencing input[value='on']\").checked", timeout=ELEMENT_TIMEOUT_MS)
+    finally:
+        session.close()
+    assert session.errors == [], session.errors
+
+
+@pytest.mark.parametrize(("width", "height"), [*DESKTOP_VIEWPORTS, (PHONE_WIDTH, 900)])
+def test_the_eyes_line_and_the_gaze_switch_fit_inside_the_sound_card(browser, gaze_switch_sink, width: int, height: int) -> None:
+    # The left column is 220 px on a laptop. A line or a segment that ran past it would be cut off,
+    # which no layout test of the cards' own boxes would notice.
+    sink, _ = gaze_switch_sink
+    session = open_page(browser, sink, width=width, height=height)
+    try:
+        page = session.page
+        sink.publish(sample_path(alarm=True, alarm_audible=False, danger_noticed=True))
+        page.wait_for_selector("#danger-noticed", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+        page.wait_for_selector("#gaze-silencing-field", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+        card = _box(page, "sound-card")
+        for element in ("danger-noticed", "nc", "gaze-silencing"):
+            box = _box(page, element)
+            assert box["x"] >= card["x"] and box["x"] + box["width"] <= card["x"] + card["width"], f"{element} runs past the card at {width} wide"
+        # The readouts each keep to one line.
+        assert _box(page, "nc")["height"] == pytest.approx(_box(page, "readout-row")["height"], abs=2)
+    finally:
+        session.close()
     assert session.errors == [], session.errors

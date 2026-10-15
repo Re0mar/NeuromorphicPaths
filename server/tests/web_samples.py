@@ -27,12 +27,16 @@ def sample_path(
     ear_gain_left: float = 1.0,
     ear_gain_right: float = 1.0,
     time_to_contact_seconds: float | None = None,
+    danger_noticed: bool = False,
+    alarm_audible: bool | None = None,
 ) -> PlannedPath:
     """
     A two-step path with the given heading, alarm, ear gains and time to contact, and nothing else of note.
 
     :param time_to_contact_seconds: Sent as the avoidance surprise it stands for, since the wire
         derives the time from the surprise. None is 0 bits, an empty corridor.
+    :param danger_noticed: Whether the eyes are on the danger.
+    :param alarm_audible: Whether the alarm is heard. None is the same as alarm, as every path before the gaze switch.
     """
     return PlannedPath(
         1.0,
@@ -46,6 +50,8 @@ def sample_path(
         alarm_pan=0.0 if alarm else None,
         ear_gain_left=ear_gain_left,
         ear_gain_right=ear_gain_right,
+        danger_noticed=danger_noticed,
+        alarm_audible=alarm_audible,
     )
 
 

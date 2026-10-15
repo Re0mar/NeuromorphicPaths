@@ -176,6 +176,34 @@ classroom walk the arrow takes 20 different values instead of 3, and sits at its
 > - **The 0.5 s hold**, so the alarm doesn't flicker. It takes the classroom walk from 108 changes to
 >   66, and the last stretch of `pixel_walk_3` from 55 to 35.
 
+## Attention
+
+The alarm is feedback, and feedback is worth what it tells the walker that they didn't already
+know. In the course's terms that's its surprise. A beep about a chair the walker is already looking
+at carries little, because the chair is already in what they expect. So with the glasses, and a
+switch turned on, the alarm can go quiet while the eyes are on the danger. The page stays red. The
+alarm's own decision, the professor's surprise and the planned path are all untouched. Attention
+only decides whether the alarm is heard.
+
+The test is an angle. Each gaze sample is a ray out of the camera. The danger is the part of the
+picture its object covers: the scene hands over 0.25 m pieces, the alarm's danger is the nearest
+piece, and the object is that piece plus every piece within 0.4 m of the next, no further than
+0.6 m from it. A sample is on the danger when the angle between its ray and the nearest point of
+any piece's outline is under 2 degrees, about the Neon's own 1.8 degree accuracy. A ray inside an
+outline is at 0 degrees. A look counts on the frame it happened and for 2 s after, at the danger's
+remembered position moved toward the walker at walking pace and matched within 0.5 m. Once an alarm
+has been under 0.35 s from contact it sounds whatever the gaze says, until it clears.
+
+What it measures is narrower than "the walker noticed this". The alarm looks only at the strip
+straight ahead, the camera is on the head, and resting eyes sit near the middle of the picture, so
+anything in that strip sits where the eyes already are, near or far. On three recorded walks a
+walker whose eyes never moved would have counted as looking about as often as the real one did. On
+a scripted 44 s walk, counting frames above the 0.35 s floor, the eyes counted as on the danger on
+30 of 35 frames where the wearer looked at it and 4 of 36 where they looked down or away. With the
+switch on, the alarm went quiet on 29 of the 33 alarm frames of the first kind and none of the 12
+of the second. So it separates eyes toward the danger from eyes away, and that's the behavior the
+switch has.
+
 ## The stereo cue
 
 The arrow and the alarm, as sound. The laptop works out how loud each ear should be and sends the

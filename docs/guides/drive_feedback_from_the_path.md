@@ -64,6 +64,8 @@ the driver has to decide how quickly to follow them.
 | `lookahead_heading_radians` | level, with a side | Where the path is heading, read 1 s ahead. Positive is right | 0 straight ahead, up to ±0.62 rad (±35.5 degrees) | Which side buzzes or sounds, and how strongly |
 | `avoidance_surprise_bits` | level | How soon the walker reaches the nearest thing in their way | 0 with nothing in the way, 0.72 at 1 s to contact, 1.47 where the alarm goes up and the drawn path is fully red, climbing fast after that | How urgent the cue is: its strength or its pulse rate |
 | `alarm` | switch | Something in the walker's corridor is under 0.7 s away at walking pace, or was in the last 0.5 s | `true` or `false` | A distinct pattern that means stop or step aside |
+| `alarm_audible` | switch | Whether to make the alarm heard. The same as `alarm`, except quiet while the laptop's gaze switch is on and the glasses' wearer has their eyes on the danger. Once contact has been under 0.35 s it stays heard until the alarm clears | `true` or `false`, never `true` with `alarm` false | Whether to play the alarm's sound. Keep the visual red on `alarm` |
+| `danger_noticed` | switch | The glasses' wearer has their eyes toward the thing in the corridor rather than down or away, now or in the last 2 s while it stayed within 0.5 m of where the look left it. It can't tell a look at that thing from resting eyes, since a thing in the corridor sits where resting eyes are | `true` or `false`, always `false` without the glasses | A small "seen" mark, for showing the gaze working with the sound off |
 | `scene_information_bits` | level, usable as a switch | How much what the camera saw changed the plan from the plan with nothing in view | 0 for an empty scene. Under 4 on 95 % of one recorded walk's frames, but there's no fixed top: that walk's highest is 22 | Whether to say anything at all. At 0 the scene changed nothing |
 | `lateral_offsets_meters`, `times_seconds` | the whole plan | Where to be sideways, every 0.1 s, out to 3.8 s | positive is right | A warning before a turn the plan already holds |
 
@@ -108,7 +110,7 @@ their own headphones.
 **Three of them arrive ready-made.** Every path carries `ear_gain_left` and `ear_gain_right`, how
 loud each ear should be, and `alarm_pan`, where the danger is while the alarm is up, −1 left to +1
 right. The laptop works them out, the ear away from the heading going quieter by the course's
-surprise of the heading error and the danger's ear dropping to a floor, so a display applies them
+surprise of the heading error and the danger's ear dropping to a floor while the alarm is heard, so a display applies them
 and decides nothing. The laptop's own web page does exactly that in its noise-cancellation mode, and
 the formula is in `docs/math/09_arrow_and_alarm.md`. The page also shows the two gains as five
 arcs an ear, one lit per 20 %, and the noise-cancelling rule below as `NC ON` or `NC OFF`, so a
@@ -132,7 +134,7 @@ the same as the sound moves: left gain `cos((pan + 1) · π/4)`, right gain `sin
 above. For volume, `min(1, avoidance_surprise_bits / 1.47)` reaches full volume right where the
 alarm goes up.
 
-**Noise cancelling off while the alarm is up.** When `alarm` turns true, switch the headphones
+**Noise cancelling off while the alarm is heard.** When `alarm_audible` turns true, switch the headphones
 from noise cancelling to their ambient or transparency mode, so the walker hears what's around
 them. Switch back once it has been false for a couple of seconds. The alarm already stays up for
 at least 0.5 s once raised, and an extra hold on the headphone side keeps the mode from flipping

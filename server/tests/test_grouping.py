@@ -17,6 +17,7 @@ from nav.scene.grouping import (
     GroupSummary,
     assign_groups,
     assign_world_groups,
+    camera_outline,
     clearance,
     filter_height_band,
     flatten_to_ground,
@@ -220,3 +221,31 @@ def test_the_radius_comes_from_the_walker_and_scene_config_has_none() -> None:
 def test_a_non_positive_cell_size_is_refused() -> None:
     with pytest.raises(ValueError, match="cell size"):
         assign_groups(np.zeros((1, 2)), SceneConfig(cell_size_meters=0.0))
+
+
+def test_a_groups_outline_runs_edge_to_edge_over_its_points_as_tangents() -> None:
+    # Two meters out: one point 0.2 m left and 0.4 m up, one 0.6 m right and at the camera's height,
+    # and one 4 m out, 0.4 m right and 1.2 m down.
+    points = np.array([[-0.2, -0.4, 2.0], [0.6, 0.0, 2.0], [0.4, 1.2, 4.0]])
+
+    outline = camera_outline(points)
+
+    assert (outline.left_tangent, outline.right_tangent) == pytest.approx((-0.1, 0.3))
+    assert (outline.top_tangent, outline.bottom_tangent) == pytest.approx((-0.2, 0.3))
+
+
+def test_a_point_at_depth_zero_is_left_out_of_the_outline() -> None:
+    outline = camera_outline(np.array([[0.1, 0.2, 0.0], [0.5, 0.25, 2.0]]))
+
+    assert outline is not None
+    assert (outline.left_tangent, outline.right_tangent) == pytest.approx((0.25, 0.25))
+
+
+def test_a_group_with_no_point_in_front_of_the_camera_has_no_outline() -> None:
+    assert camera_outline(np.array([[0.1, 0.2, 0.0], [0.3, 0.1, -1.0]])) is None
+
+
+def test_a_one_point_group_has_an_outline_of_no_size() -> None:
+    outline = camera_outline(np.array([[0.5, 0.25, 2.0]]))
+
+    assert (outline.left_tangent, outline.right_tangent, outline.top_tangent, outline.bottom_tangent) == pytest.approx((0.25, 0.25, 0.125, 0.125))

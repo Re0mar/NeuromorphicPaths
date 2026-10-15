@@ -33,6 +33,7 @@ from nav.scene.grouping import (
     GroupSummary,
     assign_groups,
     assign_world_groups,
+    camera_outline,
     clearance,
     filter_height_band,
     summarize_groups,
@@ -164,7 +165,7 @@ class ScenePipeline:
         self._history.forget_unseen(frame.timestamp_seconds)
 
         obstacle_points = tuple(
-            self._obstacle_point(summary, clearance_meters, world_to_walker, points_camera)
+            self._obstacle_point(summary, clearance_meters, world_to_walker, points_camera, group_ids)
             for summary, clearance_meters in zip(summaries, clearances, strict=True)
         )
         finished = time.perf_counter()
@@ -255,6 +256,7 @@ class ScenePipeline:
         clearance_meters: float,
         world_to_walker: np.ndarray | None,
         points_camera: np.ndarray,
+        group_ids: np.ndarray,
     ) -> ObstaclePoint:
         velocity = None
         if world_to_walker is not None:
@@ -273,4 +275,5 @@ class ScenePipeline:
             velocity_mps=velocity,
             is_wall=summary.is_wall,
             camera_point=points_camera[summary.nearest_index],
+            camera_outline=camera_outline(points_camera[group_ids == summary.group_id]),
         )

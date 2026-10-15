@@ -56,13 +56,13 @@ from nav.scene.pipeline import CAMERA_FORWARD, ScenePipeline
 from nav.scene.transform import camera_to_world_plane, rotation_matrix_from_quaternion_wxyz
 from nav.sources.framecodec import INDEX_FILENAME
 from nav.sources.logged import LoggedDepthFrameSource
-from nav.types import FloorSource, ObstacleSet, Plane
+from nav.types import FloorSource, GazeSamples, ObstacleSet, Plane
 from nav.walker import WalkerConfig
 
 NAV_DIR = Path(nav.__file__).resolve().parent
 CLONE_DIR = NAV_DIR.parent.parent
 # Bumped whenever the pickled layout changes, so an old cache entry is rebuilt rather than misread.
-CACHE_FORMAT = "cache-format-4"
+CACHE_FORMAT = "cache-format-5"
 # Beside the server code, not in whatever folder the command happens to run from, so it always lands
 # where .gitignore covers it.
 DEFAULT_CACHE_DIR = NAV_DIR.parent / ".replay_cache"
@@ -73,6 +73,8 @@ REFUSAL_NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
 # The modules whose code decides what a scene pass produces. Changing any of them changes the key.
 SCENE_PASS_SOURCES = (
     "scene/*.py",
+    # The gaze's ground point is cast through attention.pixel_ray in the scene pass.
+    "planner/attention.py",
     "types.py",
     "walker.py",
     "sources/framecodec.py",
@@ -123,6 +125,11 @@ class PlannedScene:
     floor_refusal: FloorRefusal | None
     # False means the scene used the picture's own up for this frame, not gravity.
     gravity_aligned: bool
+    # The gaze as the frame carried it, at the resolution of intrinsics: the one nearest sample, and
+    # every sample near the stamp with its offset. None on a frame or a log without them.
+    gaze_pixel: np.ndarray | None = None
+    gaze_pixels: np.ndarray | None = None
+    gaze_sample_offsets_seconds: np.ndarray | None = None
 
     def planner_input(self) -> PlannerInput:
         """The part of this frame the planner and the whole-walk numbers read."""
@@ -133,6 +140,10 @@ class PlannedScene:
             lateral_axis=self.lateral_axis,
             forward_axis=self.forward_axis,
             gaze_ground_point=self.gaze_ground_point,
+            gaze_pixels=self.gaze_pixels,
+            gaze_sample_offsets_seconds=self.gaze_sample_offsets_seconds,
+            intrinsics=self.intrinsics,
+            gaze_pixel=self.gaze_pixel,
         )
 
 
@@ -351,6 +362,9 @@ def scene_pass(
                 camera_height_meters=float(scene.previous_plane.offset_meters),
                 floor_refusal=scene.last_floor_refusal,
                 gravity_aligned=bool(frame.pose.orientation_is_gravity_aligned),
+                gaze_pixel=frame.gaze_pixel,
+                gaze_pixels=frame.gaze_pixels,
+                gaze_sample_offsets_seconds=frame.gaze_sample_offsets_seconds,
             )
         )
     time_array = np.asarray(times, dtype=np.float64)
@@ -431,7 +445,8 @@ def replayed_frames(
     planner = PlannerPipeline(planner_config, walker)
     frames = []
     for row in inputs:
-        path = planner.plan(row.obstacles, 0.0, goal_mode, row.gaze_ground_point)
+        samples = GazeSamples.of(row.gaze_pixels, row.gaze_sample_offsets_seconds, row.intrinsics)
+        path = planner.plan(row.obstacles, 0.0, goal_mode, row.gaze_ground_point, samples)
         field = planner.last_field.copy() if keep_fields else None
         frames.append(ReplayedFrame(input=row, path=path, raise_decision=alarm_raised(row.obstacles, planner_config), field=field))
     return frames

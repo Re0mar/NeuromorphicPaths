@@ -19,6 +19,13 @@ class GoalMode(Enum):
     GAZE = "gaze"
 
 
+class OnOff(Enum):
+    """A run-wide switch as the page and the command line spell it. The config holds it as a bool."""
+
+    OFF = "off"
+    ON = "on"
+
+
 @dataclass(frozen=True)
 class PlannerConfig:
     """The field, the dynamic program, the arrow's lookahead, and the alarm's corridor, threshold and hold."""
@@ -115,3 +122,31 @@ class PlannerConfig:
     # far ear only reaches this past 44 degrees of heading, beyond the 35.5 degree sidestep limit, so
     # steering alone never gets here. The alarm does: the danger's ear drops straight to it.
     far_ear_floor_gain: float = 0.10
+    # Ours, all of the attention block. None of it touches the path. It decides whether the alarm is
+    # heard, and only when gaze_silences_alarm is on. Measured 2026-10-14 on three Neon walks and a
+    # scripted 44 s walk: for a danger in the corridor the gaze shows the eyes toward it or away from
+    # it, since a head-mounted view puts a corridor danger where resting eyes sit at every distance.
+    # Starting state of the switch the page can flip. Off, so a run sounds every alarm unless asked.
+    gaze_silences_alarm: bool = False
+    # How far a gaze sample may be from the danger's object and still be on it. The tightest that kept
+    # every scripted look, near the Neon's own 1.8 degree accuracy.
+    attention_tolerance_degrees: float = 2.0
+    # Which of a frame's gaze samples count, by their distance in time from its capture.
+    attention_window_seconds: float = 0.1
+    # The danger is one 0.25 m piece, usually the object's base, and walkers look at its body. Pieces
+    # this close to each other join it. Unchecked, chaining ran along seat rows and walls until the
+    # object covered 56 % of the picture, so pieces further than the cap from the danger stay out. At
+    # the cap it covers 11 %, and the scripted walk's results were the same.
+    attention_link_meters: float = 0.4
+    attention_cap_meters: float = 0.6
+    # How long the gaze must rest on the object without a break. Swept from 0 to 0.2 s, and no value
+    # separated a look from resting eyes, so a single sample counts.
+    attention_dwell_seconds: float = 0.0
+    # How long a look counts for afterwards, and how near the danger then has to be to where the
+    # looked-at one would be by now, moved toward the walker at walking_speed_mps. Indoors the walker
+    # is often slower than that, and the credit then rarely matches. Measured, and kept as designed.
+    attention_credit_seconds: float = 2.0
+    attention_match_meters: float = 0.5
+    # Under this time to contact the alarm is heard whatever the gaze says, because looking at
+    # something is not avoiding it. Half the alarm's threshold, a starting value for the live walk.
+    attention_floor_seconds: float = 0.35

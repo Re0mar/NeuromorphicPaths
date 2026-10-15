@@ -24,14 +24,16 @@ import numpy as np
 from nav.clock import laptop_time_seconds
 from nav.config import RunConfig, build_source_and_sink
 from nav.planner.alarm import path_red_from_bits
+from nav.planner.attention import pixel_ray
 from nav.planner.pipeline import PlannerPipeline
+from nav.runtime.gaze_silencing import GazeSilencingSwitch
 from nav.runtime.textio import append_text_lf, write_text_lf
 from nav.runtime.timing import StageDurations, TimingLog, TimingRecorder
 from nav.runtime.worker import NewestFrameWorker
 from nav.scene.floor import ground_axes
 from nav.scene.pipeline import ScenePipeline
 from nav.scene.transform import rotation_matrix_from_quaternion_wxyz
-from nav.types import DebugSink, DebugView, DepthFrame, FloorSource, PlannedPath
+from nav.types import DebugSink, DebugView, DepthFrame, FloorSource, GazeSamples, PlannedPath
 from nav.usermodel.work import WorkMeter
 
 log = logging.getLogger(__name__)
@@ -114,9 +116,7 @@ def gaze_on_the_ground(frame: DepthFrame, scene: ScenePipeline) -> np.ndarray | 
     plane = scene.previous_plane
     if frame.gaze_pixel is None or plane is None:
         return None
-    focal_x, focal_y = frame.intrinsics[0, 0], frame.intrinsics[1, 1]
-    principal_x, principal_y = frame.intrinsics[0, 2], frame.intrinsics[1, 2]
-    ray = np.array([(frame.gaze_pixel[0] - principal_x) / focal_x, (frame.gaze_pixel[1] - principal_y) / focal_y, 1.0])
+    ray = pixel_ray(frame.gaze_pixel, frame.intrinsics)
     # normal . (t ray) + offset == 0 on the plane.
     descent = ray @ plane.normal
     if descent >= 0:
@@ -140,6 +140,8 @@ def run(config: RunConfig) -> int:
     """
     scene = ScenePipeline(config.scene, config.walker)
     planner = PlannerPipeline(config.planner, config.walker)
+    # Run-wide, outliving the planner that a new stretch of video rebuilds. A page may flip it.
+    gaze_switch = GazeSilencingSwitch(config.planner.gaze_silences_alarm)
     meter = WorkMeter(config.usermodel)
     baseline = HeadingBaseline(HEADING_BASELINE_SECONDS)
     timing = TimingRecorder(_timing_log(config))
@@ -182,7 +184,10 @@ def run(config: RunConfig) -> int:
         obstacles = scene.process(frame)
         after_scene = time.perf_counter()
         gaze = gaze_on_the_ground(frame, scene)
-        path = planner.plan(obstacles, 0.0, config.goal_mode, gaze)
+        samples = GazeSamples.of(frame.gaze_pixels, frame.gaze_sample_offsets_seconds, frame.intrinsics)
+        # Read before every plan, so a page's flip reaches the very next path, and a rebuilt planner too.
+        planner.set_gaze_silences_alarm(gaze_switch.enabled)
+        path = planner.plan(obstacles, 0.0, config.goal_mode, gaze, samples)
         after_planner = time.perf_counter()
         plan_done_seconds = laptop_time_seconds()
         observed = baseline.observed(yaw_from_quaternion(frame.pose.orientation), frame.timestamp_seconds)
@@ -226,7 +231,7 @@ def run(config: RunConfig) -> int:
 
     # Built together, because the glasses' video goes from the source's device to the web sink
     # without passing through here.
-    source, sink = build_source_and_sink(config, on_path_sent=timing.path_sent)
+    source, sink = build_source_and_sink(config, on_path_sent=timing.path_sent, gaze_switch=gaze_switch)
     worker: NewestFrameWorker[FrameResult] = NewestFrameWorker(process, on_dropped=timing.frame_dropped)
     worker.start()
     publisher = PublisherThread(sink, worker, on_published=timing.path_published)

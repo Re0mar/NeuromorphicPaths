@@ -791,3 +791,153 @@ def test_planned_path_has_no_default_for_either_new_number() -> None:
     # A default would let a construction site that forgot them send a plausible zero on both wires.
     with pytest.raises(TypeError, match="scene_information_bits.*avoidance_surprise_bits"):
         PlannedPath(1.0, np.array([0.0]), np.array([0.0]), 0.0, False, 0.0)
+
+
+def test_a_frame_header_round_trips_its_gaze_samples_and_offsets() -> None:
+    pixels = np.array([[10.5, 20.25], [11.0, 21.0], [12.0, 22.5]])
+    offsets = np.array([-0.15, 0.0, 0.0125])
+
+    decoded = decode_frame(_payload_of(encode_frame(_frame(gaze_pixels=pixels, gaze_sample_offsets_seconds=offsets))))
+
+    assert np.array_equal(decoded.gaze_pixels, pixels)
+    assert np.array_equal(decoded.gaze_sample_offsets_seconds, offsets)
+
+
+def test_an_empty_window_of_gaze_samples_round_trips_as_empty_not_none() -> None:
+    frame = _frame(gaze_pixels=np.empty((0, 2)), gaze_sample_offsets_seconds=np.empty(0))
+
+    decoded = decode_frame(_payload_of(encode_frame(frame)))
+
+    assert decoded.gaze_pixels.shape == (0, 2)
+    assert decoded.gaze_sample_offsets_seconds.shape == (0,)
+
+
+def test_an_old_frame_log_without_gaze_samples_decodes_to_none() -> None:
+    decoded = decode_frame(_build_payload())
+
+    assert decoded.gaze_pixels is None
+    assert decoded.gaze_sample_offsets_seconds is None
+
+
+def test_a_frame_without_gaze_samples_encodes_without_the_keys() -> None:
+    header_bytes = _payload_of(encode_frame(_frame())).partition(HEADER_TERMINATOR)[0]
+
+    header = json.loads(header_bytes)
+    assert "gaze_pixels" not in header
+    assert "gaze_sample_offsets_seconds" not in header
+
+
+@pytest.mark.parametrize(
+    "gaze_pixels",
+    [[[1.0, 2.0, 3.0]], [[1.0]], [1.0, 2.0], "far left"],
+)
+def test_gaze_samples_that_are_not_pairs_are_refused(gaze_pixels: object) -> None:
+    payload = _build_payload({"gaze_pixels": gaze_pixels, "gaze_sample_offsets_seconds": [0.0]})
+
+    with pytest.raises(FrameDecodeError, match="gaze_pixels"):
+        decode_frame(payload)
+
+
+@pytest.mark.parametrize("bad_value", ["NaN", "Infinity"])
+def test_non_finite_gaze_samples_are_refused(bad_value: str) -> None:
+    # Built as text, since json.dumps of a real NaN would be refused before the decoder saw it.
+    for header_overrides in (
+        {"gaze_pixels": [[1.0, "BAD"]], "gaze_sample_offsets_seconds": [0.0]},
+        {"gaze_pixels": [[1.0, 2.0]], "gaze_sample_offsets_seconds": ["BAD"]},
+    ):
+        payload = _build_payload(header_overrides).replace(b'"BAD"', bad_value.encode())
+        with pytest.raises(FrameDecodeError):
+            decode_frame(payload)
+
+
+def test_mismatched_sample_and_offset_lengths_are_refused() -> None:
+    payload = _build_payload({"gaze_pixels": [[1.0, 2.0], [3.0, 4.0]], "gaze_sample_offsets_seconds": [0.0]})
+
+    with pytest.raises(FrameDecodeError, match="gaze_sample_offsets_seconds"):
+        decode_frame(payload)
+
+
+def test_gaze_samples_without_their_offsets_are_refused() -> None:
+    payload = _build_payload({"gaze_pixels": [[1.0, 2.0]]})
+
+    with pytest.raises(FrameDecodeError, match="both present or both None"):
+        decode_frame(payload)
+
+
+def test_the_format_document_lists_both_gaze_sample_keys() -> None:
+    document = (Path(__file__).resolve().parents[1] / "docs" / "arcore_wire_format.md").read_text(encoding="utf-8")
+
+    assert "| `gaze_pixels` |" in document
+    assert "| `gaze_sample_offsets_seconds` |" in document
+
+
+def _gaze_path(**overrides) -> PlannedPath:
+    fields = {
+        "timestamp_seconds": 1.0,
+        "times_seconds": np.array([0.0, 0.1]),
+        "lateral_offsets_meters": np.array([0.0, 0.05]),
+        "lookahead_heading_radians": 0.0,
+        "alarm": True,
+        "cumulative_cost_bits": 0.0,
+        "scene_information_bits": 0.0,
+        "avoidance_surprise_bits": 0.0,
+    }
+    fields.update(overrides)
+    return PlannedPath(**fields)
+
+
+def _old_path_message(alarm: bool) -> dict:
+    """A path from a laptop before the gaze switch: no danger_noticed, no alarm_audible."""
+    return {
+        "timestamp_seconds": 1.0,
+        "times_seconds": [0.0, 0.1],
+        "lateral_offsets_meters": [0.0, 0.05],
+        "lookahead_heading_radians": 0.0,
+        "alarm": alarm,
+        "cumulative_cost_bits": 0.0,
+        "scene_information_bits": 0.0,
+        "avoidance_surprise_bits": 0.0,
+    }
+
+
+def test_alarm_audible_defaults_to_alarm() -> None:
+    assert _gaze_path(alarm=True).alarm_audible is True
+    assert _gaze_path(alarm=False).alarm_audible is False
+    assert _gaze_path().danger_noticed is False
+
+
+def test_alarm_audible_without_alarm_is_refused() -> None:
+    with pytest.raises(ValueError, match="alarm_audible must be False while the alarm is down"):
+        _gaze_path(alarm=False, alarm_audible=True)
+
+
+def test_a_path_message_carries_danger_noticed_and_alarm_audible() -> None:
+    decoded = decode_path(encode_path(_gaze_path(danger_noticed=True, alarm_audible=False)))
+
+    assert decoded.danger_noticed is True
+    assert decoded.alarm is True and decoded.alarm_audible is False
+
+
+def test_an_older_path_without_them_decodes_with_alarm_audible_equal_to_alarm() -> None:
+    for alarm in (True, False):
+        decoded = decode_path(json.dumps(_old_path_message(alarm)).encode("utf-8"))
+
+        assert decoded.alarm_audible is alarm
+        assert decoded.danger_noticed is False
+
+
+@pytest.mark.parametrize("key, wrong", [("alarm_audible", 1), ("alarm_audible", "false"), ("danger_noticed", 0), ("danger_noticed", None)])
+def test_a_non_boolean_alarm_audible_is_refused(key: str, wrong: object) -> None:
+    message = _old_path_message(True)
+    message[key] = wrong
+
+    with pytest.raises(FrameDecodeError, match=key):
+        decode_path(json.dumps(message).encode("utf-8"))
+
+
+def test_a_heard_alarm_with_the_alarm_down_is_refused_on_decode() -> None:
+    message = _old_path_message(False)
+    message["alarm_audible"] = True
+
+    with pytest.raises(FrameDecodeError, match="alarm_audible"):
+        decode_path(json.dumps(message).encode("utf-8"))

@@ -219,16 +219,33 @@ class Undistorter:
         :return: (2,) in the undistorted image, or None when the crop cut it off.
         :rtype: np.ndarray | None
         """
-        points = np.asarray(pixel_xy, dtype=np.float64).reshape(1, 1, 2)
+        undistorted, kept = self.undistort_pixels(np.asarray(pixel_xy, dtype=np.float64).reshape(1, 2))
+        if not kept[0]:
+            return None
+        return undistorted[0]
+
+    def undistort_pixels(self, pixels_xy: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Where several pixels of the distorted image land in the undistorted one.
+
+        :param pixels_xy: (N, 2) x and y in the distorted image. N may be 0.
+        :return: The (M, 2) pixels the crop kept, and an (N,) mask saying which of the inputs they are.
+        :rtype: tuple[np.ndarray, np.ndarray]
+        """
+        points = np.asarray(pixels_xy, dtype=np.float64).reshape(-1, 2)
+        if len(points) == 0:
+            return np.empty((0, 2), dtype=np.float64), np.zeros(0, dtype=bool)
         undistorted = cv2.undistortPointsIter(
-            points,
+            points.reshape(-1, 1, 2),
             self._calibration.camera_matrix,
             self._calibration.distortion_coefficients,
             None,
             self._camera_matrix,
             UNDISTORT_POINT_CRITERIA,
-        ).reshape(2)
+        ).reshape(-1, 2)
         height, width = self._calibration.image_size
-        if not (0.0 <= undistorted[0] < width and 0.0 <= undistorted[1] < height):
-            return None
-        return undistorted
+        kept = (
+            (undistorted[:, 0] >= 0.0) & (undistorted[:, 0] < width)
+            & (undistorted[:, 1] >= 0.0) & (undistorted[:, 1] < height)
+        )
+        return undistorted[kept], kept

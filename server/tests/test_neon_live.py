@@ -92,6 +92,13 @@ class FakeGaze:
 
 
 @dataclass
+class FakeGazeSample:
+    offset_seconds: float
+    x: float
+    y: float
+
+
+@dataclass
 class FakeScene:
     bgr_pixels: np.ndarray
     timestamp_unix_seconds: float
@@ -108,6 +115,7 @@ class FakeMatched:
     frame: FakeScene
     gaze: FakeGaze | None
     orientation: FakeQuaternion | None = None
+    gaze_samples: tuple[FakeGazeSample, ...] = ()
 
 
 def test_the_fake_matched_item_has_the_device_processes_field_names() -> None:
@@ -632,3 +640,30 @@ def test_a_real_capture_plays_through_the_real_device_process_into_frames(tmp_pa
     # The last picture, which only the decoder's flush lets out, is the brightest one.
     assert float(frames[-1].image_rgb[height // 2, width // 2].mean()) == pytest.approx(stream.brightness[-1], abs=6)
     assert process.exitcode == 0, "the device process was ended by force rather than closed"
+
+
+def test_every_sample_is_undistorted_and_samples_the_crop_cut_off_are_dropped_with_their_offsets() -> None:
+    scene_point = np.array([[0.4, 0.25, 1.0]])
+    distorted, _ = cv2.projectPoints(scene_point, np.zeros(3), np.zeros(3), FRAME_CAMERA_MATRIX, BARREL)
+    gaze_x, gaze_y = (float(value) for value in distorted.reshape(2))
+    # The scene point twice, and between them the frame's corner, which the crop removes.
+    samples = (FakeGazeSample(-0.05, gaze_x, gaze_y), FakeGazeSample(0.0, 0.0, 0.0), FakeGazeSample(0.03, gaze_x, gaze_y))
+    device = FakeDevice(
+        matched=[FakeMatched(_scene(1.0), FakeGaze(gaze_x, gaze_y), gaze_samples=samples)],
+        calibration=FakeCalibration(NATIVE_CAMERA_MATRIX, BARREL),
+    )
+
+    frame = _take(_source_with(device), 1)[0]
+
+    assert frame.gaze_sample_offsets_seconds.tolist() == [-0.05, 0.03]
+    # Each kept sample lands where the one nearest pixel lands, which the test above pins to the dot.
+    assert frame.gaze_pixels == pytest.approx(np.stack([frame.gaze_pixel, frame.gaze_pixel]))
+
+
+def test_a_frame_with_no_samples_near_it_carries_an_empty_window() -> None:
+    device = FakeDevice(matched=[FakeMatched(_scene(1.0), None)])
+
+    frame = _take(_source_with(device), 1)[0]
+
+    assert frame.gaze_pixels.shape == (0, 2)
+    assert frame.gaze_sample_offsets_seconds.shape == (0,)
