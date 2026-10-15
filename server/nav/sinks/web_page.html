@@ -151,9 +151,12 @@
   #nc.unknown { color: var(--muted); }
   #readout-row { display: flex; align-items: center; gap: var(--space-2); }
   #readout-row > span { white-space: nowrap; }
-  #danger-noticed { color: var(--accent); font-weight: bold; font-size: var(--text-s); }
-  /* Keeps its line while hidden, so the card doesn't grow and shrink as the eyes come and go. */
-  #danger-noticed[hidden] { display: inline; visibility: hidden; }
+  /* The eye: drawn in lines only, green with the eyes on the danger and red off it. */
+  #danger-noticed { width: 32px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+  #danger-noticed.looking { color: var(--accent); }
+  #danger-noticed.away { color: var(--alarm-fg); }
+  /* Keeps its place while hidden, so the card doesn't grow and shrink as the alarm comes and goes. */
+  #danger-noticed[hidden] { display: inline-block; visibility: hidden; }
   /* The ear-volume display: a head from above, five arcs a side, one lit per 20 % of that ear's gain. */
   #ears { width: 180px; height: 90px; }
   #ears .head { fill: var(--head); }
@@ -205,10 +208,14 @@
           <circle class="head" cx="100" cy="50" r="18"></circle>
           <path class="head" d="M93 34 L100 24 L107 34 Z"></path>
         </svg>
-        <!-- What the laptop decided, side by side: the noise-cancelling rule, and whether the eyes are on the danger. -->
+        <!-- What the laptop decided, side by side: the noise-cancelling rule, and the eye, shown while
+             the alarm is up, green with the eyes on the danger and red off it. -->
         <div id="readout-row">
           <span id="nc" class="unknown">NC ?</span>
-          <span id="danger-noticed" hidden>Eyes on danger</span>
+          <svg id="danger-noticed" class="away" viewBox="0 0 32 20" role="img" aria-label="Eyes off the danger" hidden>
+            <path d="M2 10 C8 2 24 2 30 10 C24 18 8 18 2 10 Z"></path>
+            <circle cx="16" cy="10" r="4"></circle>
+          </svg>
         </div>
         <div class="toggle-field">
           <span class="toggle-name" id="mode-name">Sound</span>
@@ -657,8 +664,13 @@
   }
 
   function showDangerNoticed() {
-    // In every sound mode, so a demo can show the gaze working with the sound off. Stale hides it.
-    dangerNoticedLine.hidden = isStale() || !latest.dangerNoticed;
+    // Shown while the alarm is up, in every sound mode, so a demo can show the gaze working with the
+    // sound off. Stale hides it. A run without gaze never has the eyes on the danger, so it reads red.
+    // toggleAttribute, since an SVG element has no hidden property to set.
+    dangerNoticedLine.toggleAttribute("hidden", isStale() || !latest.alarm);
+    dangerNoticedLine.classList.toggle("looking", latest.dangerNoticed);
+    dangerNoticedLine.classList.toggle("away", !latest.dangerNoticed);
+    dangerNoticedLine.setAttribute("aria-label", latest.dangerNoticed ? "Eyes on the danger" : "Eyes off the danger");
   }
 
   function refreshReadouts() {

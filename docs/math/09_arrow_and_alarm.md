@@ -191,8 +191,10 @@ piece, and the object is that piece plus every piece within 0.4 m of the next, n
 0.6 m from it. A sample is on the danger when the angle between its ray and the nearest point of
 any piece's outline is under 2 degrees, about the Neon's own 1.8 degree accuracy. A ray inside an
 outline is at 0 degrees. A look counts on the frame it happened and for 2 s after, at the danger's
-remembered position moved toward the walker at walking pace and matched within 0.5 m. Once an alarm
-has been under 0.35 s from contact it sounds whatever the gaze says, until it clears.
+remembered position moved toward the walker at walking pace and matched within 0.5 m. There is
+no floor by default: the gaze on the danger quiets the alarm at any distance. A run can set one
+with `--gaze-floor-seconds`, and once an alarm has been under that time to contact it sounds
+whatever the gaze says, until it clears.
 
 What it measures is narrower than "the walker noticed this". The alarm looks only at the strip
 straight ahead, the camera is on the head, and resting eyes sit near the middle of the picture, so
