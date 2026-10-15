@@ -26,10 +26,18 @@ These high surprise areas will then be used to alert the user, whilst also steer
 - Methods (Nolan & Dirk)
     
     - Formulation of Depth map from surroundings
+    - 4 main math formulas from presentation
+      - Possible additional content from NeuromorphicPaths\docs\math if relevant & significant
     - Explain pipeline
         - Translating Depth map to Surprise Map
-        - Forming Path through Surprise Map
+          - Brief mention of height map usage (floor and ceiling so we narrow what points we actually care about from depth map)
+        - Choosing the next step of least surprise -> cost/risk
+            - Forming Path through Surprise Map
         - Gaining output from the path
+        - Collision detection
+          - Surprise
+          - Alarm
+          - Gaze tracking
     
 - Results
     
