@@ -190,7 +190,7 @@ last slice is 0 at the center.
 >   arrow sat at its sideways limit on 59.0 % of classroom frames (was 94.9 %) and 58.2 % on
 >   `pixel_walk_3` (was 81.1 %). With nothing in the way it never did (was 9.1 % and 15.3 %). With
 >   the prior shipped, it's 30.3 % on the classroom walk and 1.6 % on `pixel_walk_3`
->   (`server/nav/planner/config.py:84-85`, `docs/evaluation/arrow_flips_and_band.md`).
+>   (`server/nav/planner/config.py:94-96`, `docs/evaluation/arrow_flips_and_band.md`).
 > - **The speed limit of 1.0 m/s** is ours, how fast a walker can sidestep.
 > - **The $`10^{-6}`$ tolerance** is ours, for the `linspace` reason above.
 > - **The backward recurrence** is ours. The planner doesn't need it. It was added so section 10

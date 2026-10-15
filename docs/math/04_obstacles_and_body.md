@@ -107,6 +107,7 @@ Its time to contact divides the clearance $`{\color{teal}{S}}`$ below, measured 
 | r | Footprint radius, 0.35 | m | walker | `server/nav/walker.py` |
 | h | Body half-width, 0.30 | m | walker | `server/nav/planner/config.py` |
 | $`{\color{teal}{S}}`$ | Clearance, the gap from the footprint's edge to the nearest point | m | walker | `server/nav/scene/grouping.py` |
+| camera point, camera outline | The group's nearest point in the camera frame, and the box its points cover in the picture as tangents. The alarm's attention test in section 9 reads them | m, none | camera | `server/nav/scene/pipeline.py`, `server/nav/scene/grouping.py` |
 | $`{\color{teal}{S}}_b`$ | Gap from the body's edge, negative on overlap | m | walker | `server/nav/planner/contact.py` |
 | d | Center distance from the walker, or a candidate position, to a point | m | walker | `server/nav/planner/field.py` |
 
