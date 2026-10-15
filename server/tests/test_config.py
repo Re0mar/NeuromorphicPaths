@@ -517,15 +517,69 @@ def test_a_recording_capture_and_the_side_to_start_on_reach_the_run_config(tmp_p
         ["--source", "neon_live", "--sink", "web", "--neon-address", "10.0.0.5", "--recording-capture", str(capture), "--start-with", "recording"]
     )
 
-    assert config.recording_capture == str(capture)
+    assert config.recording_captures == (str(capture),)
     assert config.start_with is SourceMode.RECORDING
     assert config.neon is not None and config.neon.address == "10.0.0.5", "the live side still has its address"
+
+
+def test_a_recordings_dir_lists_every_capture_folder_in_it_by_name_after_the_ones_given(tmp_path) -> None:
+    given = _capture_folder(tmp_path, with_meta=True)
+    folder = tmp_path / "recordings"
+    folder.mkdir()
+    for name in ("b_walk", "a_walk"):
+        (folder / name).mkdir()
+        (folder / name / "meta.json").write_text("{}", encoding="utf-8")
+    (folder / "notes").mkdir()
+    (folder / "stray.txt").write_text("", encoding="utf-8")
+
+    config = build_run_config(
+        ["--source", "neon_live", "--sink", "web", "--recording-capture", str(given), "--recordings-dir", str(folder)]
+    )
+
+    assert config.recording_captures == (str(given), str(folder / "a_walk"), str(folder / "b_walk"))
+
+
+def test_a_recording_capture_can_be_repeated(tmp_path) -> None:
+    (tmp_path / "one").mkdir()
+    (tmp_path / "two").mkdir()
+    first = _capture_folder(tmp_path / "one", with_meta=True)
+    second = _capture_folder(tmp_path / "two", with_meta=True).rename(tmp_path / "two" / "walk_2")
+
+    config = build_run_config(["--source", "neon_live", "--sink", "web", "--recording-capture", str(first), "--recording-capture", str(second)])
+
+    assert config.recording_captures == (str(first), str(second))
+
+
+@pytest.mark.parametrize(
+    ("layout", "fragment"),
+    [
+        ("same_name_twice", "both called walk_1"),
+        ("empty_dir", "holds no capture folder"),
+        ("not_a_dir", "is not a directory"),
+    ],
+)
+def test_a_recordings_set_the_page_could_not_tell_apart_is_refused(tmp_path, capsys: pytest.CaptureFixture[str], layout: str, fragment: str) -> None:
+    argv = ["--source", "neon_live", "--sink", "web"]
+    if layout == "same_name_twice":
+        (tmp_path / "one").mkdir()
+        (tmp_path / "two").mkdir()
+        argv += ["--recording-capture", str(_capture_folder(tmp_path / "one", with_meta=True)), "--recording-capture", str(_capture_folder(tmp_path / "two", with_meta=True))]
+    elif layout == "empty_dir":
+        (tmp_path / "recordings").mkdir()
+        argv += ["--recordings-dir", str(tmp_path / "recordings")]
+    else:
+        argv += ["--recordings-dir", str(tmp_path / "missing")]
+
+    with pytest.raises(SystemExit):
+        build_run_config(argv)
+
+    assert fragment in capsys.readouterr().err
 
 
 def test_a_run_without_a_recording_starts_on_the_live_input() -> None:
     config = build_run_config(["--source", "neon_live", "--sink", "none"])
 
-    assert config.recording_capture is None
+    assert config.recording_captures == ()
     assert config.start_with is SourceMode.LIVE
 
 

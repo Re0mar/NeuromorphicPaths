@@ -109,7 +109,7 @@
   #sound-card { grid-area: sound; }
   canvas, img, video { max-width: 100%; height: auto; }
   .placeholder { font-size: var(--text-s); color: var(--muted); }
-  .placeholder[hidden], #depth[hidden], #rings[hidden], .help[hidden], #plan-panel[hidden], #music-label[hidden], #music-controls[hidden], #alarm-sound-field[hidden], #volume-field[hidden], #source-field[hidden], #gaze-silencing-field[hidden], #input-link[hidden], #no-input[hidden], #live[hidden] { display: none; }
+  .placeholder[hidden], #depth[hidden], #rings[hidden], .help[hidden], #plan-panel[hidden], #music-label[hidden], #music-controls[hidden], #alarm-sound-field[hidden], #volume-field[hidden], #source-field[hidden], #recording-pick[hidden], #gaze-silencing-field[hidden], #input-link[hidden], #no-input[hidden], #live[hidden] { display: none; }
   /* How the live input is doing, on a run that serves the page from one. */
   #input-link { font-size: var(--text-s); color: var(--muted); }
   #input-link.connected { color: var(--accent); }
@@ -278,6 +278,8 @@
           <label><input type="radio" name="source-mode" value="live"> Live</label>
           <label><input type="radio" name="source-mode" value="recording"> Recording</label>
         </div>
+        <!-- Which recording the Recording side plays. Shown only when the run holds more than one. -->
+        <select id="recording-pick" aria-label="Which recording plays" hidden></select>
       </div>
       <span id="input-link" hidden></span>
       <span id="video-status">Waiting for video.</span>
@@ -351,6 +353,7 @@
         </div>
       </div>
       <label><input type="checkbox" id="show-rings" checked> Rings</label>
+      <label><input type="checkbox" id="show-gaze" checked> Gaze</label>
     </div>
     <div class="placeholder" id="depth-placeholder">Waiting for the first depth picture.</div>
     <div id="depth-frame">
@@ -418,6 +421,8 @@
   };
   const pictureMode = document.getElementById("picture-mode");
   const showRings = document.getElementById("show-rings");
+  const showGaze = document.getElementById("show-gaze");
+  const recordingPick = document.getElementById("recording-pick");
   const ringCanvas = document.getElementById("rings");
   const depthTitle = document.getElementById("depth-title");
   const gazeSilencingField = document.getElementById("gaze-silencing");
@@ -1224,8 +1229,10 @@
   // they line up however the picture is scaled. On a laptop the picture is fitted into its card,
   // centered across and at the top, as the CSS says, so the shown box is worked out the same way.
   function drawRings() {
-    const rings = latestPlanView ? latestPlanView.group_rings : [];
-    ringCanvas.hidden = depth.hidden || !showRings.checked || !depth.naturalWidth;
+    const rings = latestPlanView && showRings.checked ? latestPlanView.group_rings : [];
+    const gaze = latestPlanView && showGaze.checked ? latestPlanView.gaze_ring : null;
+    // One canvas for the groups' rings and the gaze's, so it hides only when neither is wanted.
+    ringCanvas.hidden = depth.hidden || !depth.naturalWidth || (!showRings.checked && !gaze);
     if (ringCanvas.hidden) return;
     ringCanvas.width = depth.naturalWidth;
     ringCanvas.height = depth.naturalHeight;
@@ -1244,6 +1251,14 @@
       draw.arc(ring.column_pixels, ring.row_pixels, ring.radius_pixels, 0, 2 * Math.PI);
       draw.stroke();
     }
+    if (gaze) {
+      // White and thicker than the groups' rings, so the eyes stand out on either picture.
+      draw.strokeStyle = "#ffffff";
+      draw.lineWidth = 3;
+      draw.beginPath();
+      draw.arc(gaze.column_pixels, gaze.row_pixels, gaze.radius_pixels, 0, 2 * Math.PI);
+      draw.stroke();
+    }
   }
 
   function sendPictureChoice() {
@@ -1257,6 +1272,7 @@
     sendPictureChoice();
   });
   showRings.addEventListener("change", drawRings);
+  showGaze.addEventListener("change", drawRings);
 
   // Whether the laptop lets the gaze quiet the alarm, run-wide. Every page's radio follows what the
   // laptop says, so they agree whoever flipped it. Until the laptop says, the radio stays hidden,
@@ -1274,6 +1290,7 @@
     sourceField.hidden = !message.has_recording;
     const chosenSide = sourceMode.querySelector('input[value="' + message.mode + '"]');
     if (chosenSide) chosenSide.checked = true;
+    showRecordings(message.recordings || [], message.recording);
     inputLink.hidden = false;
     inputLink.textContent = INPUT_LINK_TEXT[message.live] || message.live;
     inputLink.className = message.live;
@@ -1302,6 +1319,22 @@
     }
   });
 
+  // The run's recordings by name, and the one its Recording side plays. The list is rebuilt only
+  // when it changes, so an open dropdown isn't pulled shut by every state the laptop sends.
+  function showRecordings(names, playing) {
+    const shown = Array.from(recordingPick.options, (option) => option.value);
+    if (shown.join("\n") !== names.join("\n")) {
+      recordingPick.replaceChildren(...names.map((name) => new Option(name, name)));
+    }
+    recordingPick.hidden = names.length < 2;
+    if (playing !== null && playing !== undefined && recordingPick.value !== playing) recordingPick.value = playing;
+  }
+
+  recordingPick.addEventListener("change", () => {
+    if (laptopSocket && laptopSocket.readyState === WebSocket.OPEN) {
+      laptopSocket.send(JSON.stringify({ kind: "recording", recording: recordingPick.value }));
+    }
+  });
   sourceMode.addEventListener("change", () => {
     if (laptopSocket && laptopSocket.readyState === WebSocket.OPEN) {
       laptopSocket.send(JSON.stringify({ kind: "source", source: chosen(sourceMode) }));
