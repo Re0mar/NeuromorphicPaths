@@ -6,6 +6,7 @@ these have to live in a module the child can import by name, not inside a test f
 """
 
 # Standard library imports
+import os
 import time
 
 # Third party imports
@@ -20,27 +21,43 @@ from nav.types import DepthFrame
 HANG_SECONDS = 60.0
 
 
-class CountingTracker:
-    """Puts each frame at its own timestamp along x, so the test can tell frames apart by position."""
+class WalkingTracker:
+    """Puts the camera along x by the seconds since its own first frame, the way a real tracker starts at its origin."""
 
     def __init__(self, config: PositionConfig) -> None:
         self.frames = 0
+        self._first_timestamp: float | None = None
 
     def track(self, frame: DepthFrame) -> TrackingOutcome:
         self.frames += 1
-        return TrackingOutcome(np.array([frame.timestamp_seconds, 0.0, 0.0]), 0.9)
-
-    def reset(self) -> None:
-        self.frames = 0
+        if self._first_timestamp is None:
+            self._first_timestamp = frame.timestamp_seconds
+        return TrackingOutcome(np.array([frame.timestamp_seconds - self._first_timestamp, 0.0, 0.0]), 0.9)
 
     def close(self) -> None:
         pass
 
 
-class HangingOnSecondFrameTracker(CountingTracker):
-    """Answers the first frame, then never answers again, the way Open3D's dense SLAM hung."""
+class HangingOnThirdFrameTracker(WalkingTracker):
+    """Answers two frames, then never answers again, the way Open3D's dense SLAM hung."""
+
+    def track(self, frame: DepthFrame) -> TrackingOutcome:
+        if self.frames >= 2:
+            time.sleep(HANG_SECONDS)
+        return super().track(frame)
+
+
+class DyingOnSecondFrameTracker(WalkingTracker):
+    """Answers one frame, then its process ends, the way a crash inside the library ends it."""
 
     def track(self, frame: DepthFrame) -> TrackingOutcome:
         if self.frames >= 1:
-            time.sleep(HANG_SECONDS)
+            os._exit(3)
         return super().track(frame)
+
+
+class FailingToStartTracker:
+    """Its process ends before it's ready, every time, the way running out of GPU memory at start does."""
+
+    def __init__(self, config: PositionConfig) -> None:
+        raise MemoryError("no room on the card")

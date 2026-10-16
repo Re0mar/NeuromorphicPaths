@@ -1,13 +1,15 @@
 """
 Covers the source that adds a measured position to frames that came without one.
 
-The trackers here are fakes with real behaviour: a list of answers, one that never answers, one that
-fails. What's under test is which frames get a position, what they keep, and that a hung tracker
-costs the walker the position and never the arrow.
+The trackers here are fakes with real behavior: a list of answers, one that never answers, one that
+fails. What's under test is which frames get a position, what they keep, that a hung or failing
+tracker costs the walker the position and never the arrow, and that the tracker is always closed.
 """
 
 # Standard library imports
+import logging
 import threading
+import time
 from collections.abc import Iterator
 
 # Third party imports
@@ -35,8 +37,9 @@ def _frame(timestamp_seconds: float, gravity_aligned: bool = True) -> DepthFrame
 
 
 class ListSource:
-    def __init__(self, frames: list[DepthFrame]) -> None:
+    def __init__(self, frames: list[DepthFrame], events: list[str] | None = None) -> None:
         self._frames = frames
+        self._events = events if events is not None else []
         self.closed = False
 
     def frames(self) -> Iterator[DepthFrame]:
@@ -44,24 +47,25 @@ class ListSource:
 
     def close(self) -> None:
         self.closed = True
+        self._events.append("source closed")
 
 
 class AnsweringTracker:
     """Answers from a list, in order, and counts the frames it was handed."""
 
-    def __init__(self, answers: list[TrackingOutcome]) -> None:
+    def __init__(self, answers: list[TrackingOutcome], events: list[str] | None = None) -> None:
         self._answers = list(answers)
+        self._events = events if events is not None else []
         self.calls = 0
+        self.closed = False
 
     def track(self, frame: DepthFrame) -> TrackingOutcome:
         self.calls += 1
         return self._answers.pop(0)
 
-    def reset(self) -> None:
-        pass
-
     def close(self) -> None:
         self.closed = True
+        self._events.append("tracker closed")
 
 
 class HangingTracker:
@@ -70,25 +74,25 @@ class HangingTracker:
     def __init__(self) -> None:
         self.release = threading.Event()
         self.calls = 0
+        self.closed = False
 
     def track(self, frame: DepthFrame) -> TrackingOutcome:
         self.calls += 1
         self.release.wait()
         return TrackingOutcome(np.zeros(3), 1.0)
 
-    def reset(self) -> None:
-        pass
-
     def close(self) -> None:
         self.closed = True
 
 
 class FailingTracker:
-    def track(self, frame: DepthFrame) -> TrackingOutcome:
-        raise ArithmeticError("tracker fell over")
+    def __init__(self) -> None:
+        self.calls = 0
+        self.closed = False
 
-    def reset(self) -> None:
-        pass
+    def track(self, frame: DepthFrame) -> TrackingOutcome:
+        self.calls += 1
+        raise ArithmeticError("tracker fell over")
 
     def close(self) -> None:
         self.closed = True
@@ -128,7 +132,7 @@ def test_a_frame_without_gravity_never_reaches_the_tracker() -> None:
     assert frame.pose.has_position is False
 
 
-def test_a_hung_tracker_lets_every_frame_through_and_is_not_asked_again() -> None:
+def test_a_hung_tracker_lets_every_frame_through_is_not_asked_again_and_is_still_closed() -> None:
     tracker = HangingTracker()
     frames = [_frame(0.0), _frame(0.5), _frame(1.0)]
 
@@ -138,26 +142,47 @@ def test_a_hung_tracker_lets_every_frame_through_and_is_not_asked_again() -> Non
     assert [frame.timestamp_seconds for frame in passed] == [0.0, 0.5, 1.0]
     assert all(frame.pose.has_position is False for frame in passed)
     assert tracker.calls == 1
-
-
-def test_a_tracker_failure_nobody_predicted_reaches_the_pipeline() -> None:
-    source = PositionedDepthSource(ListSource([_frame(0.0)]), FailingTracker(), STALL_SECONDS)
-
-    with pytest.raises(ArithmeticError, match="tracker fell over"):
-        list(source.frames())
-
-
-def test_closing_closes_the_source_underneath() -> None:
-    inner = ListSource([])
-
-    _run(PositionedDepthSource(inner, AnsweringTracker([]), STALL_SECONDS))
-
-    assert inner.closed is True
-
-
-def test_closing_frees_the_tracker() -> None:
-    tracker = AnsweringTracker([])
-
-    _run(PositionedDepthSource(ListSource([]), tracker, STALL_SECONDS))
-
     assert tracker.closed is True
+
+
+def test_a_tracker_failure_nobody_predicted_costs_the_position_and_not_the_frames() -> None:
+    tracker = FailingTracker()
+    frames = [_frame(0.0), _frame(0.5), _frame(1.0)]
+
+    passed = _run(PositionedDepthSource(ListSource(frames), tracker, STALL_SECONDS))
+
+    assert [frame.timestamp_seconds for frame in passed] == [0.0, 0.5, 1.0]
+    assert all(frame.pose.has_position is False for frame in passed)
+    assert tracker.calls == 1
+    assert tracker.closed is True
+
+
+def test_closing_closes_the_source_before_the_tracker() -> None:
+    events: list[str] = []
+    inner = ListSource([], events)
+    tracker = AnsweringTracker([], events)
+
+    _run(PositionedDepthSource(inner, tracker, STALL_SECONDS))
+
+    assert events == ["source closed", "tracker closed"]
+
+
+def test_a_frame_handed_over_while_closing_goes_on_at_once_without_reaching_the_tracker(caplog) -> None:
+    tracker = AnsweringTracker([TrackingOutcome(np.array([1.0, 0.0, 0.0]), 0.9)])
+    source = PositionedDepthSource(ListSource([_frame(0.0), _frame(0.5)]), tracker, STALL_SECONDS)
+    frames = source.frames()
+    first = next(frames)
+
+    # The live and recording switch closes from its own thread while this one is still inside
+    # frames(), so one more frame can come out after close. Sent to the stopped tracker, it would
+    # wait out the stall and log the tracker as abandoned during an ordinary shutdown.
+    source.close()
+    began = time.monotonic()
+    with caplog.at_level(logging.ERROR, logger="nav.sources.positioned"):
+        late = next(frames)
+
+    assert time.monotonic() - began < STALL_SECONDS / 2
+    assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
+    assert first.pose.has_position is True
+    assert late.pose.has_position is False
+    assert tracker.calls == 1

@@ -38,11 +38,13 @@ from nav.sources.config import (
     VideoConfig,
 )
 from nav.planner.config import PlannerConfig
-from nav.pose.config import PositionSource
+from nav.pose.config import PositionConfig, PositionSource
 from nav.pose.tracking import dense_slam_is_available
 from nav.runtime.tap import RecordingTap
 from nav.scene.config import SceneConfig
 from nav.sinks.config import PhoneAppConfig, WebConfig
+from nav.sources.estimated_depth import EstimatedDepthSource
+from nav.sources.positioned import PositionedDepthSource
 from nav.sources.scene_video import SceneVideoFeed
 from nav.sources.switching import SwitchableSource
 from nav.types import DepthFrame, PlannedPath, Pose
@@ -1064,3 +1066,27 @@ def test_dense_slam_is_refused_before_the_model_loads_without_the_cuda_build(tmp
         build_run_config(["--source", "neon_recording", "--recording-dir", _recording_dir(tmp_path), "--position", "dense_slam", "--sink", "none"])
 
     assert "open3d_cuda" in capsys.readouterr().err
+
+
+def test_dense_slam_is_refused_beside_a_recording_switch(tmp_path, capsys) -> None:
+    capture = _capture_folder(tmp_path, with_meta=True)
+
+    with pytest.raises(SystemExit):
+        build_run_config(["--source", "neon_live", "--sink", "web", "--recording-capture", str(capture), "--position", "dense_slam"])
+
+    assert "can't be used with --recording-capture or --recordings-dir" in capsys.readouterr().err
+
+
+def test_a_run_with_a_position_gets_the_tracker_behind_the_depth_model() -> None:
+    config = dataclasses.replace(_run_config_for(SourceKind.NEON_RECORDING), position=PositionConfig(source=PositionSource.ODOMETRY))
+
+    source = build_source(config)
+    try:
+        assert isinstance(source, PositionedDepthSource)
+        assert isinstance(source.inner, EstimatedDepthSource)
+    finally:
+        source.close()
+
+
+def test_a_run_without_a_position_gets_the_depth_model_alone() -> None:
+    assert isinstance(build_source(_run_config_for(SourceKind.NEON_RECORDING)), EstimatedDepthSource)

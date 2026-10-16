@@ -427,10 +427,17 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
             f"--position {position_source.value} only applies to {' or '.join(sorted(kind.value for kind in POSITION_TRACKED_SOURCES))}, "
             f"not {source_kind.value}"
         )
+    recording_captures = _recording_captures(parser, arguments)
+    # Each side of the switch keeps its own tracker, and one dense SLAM volume holds about 2 GB of
+    # the 4 GB card beside the depth model, so a second side's volume would run it out of memory.
+    if position_source is PositionSource.DENSE_SLAM and recording_captures:
+        parser.error(
+            f"--position {position_source.value} can't be used with --recording-capture or --recordings-dir, "
+            "two sides' volumes don't fit on the card. Use --position odometry, or --neon-replay for one recording"
+        )
     # Checked before the depth model loads, so a missing install costs nothing.
     if position_source is PositionSource.DENSE_SLAM and not dense_slam_is_available():
         parser.error(f"--position {position_source.value} needs Open3D's CUDA build, this one is CPU only. Install it with: {DENSE_SLAM_INSTALL}")
-    recording_captures = _recording_captures(parser, arguments)
     if recording_captures and source_kind not in LIVE_INPUT_SOURCES:
         parser.error(f"--recording-capture only applies to {SourceKind.NEON_LIVE.value} or {SourceKind.ARCORE_TCP.value}, not {source_kind.value}")
     if recording_captures and SinkKind.WEB not in sink_kinds:

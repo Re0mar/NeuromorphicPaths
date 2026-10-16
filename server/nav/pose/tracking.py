@@ -1,13 +1,17 @@
 """
 Camera positions measured from the depth frames themselves, with Open3D's RGB-D tracking.
 
-Two trackers behind one protocol. Dense SLAM tracks each frame against a fused volume of every frame
-before it. Odometry tracks each frame against the one before it and keeps no map. Both take the
-frame's IMU orientation as given and report only where the camera is. The IMU stays the source of
-up, which the floor fit reads, whatever measured the position.
+Two trackers behind one protocol, and both report only where the camera is. The frame keeps its IMU
+orientation, which stays the source of up for the floor fit whatever measured the position.
+
+Dense SLAM tracks each frame against a fused volume of every frame before it. It starts its world
+turned the way the IMU says on its first frame, and after that follows its own rotation.
+Odometry tracks each frame against the one before it and keeps no map. It takes the IMU's turn
+between the two frames as its starting guess.
 
 The world is the IMU's world after the mount, so y is up, with the origin wherever the camera was on
-the first frame tracked.
+the first frame tracked. A tracker that has to start over carries its last position into the new
+world, so the scene's world-fixed cells stay where they were.
 """
 
 # Standard library imports
@@ -31,6 +35,8 @@ DEPTH_SCALE_METERS = 1.0
 TRUNCATION_VOXELS = 8.0
 # Nearest depth the raycast keeps. Open3D's example value.
 RAYCAST_DEPTH_MIN_METERS = 0.1
+# Width of odometry's robust loss over its outlier cutoff. Open3D's own defaults are 0.05 and 0.07 m,
+# so a looser cutoff keeps the same shape of loss.
 HUBER_TO_CUTOFF_RATIO = 0.05 / 0.07
 
 
@@ -48,8 +54,6 @@ class PositionTracker(Protocol):
     """Gives each frame in turn a position in a world that stays put, or None when it can't."""
 
     def track(self, frame: DepthFrame) -> TrackingOutcome: ...
-
-    def reset(self) -> None: ...
 
     def close(self) -> None:
         """Free what the tracker holds, on the thread that made it."""
@@ -75,14 +79,21 @@ def _depth_image(depth_meters: np.ndarray, depth_max_meters: float, device: open
     return open3d.t.geometry.Image(open3d.core.Tensor(depth)).to(device)
 
 
-def _blank_colour(shape: tuple[int, int], device: open3d.core.Device) -> open3d.t.geometry.Image:
-    # A DepthFrame carries no colour, and point-to-plane tracking doesn't read it. The volume still
-    # wants a colour channel to integrate.
+def _blank_color(shape: tuple[int, int], device: open3d.core.Device) -> open3d.t.geometry.Image:
+    # A DepthFrame carries no color, and point-to-plane tracking doesn't read it. The volume still
+    # wants a color channel to integrate.
     return open3d.t.geometry.Image(open3d.core.Tensor(np.zeros((*shape, 3), np.float32))).to(device)
 
 
 def _world_from_camera(frame: DepthFrame) -> np.ndarray:
     return rotation_matrix_from_quaternion_wxyz(frame.pose.orientation)
+
+
+def _is_plausible_step(previous_position: np.ndarray, position: np.ndarray, elapsed_seconds: float, config: PositionConfig) -> bool:
+    """Whether a walker could have covered the step in the time between the two frames."""
+    if elapsed_seconds <= 0.0:
+        return bool(np.allclose(previous_position, position))
+    return float(np.linalg.norm(position - previous_position)) / elapsed_seconds <= config.max_step_speed_mps
 
 
 class DenseSlamTracker:
@@ -91,9 +102,12 @@ class DenseSlamTracker:
     def __init__(self, config: PositionConfig) -> None:
         self._config = config
         self._device = open3d.core.Device("CUDA:0")
-        self.reset()
+        # Where the camera last was, carried into a new world when the model has to start over.
+        self._last_position = np.zeros(3)
+        self._last_timestamp: float | None = None
+        self._clear()
 
-    def reset(self) -> None:
+    def _clear(self) -> None:
         self._model = None
         self._input = None
         self._raycast = None
@@ -104,7 +118,7 @@ class DenseSlamTracker:
     def close(self) -> None:
         # The volume and the frames are GPU memory. Left to interpreter shutdown, freeing them raced
         # torch's own CUDA teardown and the process hung on exit after a run that had finished.
-        self.reset()
+        self._clear()
         open3d.core.cuda.release_cache()
 
     def track(self, frame: DepthFrame) -> TrackingOutcome:
@@ -113,7 +127,7 @@ class DenseSlamTracker:
             return self._start(frame)
 
         self._input.set_data_from_image("depth", _depth_image(frame.depth_meters, self._config.depth_max_meters, self._device))
-        self._input.set_data_from_image("color", _blank_colour(shape, self._device))
+        self._input.set_data_from_image("color", _blank_color(shape, self._device))
         position = None
         fitness = 0.0
         try:
@@ -125,22 +139,35 @@ class DenseSlamTracker:
                 self._config.dense_slam_depth_difference_meters,
             )
             fitness = float(result.fitness)
-            self._world_from_camera = self._world_from_camera @ result.transformation.numpy()
-            if fitness >= self._config.min_fitness:
-                position = self._world_from_camera[:3, 3].copy()
+            tracked = self._world_from_camera @ result.transformation.numpy()
+            elapsed = frame.timestamp_seconds - self._last_timestamp
+            if _is_plausible_step(self._world_from_camera[:3, 3], tracked[:3, 3], elapsed, self._config):
+                self._world_from_camera = tracked
+                if fitness >= self._config.min_fitness:
+                    position = tracked[:3, 3].copy()
+            else:
+                # Faster than anyone walks, so the fit locked onto the wrong surface. The pose stays
+                # where it was, and this frame is fused from there.
+                log.debug("dense SLAM step refused as faster than %.1f m/s", self._config.max_step_speed_mps)
         except RuntimeError as tracking_failure:
             # Open3D raises when the 6x6 system is singular: a blank wall, or nothing in range. The
             # frame has no position, and the volume is fused from the last pose.
             log.debug("dense SLAM couldn't track this frame (caught %s, expected): %s", type(tracking_failure).__name__, tracking_failure)
         self._fuse()
+        self._last_timestamp = frame.timestamp_seconds
+        if position is not None:
+            self._last_position = position
         return TrackingOutcome(position, fitness)
 
     def _start(self, frame: DepthFrame) -> TrackingOutcome:
         shape = frame.depth_meters.shape
         intrinsics = open3d.core.Tensor(np.asarray(frame.intrinsics, dtype=np.float64))
-        # The world starts where the camera is, turned the way the IMU says, so its y is up.
+        # The world is turned the way the IMU says, so its y is up, and starts at the camera's last
+        # position. On the first frame that's the origin.
         self._world_from_camera = np.eye(4)
         self._world_from_camera[:3, :3] = _world_from_camera(frame)
+        self._world_from_camera[:3, 3] = self._last_position
+        self._last_timestamp = frame.timestamp_seconds
         self._model = open3d.t.pipelines.slam.Model(
             self._config.voxel_size_meters,
             16,
@@ -153,7 +180,7 @@ class DenseSlamTracker:
         self._shape = shape
         self._frame_index = 0
         self._input.set_data_from_image("depth", _depth_image(frame.depth_meters, self._config.depth_max_meters, self._device))
-        self._input.set_data_from_image("color", _blank_colour(shape, self._device))
+        self._input.set_data_from_image("color", _blank_color(shape, self._device))
         self._fuse()
         # Open3D sizes its raycast's range buffer from the call before, so the first raycast comes out
         # partial ("could not generate full range map") and the second frame would track against a
@@ -180,26 +207,24 @@ class FrameToFrameOdometry:
     def __init__(self, config: PositionConfig) -> None:
         self._config = config
         self._device = open3d.core.Device("CPU:0")
-        self.reset()
-
-    def reset(self) -> None:
         self._previous: DepthFrame | None = None
         self._previous_image = None
         self._position = np.zeros(3)
 
     def close(self) -> None:
-        self.reset()
+        self._previous = None
+        self._previous_image = None
 
     def track(self, frame: DepthFrame) -> TrackingOutcome:
         shape = frame.depth_meters.shape
         image = open3d.t.geometry.RGBDImage(
-            _blank_colour(shape, self._device),
+            _blank_color(shape, self._device),
             _depth_image(frame.depth_meters, self._config.depth_max_meters, self._device),
         )
         previous, previous_image = self._previous, self._previous_image
         self._previous, self._previous_image = frame, image
         if previous is None or previous.depth_meters.shape != shape:
-            self._position = np.zeros(3)
+            # Nothing to match against. The position holds, which on the first frame is the origin.
             return TrackingOutcome(self._position.copy(), 1.0)
 
         # Odometry's transform takes the previous camera's points into this one's. The IMU says how
@@ -230,7 +255,12 @@ class FrameToFrameOdometry:
         fitness = float(result.fitness)
         current_from_previous = result.transformation.numpy()
         # This camera's center, seen from the previous camera, then turned into the world.
-        centre_in_previous = -current_from_previous[:3, :3].T @ current_from_previous[:3, 3]
-        self._position = self._position + world_from_previous @ centre_in_previous
+        center_in_previous = -current_from_previous[:3, :3].T @ current_from_previous[:3, 3]
+        stepped = self._position + world_from_previous @ center_in_previous
+        if not _is_plausible_step(self._position, stepped, frame.timestamp_seconds - previous.timestamp_seconds, self._config):
+            # Faster than anyone walks, so the fit locked onto the wrong surface. No step is taken.
+            log.debug("odometry step refused as faster than %.1f m/s", self._config.max_step_speed_mps)
+            return TrackingOutcome(None, fitness)
+        self._position = stepped
         position = self._position.copy() if fitness >= self._config.min_fitness else None
         return TrackingOutcome(position, fitness)

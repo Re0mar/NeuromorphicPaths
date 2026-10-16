@@ -43,15 +43,23 @@ class PositionConfig:
     # Under this share of matched pixels a frame gets no position. The frame is still fused, because
     # refusing poor frames left the camera stuck in the evaluation.
     min_fitness: float = 0.1
+    # A step faster than this between two frames is refused. Faster than any walker, the same 3 m/s
+    # the evaluation's track uses to spot a tracker jumping.
+    max_step_speed_mps: float = 3.0
+    # Dense SLAM's process is replaced this many times at most. Past that it's given up on for the
+    # run, so a process that dies on every start doesn't restart on every frame.
+    max_restarts: int = 3
     # A tracker call longer than this is treated as a stall. Open3D's tracking hung on some runs in
     # the evaluation, and the walker shouldn't lose the arrow over it.
     stall_seconds: float = 2.0
 
     def __post_init__(self) -> None:
-        for name in ("depth_max_meters", "dense_slam_depth_difference_meters", "odometry_depth_difference_meters", "voxel_size_meters", "stall_seconds"):
+        for name in ("depth_max_meters", "dense_slam_depth_difference_meters", "odometry_depth_difference_meters", "voxel_size_meters", "max_step_speed_mps", "stall_seconds"):
             value = getattr(self, name)
             if not math.isfinite(value) or value <= 0.0:
                 raise ValueError(f"{name} must be a finite positive number, got {value}")
+        if self.max_restarts < 0:
+            raise ValueError(f"max_restarts must be zero or more, got {self.max_restarts}")
         if self.voxel_block_count <= 0:
             raise ValueError(f"voxel_block_count must be positive, got {self.voxel_block_count}")
         if not 0.0 <= self.min_fitness < 1.0:

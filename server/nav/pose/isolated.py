@@ -4,13 +4,19 @@ A position tracker run in a process of its own, so a call that hangs can be kill
 Open3D's dense SLAM hung inside its own calls on some runs, on both its CPU and CUDA builds. On the
 GPU a hung call also held up the depth model, which shares the card, and the whole pipeline froze.
 A thread can't be stopped, but a process can, and killing it frees its GPU work. So a call past the
-time limit kills the process and starts a fresh one in the background. The world starts over in the
-new one, which the scene meets as new cells, and frames go on without a position until it's ready.
+time limit kills the process and starts a fresh one in the background, and frames go on without a
+position until it's ready.
+
+The new process starts its world at the camera, where the old one had it at the last position it
+reported. Both worlds share the IMU's axes, so that last position is added to everything the new
+one reports, and the scene's world-fixed cells stay on the same places. After max_restarts the
+tracker is given up on for the run.
 """
 
 # Standard library imports
 import logging
 import multiprocessing
+import threading
 from collections.abc import Callable
 from enum import Enum
 from multiprocessing.connection import Connection
@@ -34,7 +40,6 @@ class TrackerMessage(Enum):
 
     READY = "ready"
     TRACK = "track"
-    RESET = "reset"
     CLOSE = "close"
     OUTCOME = "outcome"
 
@@ -49,8 +54,6 @@ def _serve_tracker(connection: Connection, build: Callable[[PositionConfig], Pos
             case TrackerMessage.TRACK:
                 outcome = tracker.track(_frame_from_payload(message[1]))
                 connection.send((TrackerMessage.OUTCOME, outcome.position, outcome.fitness))
-            case TrackerMessage.RESET:
-                tracker.reset()
             case TrackerMessage.CLOSE:
                 tracker.close()
                 return
@@ -87,56 +90,62 @@ class IsolatedTracker:
         """
         :param build: Makes the real tracker inside the child. Must be a module-level function, since
             the child is spawned and gets it by import.
-        :param config: Handed to build, and its stall_seconds is the time limit per frame.
+        :param config: Handed to build. Its stall_seconds is the time limit per frame, and its
+            max_restarts the number of replacements before the tracker is given up on.
         """
         self._build = build
         self._config = config
         self._context = multiprocessing.get_context("spawn")
+        # close() can come from the pipeline's thread while a frame is being tracked on another.
+        self._lock = threading.Lock()
         self._process = None
         self._connection: Connection | None = None
         self._ready = False
+        self._given_up = False
+        # Added to every position the current process reports, so its world lines up with the last.
+        self._offset = np.zeros(3)
+        self._last_position = np.zeros(3)
         self.restarts = 0
         self._start()
 
-    def track(self, frame: DepthFrame) -> TrackingOutcome:
-        if not self._ready and not self._became_ready():
-            # Still starting. Waiting here would hold up the frame for the seconds a CUDA start takes.
-            return TrackingOutcome(None, 0.0)
-        try:
-            self._connection.send((TrackerMessage.TRACK, _payload(frame)))
-            if not self._connection.poll(self._config.stall_seconds):
-                log.warning(
-                    "the position tracker hung for over %.1f s and was restarted, its world starts over",
-                    self._config.stall_seconds,
-                )
-                self._restart()
-                return TrackingOutcome(None, 0.0)
-            _, position, fitness = self._connection.recv()
-        except (EOFError, BrokenPipeError, ConnectionResetError) as gone:
-            # The process died on its own, a crash inside the library. Same treatment as a hang.
-            log.warning("the position tracker's process ended (caught %s, expected) and was restarted", type(gone).__name__)
-            self._restart()
-            return TrackingOutcome(None, 0.0)
-        return TrackingOutcome(position, fitness)
+    @property
+    def given_up(self) -> bool:
+        """Whether the restarts ran out, so no frame of this run will get a position from it again."""
+        return self._given_up
 
-    def reset(self) -> None:
-        if self._ready:
-            self._connection.send((TrackerMessage.RESET,))
+    def track(self, frame: DepthFrame) -> TrackingOutcome:
+        with self._lock:
+            if self._given_up or self._process is None:
+                return TrackingOutcome(None, 0.0)
+            if not self._ready and not self._became_ready():
+                # Still starting. Waiting here would hold up the frame for the seconds a CUDA start takes.
+                return TrackingOutcome(None, 0.0)
+            try:
+                self._connection.send((TrackerMessage.TRACK, _payload(frame)))
+                if not self._connection.poll(self._config.stall_seconds):
+                    self._replace(f"hung for over {self._config.stall_seconds:.1f} s")
+                    return TrackingOutcome(None, 0.0)
+                _, position, fitness = self._connection.recv()
+            except (EOFError, BrokenPipeError, ConnectionResetError) as gone:
+                # The process died on its own, a crash inside the library. Same treatment as a hang.
+                self._replace(f"ended (caught {type(gone).__name__}, expected)")
+                return TrackingOutcome(None, 0.0)
+            if position is None:
+                return TrackingOutcome(None, fitness)
+            self._last_position = position + self._offset
+            return TrackingOutcome(self._last_position.copy(), fitness)
 
     def close(self) -> None:
-        if self._process is None:
-            return
-        try:
-            if self._ready:
-                self._connection.send((TrackerMessage.CLOSE,))
-        except (BrokenPipeError, ConnectionResetError, OSError) as gone:
-            log.debug("the position tracker's process was already gone at close (caught %s, expected)", type(gone).__name__)
-        self._process.join(CLOSE_WAIT_SECONDS)
-        if self._process.is_alive():
-            self._process.kill()
-            self._process.join()
-        self._connection.close()
-        self._process = None
+        with self._lock:
+            if self._process is None:
+                return
+            try:
+                if self._ready:
+                    self._connection.send((TrackerMessage.CLOSE,))
+            except (BrokenPipeError, ConnectionResetError, OSError) as gone:
+                log.debug("the position tracker's process was already gone at close (caught %s, expected)", type(gone).__name__)
+            self._process.join(CLOSE_WAIT_SECONDS)
+            self._stop()
 
     def _start(self) -> None:
         parent_end, child_end = self._context.Pipe()
@@ -148,19 +157,34 @@ class IsolatedTracker:
         self._connection = parent_end
         self._ready = False
 
+    def _stop(self) -> None:
+        if self._process.is_alive():
+            self._process.kill()
+            self._process.join()
+        self._connection.close()
+        self._process = None
+
     def _became_ready(self) -> bool:
         try:
             if self._connection.poll(0):
                 message = self._connection.recv()
                 self._ready = message[0] == TrackerMessage.READY
         except (EOFError, BrokenPipeError, ConnectionResetError) as gone:
-            log.warning("the position tracker's process ended while starting (caught %s, expected) and was restarted", type(gone).__name__)
-            self._restart()
+            self._replace(f"ended while starting (caught {type(gone).__name__}, expected)")
         return self._ready
 
-    def _restart(self) -> None:
-        self._process.kill()
-        self._process.join()
-        self._connection.close()
+    def _replace(self, what_happened: str) -> None:
+        """Kill the process, and start another unless the run has used up its replacements."""
+        self._stop()
+        if self.restarts >= self._config.max_restarts:
+            self._given_up = True
+            log.error(
+                "the position tracker's process %s after %d restarts and is given up on. Frames go on without a position for the rest of the run",
+                what_happened,
+                self.restarts,
+            )
+            return
         self.restarts += 1
+        self._offset = self._last_position.copy()
+        log.warning("the position tracker's process %s and was restarted, carrying its last position", what_happened)
         self._start()

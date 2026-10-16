@@ -112,11 +112,14 @@ Open3D's dense SLAM hung inside its own calls on about one run in three or four,
 build (CPU) and the CUDA build. On the GPU a hung call also held up the depth model, which shares the
 card, and the pipeline froze. So `--position dense_slam` runs it in a separate process with a 2 s
 limit per frame. A call past the limit kills the process and starts a new one, and the frames go on
-without a position until it's ready. The world starts over in the new process. In the six runs above
-nothing hung. In the three runs before them, one did, and the pipeline carried on.
+without a position until it's ready. The new process starts its world at the camera, so its
+positions are moved by the last position the old one reported, and the scene's world-fixed cells
+stay on the same places. After three restarts dense SLAM is given up on for the run. In the six runs
+above nothing hung. In the three runs before them, one did, and the pipeline carried on.
 
-The plain Windows build of Open3D is CPU-only, and dense SLAM needs the CUDA build. Installing it is
-in `server/README.md`.
+One dense SLAM volume holds about 2 GB of the T2000's 4 GB, so `dense_slam` is refused on a run that
+can switch to a recording, where each side would hold its own. The plain Windows build of Open3D is
+CPU-only, and dense SLAM needs the CUDA build. Installing it is in `server/README.md`.
 
 ## Why the pipeline runs without a position
 

@@ -94,15 +94,16 @@ is the whole configuration, and `--verbose` prints per-stage timings.
 | `neon_live` | the Pupil Labs Neon over the network, through the depth estimator | `--neon-address` only if discovery is blocked, `--neon-replay` to play a capture instead, `--recording-capture`, `--recordings-dir` and `--start-with` for a run the page can switch to a recording and back |
 | `arcore_tcp` | the Pixel app's depth frames over TCP | `--arcore-port` (9000), `--arcore-accept-timeout` (30), `--reconnect`, `--recording-capture`, `--recordings-dir` and `--start-with` as for `neon_live` |
 | `neon_recording` | a native Neon recording, straightened with its own calibration, through the depth estimator | `--recording-dir`, `--recording-rate` (2 frames a second of recording) |
+| `logged` | a frame log this pipeline recorded earlier | `--log-dir`, `--realtime` |
 
 `neon_live` and `neon_recording` also take `--position`, where a frame's position comes from:
 `absent`, the default, is the glasses' IMU orientation and no position. `odometry` measures the
 position by matching each frame's depth to the one before with Open3D, on the CPU. `dense_slam`
 matches each frame to a volume fused from every frame before, Open3D's dense SLAM, on the GPU in a
-process of its own, and needs the CUDA build above. How the three compare on a recorded walk, and
-why `absent` stays the default, is in
+process of its own, and needs the CUDA build above. Its volume takes about 2 GB of the card, so it
+can't run beside a recording switch, `--recording-capture` or `--recordings-dir`. How the three
+compare on a recorded walk, and why `absent` stays the default, is in
 [docs/evaluation/neon_position_evaluation.md](../docs/evaluation/neon_position_evaluation.md).
-| `logged` | a frame log this pipeline recorded earlier | `--log-dir`, `--realtime` |
 
 `--reconnect` keeps the same listener open after the phone disconnects, so a walk recorded with
 `--record-to` continues in the same log with the frame numbers running on. It waits up to the
