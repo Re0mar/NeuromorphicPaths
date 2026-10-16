@@ -261,6 +261,35 @@ def _view_with_a_group() -> DebugView:
     return dataclasses.replace(sample_view(), obstacles=ObstacleSet(1.0, (group,), 1))
 
 
+def _view_with_gaze() -> DebugView:
+    # The eyes on the frame's center pixel (2, 2), which the 160 times scale-up puts at (320, 320).
+    view = sample_view()
+    return dataclasses.replace(view, frame=dataclasses.replace(view.frame, gaze_pixel=np.array([2.0, 2.0])))
+
+
+def test_the_gaze_ring_is_drawn_white_over_the_picture_and_hides_with_its_box(browser_page: PageSession, sink: WebSink) -> None:
+    page = browser_page.page
+    field, grid = sample_field()
+    # Rings off, so whatever is drawn is the gaze's alone.
+    page.uncheck("#show-rings")
+    sink.publish_debug(sample_path(), field, grid, _view_with_gaze())
+    page.wait_for_selector("#rings", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+    page.wait_for_function("() => document.getElementById('rings').width > 0", timeout=ELEMENT_TIMEOUT_MS)
+
+    assert canvas_pixels(page, "rings") > 0
+    # 14 px above the center sits on the ring's stroke, and the stroke is white.
+    on_the_ring = page.evaluate("() => Array.from(document.getElementById('rings').getContext('2d').getImageData(320, 306, 1, 1).data)")
+    assert on_the_ring[:3] == [255, 255, 255] and on_the_ring[3] > 0, on_the_ring
+
+    page.uncheck("#show-gaze")
+    page.wait_for_selector("#rings", state="hidden", timeout=ELEMENT_TIMEOUT_MS)
+
+    # A frame without gaze draws no ring, with the box checked.
+    page.check("#show-gaze")
+    sink.publish_debug(sample_path(), field, grid, sample_view())
+    page.wait_for_selector("#rings", state="hidden", timeout=ELEMENT_TIMEOUT_MS)
+
+
 def test_the_rings_are_drawn_over_the_picture_and_hide_with_their_box(browser_page: PageSession, sink: WebSink) -> None:
     page = browser_page.page
     field, grid = sample_field()
@@ -1450,6 +1479,44 @@ def _switch_page(browser, switch: FakeSwitch) -> tuple[WebSink, PageSession]:
     return switch_sink, open_page(browser, switch_sink)
 
 
+def test_the_recording_picker_lists_the_run_s_recordings_and_a_pick_asks_the_laptop(browser) -> None:
+    switch = FakeSwitch(SourceMode.LIVE, InputLink.CONNECTED, recordings=("walk_1", "walk_2"))
+    switch_sink, session = _switch_page(browser, switch)
+    try:
+        page = session.page
+        page.wait_for_selector("#recording-pick", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+        assert page.eval_on_selector_all("#recording-pick option", "options => options.map(option => option.value)") == ["walk_1", "walk_2"]
+        assert page.input_value("#recording-pick") == "walk_1", "the one playing is selected"
+
+        page.select_option("#recording-pick", "walk_2")
+
+        page.wait_for_function("() => document.getElementById('recording-pick').value === 'walk_2'", timeout=ELEMENT_TIMEOUT_MS)
+        deadline = time.monotonic() + ELEMENT_TIMEOUT_MS / 1000
+        while switch.recording_requests != ["walk_2"] and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert switch.recording_requests == ["walk_2"]
+        # Another page's pick, announced by the laptop, moves this page's dropdown.
+        switch.request_recording("walk_1")
+        page.wait_for_function("() => document.getElementById('recording-pick').value === 'walk_1'", timeout=ELEMENT_TIMEOUT_MS)
+    finally:
+        session.close()
+        switch_sink.close()
+    assert session.errors == [], session.errors
+
+
+def test_the_recording_picker_stays_hidden_with_one_recording(browser) -> None:
+    switch = FakeSwitch(SourceMode.LIVE, InputLink.CONNECTED)
+    switch_sink, session = _switch_page(browser, switch)
+    try:
+        page = session.page
+        page.wait_for_selector("#source-field", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+        assert not page.is_visible("#recording-pick"), "nothing to pick between"
+    finally:
+        session.close()
+        switch_sink.close()
+    assert session.errors == [], session.errors
+
+
 def test_the_toggle_follows_the_laptop_and_a_click_asks_it_to_switch(browser) -> None:
     switch = FakeSwitch(SourceMode.LIVE, InputLink.CONNECTED)
     switch_sink, session = _switch_page(browser, switch)
@@ -1599,7 +1666,8 @@ def test_an_older_path_without_alarm_audible_beeps_on_alarm(browser, sink: WebSi
         del message["danger_noticed"]
         send_text(sink, json.dumps({"kind": WebMessageKind.PATH.value, **message}))
         _wait_for_audio(page, "state.lastPlayed !== null && state.lastPlayed.sound === 'pulse'")
-        assert not page.is_visible("#danger-noticed")
+        # The alarm is up, so the eye shows, and such a laptop never has the eyes on the danger.
+        page.wait_for_selector("#danger-noticed.away", state="visible", timeout=ELEMENT_TIMEOUT_MS)
     finally:
         session.close()
     assert session.errors == [], session.errors
@@ -1656,15 +1724,24 @@ def test_a_quiet_alarm_leaves_the_tick_where_the_arrow_points(browser, sink: Web
     assert right < 0.05 * left, f"left {left} right {right}"
 
 
-def test_the_danger_noticed_line_shows_and_goes_stale(browser, sink: WebSink) -> None:
+def test_the_eye_is_green_on_the_danger_red_off_it_and_gone_with_the_alarm_or_stale(browser, sink: WebSink) -> None:
     session = open_page(browser, sink, fake_clock=True)
     try:
         page = session.page
         sink.publish(sample_path(alarm=True, danger_noticed=True))
-        page.wait_for_selector("#danger-noticed", state="visible", timeout=ELEMENT_TIMEOUT_MS)
-        assert page.text_content("#danger-noticed") == "Eyes on danger"
+        page.wait_for_selector("#danger-noticed.looking", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+        assert page.get_attribute("#danger-noticed", "aria-label") == "Eyes on the danger"
+        # Lines only: nothing in the eye is filled.
+        assert page.evaluate("() => getComputedStyle(document.querySelector('#danger-noticed')).fill") == "none"
+        assert page.evaluate("() => getComputedStyle(document.querySelector('#danger-noticed')).color") == "rgb(63, 223, 95)"
 
         sink.publish(sample_path(alarm=True, danger_noticed=False))
+        page.wait_for_selector("#danger-noticed.away", state="visible", timeout=ELEMENT_TIMEOUT_MS)
+        assert page.get_attribute("#danger-noticed", "aria-label") == "Eyes off the danger"
+        assert page.evaluate("() => getComputedStyle(document.querySelector('#danger-noticed')).color") == "rgb(255, 80, 80)"
+
+        # No alarm, so there is no danger to be on or off.
+        sink.publish(sample_path(alarm=False, danger_noticed=False))
         page.wait_for_selector("#danger-noticed", state="hidden", timeout=ELEMENT_TIMEOUT_MS)
 
         sink.publish(sample_path(alarm=True, danger_noticed=True))

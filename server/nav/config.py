@@ -20,6 +20,9 @@ from pathlib import Path
 
 # Local package imports
 from nav.planner.config import GoalMode, OnOff, PlannerConfig
+from nav.pose.config import PositionConfig, PositionSource
+from nav.pose.factory import build_position_tracker
+from nav.pose.tracking import DENSE_SLAM_INSTALL, dense_slam_is_available
 from nav.runtime.tap import RecordingTap
 from nav.scene.config import SceneConfig
 from nav.sinks.config import DebugWindowConfig, PhoneAppConfig, WebConfig
@@ -46,6 +49,7 @@ from nav.sources.estimator import DepthEstimator, DepthEstimatorProtocol
 from nav.sources.logged import LoggedDepthFrameSource
 # Module scope: pupil_labs is imported inside the reader, not by importing this.
 from nav.sources.neon_recording import NEON_RECORDING_INFO_FILENAME, NativeNeonRecordingReader, NeonRecordingReader, NeonRecordingRgbSource
+from nav.sources.positioned import PositionedDepthSource
 from nav.sources.rgb import RgbSource
 from nav.sources.scene_video import SceneVideoFeed
 from nav.sources.switching import OnlyWhileChosen, SharedEstimator, SideFactory, SwitchableSource
@@ -85,6 +89,9 @@ LIVE_INPUT_SOURCES = frozenset({SourceKind.NEON_LIVE, SourceKind.ARCORE_TCP})
 # Of those, the ones a person walks with while the estimator runs, where a CPU estimator is worth a
 # warning. A recording on the CPU is only slow to process.
 LIVE_ESTIMATOR_SOURCES = frozenset({SourceKind.NEON_LIVE})
+# The sources whose frames carry the glasses' IMU orientation and no position, the only ones a
+# measured position can be added to. A video file has no gravity, and the Pixel brings its own position.
+POSITION_TRACKED_SOURCES = frozenset({SourceKind.NEON_LIVE, SourceKind.NEON_RECORDING})
 
 
 @dataclass(frozen=True)
@@ -108,6 +115,7 @@ class RunConfig:
     neon_recording: NeonRecordingConfig | None = None
     logged: LoggedConfig | None = None
     estimator: EstimatorConfig | None = None
+    position: PositionConfig = field(default_factory=PositionConfig)
     web: WebConfig | None = None
     phone_app: PhoneAppConfig | None = None
     debug_window: DebugWindowConfig = field(default_factory=DebugWindowConfig)
@@ -115,7 +123,8 @@ class RunConfig:
     realtime_replay: bool = False
     # A capture the page can switch to while the live input stays connected, and back. A converted
     # Companion recording is the usual one. Only on a run that serves the page from a live input.
-    recording_capture: str | None = None
+    # Capture folders the page can switch to, in the order listed. Empty for a run without one.
+    recording_captures: tuple[str, ...] = ()
     # Which side such a run plans on first.
     start_with: SourceMode = SourceMode.LIVE
     verbose: bool = False
@@ -147,6 +156,39 @@ def _finite_positive_float(text: str) -> float:
     if not math.isfinite(value):
         raise argparse.ArgumentTypeError(f"must be a finite number, got {value}")
     return value
+
+
+def _zero_or_positive_float(text: str) -> float:
+    value = float(text)
+    if not value >= 0.0:
+        raise argparse.ArgumentTypeError(f"must be zero or more, got {value}")
+    return value
+
+
+def _recording_captures(parser: argparse.ArgumentParser, arguments: argparse.Namespace) -> tuple[str, ...]:
+    """
+    Every capture the run can switch to: each --recording-capture, then every capture folder in --recordings-dir.
+
+    A capture is a folder with a meta.json. The page lists them by folder name, so two with one
+    name are refused.
+    """
+    captures = list(arguments.recording_capture)
+    for capture in captures:
+        if not (Path(capture) / "meta.json").is_file():
+            parser.error(f"--recording-capture {capture} is not a capture folder, it has no meta.json")
+    if arguments.recordings_dir is not None:
+        recordings_dir = Path(arguments.recordings_dir)
+        if not recordings_dir.is_dir():
+            parser.error(f"--recordings-dir {arguments.recordings_dir} is not a directory")
+        found = sorted(str(folder) for folder in recordings_dir.iterdir() if (folder / "meta.json").is_file())
+        if not found:
+            parser.error(f"--recordings-dir {arguments.recordings_dir} holds no capture folder, none of its folders has a meta.json")
+        captures.extend(found)
+    names = [Path(capture).name for capture in captures]
+    for name in names:
+        if names.count(name) > 1:
+            parser.error(f"two recordings are both called {name}, and the page tells them apart by name")
+    return tuple(captures)
 
 
 def _positive_int(text: str) -> int:
@@ -208,6 +250,21 @@ def build_parser() -> argparse.ArgumentParser:
         default=OnOff.OFF.value,
         help="whether the glasses' gaze on the danger may quiet the alarm, at the start. A page can flip it for the whole run",
     )
+    pipeline.add_argument(
+        "--position",
+        choices=[source.value for source in PositionSource],
+        default=PositionSource.ABSENT.value,
+        help=(
+            "where a glasses frame's position comes from. absent, the default, is IMU orientation only. "
+            "dense_slam and odometry measure one from the depth with Open3D, and dense_slam needs Open3D's CUDA build"
+        ),
+    )
+    pipeline.add_argument(
+        "--gaze-floor-seconds",
+        type=_zero_or_positive_float,
+        default=PlannerConfig.attention_floor_seconds,
+        help="under this time to contact the alarm sounds whatever the gaze says. 0, the default, is no floor",
+    )
 
     video = parser.add_argument_group("video_file source")
     video.add_argument("--path", help="recording on disk, or an IP camera stream URL")
@@ -224,7 +281,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     switching.add_argument(
         "--recording-capture",
-        help="a capture folder the page can switch to and from, such as a recording converted by examples/recording_to_capture.py",
+        action="append",
+        default=[],
+        metavar="CAPTURE",
+        help="a capture folder the page can switch to, beside the live input. Repeat it for more than one",
+    )
+    switching.add_argument(
+        "--recordings-dir",
+        help="a folder of capture folders, every one of which the page can switch to, listed by name",
     )
     switching.add_argument(
         "--start-with",
@@ -357,16 +421,31 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
         parser.error(f"--recording-rate only applies to {SourceKind.NEON_RECORDING.value}, not {source_kind.value}")
     if arguments.neon_replay is not None and arguments.neon_address is not None:
         parser.error("--neon-address and --neon-replay cannot be used together, a replay plays a capture in place of the glasses")
-    if arguments.recording_capture is not None and source_kind not in LIVE_INPUT_SOURCES:
+    position_source = PositionSource(arguments.position)
+    if position_source is not PositionSource.ABSENT and source_kind not in POSITION_TRACKED_SOURCES:
+        parser.error(
+            f"--position {position_source.value} only applies to {' or '.join(sorted(kind.value for kind in POSITION_TRACKED_SOURCES))}, "
+            f"not {source_kind.value}"
+        )
+    recording_captures = _recording_captures(parser, arguments)
+    # Each side of the switch keeps its own tracker, and one dense SLAM volume holds about 2 GB of
+    # the 4 GB card beside the depth model, so a second side's volume would run it out of memory.
+    if position_source is PositionSource.DENSE_SLAM and recording_captures:
+        parser.error(
+            f"--position {position_source.value} can't be used with --recording-capture or --recordings-dir, "
+            "two sides' volumes don't fit on the card. Use --position odometry, or --neon-replay for one recording"
+        )
+    # Checked before the depth model loads, so a missing install costs nothing.
+    if position_source is PositionSource.DENSE_SLAM and not dense_slam_is_available():
+        parser.error(f"--position {position_source.value} needs Open3D's CUDA build, this one is CPU only. Install it with: {DENSE_SLAM_INSTALL}")
+    if recording_captures and source_kind not in LIVE_INPUT_SOURCES:
         parser.error(f"--recording-capture only applies to {SourceKind.NEON_LIVE.value} or {SourceKind.ARCORE_TCP.value}, not {source_kind.value}")
-    if arguments.recording_capture is not None and SinkKind.WEB not in sink_kinds:
+    if recording_captures and SinkKind.WEB not in sink_kinds:
         parser.error(f"--recording-capture needs --sink {SinkKind.WEB.value}, whose page switches to the recording")
-    if arguments.recording_capture is not None and arguments.neon_replay is not None:
+    if recording_captures and arguments.neon_replay is not None:
         parser.error("--recording-capture and --neon-replay cannot be used together, --recording-capture switches between the live input and a capture")
-    if arguments.recording_capture is not None and not (Path(arguments.recording_capture) / "meta.json").is_file():
-        parser.error(f"--recording-capture {arguments.recording_capture} is not a capture folder, it has no meta.json")
     # Starting on a recording that isn't there would plan on nothing and never say why.
-    if arguments.start_with == SourceMode.RECORDING.value and arguments.recording_capture is None:
+    if arguments.start_with == SourceMode.RECORDING.value and not recording_captures:
         parser.error("--start-with recording needs --recording-capture")
     # One log, one place. With both, a reader would have to guess which file the run wrote.
     if arguments.timing_log is not None and arguments.record_to is not None:
@@ -423,7 +502,7 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
 
     estimator = None
     # A recording goes through the depth model whatever the live input is, the Pixel included.
-    if source_kind in ESTIMATOR_BACKED_SOURCES or arguments.recording_capture is not None:
+    if source_kind in ESTIMATOR_BACKED_SOURCES or recording_captures:
         estimator = EstimatorConfig(
             model_name=arguments.model,
             process_resolution=arguments.process_resolution,
@@ -450,7 +529,10 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
         sink_kinds=sink_kinds,
         goal_mode=goal_mode,
         # The page and the command line spell it as OnOff, and the planner holds the bool.
-        planner=PlannerConfig(gaze_silences_alarm=OnOff(arguments.gaze_silences_alarm) is OnOff.ON),
+        planner=PlannerConfig(
+            gaze_silences_alarm=OnOff(arguments.gaze_silences_alarm) is OnOff.ON,
+            attention_floor_seconds=arguments.gaze_floor_seconds,
+        ),
         scene=SceneConfig(floor_max_tilt_degrees=arguments.floor_max_tilt, floor_max_offset_meters=arguments.floor_max_height),
         walker=WalkerConfig(radius_meters=arguments.walker_radius),
         tap=TapConfig(log_dir=arguments.record_to),
@@ -461,19 +543,20 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
         neon_recording=neon_recording,
         logged=logged,
         estimator=estimator,
+        position=PositionConfig(source=position_source),
         web=web,
         phone_app=phone_app,
         reconnect=arguments.reconnect,
         realtime_replay=arguments.realtime,
-        recording_capture=arguments.recording_capture,
+        recording_captures=recording_captures,
         start_with=SourceMode(arguments.start_with),
         verbose=arguments.verbose,
     )
 
 
-def build_estimated_depth_source(rgb_source: RgbSource, config: RunConfig) -> EstimatedDepthSource:
+def build_estimated_depth_source(rgb_source: RgbSource, config: RunConfig) -> DepthFrameSource:
     """
-    Compose an RGB source with the depth estimator.
+    Compose an RGB source with the depth estimator, and with the position tracker when the run has one.
 
     Tests inject a stub through RunConfig.estimator_factory rather than patching an import, so the
     production path and the test path differ by one value instead of by a monkeypatch.
@@ -481,11 +564,29 @@ def build_estimated_depth_source(rgb_source: RgbSource, config: RunConfig) -> Es
     :param rgb_source: The camera to read from.
     :param config: The run configuration, whose estimator field must be set.
     :return: A source of DepthFrame objects.
-    :rtype: EstimatedDepthSource
+    :rtype: DepthFrameSource
     """
     if config.estimator is None:
         raise ValueError(f"{config.source_kind.value} needs an estimator config and none was built")
-    return EstimatedDepthSource(rgb_source, _build_estimator(config), config.estimator)
+    return with_position(EstimatedDepthSource(rgb_source, _build_estimator(config), config.estimator), config.position)
+
+
+def with_position(source: DepthFrameSource, position: PositionConfig) -> DepthFrameSource:
+    """
+    The source as it is, or behind a fresh position tracker when the run measures a position.
+
+    Fresh per source, so each side of the live and recording switch keeps a world of its own.
+
+    :param source: Frames after the depth estimator.
+    :param position: The run's position settings.
+    :return: The source, positioned or not.
+    :rtype: DepthFrameSource
+    """
+    if position.source is PositionSource.ABSENT:
+        return source
+    # Twice the tracker's own limit, so dense SLAM's process gets to kill and replace a hung call
+    # before this gives up on the tracker for the rest of the run.
+    return PositionedDepthSource(source, build_position_tracker(position), 2.0 * position.stall_seconds)
 
 
 def _build_estimator(config: RunConfig) -> DepthEstimatorProtocol:
@@ -530,7 +631,7 @@ def build_source_and_sink(
     :rtype: tuple[DepthFrameSource, PathSink]
     """
     # A recording plays the glasses' video, so a run with one has video whatever its live input is.
-    has_video = config.source_kind in SOURCES_WITH_SCENE_VIDEO or config.recording_capture is not None
+    has_video = config.source_kind in SOURCES_WITH_SCENE_VIDEO or config.recording_captures
     video_feed = SceneVideoFeed() if has_video else None
     # The switch is shared too: the source plans on whichever side it says, and the page changes it.
     source_switch = _build_source_switch(config, video_feed)
@@ -560,21 +661,24 @@ def _build_source_switch(config: RunConfig, video_feed: SceneVideoFeed | None) -
     from nav.sources.neon_live import NeonLiveRgbSource
 
     # One model for both sides, and built only when a side needs one: the Pixel sends its own depth.
-    needs_model = config.source_kind is SourceKind.NEON_LIVE or config.recording_capture is not None
+    needs_model = config.source_kind is SourceKind.NEON_LIVE or config.recording_captures
     shared = SharedEstimator(_build_estimator(config)) if needs_model else None
 
     def through_the_model(neon: NeonConfig) -> SideFactory:
-        return lambda feed, chosen: EstimatedDepthSource(OnlyWhileChosen(NeonLiveRgbSource(neon, video_feed=feed), chosen), shared, config.estimator)
+        return lambda feed, chosen: with_position(
+            EstimatedDepthSource(OnlyWhileChosen(NeonLiveRgbSource(neon, video_feed=feed), chosen), shared, config.estimator),
+            config.position,
+        )
 
     def pixel(feed: SceneVideoFeed | None, chosen) -> DepthFrameSource:
         # The Pixel sends depth of its own and no video, so it needs neither the feed nor the model.
         return ArCoreTcpSource(config.arcore)
 
     live = through_the_model(config.neon) if config.source_kind is SourceKind.NEON_LIVE else pixel
-    recording = None if config.recording_capture is None else through_the_model(NeonConfig(replay_dir=config.recording_capture))
+    recordings = {Path(capture).name: through_the_model(NeonConfig(replay_dir=capture)) for capture in config.recording_captures}
     return SwitchableSource(
         live_factory=live,
-        recording_factory=recording,
+        recordings=recordings,
         initial=config.start_with,
         video_feed=video_feed,
         live_has_video=config.source_kind is SourceKind.NEON_LIVE,

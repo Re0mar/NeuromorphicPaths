@@ -25,8 +25,8 @@ whether moving was the right call.
 >   previous-plan prior kept. Built in `server/nav/planner/pipeline.py`.
 > - The effort term $`{\color{blue}{T}}`$ lives inside the dynamic program, so both runs have it.
 > - Cost: for each field, a forward pass up to $`k_h`$ and a backward pass from it. Each runs over
->   its half of the field, so the two together cost about one full pass. The tests bound plan plus
->   information under 10 ms (`server/tests/test_dynamic_programming.py`).
+>   its half of the field, so the two together cost about one full pass. The tests bound the plan
+>   alone under 10 ms and plan plus information under 20 ms (`server/tests/test_dynamic_programming.py`).
 
 ## The formulas
 

@@ -139,6 +139,23 @@ def apply_confidence_filter(estimate: DepthEstimate, drop_percentile: float) -> 
     return filtered
 
 
+def load_torch_before_open3d() -> None:
+    """
+    Import torch now, when it's installed, so it loads its CUDA libraries before Open3D does.
+
+    Open3D's CUDA build, which dense SLAM needs, brings CUDA libraries of its own. Loaded first, they
+    stop torch's from loading at all ("The specified procedure could not be found" on shm.dll). The
+    entry point calls this before anything imports Open3D. Without torch, as in the test
+    environment, it does nothing.
+    """
+    try:
+        # Optional dependency, the glasses extra. Imported here rather than at module scope so the
+        # shared layers still import without it.
+        import torch  # noqa: F401
+    except ImportError:
+        return
+
+
 class DepthEstimator:
     """Depth Anything 3, loaded once and run per frame."""
 
