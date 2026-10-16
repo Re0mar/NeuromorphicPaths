@@ -52,6 +52,23 @@ time, because a package that depends on torch can pull the CPU build back in wit
 The version must end in `+cu126` and the third value must be `True`. A `neon_live` run on a CPU
 estimator also says so in its log, and still runs.
 
+### Open3D's CUDA build, for `--position dense_slam`
+
+Dense SLAM needs Open3D's CUDA build. The `open3d` wheel PyPI gives Windows is CPU-only, and its
+dense SLAM hung at random frames when it was evaluated. The CUDA build is a separate package on
+Open3D's release page, labeled a preview, and it replaces `open3d` rather than sitting beside it:
+
+```
+.venv/Scripts/python -m pip uninstall -y open3d
+.venv/Scripts/python -m pip install https://github.com/isl-org/Open3D/releases/download/v0.20.0/open3d_cuda-0.20.0-cp312-cp312-win_amd64.whl
+.venv/Scripts/python -c "import torch, open3d; print(torch.cuda.is_available(), open3d.core.cuda.is_available())"
+```
+
+Both values must be `True`. Import torch first in any check like this one: Open3D's CUDA build loaded
+first stops torch from loading at all, with "The specified procedure could not be found" on
+`shm.dll`. The pipeline loads torch before anything imports Open3D for that reason. Nothing else
+needs the CUDA build, and `--position odometry` runs on the plain one.
+
 If pip stalls on a 401 from a private package index, your machine has a user-level `pip.ini`
 pointing somewhere that needs a token. Put this in `.venv/pip.ini` and it talks to PyPI only:
 
@@ -78,6 +95,15 @@ is the whole configuration, and `--verbose` prints per-stage timings.
 | `arcore_tcp` | the Pixel app's depth frames over TCP | `--arcore-port` (9000), `--arcore-accept-timeout` (30), `--reconnect`, `--recording-capture`, `--recordings-dir` and `--start-with` as for `neon_live` |
 | `neon_recording` | a native Neon recording, straightened with its own calibration, through the depth estimator | `--recording-dir`, `--recording-rate` (2 frames a second of recording) |
 | `logged` | a frame log this pipeline recorded earlier | `--log-dir`, `--realtime` |
+
+`neon_live` and `neon_recording` also take `--position`, where a frame's position comes from:
+`absent`, the default, is the glasses' IMU orientation and no position. `odometry` measures the
+position by matching each frame's depth to the one before with Open3D, on the CPU. `dense_slam`
+matches each frame to a volume fused from every frame before, Open3D's dense SLAM, on the GPU in a
+process of its own, and needs the CUDA build above. Its volume takes about 2 GB of the card, so it
+can't run beside a recording switch, `--recording-capture` or `--recordings-dir`. How the three
+compare on a recorded walk, and why `absent` stays the default, is in
+[docs/evaluation/neon_position_evaluation.md](../docs/evaluation/neon_position_evaluation.md).
 
 `--reconnect` keeps the same listener open after the phone disconnects, so a walk recorded with
 `--record-to` continues in the same log with the frame numbers running on. It waits up to the
@@ -687,8 +713,14 @@ conditions they were taken under and the commands that rerun them, are in
 - ARCore depth is computed from motion. It stops updating when the walker stands still, drops
   out on blank walls, and is unreliable on moving objects. Static obstacles first.
 - Estimator depth flickers between frames and its scale can drift. The pose never comes from it.
-- Without a position there is no memory of obstacles out of view, and N is approximate because
-  the ground grid moves with the walker.
+- The glasses have no position unless `--position` asks for one. Without one, N is approximate
+  because the ground grid moves with the walker. With one, the grid stays put, but N still sits at
+  its floor, because the 0.5 s window holds one or two of the 2.5 to 3.5 frames planned a second
+  and N needs three. Neither way keeps obstacles that are out of view.
+- `--position dense_slam` is about 1 m off on a recorded walk at the rate the pipeline runs, and
+  `odometry` 0.2 to 0.3 m. Dense SLAM tracked to 0.18 m only with depth for every frame at 30 a
+  second, which the depth model can't make as the walk happens. See
+  [neon_position_evaluation.md](../docs/evaluation/neon_position_evaluation.md).
 - Motion prediction in the planner is off by default. The scene reports a group's velocity from
   its centroid in the world frame, which needs a source with a position.
 - The user model's time constant, b, is a placeholder until a walker is measured.

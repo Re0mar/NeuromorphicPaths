@@ -9,7 +9,7 @@ device: Device {
 
 sources: sources {
   reader: device reader
-  pose: pose provider\n(device, IMU, or SLAM later)
+  pose: pose provider\n(device, IMU, odometry or dense SLAM)
   reader -> frame
   pose -> frame
   frame: DepthFrame {
