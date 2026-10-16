@@ -131,6 +131,94 @@ CPU-only, and dense SLAM needs the CUDA build. Installing it is in `server/READM
 - Neither changes what the planner sees today, because N's window holds too few frames.
 - `absent` keeps the full frame rate and works on any laptop that can run the depth model.
 
+## How the current state came about
+
+The position had to come as the walk happens, from the glasses or from a recording played as a
+stream. Work done afterwards on a finished recording didn't count, because the walker needs the
+arrow at the time.
+
+1. **Dense SLAM first, since it was the recommended route.** It tracked the walk to 0.18 m with depth
+   for every frame at 30 a second, and lost it at every lower rate. The depth model makes 2.5 to 3.5
+   frames a second on this laptop, so as the walk happens dense SLAM is about 1 m off. The same code
+   on a sensor's depth (Open3D's Lounge sequence) tracked fine, so the code wasn't the problem.
+2. **Helping dense SLAM at low rates didn't work.** A looser match tolerance left the camera standing
+   still more. Starting each frame from the IMU's turn and the last measured speed made every rate
+   worse and ran away at 30 frames a second.
+3. **Odometry, the lighter relative.** Matching each frame to the one before, with no map, at first
+   lost a third of the distance walked. Open3D's 0.07 m match limit was the cause, since the walker
+   covers 0.2 to 0.3 m between planned frames. A 0.3 m limit brought it to 0.20 to 0.33 m as the walk
+   plays, about one grid cell.
+4. **A 30 frames a second feature tracker, to get around the depth rate.** It followed image
+   features on every frame and took metric depth from the model every 0.5 s. Its best result offline
+   was 0.30 m, with depth arriving 0.5 s late and the track smoothed over 1 s. With depth every 0.6 s,
+   arriving 0.9 s late as in the pipeline, it was 0.78 m off and had a position on 52 % of frames, so
+   it was dropped. Along the way, the glasses' IMU orientation turned out 16 % short of what the images
+   show on turns, and about 1 degree off over 0.1 s at the median. That's too loose to hold the rotation fixed and
+   solve only for the position. Solving rotation from the images is what any further tracker would need.
+5. **A position on its own doesn't reach the planner.** Fixing the grid to the world was the point,
+   so that N could be measured. N also needs 3 samples in its 0.5 s window, and the pipeline plans
+   2.4 to 3.5 frames a second, so N stayed at its floor with a position and without.
+6. **Dense SLAM hung.** About one run in three or four, inside Open3D, on both builds. Running it in a
+   process that can be killed and replaced keeps the arrow going when it does.
+7. **The walking speed stayed a constant.** The planner assumes 1.4 m/s. Nothing in the mapping uses
+   that figure, but the field, the alarm, the contact term, the previous plan and the arrow's
+   lookahead all do. On the walk the reference covers, the pace ranged from standing to about 0.85 m/s.
+   Odometry's speed over 1 to 3 s came within about 0.15 m/s of the reference's at the pipeline's
+   rate, where the constant was about 1 m/s off. The constant stays as an average for a proof of
+   concept. Odometry's speed is the obvious replacement.
+
+So `absent` is the default. `odometry` and `dense_slam` stay in the pipeline behind `--position`, so
+the comparison above can be run on any recording.
+
+## What could still be tried
+
+None of this was built or measured unless it says so.
+
+**More depth frames a second.** This is what dense SLAM is short of.
+- A smaller depth model. Depth Anything 3's small model has about 25 million parameters against about
+  330 million for the large one. Scaling from the large model's 286 ms at 280 px puts it near 22 ms,
+  or 11 to 15 ms at half precision. That's an estimate, not a measurement. It also gives relative depth,
+  not meters, so the scale would have to come from somewhere else: the floor height, or a large-model
+  frame now and then.
+- The large model at half precision, or compiled with TensorRT. Lowering the resolution alone can't
+  get there: by the measured trend it would take about 110 x 80 px to reach 20 ms.
+- Glasses or a phone with a depth sensor. A depth sensor gives depth at its own frame rate, and that
+  is what dense SLAM tracked well on.
+
+**A proper visual-inertial tracker.** The dropped feature tracker solved each frame on its own. Real
+trackers refine each landmark over many frames and adjust recent poses together, which is several
+days of work at least.
+- Existing ones (ORB-SLAM3, OpenVINS, Basalt) are C++ and mostly built for Linux and ROS. Learned
+  ones (DROID-SLAM, DPVO) need GPU time the depth model is already using.
+- They want the raw gyroscope and accelerometer. The glasses' native recordings have both, but the
+  live stream and the laptop's captures keep only the fused orientation.
+
+**Dense SLAM with color.** Open3D's color-and-depth tracking stalled on its first frame with our data
+every time, so it was never compared. The frame logs carry no color, so it would need the cached
+depth-and-color frames or the live route.
+
+**Depth Anything 3's own poses.** Some of its checkpoints estimate camera poses from several frames
+at once. The metric one in use doesn't. The metric multi-view model is 6.8 GB and doesn't fit the
+4 GB card.
+
+**Getting a position to the planner.** Whatever tracker is used, N needs its window widened to about
+1.5 s, or its samples taken from a tracker that runs faster than the planner. That's our input, not
+the professor's formula.
+
+**Measured walking speed.** Odometry's speed replacing the 1.4 m/s constant needs no new tracker. It
+would change the field, the alarm and the contact term, so it would want its own evaluation first.
+
+**Known weak spots in odometry.**
+- Facing a single flat wall, a step along the wall isn't pinned down. On a synthetic room it reported
+  a 0.41 m error at a fit of 0.69, which no current check catches. Refusing a match whose surfaces all
+  face one way would.
+- Its slowest twentieth of delays at 336 px went past a second on the walk, because the pipeline waits
+  for each position before planning. Planning without waiting, and using the position a frame late,
+  was not tried.
+
+**A wider check.** The reference covers 18 s of one walk. COLMAP on the other recorded walks, such as
+the hallway, would show whether these numbers hold elsewhere.
+
 ## Rerunning it
 
 The capture is made from the recording with `examples/recording_to_capture.py`. Each run, from `server/`:
