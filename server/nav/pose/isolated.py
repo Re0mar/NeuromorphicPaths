@@ -3,13 +3,13 @@ A position tracker run in a process of its own, so a call that hangs can be kill
 
 Open3D's dense SLAM hung inside its own calls on some runs, on both its CPU and CUDA builds. On the
 GPU a hung call also held up the depth model, which shares the card, and the whole pipeline froze.
-A thread can't be stopped, but a process can, and killing it frees its GPU work. So a call past the
-time limit kills the process and starts a fresh one in the background, and frames go on without a
-position until it's ready.
+A thread can't be stopped, but a process can, and killing it frees its GPU work. A call past the
+time limit kills the process and starts a fresh one in the background. Frames go on without a
+position until it is ready.
 
 The new process starts its world at the camera, where the old one had it at the last position it
 reported. Both worlds share the IMU's axes, so that last position is added to everything the new
-one reports, and the scene's world-fixed cells stay on the same places. After max_restarts the
+one reports, and the scene's world-fixed cells stay on the same places. After `max_restarts` the
 tracker is given up on for the run.
 """
 

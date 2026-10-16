@@ -2,7 +2,7 @@
 Poses that carry a position: from a device that tracks its own, which today means ARCore on the
 Pixel, or from a tracker that measured one for a pose that had none.
 
-Lost tracking is has_position False on that frame, never a made-up position.
+Lost tracking is `has_position` False on that frame, never a made-up position.
 """
 
 # Standard library imports
@@ -21,7 +21,7 @@ def pose_from_device(orientation_wxyz: np.ndarray, position_xyz: np.ndarray) -> 
 
     :param orientation_wxyz: Quaternion in (w, x, y, z) order. Need not be normalized.
     :param position_xyz: Position in meters in the device's world frame.
-    :return: Pose with has_position True.
+    :return: Pose with `has_position` True.
     :rtype: Pose
     """
     if orientation_wxyz.shape != (4,):
@@ -50,7 +50,7 @@ def pose_with_position(pose: Pose, position_xyz: np.ndarray) -> Pose:
 
     :param pose: The frame's pose, whatever its source.
     :param position_xyz: Position in meters, in the world the orientation rotates into.
-    :return: The pose with has_position True.
+    :return: The pose with `has_position` True.
     :rtype: Pose
     """
     if position_xyz.shape != (3,):

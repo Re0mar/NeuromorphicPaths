@@ -11,20 +11,20 @@ Both are in the pipeline now behind `--position {absent,odometry,dense_slam}`. `
 ## The walk and the reference
 
 The walk is `2026-10-14_17-18-02`, 44 s in the tiered classroom: up to a chair, back past it, up the
-stairs and down, then at the whiteboard wall. 1227 scene frames at 30 a second, every IMU reading
-usable.
+stairs and down, then at the whiteboard wall. 1227 scene frames at 30 a second. Every IMU reading
+was usable.
 
 Nothing measured where the glasses really were, so a reference was built. COLMAP, a
 structure-from-motion program, reconstructed the camera path from the scene video at 5 frames a
-second, straightened with the glasses' own calibration. It matched the first 18.4 s (93 frames, the
-chair and the start of the stairs) into one piece. Every score below covers that stretch, where the
-reference path is about 8 m long.
+second, straightened with the glasses' own calibration. It matched the first 18.4 s (93 frames,
+the chair and the start of the stairs) into one piece. Every score below covers that stretch,
+where the reference path is about 8 m long.
 
-COLMAP's path has no scale of its own. Its scale was taken from the depth model: the model's depth at
-each of COLMAP's 3D points over COLMAP's depth for the same point, median over 32,368 observations,
-0.457 m per COLMAP unit, with the middle half between 0.440 and 0.479. That scale comes from neither
-tracker, so it can't flatter one. Each tracker's path is laid over the reference by a rotation and a
-shift only, no scaling.
+COLMAP's path has no scale of its own. Its scale was taken from the depth model: the model's depth
+at each of COLMAP's 3D points over COLMAP's depth for the same point, median over 32,368
+observations, 0.457 m per COLMAP unit, with the middle half between 0.440 and 0.479. That scale
+comes from neither tracker, so it can't flatter one. Each tracker's path is laid over the
+reference by a rotation and a shift only, no scaling.
 
 The scores:
 
@@ -36,11 +36,11 @@ The scores:
 
 ## What the depth gives a tracker to work with
 
-Both trackers match depth, and the depth comes from a model guessing it from one picture. The model's
-depth for the same 3D point changes between frames 0.2 s apart by 1.3 % at the median and 5.2 % for
-the worst tenth, measured at COLMAP's points. In meters that's a median of 0.027 m and 0.138 m for the
-worst tenth. A quarter of the point pairs move more than 0.07 m, which is Open3D's default limit for
-"the same surface".
+Both trackers match depth, and the depth comes from a model guessing it from one picture. The
+model's depth for the same 3D point changes between frames 0.2 s apart by 1.3 % at the median and
+5.2 % for the worst tenth, measured at COLMAP's points. In meters that's a median of 0.027 m and
+0.138 m for the worst tenth. A quarter of the point pairs move more than 0.07 m, which is Open3D's
+default limit for "the same surface".
 
 ## Dense SLAM needs depth at 30 frames a second
 
@@ -60,8 +60,8 @@ a median error of 0.28 m, 0.30 m drift over 3 s and a fitness of 0.69, with no f
 code works, and at 30 frames a second it works on the glasses' depth too.
 
 Depth for every frame isn't available as the walk happens. The depth model took 1.4 s a frame at
-504 px for that offline run, and the pipeline plans 2.5 to 3.5 frames a second at 336 and 280 px. That
-is 9 to 12 times short of 30.
+504 px for that offline run, and the pipeline plans 2.5 to 3.5 frames a second at 336 and 280 px.
+That is 9 to 12 times short of 30.
 
 Two things were tried to make it track at the lower rates, and neither helped. A looser match
 tolerance, 0.15 or 0.3 m, kept more pixels matched but left the camera standing still more. Starting

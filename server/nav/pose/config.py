@@ -49,8 +49,8 @@ class PositionConfig:
     # Dense SLAM's process is replaced this many times at most. Past that it's given up on for the
     # run, so a process that dies on every start doesn't restart on every frame.
     max_restarts: int = 3
-    # A tracker call longer than this is treated as a stall. Open3D's tracking hung on some runs in
-    # the evaluation, and the walker shouldn't lose the arrow over it.
+    # A tracker call longer than this is treated as a stall. Open3D's tracking hung on some runs
+    # during the evaluation, and the walker shouldn't lose the arrow over it.
     stall_seconds: float = 2.0
 
     def __post_init__(self) -> None:

@@ -4,10 +4,10 @@ A depth source whose frames gain a measured position, for a camera that only kno
 Composed behind the depth estimator, so the tracker sees exactly the depth the scene will. The scene
 already places a positioned frame in a world that stays put, so nothing past here changes.
 
-The tracker runs on a thread of its own. Open3D's tracking hung on some runs while it was being
-evaluated, and a hung call can't be interrupted, so a call that takes too long is abandoned. A
-tracker that fails in a way nobody predicted is treated the same. Either way that frame and every
-later one go on without a position, and the walker keeps the arrow.
+The tracker runs on a thread of its own. Open3D's tracking hung on some runs during the evaluation,
+and a hung call can't be interrupted, so a call that takes too long is abandoned. A tracker that
+fails in a way nobody predicted is treated the same. Either way that frame and every later one go
+on without a position, and the walker keeps the arrow.
 """
 
 # Standard library imports
