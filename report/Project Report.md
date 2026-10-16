@@ -5,14 +5,7 @@
     - Explain the problem
     - General approach idea?
 
-In recent years, the problem of distracted people taking part in trafic has been on the rise, caused for the most part by increased usage of mobile phones and similar devices.
-The effects of this have been pretty clear, causing many traffic accidents which would've been preventable [(Rijniers, 2017)](#references).
-In an effort to reduce these collisions our group set out to research a potential aid based upon surprise theory, 
-where the user is either alerted or has the distractions on the phone muted whilst their environment is to surprising, 
-as this increase in surprise should correlate with an increased risk for accidents.
-Put into practice, our team will work with an camera device to generate a map of the surroundings, 
-after which Fitt's Law is used to identify areas of high surprise.
-These high surprise areas will then be used to alert the user, whilst also steering them clear of it.
+
 
 
         
@@ -54,7 +47,15 @@ These high surprise areas will then be used to alert the user, whilst also steer
     
 - References
 # Introduction
-In recent years, more and more preventable traffic accidents keep happening on Dutch roads because of distracted driving caused by smartphones [(Rijniers, 2017)](#references). In light of this, our group has set out to research a potential aid that utilizes surprise to get the user to pay attention to the road when they encounter a potentially dangerous situation. To achieve this, we theorized that we could employ smart glasses utilizing computer vision to analyze the environment and infer the relative risk of potential collision using Fitts' law.
+In recent years, the problem of distracted people taking part in trafic has been on the rise, caused for the most part by increased usage of mobile phones and similar devices.
+The effects of this have been pretty clear, causing many traffic accidents which would've been preventable [(Rijniers, 2017)](#references).
+In an effort to reduce these collisions our group set out to research a potential aid based upon surprise theory, 
+where the user is either alerted or has the distractions on the phone muted whilst their environment is to surprising, 
+as this increase in surprise should correlate with an increased risk for accidents.
+Put into practice, our team will work with an camera device to generate a map of the surroundings, 
+after which Fitt's Law is used to identify areas of high surprise.
+These high surprise areas will then be used to alert the user, whilst also steering them clear of it, theoretically eliminating the potential for accidents or collisions to occur.
+
 
 # Background
 A 2017 thesis published at the Radboud University concluded that reminding drivers to pay attention to the road has a significant effect on subsequent accidents [1](#references). Many of these are preventable one-sided accidents caused by drivers, cyclists and pedestrians leaving or crossing the road by accident or at the wrong moment. Our leading theory is that using wearable computer vision found in commercial products like smart glasses, we could detect these dangerous situations and subsequently direct the users attention to the road to greatly decrease the likelihood for an incident to occur.
