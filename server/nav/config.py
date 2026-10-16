@@ -20,6 +20,9 @@ from pathlib import Path
 
 # Local package imports
 from nav.planner.config import GoalMode, OnOff, PlannerConfig
+from nav.pose.config import PositionConfig, PositionSource
+from nav.pose.factory import build_position_tracker
+from nav.pose.tracking import DENSE_SLAM_INSTALL, dense_slam_is_available
 from nav.runtime.tap import RecordingTap
 from nav.scene.config import SceneConfig
 from nav.sinks.config import DebugWindowConfig, PhoneAppConfig, WebConfig
@@ -46,6 +49,7 @@ from nav.sources.estimator import DepthEstimator, DepthEstimatorProtocol
 from nav.sources.logged import LoggedDepthFrameSource
 # Module scope: pupil_labs is imported inside the reader, not by importing this.
 from nav.sources.neon_recording import NEON_RECORDING_INFO_FILENAME, NativeNeonRecordingReader, NeonRecordingReader, NeonRecordingRgbSource
+from nav.sources.positioned import PositionedDepthSource
 from nav.sources.rgb import RgbSource
 from nav.sources.scene_video import SceneVideoFeed
 from nav.sources.switching import OnlyWhileChosen, SharedEstimator, SideFactory, SwitchableSource
@@ -85,6 +89,9 @@ LIVE_INPUT_SOURCES = frozenset({SourceKind.NEON_LIVE, SourceKind.ARCORE_TCP})
 # Of those, the ones a person walks with while the estimator runs, where a CPU estimator is worth a
 # warning. A recording on the CPU is only slow to process.
 LIVE_ESTIMATOR_SOURCES = frozenset({SourceKind.NEON_LIVE})
+# The sources whose frames carry the glasses' IMU orientation and no position, the only ones a
+# measured position can be added to. A video file has no gravity, and the Pixel brings its own position.
+POSITION_TRACKED_SOURCES = frozenset({SourceKind.NEON_LIVE, SourceKind.NEON_RECORDING})
 
 
 @dataclass(frozen=True)
@@ -108,6 +115,7 @@ class RunConfig:
     neon_recording: NeonRecordingConfig | None = None
     logged: LoggedConfig | None = None
     estimator: EstimatorConfig | None = None
+    position: PositionConfig = field(default_factory=PositionConfig)
     web: WebConfig | None = None
     phone_app: PhoneAppConfig | None = None
     debug_window: DebugWindowConfig = field(default_factory=DebugWindowConfig)
@@ -241,6 +249,15 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[state.value for state in OnOff],
         default=OnOff.OFF.value,
         help="whether the glasses' gaze on the danger may quiet the alarm, at the start. A page can flip it for the whole run",
+    )
+    pipeline.add_argument(
+        "--position",
+        choices=[source.value for source in PositionSource],
+        default=PositionSource.ABSENT.value,
+        help=(
+            "where a glasses frame's position comes from. absent, the default, is IMU orientation only. "
+            "dense_slam and odometry measure one from the depth with Open3D, and dense_slam needs Open3D's CUDA build"
+        ),
     )
     pipeline.add_argument(
         "--gaze-floor-seconds",
@@ -404,6 +421,15 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
         parser.error(f"--recording-rate only applies to {SourceKind.NEON_RECORDING.value}, not {source_kind.value}")
     if arguments.neon_replay is not None and arguments.neon_address is not None:
         parser.error("--neon-address and --neon-replay cannot be used together, a replay plays a capture in place of the glasses")
+    position_source = PositionSource(arguments.position)
+    if position_source is not PositionSource.ABSENT and source_kind not in POSITION_TRACKED_SOURCES:
+        parser.error(
+            f"--position {position_source.value} only applies to {' or '.join(sorted(kind.value for kind in POSITION_TRACKED_SOURCES))}, "
+            f"not {source_kind.value}"
+        )
+    # Checked before the depth model loads, so a missing install costs nothing.
+    if position_source is PositionSource.DENSE_SLAM and not dense_slam_is_available():
+        parser.error(f"--position {position_source.value} needs Open3D's CUDA build, this one is CPU only. Install it with: {DENSE_SLAM_INSTALL}")
     recording_captures = _recording_captures(parser, arguments)
     if recording_captures and source_kind not in LIVE_INPUT_SOURCES:
         parser.error(f"--recording-capture only applies to {SourceKind.NEON_LIVE.value} or {SourceKind.ARCORE_TCP.value}, not {source_kind.value}")
@@ -510,6 +536,7 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
         neon_recording=neon_recording,
         logged=logged,
         estimator=estimator,
+        position=PositionConfig(source=position_source),
         web=web,
         phone_app=phone_app,
         reconnect=arguments.reconnect,
@@ -520,9 +547,9 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
     )
 
 
-def build_estimated_depth_source(rgb_source: RgbSource, config: RunConfig) -> EstimatedDepthSource:
+def build_estimated_depth_source(rgb_source: RgbSource, config: RunConfig) -> DepthFrameSource:
     """
-    Compose an RGB source with the depth estimator.
+    Compose an RGB source with the depth estimator, and with the position tracker when the run has one.
 
     Tests inject a stub through RunConfig.estimator_factory rather than patching an import, so the
     production path and the test path differ by one value instead of by a monkeypatch.
@@ -530,11 +557,29 @@ def build_estimated_depth_source(rgb_source: RgbSource, config: RunConfig) -> Es
     :param rgb_source: The camera to read from.
     :param config: The run configuration, whose estimator field must be set.
     :return: A source of DepthFrame objects.
-    :rtype: EstimatedDepthSource
+    :rtype: DepthFrameSource
     """
     if config.estimator is None:
         raise ValueError(f"{config.source_kind.value} needs an estimator config and none was built")
-    return EstimatedDepthSource(rgb_source, _build_estimator(config), config.estimator)
+    return with_position(EstimatedDepthSource(rgb_source, _build_estimator(config), config.estimator), config.position)
+
+
+def with_position(source: DepthFrameSource, position: PositionConfig) -> DepthFrameSource:
+    """
+    The source as it is, or behind a fresh position tracker when the run measures a position.
+
+    Fresh per source, so each side of the live and recording switch keeps a world of its own.
+
+    :param source: Frames after the depth estimator.
+    :param position: The run's position settings.
+    :return: The source, positioned or not.
+    :rtype: DepthFrameSource
+    """
+    if position.source is PositionSource.ABSENT:
+        return source
+    # Twice the tracker's own limit, so dense SLAM's process gets to kill and replace a hung call
+    # before this gives up on the tracker for the rest of the run.
+    return PositionedDepthSource(source, build_position_tracker(position), 2.0 * position.stall_seconds)
 
 
 def _build_estimator(config: RunConfig) -> DepthEstimatorProtocol:
@@ -613,7 +658,10 @@ def _build_source_switch(config: RunConfig, video_feed: SceneVideoFeed | None) -
     shared = SharedEstimator(_build_estimator(config)) if needs_model else None
 
     def through_the_model(neon: NeonConfig) -> SideFactory:
-        return lambda feed, chosen: EstimatedDepthSource(OnlyWhileChosen(NeonLiveRgbSource(neon, video_feed=feed), chosen), shared, config.estimator)
+        return lambda feed, chosen: with_position(
+            EstimatedDepthSource(OnlyWhileChosen(NeonLiveRgbSource(neon, video_feed=feed), chosen), shared, config.estimator),
+            config.position,
+        )
 
     def pixel(feed: SceneVideoFeed | None, chosen) -> DepthFrameSource:
         # The Pixel sends depth of its own and no video, so it needs neither the feed nor the model.

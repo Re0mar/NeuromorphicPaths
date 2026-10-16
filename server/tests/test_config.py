@@ -38,6 +38,8 @@ from nav.sources.config import (
     VideoConfig,
 )
 from nav.planner.config import PlannerConfig
+from nav.pose.config import PositionSource
+from nav.pose.tracking import dense_slam_is_available
 from nav.runtime.tap import RecordingTap
 from nav.scene.config import SceneConfig
 from nav.sinks.config import PhoneAppConfig, WebConfig
@@ -1034,3 +1036,31 @@ def test_a_gaze_silences_alarm_value_outside_the_vocabulary_is_refused(capsys: p
         build_run_config([*MINIMAL_VIDEO_ARGV, "--gaze-silences-alarm", "yes"])
 
     assert "--gaze-silences-alarm" in capsys.readouterr().err
+
+
+def test_the_position_is_absent_unless_asked_for(tmp_path) -> None:
+    config = build_run_config(["--source", "neon_recording", "--recording-dir", _recording_dir(tmp_path), "--sink", "none"])
+
+    assert config.position.source is PositionSource.ABSENT
+
+
+def test_odometry_is_accepted_for_a_glasses_recording(tmp_path) -> None:
+    config = build_run_config(["--source", "neon_recording", "--recording-dir", _recording_dir(tmp_path), "--position", "odometry", "--sink", "none"])
+
+    assert config.position.source is PositionSource.ODOMETRY
+
+
+@pytest.mark.parametrize("source", ["video_file", "arcore_tcp", "logged"])
+def test_a_position_is_refused_for_a_source_without_the_glasses_imu(source, capsys) -> None:
+    with pytest.raises(SystemExit):
+        build_run_config(["--source", source, "--position", "odometry", "--sink", "none"])
+
+    assert "--position odometry only applies to neon_live or neon_recording" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(dense_slam_is_available(), reason="this Open3D build has CUDA, so dense SLAM is not refused")
+def test_dense_slam_is_refused_before_the_model_loads_without_the_cuda_build(tmp_path, capsys) -> None:
+    with pytest.raises(SystemExit):
+        build_run_config(["--source", "neon_recording", "--recording-dir", _recording_dir(tmp_path), "--position", "dense_slam", "--sink", "none"])
+
+    assert "open3d_cuda" in capsys.readouterr().err
