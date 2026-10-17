@@ -81,15 +81,63 @@ Depth Anything 3 is a model that "predicts spatially consistent geometry from an
 
 # Methodology
 
-## Pipeline Overview
-> Diagram and such
+## System Overview
+- glasses stream video + IMU + gaze to Neon-paired phone Companion app, which then streams over wifi to Server
+- background process on Server decodes all 30 fps but keeps only newest frame, older ones get tossed
+- frame gets straightened with glasses' calibration, and gets IMU reading closest to when it was captured (within 50 ms, or we can't figure out orientation at all and ignore it)
+- Depth Anything 3 (metric large) turns it into a depth picture (meters). Only depth comes out, no height map from model
+- *(optional, off by default)* `--position odometry` or `dense_slam` adds a camera position at this step. (see Part 1 of experiment section)
+- scene: depth → 3D points → find the ground/floor → only keep points between ankle and head height → chop into 0.25 m floor cells → each cell's distance and wobble (N)
+  - <define wobble better here, word is ambiguous>
+- planner: cost field over next few seconds, dynamic program for cheapest path, generate arrow heading (not directly shared with user), then alarm + gaze silencing
+- "user model" for actual navigation: just measures what each avoidance cost in bits, doesn't steer anything
+- planning runs on a worker thread that always grabs newest frame, so when it's busy frames get dropped (not queued! always as "live" as possible)
+- output: Server sends plan (arrow, alarm, numbers) to webpage over HTTPS -> page decodes the glasses' video itself and draws extra info on it (for evaluation/documentation, the webpage isn't expected to be shared with user).
+    - NOTE: fixes vs old step list: depth only (no height map from the model), no dense SLAM by default, planner is field + dynamic program (the Lagrangian side is the user model measuring afterwards), page draws over the video, local network not internet
+    - NOTE: the component diagram still has a "Dense SLAM" box, needs redrawing!
 
-## Camera Feed
-> What kind of videos/how we record them (i.e. walking up to objects on the ground, walls, people etc.)
-## Neon Companion
-> Explain what the app does:
-> 1. Video recording & Streaming
-> 2. Gaze tracking data
+![Component Diagram|700](diagrams/ComponentDiagram.drawio.png)
+
+## Hardware and Data Capture
+- camera: Neon scene camera, 1600 × 1200 at 30 fps, IMU (~100 Hz) and eye-tracking/gaze (200 Hz)
+- Server: laptop with a Quadro T2000 GPU (4 GB), runs the whole pipeline + serves the webpage
+- types of recordings + what we use them for:
+  - **Companion Recording:** phone app records everything itself (video + IMU + gaze + calibration), sometimes saved to Server afterward
+    - USED FOR: our "raw data" archive, kept for future tests/dev/demos (example: presentation demo)
+  - **Stream Capture:** Server saves exactly what glasses send over wifi (compressed video packets + IMU + gaze + calibration). No decoding while recording! This is what we used to get "real" samples that included network behavior, and then use it for test/dev of our decoding afterward
+    - USED FOR: what the Server actually receives, so replaying it tests everything (decoder, timing, IMU matching) simulating live behavior. Replays lost packets but not network delay. Used and then archived
+  - **Frame Log (`--record-to`):** Server saves depth frames coming out of depth model
+    - USED FOR: faster testing for all of the math AFTER the depth model (logs let us skip straight to scene + planner). Can't test anything before depth model. Used and then archived
+- Companion recording → capture conversion takes a few seconds, so recordings and captures replay the same way
+- replay: capture → exact same live route and Server treats it like glasses are on (demos + live-route tests ran this way)
+- recordings don't store depth (frame logs do), recomputed from video every run (so a newer depth model applies to old recordings automatically)
+- recordings (walking) we have (all on glasses, all indoors):
+  - 2026-10-05: first live session, two 240 s classroom captures. (only the second works for real, first one had sensor issues)
+  - 2026-10-08: walk A (214 s, between classroom desks), walk B (27 s)
+  - 2026-10-08, demo room: hallway into classroom (194 s), up and down stairs (121 s), standing on the tiers (263 s)
+  - 2026-10-09: demo walk (148 s, starts by a big window)
+  - 2026-10-14: attention walk (44 s, scripted: stare at a chair, walk past it looking and not looking, stairs, toward a wall)
+    - NOTE: none outdoors, none with pedestrians or other moving obstacles. maybe worth a re-record since he wants us to make a full demo vid anyway? (we know these work, but processing time still an issue)
+
+### Neon Companion
+- Neon-paired phone app = only thing server talks to (glasses never connect to server directly)
+- what server receives from the app (real-time API):
+  - **Discovery:** finds phone on network automatically, or by typed-in address (Radboud wifi blocks discovery)
+  - **Calibration:** glasses' camera calibration
+    - used for straightening every frame
+  - **Streams:** scene video + gaze + IMU. Video arrives compressed, server decodes
+  - **Clock Offset ("Time Echo"):** gap between phone and server clocks
+    - used for timing delays from the moment of capture. Capture time on server's clock:
+
+      $$t_{\text{server}} = t_{\text{Neon}} + \Delta$$
+
+      - $t_{\text{Neon}}$ = glasses' timestamp, $\Delta$ = measured offset (median of many round trips)
+- **IMU stream only serves ONE client at a time!** (other connections get empty readings, glasses only support one connection at a time)
+- **Recording:** app can record on its own (Companion Recording above), server never starts/stops it
+- **Gaze**:
+  - `--goal gaze`: planner "aims" where wearer is looking (default straight ahead)
+  - gaze silencing: looking at the danger can quiet the alarm (switch, off by default)
+  - gaze ring on webpage (evaluation only, not shared with user)
 
 ## Point Cloud Generation
 > Each frame...
