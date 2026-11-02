@@ -137,17 +137,7 @@ Depth Anything 3 is a model that "predicts spatially consistent geometry from an
 - replay: capture → exact same live route and Server treats it like glasses are on (demos + live-route tests ran this way)
 
 ### Neon Companion
-- Neon-paired phone app = only thing server talks to (glasses never connect to server directly)
-- what server receives from the app (real-time API):
-  - **Calibration:** glasses' camera calibration
-    - used for straightening every frame
-  - **Streams:** scene video + gaze + IMU. Video arrives compressed, server decodes
-  - **Clock Offset ("Time Echo"):** gap between phone and server clocks (Appendix D)
-- **Gaze**:
-  - `--goal gaze`: planner "aims" where wearer is looking (default straight ahead)
-  - gaze silencing: looking at the danger can quiet the alarm (switch, off by default)
-  - gaze ring on webpage (evaluation only, not shared with user)
-
+The [Neon Companion](https://pupil-labs.com/products/neon/software) phone app runs on the phone the glasses are connected to and is used to read out and record the data from the camera and eye tracker on the glasses. In the prototype, the phone broadcasts the live feed from the glasses over the local network so that this data can be analyzed on a different device. Apart from a video feed, the real-time API also includes information about the glasses' camera calibration and a clock offset used to straighten every frame and sync measurements respectively (see [Appendix D](d-neon-companion-api)). The live feed moreover includes gaze data from the eyetracker, which is used in the prototype both to optionally silence the alarm when the user looks at detected danger and by the path planner as the preferred direction to walk in.
 ## Point Cloud Generation
 - **straighten picture:** Neon lens bends straight lines, depth model wants plain pinhole picture -> every frame undistorted with glasses' calibration first (details in Appendix C)
 - **depth in meters:** Depth Anything 3's metric model answers as if every camera had 300 px focal length -> scale by our camera's real focal at the resolution the model ran at:
