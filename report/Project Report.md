@@ -137,23 +137,29 @@ Depth Anything 3 is a model that "predicts spatially consistent geometry from an
 - replay: capture → exact same live route and Server treats it like glasses are on (demos + live-route tests ran this way)
 
 ### Neon Companion
-The [Neon Companion](https://pupil-labs.com/products/neon/software) phone app runs on the phone the glasses are connected to and is used to read out and record the data from the camera and eye tracker on the glasses. In the prototype, the phone broadcasts the live feed from the glasses over the local network so that this data can be analyzed on a different device. Apart from a video feed, the real-time API also includes information about the glasses' camera calibration and a clock offset used to straighten every frame and sync measurements respectively (see [Appendix D](d-neon-companion-api)). The live feed moreover includes gaze data from the eyetracker, which is used in the prototype both to optionally silence the alarm when the user looks at detected danger and by the path planner as the preferred direction to walk in.
+The [Neon Companion](https://pupil-labs.com/products/neon/software) phone app runs on the phone the glasses are connected to and is used to read out and record the data from the camera and eye tracker on the glasses. In the prototype, the phone broadcasts the live feed from the glasses over the local network so that this data can be analyzed on a different device. Apart from a video feed, the real-time API also includes information about the glasses' camera calibration and a clock offset used to straighten every frame and sync measurements respectively (see [Appendix D](d-neon-companion-api)). The live feed moreover includes gaze data from the eye tracker, which is used in the prototype both to optionally silence the alarm when the user looks at detected danger and by the path planner as the preferred direction to walk in.
 ## Point Cloud Generation
-- **straighten picture:** Neon lens bends straight lines, depth model wants plain pinhole picture -> every frame undistorted with glasses' calibration first (details in Appendix C)
-- **depth in meters:** Depth Anything 3's metric model answers as if every camera had 300 px focal length -> scale by our camera's real focal at the resolution the model ran at:
+Point cloud generation refers to the repeated creation of a 3D map of points that are most crucial for navigation. It is generated primarily by analyzing the video feed from the glasses, but could alternatively simply be obtained from LiDAR sensors on select smartphones and smart glasses. This would nullify the need for the additional computation discussed in this section. The general flow for point cloud generation is given in below image.
 
-  $$z = z_{\text{raw}} \cdot \frac{\bar f}{300}, \qquad \bar f = \frac{f_x + f_y}{2}$$
+![General flow point cloud generation](DataAnalyzationFlow.drawio.png)
 
-  - $z_{\text{raw}}$ = what model returns, $z$ = depth (meters), $f_x, f_y$ = focal lengths (pixels) of depth picture, which is smaller than the frame (model runs at 336 or 504 px on long side)
-- **depth picture -> 3D points:** each pixel goes back out along its ray, as far as its depth says (pinhole model run backwards, formula in Appendix C)
-- **find floor:** floor = plane $\hat n \cdot \mathbf p + h = 0$, with $\hat n$ = unit normal pointing up, $h$ = camera height above it (which way is up comes from IMU, Appendix A, fit in Appendix B)
-- **keep what you could walk into:** point height above floor:
+The smart glasses are equipped with a wide-angle camera, which records a barrel distorted (fisheye) image. The first step is to straighten this image using the camera's calibration, to undo the effects of distortion (see [Appendix C](c-point-cloud-details)). 
 
-  $$e_i = \hat n \cdot \mathbf p_i + h$$
+This image is then piped into Depth Anything 3's metric model to determine a depth (distance from camera) for every point. But because this model treats each image as if it were captured on a 300 pixel focal length camera, the camera's real focal must first be scaled from the resolution at which the model runs:
+$$
+z = z_{raw}\cdot \frac{\bar{f}}{300} \qquad \bar{f}=\frac{f_{x}+f_{y}}{2}
+$$
+The scaled (actual) depth $z$ and depth returned by the model $z_{raw}$ are both in meters. The horizontal and vertical focal length values $f_{x}$ and $f_{y}$, which correspond to the dept map produced by the model, are measured in pixels. The average focal length is signified with $\bar{f}$. Every pixel is then sent back along its ray as far as the estimated dept specifies, to generate a 3D image of the visible environment.
 
-  - keep only $0.20 < e_i < 2.00$ m (below ankle height = floor, above head height = you walk under it)
+To help orient and interpret the meaning of these points, the position of the floor is estimated for each frame. The floor is defined as a plane:
+$$
+\hat n \cdot \mathbf p + h = 0
+$$
+With $\hat{n}$ being the unit normal pointing up and $h$ the camera height, which is determined by incorporating data from the on-board Inertial Measurement Unit (see [Appendix A](c-point-cloud-details)). After this, the distance from the floor of every point $e_{i}$ is computed in meters using:
+$$e_i = \hat n \cdot \mathbf p_i + h$$
+Every point that is either too high or too low to collide with is filtered out. In the prototype, this leaves points $\{e_{i} \mid 0.2 < e_{i} < 2.0\}$.
 
-![[DataAnalyzationFlow.drawio.png]]
+Finally, the filtered point cloud is projected onto a 2D top-down representation of the environment by using the IMU (Inertial Measurement Unit) data to determine each point's lateral and forward position. 
 
 ## Point Cloud Cost
 - **chop into cells:** surviving points flattened onto floor -> (lateral, forward) from walker -> 0.25 m squares ("cells"), 3 m each side, 6 m ahead. One cell = one obstacle from here on
