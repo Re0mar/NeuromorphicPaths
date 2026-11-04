@@ -122,18 +122,6 @@ Depth Anything 3 is a model that "predicts spatially consistent geometry from an
 
 ![Component Diagram|700](diagrams/ComponentDiagram.drawio.png)
 
-## Hardware and Data Capture
-- camera: Neon scene camera, 1600 × 1200 at 30 fps, IMU (~100 Hz) and eye-tracking/gaze (200 Hz)
-- Server: laptop with a Quadro T2000 GPU (4 GB), runs the whole pipeline + serves the webpage
-- types of recordings + what we use them for:
-  - **Companion Recording:** phone app records everything itself (video + IMU + gaze + calibration), sometimes saved to Server afterward
-    - USED FOR: our "raw data" archive, kept for future tests/dev/demos (example: presentation demo)
-  - **Stream Capture:** Server saves exactly what glasses send over wifi (compressed video packets + IMU + gaze + calibration). No decoding while recording! This is what we used to get "real" samples that included network behavior, and then use it for test/dev of our decoding afterward
-    - USED FOR: what the Server actually receives, so replaying it tests everything (decoder, timing, IMU matching) simulating live behavior. Replays lost packets but not network delay. Used and then archived
-  - **Frame Log (`--record-to`):** Server saves depth frames coming out of depth model
-    - USED FOR: faster testing for all of the math AFTER the depth model (logs let us skip straight to scene + planner). Can't test anything before depth model. Used and then archived
-- replay: capture → exact same live route and Server treats it like glasses are on (demos + live-route tests ran this way)
-
 ### Neon Companion
 The [Neon Companion](https://pupil-labs.com/products/neon/software) phone app runs on the phone the glasses are connected to and is used to read out and record the data from the camera and eye tracker on the glasses. In the prototype, the phone broadcasts the live feed from the glasses over the local network so that this data can be analyzed on a different device. Apart from a video feed, the real-time API also includes information about the glasses' camera calibration and a clock offset used to straighten every frame and sync measurements respectively (see [Appendix D](d-neon-companion-api)). The live feed moreover includes gaze data from the eye tracker, which is used in the prototype both to optionally silence the alarm when the user looks at detected danger and by the path planner as the preferred direction to walk in.
 ## Point Cloud Generation
@@ -178,12 +166,32 @@ N =
        N &\text{otherwise} \\ 
      \end{cases}
 $$
-Each cell is assigned a measure of surprise $U$ which is defined as being half of the squared signal-to-noise:
+Each obstacle point is assigned a measure of (collision) surprise $U$, which is quantified in natural-log units dubbed 'bits' in this project. Surprise is defined as being half of the squared signal-to-noise:
 $$
 U = \frac{1}{2} \left( \frac{N}{S} \right)^2
 $$
 
 ## Planning
+To find the optimal path to guide the user in, the planner first computes the cost of the paths for all reachable states. This is represented as a field of time/position pairs with a temporal interval $\Delta t = 0.1\text{ s}$ and a spacial interval of $0.1 \text{ m}$ for each lateral position over couple second horizon. The walker is assumed to be moving at some constant speed $v = 1.4 \text{ m/s}$, such that at step $k$, they would be $v\cdot k\cdot \Delta t$ meters further ahead. Because of this, obstacle points are predicted to always come closer for higher values of $k$. 
+
+At each step and position in the field, two terms are added together to determine the surprise of that entry. The first is collision surprise, already given as the cost of the point in the point cloud. The second is contact surprise, which is the cost of the walker's body probably touching the obstacle. Let $d$ be the distance from a candidate walker's center to an obstacle point and $r$ be the circular footprint of the walker. The clearance $S$ then becomes:
+$$
+S_{b} = d - r \qquad r=0.30 \text{ m}
+$$
+The body's positional uncertainty is quantified as the standard deviation $\sigma$ of the assumed normally distributed clearance $S_{b}$. This is a combination two independent sources of uncertainty: noise $N$ and assumed sway $s$:
+$$
+\sigma = \sqrt{ N^2 + s^2 } \qquad s=0.10 \text{ m}
+$$
+The chance of walking past an obstacle without contacting it is the standard normal cumulative $\Phi\left( \frac{S_{b}}{\sigma} \right)$. The negative logarithm of this number is taken to convert the probability into surprise, by mapping a high probability of passing to low surprise and vice versa. This surprise is divided by time-to-impact $\tau_{b}$, which is the estimated time required for the walker's body with radius $r$ to move past the obstacle at a constant speed $v$.
+$$
+\tau_{b}=\frac{2r}{v}=\frac{2\cdot 0.30}{1.4}\approx 0.43\text{ s}
+$$
+This is done to convert the scalar surprise into a rate per second, so it can be integrated consistently over the planner's time steps. Contact surprise is defined as:
+$$
+U_{contact}=\frac{-\ln \Phi\left( \frac{S_{b}}{\sigma} \right)}{\tau_{b}}
+$$
+
+
 - **field:** cost-per-second for every future moment and sideways position
   - time: steps of $\Delta t = 0.1$ s out to a 3.8 s horizon (professor's values). Sideways: 0.1 m spacing, 3 m each way (our choice)
   - at step $k$, walker assumed $1.4 \cdot k\Delta t$ m further ahead (walking speed 1.4 m/s, our choice, professor's is 5 m/s for a cyclist) -> every cell that much nearer. Obstacles held still (motion prediction exists but off)
@@ -229,6 +237,21 @@ $$
 - **what reaches the walker vs what's for us:** ear gains and alarm sound are the walker's. Arrow, red, rings, plan view, pictures and bits are evaluation/demo (walker isn't looking at a screen)
 
 ## Experimental Conditions
+
+## Hardware and Data Capture
+- camera: Neon scene camera, 1600 × 1200 at 30 fps, IMU (~100 Hz) and eye-tracking/gaze (200 Hz)
+- Server: laptop with a Quadro T2000 GPU (4 GB), runs the whole pipeline + serves the webpage
+- types of recordings + what we use them for:
+  - **Companion Recording:** phone app records everything itself (video + IMU + gaze + calibration), sometimes saved to Server afterward
+    - USED FOR: our "raw data" archive, kept for future tests/dev/demos (example: presentation demo)
+  - **Stream Capture:** Server saves exactly what glasses send over wifi (compressed video packets + IMU + gaze + calibration). No decoding while recording! This is what we used to get "real" samples that included network behavior, and then use it for test/dev of our decoding afterward
+    - USED FOR: what the Server actually receives, so replaying it tests everything (decoder, timing, IMU matching) simulating live behavior. Replays lost packets but not network delay. Used and then archived
+  - **Frame Log (`--record-to`):** Server saves depth frames coming out of depth model
+    - USED FOR: faster testing for all of the math AFTER the depth model (logs let us skip straight to scene + planner). Can't test anything before depth model. Used and then archived
+- replay: capture → exact same live route and Server treats it like glasses are on (demos + live-route tests ran this way)
+
+> TODO merge near identical text above with text below. 
+
 - all three parts run on recordings, through the exact live route (`--neon-replay` on a capture), on Server (Quadro T2000, 4 GB), otherwise idle. Same code path as a live walk, so frame rate and delays real, network delay isn't
 - recordings (walking) we have (all on glasses, all indoors):
   - 2026-10-05: first live session, two 240 s classroom captures. (only the second works for real, first one had sensor issues)
