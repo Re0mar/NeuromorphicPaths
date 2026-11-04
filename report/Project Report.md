@@ -41,9 +41,8 @@ papers roel: mute conversation in cars
 	    - What is implemented, but not rigurously tested (and not part of the current prototype)
         - Usage of magic numbers
         - Inclusion of accelerometer and gps?
-        - Better (fancier) demo for publication?
     - Presentation mentions
-    - AI declaration
+        
 - References
 # Introduction
 In recent years, the problem of distracted people taking part in trafic has been on the rise, caused for the most part by increased usage of mobile phones and similar devices.
@@ -260,18 +259,29 @@ https://www.nature.com/articles/s41598-025-08475-4
 
 *If you did a system, follow the same procedure but instead of results you describe 3 scenarios in which the system could be used in the future. When you write the scenario, imagine you are a user using the system and describe all the little details that demonstrate how well your interactions were thought through and how it solves an existing usability problem.*
 
-# Experiment
+# Results
 
-> Outline. Each part points back at its methodology section.
+At the end of the development process of the product, the product needed to be presented to our peers. For this presentation a demonstration of the product was made, this demonstration had next to a live demonstration also a back-up video in which a user from the development team used the glasses while walking through a lecture room at Radboud university. The image below shows a frame from this back-up video in which we see a multitude of panels further explained below the image. 
+<img width="1726" height="1079" alt="NMHCI_demo_screenshot" src="https://github.com/user-attachments/assets/06b57432-3772-48f0-af11-262eb068fab6" />
+## Panel: Sound
+The panel at the top left is the output panel. This is the visual demonstration of what the product feeds back to the user. The top part shows the left and right speaker of the music device of the user. When encountering an obstacle with high risk it will start emitting a beeping noise from that specific side. This is seen in the five green bars showing the direction the beeping is coming from. There are also options to turn off the sound and turn off the noise cancellation at that side.
 
-## Part 1: A position for the glasses
-> IMU-only (today's pipeline) vs odometry vs dense SLAM, on the attention walk against a COLMAP reference. Measured, see `docs/evaluation/neon_position_evaluation.md`. Bullets come when we get here.
+## Panel: Heading
+The panel at the bottom left is the direction the user should walk towards to follow the safe path. This is not part of the output the user sees but the direction is concluded from the calculated path. The direction heading is not used in the rest of the product at the moment but it gives an entry point for different implementations to take input from to improve user experience by improving the system of guiding the user over the safe path.
 
-## Part 2: Planning
-> Results of the surprise functions for the path. Which measurements exist still needs checking.
+## Panel: Video
+The central panel is the field of view from the user, recorded by the camera on the neon glasses. This video shows the lecture room environment. The video shows the rows of chairs on the right, a wall with glass on the left and the path between those. In the path is a big black bag placed that functions as an obstacle for the user. This video feed is the input for the product to apply all the earlier mentioned functionalities on.
 
-## Part 3: Collision detection
-> Results of the surprise functions for the alarm. Which measurements exist still needs checking.
+## Panel: From above
+The top right panel shows to determined point cloud. This shows the grid in which all the measured points are placed. Specifically, the yellow and pink dots are the point of interest where a worth mentioning amount of risk is determined. The panel also shows blue and green areas below and around the dots, these are the weighted averages of the points in the point cloud to determine which objects are of any risk. The risk goes from blue to green to orange to red in order of increasing risk. Finally there is a big red line with an arrow to show the safe path for the user, this path is the source for the Sound and Heading panels and is obtained from the Risk panel.
+
+## Panel: Risk
+The bottom right panel is the video feed overlayed with the point cloud from the view from above. The panel shows the high risk, dark red, areas such as the chairs on the right and the wall on the left. It determines the floor as completely safe, seen by the dark blue color, except for the black bag placed. The bag has a clear yellow which indicates it has some risk of encountering and would turn darker red when getting closer to it. Next to the bag is the safe path shown with two red lines. These lines are calculated here and then used in the panel from above to show where the path progresses.
+
+Link to the demonstration video
+Explain the demonstration video.
+
+argue about the resutls
 
 # Scenarios
 
@@ -286,7 +296,6 @@ https://www.nature.com/articles/s41598-025-08475-4
 # Conclusion
 
 # References
-> TODO update
 1. Rijniers, R. (2017). *Ogen op de weg ☺ Een vermindering van het smartphonegebruik op de N36 middels een gedragsinterventie langs de weg* [Radboud Universiteit]. https://theses.ubn.ru.nl/items/c8935b8d-8583-455a-97e4-90905e7adb13/full
 2. Haas, G. (2023). *Towards Auditory Interaction: An Analysis of Computer-Based Auditory Interfaces in Three Settings* [Doctoral dissertation, Ulm University]. https://oparu.uni-ulm.de/server/api/core/bitstreams/c45354b6-409b-4444-81e5-d55b99acf3f1/content
 3. *[Authors]* (2025). *Interactive Inference: A Neuromorphic Theory of Human-Computer Interaction*. https://arxiv.org/abs/2502.05935 
