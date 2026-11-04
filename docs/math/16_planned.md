@@ -4,7 +4,9 @@
 
 Two pieces of math aren't part of the planner as it runs today. One is in the code and switched off.
 The other is planned. Both will be switched on and off live, and both stay off unless someone turns
-them on. Each gets a full section here once it ships.
+them on. Each gets a full section here once it ships. The gaze switch in section 9 is the one live
+switch built so far: a page flips it, every page follows, and a flip goes to the run's log only, not
+to each frame, so a replay can't match it. A switch here would need the per-frame record.
 
 ## Motion prediction
 
@@ -21,7 +23,7 @@ y(t_k) = y + v_y\, t_k - v_w\, t_k, \qquad x(t_k) = x + v_x\, t_k
 |---|---|---|---|---|
 | $`x`$, $`y`$ | The obstacle's sideways and forward position now | m | walker's ground frame, right and ahead positive | `server/nav/planner/field.py` |
 | $`v_x`$, $`v_y`$ | The obstacle's measured velocity, 0 when prediction is off or there's no velocity | m/s | walker's ground frame | `server/nav/scene/history.py`, `server/nav/scene/pipeline.py` |
-| $`v_w`$ | Walking speed, 1.4 | m/s | | `server/nav/planner/config.py:41` |
+| $`v_w`$ | Walking speed, 1.4 | m/s | | `server/nav/planner/config.py:51` |
 | $`t_k`$ | Time of slice $`k`$, $`k \cdot 0.1`$ s | s | | `server/nav/planner/field.py` |
 
 A person 4.0 m ahead walks toward the walker at 1.0 m/s, so $`v_y = -1.0`$. Two seconds out, at

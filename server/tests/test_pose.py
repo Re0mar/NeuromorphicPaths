@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 # Local package imports
-from nav.pose.device import pose_from_device
+from nav.pose.device import pose_from_device, pose_with_position
 from nav.pose.imu_orientation import (
     IMU_MATCH_TOLERANCE_SECONDS,
     ImuMount,
@@ -247,3 +247,19 @@ def test_device_pose_refuses_a_non_finite_position() -> None:
 def test_device_pose_refuses_a_wrongly_shaped_position() -> None:
     with pytest.raises(ValueError, match=r"position must be \(3,\)"):
         pose_from_device(np.array([1.0, 0.0, 0.0, 0.0]), np.array([1.0, 2.0]))
+
+
+def test_a_measured_position_keeps_the_imu_orientation_and_gravity() -> None:
+    imu_pose = pose_from_imu(np.array([0.9238795, 0.3826834, 0.0, 0.0]), NO_MOUNT)
+
+    pose = pose_with_position(imu_pose, np.array([1.0, 2.0, 3.0]))
+
+    assert pose.has_position is True
+    assert pose.position == pytest.approx([1.0, 2.0, 3.0])
+    assert pose.orientation == pytest.approx(imu_pose.orientation)
+    assert pose.orientation_is_gravity_aligned is True
+
+
+def test_a_measured_position_must_be_finite() -> None:
+    with pytest.raises(ValueError, match="Lost tracking is has_position False"):
+        pose_with_position(identity_pose(), np.array([1.0, np.nan, 3.0]))

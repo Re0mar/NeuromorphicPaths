@@ -52,6 +52,23 @@ time, because a package that depends on torch can pull the CPU build back in wit
 The version must end in `+cu126` and the third value must be `True`. A `neon_live` run on a CPU
 estimator also says so in its log, and still runs.
 
+### Open3D's CUDA build, for `--position dense_slam`
+
+Dense SLAM needs Open3D's CUDA build. The `open3d` wheel PyPI gives Windows is CPU-only, and its
+dense SLAM hung at random frames when it was evaluated. The CUDA build is a separate package on
+Open3D's release page, labeled a preview, and it replaces `open3d` rather than sitting beside it:
+
+```
+.venv/Scripts/python -m pip uninstall -y open3d
+.venv/Scripts/python -m pip install https://github.com/isl-org/Open3D/releases/download/v0.20.0/open3d_cuda-0.20.0-cp312-cp312-win_amd64.whl
+.venv/Scripts/python -c "import torch, open3d; print(torch.cuda.is_available(), open3d.core.cuda.is_available())"
+```
+
+Both values must be `True`. Import torch first in any check like this one: Open3D's CUDA build loaded
+first stops torch from loading at all, with "The specified procedure could not be found" on
+`shm.dll`. The pipeline loads torch before anything imports Open3D for that reason. Nothing else
+needs the CUDA build, and `--position odometry` runs on the plain one.
+
 If pip stalls on a 401 from a private package index, your machine has a user-level `pip.ini`
 pointing somewhere that needs a token. Put this in `.venv/pip.ini` and it talks to PyPI only:
 
@@ -74,10 +91,19 @@ is the whole configuration, and `--verbose` prints per-stage timings.
 | Source | What it reads | Flags |
 |---|---|---|
 | `video_file` | a recording, or an IP camera app's stream URL, through the depth estimator | `--path`, checked before the model loads |
-| `neon_live` | the Pupil Labs Neon over the network, through the depth estimator | `--neon-address` only if discovery is blocked, `--neon-replay` to play a capture instead, `--recording-capture` and `--start-with` for a run the page can switch to a recording and back |
-| `arcore_tcp` | the Pixel app's depth frames over TCP | `--arcore-port` (9000), `--arcore-accept-timeout` (30), `--reconnect`, `--recording-capture` and `--start-with` as for `neon_live` |
+| `neon_live` | the Pupil Labs Neon over the network, through the depth estimator | `--neon-address` only if discovery is blocked, `--neon-replay` to play a capture instead, `--recording-capture`, `--recordings-dir` and `--start-with` for a run the page can switch to a recording and back |
+| `arcore_tcp` | the Pixel app's depth frames over TCP | `--arcore-port` (9000), `--arcore-accept-timeout` (30), `--reconnect`, `--recording-capture`, `--recordings-dir` and `--start-with` as for `neon_live` |
 | `neon_recording` | a native Neon recording, straightened with its own calibration, through the depth estimator | `--recording-dir`, `--recording-rate` (2 frames a second of recording) |
 | `logged` | a frame log this pipeline recorded earlier | `--log-dir`, `--realtime` |
+
+`neon_live` and `neon_recording` also take `--position`, where a frame's position comes from:
+`absent`, the default, is the glasses' IMU orientation and no position. `odometry` measures the
+position by matching each frame's depth to the one before with Open3D, on the CPU. `dense_slam`
+matches each frame to a volume fused from every frame before, Open3D's dense SLAM, on the GPU in a
+process of its own, and needs the CUDA build above. Its volume takes about 2 GB of the card, so it
+can't run beside a recording switch, `--recording-capture` or `--recordings-dir`. How the three
+compare on a recorded walk, and why `absent` stays the default, is in
+[docs/evaluation/neon_position_evaluation.md](../docs/evaluation/neon_position_evaluation.md).
 
 `--reconnect` keeps the same listener open after the phone disconnects, so a walk recorded with
 `--record-to` continues in the same log with the frame numbers running on. It waits up to the
@@ -164,7 +190,9 @@ every mode, then the mode toggle, the alarm sound and volume toggles in alarm mo
 picker in noise-cancellation mode. The readouts are
 a head with five arcs an ear, one lit per 20 % of that ear's gain as the laptop sent it, and
 `NC ON` or `NC OFF`, the driving guide's rule, off while the alarm is up and back on 2 s after it
-clears, both reading unknown after 1.5 s without a path. The alarm still turns the whole page red.
+clears, both reading unknown after 1.5 s without a path. Beside `NC` an eye drawn in lines shows
+while the alarm is up, green with the wearer's eyes on the danger and red off it, so always red on
+a run without the glasses. The alarm still turns the whole page red.
 A page tab open across a laptop restart keeps the HTML it loaded, so a page change shows only
 after a reload.
 
@@ -200,7 +228,7 @@ nearest clearance, where the floor came from (`supplied` by the source, `fitted`
 or the `previous` frame's), and `ALARM` when set. It is what a person tuning the planner looks at, and the window
 and the browser draw it from the same code. The phone never gets it.
 
-In the browser the Depth card has a **Picture** toggle and a **Rings** checkbox, and its title
+In the browser the Depth card has a **Picture** toggle and **Rings** and **Gaze** checkboxes, and its title
 names the picture shown. Picture switches to the risk view: the same picture, with every reading the planner's field reaches
 recolored by what the field costs there, at the moment the walker would get there, on OpenCV's
 TURBO scale from blue for cheap to red for costly. It is the view from above's field seen through
@@ -211,7 +239,9 @@ gets only that one, and the laptop draws the risk view only while some browser s
 recorded Neon frame, 252 by 336, the risk view took 21.2 ms to draw and encode against the depth
 view's 9.0 ms. Rings hides the group rings over either picture at once. The browser draws them
 itself, at places the laptop works out and sends with the plan view, so neither picture carries
-them. The window still draws its rings into the picture.
+them. The window still draws its rings into the picture. Gaze draws a white ring where the glasses' eyes were in the frame the path was planned for,
+over either picture, from the same sample the planner's attention test reads. A run without
+gaze draws none.
 
 The browser also draws the planner's view from above, walking up the screen, about 5.3 m ahead and
 3 m to each side. Three layers, each with a checkbox that hides it in the browser alone:
@@ -527,14 +557,18 @@ Convert it to a capture once:
 The converter reads the recording's scene video, IMU, gaze and calibration, and writes them in the
 capture format above. It decodes nothing, so a 263 s recording converts in about 3 s.
 
-**For a demo, start one server that can switch between the live input and the recording:**
+**For a demo, start one server that can switch between the live input and the recordings:**
 
 ```
-.venv/Scripts/python -m nav --source neon_live --neon-address <glasses address> --recording-capture frame_logs/captures/<name> --sink web
+.venv/Scripts/python -m nav --source neon_live --neon-address <glasses address> --recordings-dir frame_logs/captures --sink web
 ```
 
-The page's Video card then has a **Live / Recording** toggle. Any open page can turn it, every page
-follows, and the depth model, the planner and the server stay up throughout. The recording plays
+`--recordings-dir` takes every capture folder inside it, by folder name. `--recording-capture
+<folder>` names one, and can be repeated. The page's Video card then has a **Live / Recording**
+toggle, and with more than one recording a dropdown under it that says which one the Recording
+side plays. Picking another while the recording plays starts that one from its beginning. Any open
+page can turn the toggle or the dropdown, every page follows, and the depth model, the planner and
+the server stay up throughout. The recording plays
 through the live route end to end, so the page's video is the recording's own, in step with every
 other card. It starts from the beginning each time it is chosen, and loops. The glasses stay
 connected while the recording plays, so switching back is immediate. That also means the glasses'
@@ -542,10 +576,10 @@ IMU stream stays claimed by this run, so no other program should connect to it a
 Each switch starts the scene and the planner afresh, since a floor and a previous plan from the
 other side would steer the first frames of this one. `--start-with recording` starts on the
 recording, which is the safe choice when the glasses haven't been checked yet. The same flags work
-with `--source arcore_tcp`, with the Pixel as the live input. Without `--recording-capture`, a
+with `--source arcore_tcp`, with the Pixel as the live input. Without a recording flag, a
 recording alone also replays with `--neon-replay frame_logs/captures/<name>`.
 
-**To move the demo to another recording, convert that one and point `--recording-capture` at it.** There is
+**To add a recording to the demo, convert it into the captures folder.** There is
 nothing else to change. Depth is estimated from the video on every run and never stored, so there is
 no depth map to regenerate, and a change to the depth model reaches every converted recording by
 itself. The output folder must not exist yet, so an earlier capture is never overwritten.
@@ -581,9 +615,11 @@ still ends when its device or its capture does, which is what recording a walk r
 **With the glasses, the alarm can go quiet while the wearer's eyes are on the danger.** It's off
 unless asked for. `--gaze-silences-alarm on` starts a run with it on, and the page's Sound card can
 flip it for every page at once. The page still turns red. Only the sound, the noise-cancellation
-cut and the drop in the danger's ear are held back. Once an alarm has been under 0.35 s from
-contact it sounds whatever the eyes are doing until it clears, because looking at something isn't
-the same as stepping around it.
+cut and the drop in the danger's ear are held back, at any distance. `--gaze-floor-seconds 0.35`
+puts a floor under it: once an alarm has been under that time to contact it sounds whatever the
+eyes are doing until it clears, on the view that looking at something isn't stepping around it.
+There is no floor by default, since on a manual test indoors a desk inside the footprint kept the
+floor sounding the alarm the whole run.
 
 What the gaze can tell is whether the eyes are toward the danger or away from it, down at the floor
 or off to the side. It can't tell that the wearer singled the thing out. The alarm only looks at
@@ -677,8 +713,14 @@ conditions they were taken under and the commands that rerun them, are in
 - ARCore depth is computed from motion. It stops updating when the walker stands still, drops
   out on blank walls, and is unreliable on moving objects. Static obstacles first.
 - Estimator depth flickers between frames and its scale can drift. The pose never comes from it.
-- Without a position there is no memory of obstacles out of view, and N is approximate because
-  the ground grid moves with the walker.
+- The glasses have no position unless `--position` asks for one. Without one, N is approximate
+  because the ground grid moves with the walker. With one, the grid stays put, but N still sits at
+  its floor, because the 0.5 s window holds one or two of the 2.5 to 3.5 frames planned a second
+  and N needs three. Neither way keeps obstacles that are out of view.
+- `--position dense_slam` is about 1 m off on a recorded walk at the rate the pipeline runs, and
+  `odometry` 0.2 to 0.3 m. Dense SLAM tracked to 0.18 m only with depth for every frame at 30 a
+  second, which the depth model can't make as the walk happens. See
+  [neon_position_evaluation.md](../docs/evaluation/neon_position_evaluation.md).
 - Motion prediction in the planner is off by default. The scene reports a group's velocity from
   its centroid in the world frame, which needs a source with a position.
 - The user model's time constant, b, is a placeholder until a walker is measured.

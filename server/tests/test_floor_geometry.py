@@ -6,6 +6,9 @@ Expected pixels are worked out by hand in each test's comment, never by calling 
 test, so a wrong axis or a swapped sign shows as a wrong number rather than as agreement with itself.
 """
 
+# Standard library imports
+import dataclasses
+
 # Third party imports
 import numpy as np
 import pytest
@@ -15,6 +18,7 @@ from nav.scene.config import SceneConfig
 from nav.sinks.floor_geometry import (
     MIN_FLOOR_SCATTER_METERS,
     NEAR_PLANE_METERS,
+    GazeRing,
     GroupRing,
     clip_segment_to_near_plane,
     clip_to_near_plane,
@@ -23,6 +27,7 @@ from nav.sinks.floor_geometry import (
     floor_point,
     floor_scatter_meters,
     floor_seen_mask,
+    gaze_ring,
     group_rings,
     project_points,
 )
@@ -440,6 +445,34 @@ def test_a_ring_turns_with_the_picture() -> None:
     marked[290, 445] = True
     turned_rows, turned_columns = np.nonzero(np.rot90(marked, 1))
     assert (rings[0].column_pixels, rings[0].row_pixels) == (290, 194) == (int(turned_columns[0]), int(turned_rows[0]))
+
+
+def _gaze_view(pixel: np.ndarray | None, floor: Plane = LEVEL_FLOOR) -> DebugView:
+    view = _group_view(np.array([0.5, 0.2, 2.0]), floor=floor)
+    return dataclasses.replace(view, frame=dataclasses.replace(view.frame, gaze_pixel=pixel))
+
+
+def test_the_gaze_ring_sits_where_the_eyes_were_scaled_as_the_picture_is() -> None:
+    # The gaze pixel is already in depth-image pixels, so only the 5 times scale applies: (89, 58)
+    # is where the group above lands, and the ring sits on it at its one size.
+    assert gaze_ring(_gaze_view(np.array([89.0, 58.0]))) == GazeRing(445, 290, 14)
+
+
+def test_the_gaze_ring_turns_with_the_picture_like_the_groups_rings() -> None:
+    sideways_floor = Plane(np.array([1.0, 0.0, 0.0]), 1.6)
+    view = _gaze_view(np.array([89.0, 58.0]), floor=sideways_floor)
+
+    ring, group = gaze_ring(view), group_rings(view)[0]
+
+    assert (ring.column_pixels, ring.row_pixels) == (group.column_pixels, group.row_pixels) == (290, 194)
+
+
+def test_no_gaze_or_gaze_off_the_image_has_no_ring() -> None:
+    assert gaze_ring(_gaze_view(None)) is None
+    # Column 200 is past the 128 columns.
+    assert gaze_ring(_gaze_view(np.array([200.0, 58.0]))) is None
+    assert gaze_ring(_gaze_view(np.array([-1.0, 58.0]))) is None
+    assert gaze_ring(_gaze_view(np.array([np.nan, 58.0]))) is None
 
 
 def test_a_group_behind_the_camera_or_off_the_image_has_no_ring() -> None:

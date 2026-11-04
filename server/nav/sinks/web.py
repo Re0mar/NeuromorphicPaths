@@ -61,6 +61,7 @@ from nav.sinks.config import WebConfig
 from nav.sinks.rendering import encode_png, render_depth_view, render_risk_view
 from nav.sinks.web_messages import (
     PictureKind,
+    RecordingChoice,
     WebMessageKind,
     browser_choice,
     gaze_silencing_state_message,
@@ -572,6 +573,12 @@ class WebSink:
                     return
                 # For every page at once. The switch announces the new state to all of them.
                 self._source_switch.request(choice)
+                return
+            if isinstance(choice, RecordingChoice):
+                if self._source_switch is None:
+                    log.warning("a page asked for recording %s, and this run has no recording", choice.name)
+                    return
+                self._source_switch.request_recording(choice.name)
                 return
             if isinstance(choice, OnOff):
                 if self._gaze_switch is None:

@@ -23,6 +23,7 @@ from nav.sinks.web_messages import (
     RING_KEYS,
     PictureKind,
     WebMessageKind,
+    RecordingChoice,
     browser_choice,
     gaze_silencing_state_message,
     plan_view_message,
@@ -273,6 +274,15 @@ def test_the_plan_view_says_where_each_groups_ring_goes() -> None:
     assert all(set(ring) == set(RING_KEYS) for ring in message["group_rings"])
 
 
+def test_the_plan_view_carries_the_gaze_ring_or_none_without_gaze() -> None:
+    without = _view()
+    # Pixel (1, 1) of the 4 by 4 frame, scaled 160 times by the picture.
+    with_gaze = dataclasses.replace(without, frame=dataclasses.replace(without.frame, gaze_pixel=np.array([1.0, 1.0])))
+
+    assert plan_view_message(_path(), _field(), GRID, without, SCENE)["gaze_ring"] is None
+    assert plan_view_message(_path(), _field(), GRID, with_gaze, SCENE)["gaze_ring"] == {"column_pixels": 160, "row_pixels": 160, "radius_pixels": 14}
+
+
 @pytest.mark.parametrize("picture", list(PictureKind))
 def test_a_picture_choice_is_read_back_as_the_picture_named(picture: PictureKind) -> None:
     assert browser_choice(json.dumps({"kind": "picture", "picture": picture.value})) is picture
@@ -294,6 +304,8 @@ def test_a_source_choice_is_read_back_as_the_side_named(side: SourceMode) -> Non
         (json.dumps({"kind": "source", "source": "phone"}), "a source this laptop does not have: 'phone'"),
         # A choice in the other message's field is no choice at all.
         (json.dumps({"kind": "source", "picture": "risk"}), "a source this laptop does not have: None"),
+        (json.dumps({"kind": "recording", "recording": ""}), "this laptop does not have"),
+        (json.dumps({"kind": "recording", "recording": 5}), "this laptop does not have"),
     ],
 )
 def test_a_message_that_is_not_a_choice_is_refused(text: str, fragment: str) -> None:
@@ -313,7 +325,21 @@ def test_the_source_state_carries_the_side_and_the_live_link_as_the_page_reads_t
         "live_detail": "ConnectionError: no Neon found",
         "has_recording": True,
         "live_has_video": False,
+        "recordings": [],
+        "recording": None,
     }
+
+
+def test_the_source_state_lists_the_recordings_and_the_one_playing() -> None:
+    state = SwitchState(SourceMode.LIVE, InputLink.CONNECTED, None, True, True, ("walk_1", "walk_2"), "walk_2")
+
+    message = source_state_message(state)
+
+    assert (message["recordings"], message["recording"]) == (["walk_1", "walk_2"], "walk_2")
+
+
+def test_a_recording_pick_is_read_by_name() -> None:
+    assert browser_choice(json.dumps({"kind": "recording", "recording": "walk_2"})) == RecordingChoice("walk_2")
 
 
 @pytest.mark.parametrize("state", list(OnOff))

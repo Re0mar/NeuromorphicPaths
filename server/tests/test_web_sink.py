@@ -1088,9 +1088,29 @@ def test_a_page_sees_the_side_in_use_and_its_choice_switches_every_page() -> Non
         "live_detail": None,
         "has_recording": True,
         "live_has_video": True,
+        "recordings": ["walk"],
+        "recording": "walk",
     }, "on connect"
     assert states[-1]["mode"] == "recording", "the switch's new state reaches the page that asked"
     assert _source_states(late_page)[-1]["mode"] == "recording", "and a page opened afterwards"
+
+
+def test_a_page_picking_a_recording_reaches_the_switch_and_every_page_sees_it() -> None:
+    switch = FakeSwitch(recordings=("walk_1", "walk_2"))
+    sink = WebSink(WebConfig(port=0), SceneConfig(), video_feed=None, source_switch=switch)
+    sink.start()
+    try:
+        pick = json.dumps({"kind": "recording", "recording": "walk_2"})
+        received = asyncio.run(_say_then_receive_until_quiet(sink.port, [pick], lambda: None, 0.5))
+        late_page = asyncio.run(_receive_until_quiet(sink.port, lambda: None, 0.5))
+    finally:
+        sink.close()
+
+    assert switch.recording_requests == ["walk_2"]
+    states = _source_states(received)
+    assert (states[0]["recordings"], states[0]["recording"]) == (["walk_1", "walk_2"], "walk_1"), "on connect"
+    assert states[-1]["recording"] == "walk_2", "the pick reaches the page that asked"
+    assert _source_states(late_page)[-1]["recording"] == "walk_2", "and a page opened afterwards"
 
 
 def test_a_run_without_a_switch_says_nothing_of_one_and_ignores_a_request(sink: WebSink, caplog: pytest.LogCaptureFixture) -> None:

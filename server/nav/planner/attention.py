@@ -72,10 +72,11 @@ def check_attention_config(config: PlannerConfig) -> None:
     if not np.isfinite(dwell) or dwell < 0.0:
         raise ValueError(f"attention_dwell_seconds must be zero or more, got {dwell}")
     floor = config.attention_floor_seconds
-    if not np.isfinite(floor) or not 0.0 < floor < config.alarm_time_to_contact_seconds:
-        # A floor at or over the alarm's threshold would mean the gaze could never quiet anything.
+    if not np.isfinite(floor) or not 0.0 <= floor < config.alarm_time_to_contact_seconds:
+        # Zero is no floor. One at or over the alarm's threshold would mean the gaze could never
+        # quiet anything.
         raise ValueError(
-            f"attention_floor_seconds must be above zero and under alarm_time_to_contact_seconds "
+            f"attention_floor_seconds must be zero or more and under alarm_time_to_contact_seconds "
             f"{config.alarm_time_to_contact_seconds}, got {floor}"
         )
 
@@ -85,8 +86,9 @@ def alarm_audible(alarm: bool, eyes_on_danger: bool, time_to_contact_seconds: fl
     Whether the display should make the alarm heard this frame.
 
     Heard whenever the alarm is up, except with the switch on, the eyes on the danger, and contact
-    no nearer than the floor. A raised alarm with nothing left in the corridor is the hold, and its
-    time to contact is None, which is above the floor.
+    no nearer than the floor. With the floor at zero, the default, every contact is above it. A
+    raised alarm with nothing left in the corridor is the hold, and its time to contact is None,
+    which is above the floor.
 
     :param alarm: The alarm, hold included. Never changed here.
     :param eyes_on_danger: Whether the gaze was on the danger's object, credit included.

@@ -44,10 +44,10 @@ $`-3`$ to $`3`$ m and forward $`0`$ to $`4`$ m. Only the lateral value steers. T
 
 | Symbol | Plain English | Units | Frame | Where in the code |
 |---|---|---|---|---|
-| $`(u, v)`$ | gaze pixel, column and row | pixels | depth image | `server/nav/runtime/loop.py` |
-| $`f_x, f_y`$ | focal lengths | pixels | depth image | `server/nav/runtime/loop.py` |
-| $`c_x, c_y`$ | image center | pixels | depth image | `server/nav/runtime/loop.py` |
-| $`\mathbf r`$ | ray through the pixel, one unit deep | none | camera: x right, y down, z forward | `server/nav/runtime/loop.py` |
+| $`(u, v)`$ | gaze pixel, column and row | pixels | depth image | `server/nav/types.py` (`gaze_pixel`) |
+| $`f_x, f_y`$ | focal lengths | pixels | depth image | `server/nav/planner/attention.py` (`pixel_ray`) |
+| $`c_x, c_y`$ | image center | pixels | depth image | `server/nav/planner/attention.py` (`pixel_ray`) |
+| $`\mathbf r`$ | ray through the pixel, one unit deep | none | camera: x right, y down, z forward | `server/nav/planner/attention.py` (`pixel_ray`), called from `server/nav/runtime/loop.py` |
 | $`\mathbf n`$ | floor normal, unit length, pointing up | none | camera | `server/nav/scene/floor.py` |
 | $`d`$ | floor offset. The camera's height when $`\mathbf n`$ points up | m | camera | `server/nav/scene/floor.py` |
 | $`t`$ | how far along the ray the floor is. The ray is one unit deep, so $`t`$ is the hit's depth | m | camera | `server/nav/runtime/loop.py` |
@@ -55,6 +55,14 @@ $`-3`$ to $`3`$ m and forward $`0`$ to $`4`$ m. Only the lateral value steers. T
 | $`\hat{\mathbf z}_c`$ | camera forward, $`(0, 0, 1)`$ | none | camera | `server/nav/scene/floor.py` |
 | $`\hat{\mathbf f}`$, $`\hat{\mathbf l}`$ | floor forward and floor right | none | camera | `server/nav/scene/floor.py` (`ground_axes`) |
 | lateral, forward | the gaze point on the floor | m | ground: right positive, forward away from the walker | `server/nav/runtime/loop.py` |
+
+The frame carries the gaze twice. `gaze_pixel` is the one sample nearest the frame's stamp, and is
+what this section uses. `gaze_pixels` with `gaze_sample_offsets_seconds` is every sample within
+0.2 s of the stamp, which the alarm's attention test in section 9 reads as rays against the danger's
+outline, with no floor involved. Both are undistorted and scaled to the depth image, and a sample
+the undistortion crop cuts off is dropped, so the goal falls back to straight ahead. The goal
+follows the gaze only with `--goal gaze`. The default is `ahead`.
+
 
 | Step | Expression | Why |
 |---|---|---|

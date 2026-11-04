@@ -38,9 +38,13 @@ from nav.sources.config import (
     VideoConfig,
 )
 from nav.planner.config import PlannerConfig
+from nav.pose.config import PositionConfig, PositionSource
+from nav.pose.tracking import dense_slam_is_available
 from nav.runtime.tap import RecordingTap
 from nav.scene.config import SceneConfig
 from nav.sinks.config import PhoneAppConfig, WebConfig
+from nav.sources.estimated_depth import EstimatedDepthSource
+from nav.sources.positioned import PositionedDepthSource
 from nav.sources.scene_video import SceneVideoFeed
 from nav.sources.switching import SwitchableSource
 from nav.types import DepthFrame, PlannedPath, Pose
@@ -517,15 +521,69 @@ def test_a_recording_capture_and_the_side_to_start_on_reach_the_run_config(tmp_p
         ["--source", "neon_live", "--sink", "web", "--neon-address", "10.0.0.5", "--recording-capture", str(capture), "--start-with", "recording"]
     )
 
-    assert config.recording_capture == str(capture)
+    assert config.recording_captures == (str(capture),)
     assert config.start_with is SourceMode.RECORDING
     assert config.neon is not None and config.neon.address == "10.0.0.5", "the live side still has its address"
+
+
+def test_a_recordings_dir_lists_every_capture_folder_in_it_by_name_after_the_ones_given(tmp_path) -> None:
+    given = _capture_folder(tmp_path, with_meta=True)
+    folder = tmp_path / "recordings"
+    folder.mkdir()
+    for name in ("b_walk", "a_walk"):
+        (folder / name).mkdir()
+        (folder / name / "meta.json").write_text("{}", encoding="utf-8")
+    (folder / "notes").mkdir()
+    (folder / "stray.txt").write_text("", encoding="utf-8")
+
+    config = build_run_config(
+        ["--source", "neon_live", "--sink", "web", "--recording-capture", str(given), "--recordings-dir", str(folder)]
+    )
+
+    assert config.recording_captures == (str(given), str(folder / "a_walk"), str(folder / "b_walk"))
+
+
+def test_a_recording_capture_can_be_repeated(tmp_path) -> None:
+    (tmp_path / "one").mkdir()
+    (tmp_path / "two").mkdir()
+    first = _capture_folder(tmp_path / "one", with_meta=True)
+    second = _capture_folder(tmp_path / "two", with_meta=True).rename(tmp_path / "two" / "walk_2")
+
+    config = build_run_config(["--source", "neon_live", "--sink", "web", "--recording-capture", str(first), "--recording-capture", str(second)])
+
+    assert config.recording_captures == (str(first), str(second))
+
+
+@pytest.mark.parametrize(
+    ("layout", "fragment"),
+    [
+        ("same_name_twice", "both called walk_1"),
+        ("empty_dir", "holds no capture folder"),
+        ("not_a_dir", "is not a directory"),
+    ],
+)
+def test_a_recordings_set_the_page_could_not_tell_apart_is_refused(tmp_path, capsys: pytest.CaptureFixture[str], layout: str, fragment: str) -> None:
+    argv = ["--source", "neon_live", "--sink", "web"]
+    if layout == "same_name_twice":
+        (tmp_path / "one").mkdir()
+        (tmp_path / "two").mkdir()
+        argv += ["--recording-capture", str(_capture_folder(tmp_path / "one", with_meta=True)), "--recording-capture", str(_capture_folder(tmp_path / "two", with_meta=True))]
+    elif layout == "empty_dir":
+        (tmp_path / "recordings").mkdir()
+        argv += ["--recordings-dir", str(tmp_path / "recordings")]
+    else:
+        argv += ["--recordings-dir", str(tmp_path / "missing")]
+
+    with pytest.raises(SystemExit):
+        build_run_config(argv)
+
+    assert fragment in capsys.readouterr().err
 
 
 def test_a_run_without_a_recording_starts_on_the_live_input() -> None:
     config = build_run_config(["--source", "neon_live", "--sink", "none"])
 
-    assert config.recording_capture is None
+    assert config.recording_captures == ()
     assert config.start_with is SourceMode.LIVE
 
 
@@ -956,6 +1014,17 @@ def test_gaze_silences_alarm_defaults_to_off() -> None:
     assert build_run_config(MINIMAL_VIDEO_ARGV).planner.gaze_silences_alarm is False
 
 
+def test_the_gaze_floor_defaults_to_none_and_is_read_in_seconds() -> None:
+    assert build_run_config(MINIMAL_VIDEO_ARGV).planner.attention_floor_seconds == 0.0
+    assert build_run_config([*MINIMAL_VIDEO_ARGV, "--gaze-floor-seconds", "0.35"]).planner.attention_floor_seconds == 0.35
+
+
+def test_a_negative_gaze_floor_is_refused_as_a_usage_error(capsys) -> None:
+    with pytest.raises(SystemExit):
+        build_run_config([*MINIMAL_VIDEO_ARGV, "--gaze-floor-seconds", "-0.1"])
+    assert "must be zero or more" in capsys.readouterr().err
+
+
 def test_gaze_silences_alarm_on_is_read_as_the_bool() -> None:
     config = build_run_config([*MINIMAL_VIDEO_ARGV, "--gaze-silences-alarm", "on"])
 
@@ -969,3 +1038,55 @@ def test_a_gaze_silences_alarm_value_outside_the_vocabulary_is_refused(capsys: p
         build_run_config([*MINIMAL_VIDEO_ARGV, "--gaze-silences-alarm", "yes"])
 
     assert "--gaze-silences-alarm" in capsys.readouterr().err
+
+
+def test_the_position_is_absent_unless_asked_for(tmp_path) -> None:
+    config = build_run_config(["--source", "neon_recording", "--recording-dir", _recording_dir(tmp_path), "--sink", "none"])
+
+    assert config.position.source is PositionSource.ABSENT
+
+
+def test_odometry_is_accepted_for_a_glasses_recording(tmp_path) -> None:
+    config = build_run_config(["--source", "neon_recording", "--recording-dir", _recording_dir(tmp_path), "--position", "odometry", "--sink", "none"])
+
+    assert config.position.source is PositionSource.ODOMETRY
+
+
+@pytest.mark.parametrize("source", ["video_file", "arcore_tcp", "logged"])
+def test_a_position_is_refused_for_a_source_without_the_glasses_imu(source, capsys) -> None:
+    with pytest.raises(SystemExit):
+        build_run_config(["--source", source, "--position", "odometry", "--sink", "none"])
+
+    assert "--position odometry only applies to neon_live or neon_recording" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(dense_slam_is_available(), reason="this Open3D build has CUDA, so dense SLAM is not refused")
+def test_dense_slam_is_refused_before_the_model_loads_without_the_cuda_build(tmp_path, capsys) -> None:
+    with pytest.raises(SystemExit):
+        build_run_config(["--source", "neon_recording", "--recording-dir", _recording_dir(tmp_path), "--position", "dense_slam", "--sink", "none"])
+
+    assert "open3d_cuda" in capsys.readouterr().err
+
+
+def test_dense_slam_is_refused_beside_a_recording_switch(tmp_path, capsys) -> None:
+    capture = _capture_folder(tmp_path, with_meta=True)
+
+    with pytest.raises(SystemExit):
+        build_run_config(["--source", "neon_live", "--sink", "web", "--recording-capture", str(capture), "--position", "dense_slam"])
+
+    assert "can't be used with --recording-capture or --recordings-dir" in capsys.readouterr().err
+
+
+def test_a_run_with_a_position_gets_the_tracker_behind_the_depth_model() -> None:
+    config = dataclasses.replace(_run_config_for(SourceKind.NEON_RECORDING), position=PositionConfig(source=PositionSource.ODOMETRY))
+
+    source = build_source(config)
+    try:
+        assert isinstance(source, PositionedDepthSource)
+        assert isinstance(source.inner, EstimatedDepthSource)
+    finally:
+        source.close()
+
+
+def test_a_run_without_a_position_gets_the_depth_model_alone() -> None:
+    assert isinstance(build_source(_run_config_for(SourceKind.NEON_RECORDING)), EstimatedDepthSource)

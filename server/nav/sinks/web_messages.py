@@ -18,6 +18,8 @@ import base64
 import json
 from enum import Enum
 
+from dataclasses import dataclass
+
 # Third party imports
 import numpy as np
 
@@ -25,7 +27,7 @@ import numpy as np
 from nav.planner.alarm import time_to_contact_from_avoidance_bits
 from nav.planner.config import OnOff
 from nav.scene.config import SceneConfig
-from nav.sinks.floor_geometry import floor_hidden_mask, floor_seen_mask, group_rings
+from nav.sinks.floor_geometry import floor_hidden_mask, floor_seen_mask, gaze_ring, group_rings
 from nav.sinks.path_style import BORDER_OPACITY, GROUP_RGB, WALL_RGB, path_color_rgb, path_fill_opacity
 from nav.sources.config import SourceMode
 from nav.sources.scene_video import VideoDescription
@@ -70,6 +72,7 @@ PLAN_VIEW_KEYS = (
     "floor_seen",
     "floor_hidden",
     "group_rings",
+    "gaze_ring",
 )
 OBSTACLE_KEYS = ("lateral_meters", "forward_meters", "is_wall")
 # Each ring the page draws over the depth or risk picture, in that picture's own pixels.
@@ -90,14 +93,28 @@ class BrowserMessageKind(Enum):
     PICTURE = "picture"
     # Which side every page's run should plan on, the live input or the recording, in a "source" field.
     SOURCE = "source"
+    # Which recording the recording side plays, its name in a "recording" field.
+    RECORDING = "recording"
     # Whether every page's run lets the gaze quiet the alarm, "off" or "on", in a "gaze_silencing" field.
     GAZE_SILENCING = "gaze_silencing"
+
+
+@dataclass(frozen=True)
+class RecordingChoice:
+    """A page's pick of recording, by name. The switch checks the name against the run's own list."""
+
+    name: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not self.name:
+            raise ValueError(f"a recording is picked by name, got {self.name!r}")
 
 
 # Each message a page sends, the field its choice is in, and the vocabulary that choice comes from.
 BROWSER_CHOICES: dict[BrowserMessageKind, type[Enum]] = {
     BrowserMessageKind.PICTURE: PictureKind,
     BrowserMessageKind.SOURCE: SourceMode,
+    BrowserMessageKind.RECORDING: RecordingChoice,
     BrowserMessageKind.GAZE_SILENCING: OnOff,
 }
 
@@ -156,11 +173,20 @@ def plan_view_message(path: PlannedPath, field: np.ndarray, grid: np.ndarray, vi
             }
             for ring in group_rings(view)
         ],
+        # Where the eyes were in the picture, or None for a frame without gaze.
+        "gaze_ring": _gaze_ring_message(view),
     }
     return message
 
 
-def browser_choice(text: str) -> PictureKind | SourceMode | OnOff:
+def _gaze_ring_message(view: DebugView) -> dict | None:
+    ring = gaze_ring(view)
+    if ring is None:
+        return None
+    return {"column_pixels": ring.column_pixels, "row_pixels": ring.row_pixels, "radius_pixels": ring.radius_pixels}
+
+
+def browser_choice(text: str) -> PictureKind | SourceMode | OnOff | RecordingChoice:
     """
     What a page asked for, read from one text frame it sent: a picture, a side to plan on, or the gaze switch.
 
@@ -193,6 +219,8 @@ def source_state_message(state: SwitchState) -> dict:
         "live_detail": state.live_detail,
         "has_recording": state.has_recording,
         "live_has_video": state.live_has_video,
+        "recordings": list(state.recordings),
+        "recording": state.recording,
     }
 
 

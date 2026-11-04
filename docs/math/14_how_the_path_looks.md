@@ -70,7 +70,7 @@ $`L_1 = (0.6114, 0.1976, 0.0999)`$. Walking toward a single post in the corridor
 | nothing in the corridor | none | 0 | 0 | (47, 111, 255), blue |
 | 2.80 m | 2.00 s | $`0.25 / 1.3863 = 0.180`$ | 0.12 | (85, 113, 233) |
 | 1.96 m | 1.40 s | $`0.5102 / 1.3863 = 0.368`$ | 0.25 | (114, 113, 210) |
-| 1.39 m | 0.99 s | $`1.0204 / 1.3863 = 0.736`$ | 0.5 | (159, 105, 163) |
+| 1.386 m | 0.99 s | $`1.0204 / 1.3863 = 0.736`$ | 0.5 | (159, 105, 163) |
 | 0.98 m | 0.70 s | $`2.0408 / 1.3863 = 1.472`$ | 1 | (235, 48, 48), red, and the alarm raises below this |
 
 These are what the code's own functions return for each row.
@@ -81,7 +81,9 @@ ends. A plain RGB average would give $`((47 + 235)/2, (111 + 48)/2, (255 + 48)/2
 instead.
 
 For the fill, take $`I = 0.37`$ bits. The opacity is $`0.7 + 0.3 \times 0.37 = 0.811`$. At $`I = 0.5`$ it's
-$`0.7 + 0.15 = 0.85`$, and anything from 1 bit up is fully solid.
+$`0.7 + 0.15 = 0.85`$, and anything from 1 bit up is fully solid. On the laptop's own depth view the
+fill also fades with time along the path, to nothing at the horizon, and the risk view draws the
+borders only.
 
 The 1 bit hasn't moved, but on 2026-10-07 the scene information started being computed from
 chances in base e (section 10), which reads higher than the old base-2 version on the same scene.
@@ -94,10 +96,12 @@ So the fill is solid more often than it was. On every planned frame of `pixel_wa
 |---|---|---|
 | Obstacle groups | amber (255, 200, 0) | `server/nav/sinks/path_style.py` |
 | Walls | magenta (255, 0, 255) | `server/nav/sinks/path_style.py` |
-| Path border | the path's color at opacity 0.6 | `server/nav/sinks/path_style.py` |
+| Path border | a 4 px black line under the path's color at 2 px, both at opacity 0.6 | `server/nav/sinks/path_style.py`, `server/nav/sinks/web_page.html` |
 | Path width | twice the body half-width, $`2 \times 0.30 = 0.60`$ m | `server/nav/sinks/web_messages.py` |
+| Group rings | one ring per group over the depth or risk picture, amber or magenta like the group, radius 5 px plus 8 px per meter of clearance, 5 to 40 px. The page draws them, behind a Rings checkbox | `server/nav/sinks/floor_geometry.py`, `server/nav/sinks/web_page.html` |
+| Gaze ring | a white ring, radius 14 px, 3 px line, where the eyes were in the planned frame, over either picture, behind a Gaze checkbox. None without gaze | `server/nav/sinks/floor_geometry.py`, `server/nav/sinks/web_page.html` |
 | Field cells out of view, light gray (110, 110, 110) | cells whose floor spot projects outside the depth image | which cells: `server/nav/sinks/floor_geometry.py`. The gray: `server/nav/sinks/web_page.html` |
-| Field cells hidden, dark gray (55, 55, 55) | in view, but the depth at the cell's pixel has no reading or stands more than 4 scatters above the floor | which cells: `server/nav/sinks/floor_geometry.py`. The gray: `server/nav/sinks/web_page.html` |
+| Field cells hidden, dark gray (55, 55, 55) | in view, but the depth at the cell's pixel has no reading, is outside 0.1 to 30 m, or stands more than 4 scatters above the floor | which cells: `server/nav/sinks/floor_geometry.py`. The gray: `server/nav/sinks/web_page.html` |
 
 The depth view and the web page call the same style functions, so they always agree.
 

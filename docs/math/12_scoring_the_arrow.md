@@ -151,6 +151,14 @@ arrow leaning more than 10° to one side for at least 0.5 s with no turn during 
 | `wifi_run_2` | the 1 s lookahead arrow | 6 | 4 | 4 | 0 | 0 | 0.40 s, 3 known, 1 at limit | 21.6 |
 | `pixel_display_run` | an older three-value arrow | 9 | 4 | 3 | 0 | 1 | 0.05 s, 2 known, 2 at limit | 10.2 |
 
+The table is per segment: a pause in the pose stream over 5 s starts a new segment, and a segment
+under 20 s isn't scored. Obstacle ahead means something stood in a patch 3.0 m long and 0.35 m to
+each side of the walker during the 2 s before the turn, on at least a quarter of the frames where
+that patch was in the picture, and reads unknown when it never was. A lead is also unknown when the
+arrow's average agreed but the arrow wasn't on the turn's side at the onset itself. The scoring runs
+as `python -m nav.evaluation <log dirs>`, three replay passes by default, and is not one of the
+`check_planner` subcommands.
+
 No turn on any walk was tagged open ahead. Before the contact term (kinetic weight 0.055, contact
 off), `pixel_walk_3` was 12 agreed and 5 wrong side of 17, with a median lead of 0.38 s. Moving the
 threshold to 8° or 14° hardly changes `pixel_walk_3`.

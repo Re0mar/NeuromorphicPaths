@@ -83,10 +83,14 @@ class FakeSwitch:
         detail: str | None = None,
         has_recording: bool = True,
         live_has_video: bool = True,
+        recordings: tuple[str, ...] | None = None,
     ) -> None:
         self.requests: list[SourceMode] = []
+        self.recording_requests: list[str] = []
         self.listeners: list = []
-        self.current = SwitchState(mode, live, detail, has_recording, live_has_video)
+        if recordings is None:
+            recordings = ("walk",) if has_recording else ()
+        self.current = SwitchState(mode, live, detail, has_recording, live_has_video, recordings, recordings[0] if recordings else None)
 
     def subscribe(self, listener):
         self.listeners.append(listener)
@@ -96,6 +100,10 @@ class FakeSwitch:
     def request(self, mode: SourceMode) -> None:
         self.requests.append(mode)
         self.announce(dataclasses.replace(self.current, mode=mode))
+
+    def request_recording(self, name: str) -> None:
+        self.recording_requests.append(name)
+        self.announce(dataclasses.replace(self.current, recording=name))
 
     def announce(self, state: SwitchState) -> None:
         """Tell every listener of a new state, the way the real switch does when the live link changes."""

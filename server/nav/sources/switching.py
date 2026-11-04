@@ -27,7 +27,7 @@ import dataclasses
 import logging
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import Enum
 
@@ -82,6 +82,10 @@ class SwitchState:
     has_recording: bool
     # Whether the live input sends video. The glasses do and the Pixel doesn't.
     live_has_video: bool
+    # Every recording the run holds, by name, and the one the recording side plays. The page lists
+    # them when there is more than one. Empty and None for a run without a recording.
+    recordings: tuple[str, ...] = ()
+    recording: str | None = None
 
 
 class OnlyWhileChosen:
@@ -154,7 +158,7 @@ class SwitchableSource:
     def __init__(
         self,
         live_factory: SideFactory,
-        recording_factory: SideFactory | None,
+        recordings: Mapping[str, SideFactory],
         initial: SourceMode,
         video_feed: SceneVideoFeed | None = None,
         live_has_video: bool = True,
@@ -163,8 +167,9 @@ class SwitchableSource:
     ) -> None:
         """
         :param live_factory: Builds the live input's source. Called again on every reconnect.
-        :param recording_factory: Builds a fresh recording source, called on every start-over. None
-            for a run with no recording, which then only ever plans on the live input.
+        :param recordings: Each recording's name and the factory that builds a fresh source for it,
+            called on every start-over. The first is the one played until a page picks another.
+            Empty for a run with no recording, which then only ever plans on the live input.
         :param initial: The side planned on from the start.
         :param video_feed: The page's video feed, or None when no display shows video.
         :param live_has_video: Whether the live input sends video, for the page to say when it doesn't.
@@ -172,9 +177,11 @@ class SwitchableSource:
         :param live_stall_seconds: How long the chosen live input may go quiet before it reads as no input.
         :raises ValueError: When the run is to start on a recording it doesn't have.
         """
-        if initial is SourceMode.RECORDING and recording_factory is None:
+        if initial is SourceMode.RECORDING and not recordings:
             raise ValueError("a run can only start on the recording when it has one")
-        self._factories: dict[SourceMode, SideFactory | None] = {SourceMode.LIVE: live_factory, SourceMode.RECORDING: recording_factory}
+        self._live_factory = live_factory
+        self._recordings: dict[str, SideFactory] = dict(recordings)
+        self._recording: str | None = next(iter(self._recordings), None)
         self._video_feed = video_feed
         self._live_has_video = live_has_video
         self._retry_seconds = live_retry_seconds
@@ -205,7 +212,15 @@ class SwitchableSource:
 
     def state(self) -> SwitchState:
         with self._lock:
-            return SwitchState(self._mode, self._live, self._live_detail, self._factories[SourceMode.RECORDING] is not None, self._live_has_video)
+            return SwitchState(
+                self._mode,
+                self._live,
+                self._live_detail,
+                bool(self._recordings),
+                self._live_has_video,
+                tuple(self._recordings),
+                self._recording,
+            )
 
     def subscribe(self, listener: Callable[[SwitchState], None]) -> Callable[[], None]:
         """
@@ -228,7 +243,7 @@ class SwitchableSource:
         with self._lock:
             if mode is self._mode:
                 return
-            if self._factories[mode] is None:
+            if mode is SourceMode.RECORDING and not self._recordings:
                 log.warning("a page asked for the %s, and this run has none", mode.value)
                 return
             self._mode = mode
@@ -243,6 +258,27 @@ class SwitchableSource:
         description = self._gates[mode].description
         if description is not None and mode is SourceMode.LIVE:
             self.video_feed_describe(description)
+        self._announce()
+
+    def request_recording(self, name: str) -> None:
+        """
+        Play the named recording whenever the recording side is chosen. A name the run lacks changes nothing.
+
+        While the recording side is in use, the new recording starts from its beginning at once, as a
+        new stretch of video. The name is checked here, once, against the run's own list.
+        """
+        with self._lock:
+            if name not in self._recordings:
+                log.warning("a page asked for recording %r, and this run has no such recording", name)
+                return
+            if name == self._recording:
+                return
+            self._recording = name
+            if self._mode is SourceMode.RECORDING:
+                self._generation += 1
+                self._newest = None
+            self._lock.notify_all()
+        log.info("recording %s chosen", name)
         self._announce()
 
     def frames(self) -> Iterator[DepthFrame]:
@@ -285,7 +321,7 @@ class SwitchableSource:
         if self._threads:
             return
         sides = [(SourceMode.LIVE, self._run_live)]
-        if self._factories[SourceMode.RECORDING] is not None:
+        if self._recordings:
             sides.append((SourceMode.RECORDING, self._run_recording))
         for mode, run in sides:
             thread = threading.Thread(target=run, name=f"{mode.value}-source", daemon=True)
@@ -305,7 +341,7 @@ class SwitchableSource:
 
     def _run_live(self) -> None:
         """The live side: connect, stream for as long as the link holds, retry when it doesn't."""
-        factory = self._factories[SourceMode.LIVE]
+        factory = self._live_factory
         while not self._is_stopping():
             source = factory(self._side_feed(SourceMode.LIVE), self._chosen(SourceMode.LIVE))
             self._put_source(SourceMode.LIVE, source)
@@ -345,21 +381,25 @@ class SwitchableSource:
                 self._lock.wait_for(lambda: self._stopping, self._retry_seconds)
 
     def _run_recording(self) -> None:
-        """The recording side: idle until chosen, then play from the start, looping, until another side is chosen."""
-        factory = self._factories[SourceMode.RECORDING]
+        """
+        The recording side: idle until chosen, then play the chosen recording from the start, looping,
+        until another side or another recording is chosen.
+        """
         while True:
             with self._lock:
                 self._lock.wait_for(lambda: self._stopping or self._mode is SourceMode.RECORDING)
                 if self._stopping:
                     return
+                name = self._recording
+                factory = self._recordings[name]
             source = factory(self._side_feed(SourceMode.RECORDING), self._chosen(SourceMode.RECORDING))
             self._put_source(SourceMode.RECORDING, source)
             # A fresh start is a new stretch of video, even when the recording was already chosen.
             self._next_generation_if(SourceMode.RECORDING)
-            log.info("playing the recording from the start")
+            log.info("playing recording %s from the start", name)
             try:
                 for frame in source.frames():
-                    if self._is_stopping() or self.mode is not SourceMode.RECORDING:
+                    if self._is_stopping() or self.mode is not SourceMode.RECORDING or self._chosen_recording() != name:
                         break
                     self._deposit(SourceMode.RECORDING, frame)
             except SOURCE_FAILURES as failure:
@@ -368,22 +408,27 @@ class SwitchableSource:
                 # A recording that won't play is a setup fault, a capture that is missing or
                 # malformed, and retrying it would only repeat it. The run stays up so the live input
                 # can still be chosen, and choosing the recording again tries once more.
-                log.error("the recording stopped (caught %s), choose it again to retry: %s", type(failure).__name__, failure)
-                self._wait_until_recording_is_left()
+                log.error("the recording stopped, %s (caught %s), choose it again to retry: %s", name, type(failure).__name__, failure)
+                self._wait_until_recording_is_left(name)
             except Exception as unexpected_error:
                 if self._is_stopping():
                     # A source closed under its own thread at shutdown can fail any way at all.
                     return
                 log.error("UNEXPECTED %s on the recording side, may need a handler, choose it again to retry", type(unexpected_error).__name__, exc_info=True)
-                self._wait_until_recording_is_left()
+                self._wait_until_recording_is_left(name)
             finally:
                 if self._take_source(SourceMode.RECORDING, source) is not None:
                     self._close_quietly(source)
 
-    def _wait_until_recording_is_left(self) -> None:
+    def _wait_until_recording_is_left(self, name: str) -> None:
         # Without this a failed recording would start over at once, and fail again, as fast as it can.
+        # Picking another recording leaves it too.
         with self._lock:
-            self._lock.wait_for(lambda: self._stopping or self._mode is not SourceMode.RECORDING)
+            self._lock.wait_for(lambda: self._stopping or self._mode is not SourceMode.RECORDING or self._recording != name)
+
+    def _chosen_recording(self) -> str | None:
+        with self._lock:
+            return self._recording
 
     def _check_live_stall(self) -> None:
         """

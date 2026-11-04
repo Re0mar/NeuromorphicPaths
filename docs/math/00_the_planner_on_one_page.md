@@ -107,7 +107,8 @@ F[38, c] \mathrel{+}= \tfrac{1}{2}\left(\frac{g_c - x_{\text{goal}}}{\lambda}\ri
 **The previous-plan prior**, on the rows in the first second, pulls the path toward where last
 frame's plan said the walker should be, $`e_k`$, after sliding that plan forward by however far
 the walker has walked since. Its spread starts at $`\rho = 0.25`$ m and widens with the old plan's
-age $`\Delta_f`$, and a plan older than 3.0 s is dropped. This is what stopped the arrow swinging
+age $`\Delta_f`$. The plan is dropped when it's older than 3.0 s, when the clock steps back, or when
+the goal moves sideways by more than 1.5 m. This is what stopped the arrow swinging
 from one side to the other every frame.
 
 ```math
@@ -159,9 +160,15 @@ under 0.7 s, and once raised, hold for 0.5 s.
 {\color{red}{\tau}} = \frac{\min_{i:\ y_i > 0,\ |x_i| \le 0.30} {\color{teal}{S}}_i}{1.4}, \qquad \text{raise when } {\color{red}{\tau}} < 0.7
 ```
 
-The same $`{\color{red}{\tau}}`$ feeds his avoidance form in bits, which colors the path and
-nothing else. At the alarm's threshold it reads 1.47 bits, and that is where the path turns fully
-red.
+The same $`{\color{red}{\tau}}`$ feeds his avoidance form in bits, which colors the path and gives
+the page its time-to-contact readout, and nothing else. For the bits the clearance is floored at
+0.06 m first, so the figure never runs past what 0.06 m gives. At the alarm's threshold it reads
+1.47 bits, and that is where the path turns fully red.
+
+Two more things come out of this step. With the glasses and `--gaze-silences-alarm on`, off by
+default, the alarm is raised as above but not heard while the eyes are on the thing that raised it,
+and any page can flip that for the whole run. And every path carries how loud each ear should be: a
+steering cue by the heading error, and the danger's ear dropped while the alarm is heard.
 
 ```math
 {\color{purple}{U}}_{\text{avoid}} = \frac{(1\ \text{s} / {\color{red}{\tau}})^2}{2 \ln 2}

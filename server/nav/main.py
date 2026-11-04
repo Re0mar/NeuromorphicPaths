@@ -4,8 +4,14 @@
 import logging
 
 # Local package imports
-from nav.config import build_run_config
-from nav.runtime.loop import run
+from nav.sources.estimator import load_torch_before_open3d
+
+# Before nav.config, which imports Open3D through the scene. Open3D's CUDA build loaded first stops
+# torch from loading, see load_torch_before_open3d.
+load_torch_before_open3d()
+
+from nav.config import build_run_config  # noqa: E402
+from nav.runtime.loop import run  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:

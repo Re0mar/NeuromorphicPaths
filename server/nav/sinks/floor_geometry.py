@@ -62,6 +62,29 @@ class GroupRing:
     is_wall: bool
 
 
+@dataclass(frozen=True)
+class GazeRing:
+    """Where the eyes were in the depth picture, as sent, for the page to draw a ring around."""
+
+    column_pixels: int
+    row_pixels: int
+    radius_pixels: int
+
+
+# One size for the gaze ring, in picture pixels. About the Neon's own accuracy at the picture's
+# scale, and large enough to find at a glance.
+GAZE_RING_RADIUS_PIXELS = 14
+
+
+def _into_picture(column: int, row: int, width: int, height: int, turns: int) -> tuple[int, int]:
+    """A scaled pixel carried through the quarter turns the picture gets, so it lands where the picture shows it."""
+    for _ in range(turns):
+        # np.rot90 puts source (row, column) at (width - 1 - column, row), and swaps the sides.
+        column, row = row, width - 1 - column
+        width, height = height, width
+    return column, row
+
+
 def picture_scale(depth_columns: int) -> int:
     """The whole number the depth image is scaled up by in the depth and risk pictures."""
     return max(1, DEPTH_VIEW_TARGET_WIDTH // depth_columns)
@@ -113,16 +136,30 @@ def group_rings(view: DebugView) -> list[GroupRing]:
         column, row = float(column) * scale, float(row) * scale
         if not (0 <= column < columns * scale and 0 <= row < rows * scale):
             continue
-        turned_column, turned_row = int(column), int(row)
-        width = columns * scale
-        height = rows * scale
-        for _ in range(turns):
-            # np.rot90 puts source (row, column) at (width - 1 - column, row), and swaps the sides.
-            turned_column, turned_row = turned_row, width - 1 - turned_column
-            width, height = height, width
+        turned_column, turned_row = _into_picture(int(column), int(row), columns * scale, rows * scale, turns)
         radius = int(np.clip(GROUP_RING_MIN_RADIUS + GROUP_RING_PIXELS_PER_METER * point.clearance_meters, GROUP_RING_MIN_RADIUS, GROUP_RING_MAX_RADIUS))
         rings.append(GroupRing(turned_column, turned_row, radius, bool(point.is_wall)))
     return rings
+
+
+def gaze_ring(view: DebugView) -> GazeRing | None:
+    """
+    The gaze's ring in the depth picture: the sample nearest the frame's stamp, scaled and turned as the picture is.
+
+    :param view: The frame, with the gaze pixel the source matched to it, at the depth image's resolution.
+    :return: The ring, or None when the frame carries no gaze or the gaze is off the image.
+    :rtype: GazeRing | None
+    """
+    pixel = view.frame.gaze_pixel
+    if pixel is None:
+        return None
+    rows, columns = view.frame.depth_meters.shape
+    scale = picture_scale(columns)
+    column, row = float(pixel[0]) * scale, float(pixel[1]) * scale
+    if not (np.isfinite(column) and np.isfinite(row)) or not (0 <= column < columns * scale and 0 <= row < rows * scale):
+        return None
+    turned_column, turned_row = _into_picture(int(column), int(row), columns * scale, rows * scale, upright_quarter_turns(view.floor))
+    return GazeRing(turned_column, turned_row, GAZE_RING_RADIUS_PIXELS)
 
 
 def floor_point(floor: Plane, forward_meters: float | np.ndarray, lateral_meters: float | np.ndarray) -> np.ndarray:

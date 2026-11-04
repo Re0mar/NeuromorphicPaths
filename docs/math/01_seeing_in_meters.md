@@ -120,6 +120,12 @@ frame keeps the last floor it had. On a replay with the conversion, 395 of 432 f
 > made square first and the fallback camera has one focal. The depth image's exact size is set
 > inside Depth Anything 3 and isn't written in the repository. 504 by 378 is inferred.
 
+The model is `--model`, run at `--process-resolution`. A NESTED checkpoint answers in meters itself,
+and a relative one is refused at startup. The camera matrix is the device's own calibration when it
+has one, else the model's, else `--fallback-fov`. Before the conversion, `--confidence-drop-percentile`,
+30 by default, blanks the least confident pixels. The default metric model gives no confidence map,
+so there it blanks nothing, and the code says so once.
+
 > [!NOTE]
 > **Neon Player's depth plugin is in meters too, and no route reads it any more.** Pupil Labs'
 > plugin applies the same conversion before it saves its depth maps. It uses the recording's mean

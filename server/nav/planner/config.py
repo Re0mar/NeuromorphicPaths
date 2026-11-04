@@ -147,6 +147,8 @@ class PlannerConfig:
     # is often slower than that, and the credit then rarely matches. Measured, and kept as designed.
     attention_credit_seconds: float = 2.0
     attention_match_meters: float = 0.5
-    # Under this time to contact the alarm is heard whatever the gaze says, because looking at
-    # something is not avoiding it. Half the alarm's threshold, a starting value for the live walk.
-    attention_floor_seconds: float = 0.35
+    # Under this time to contact the alarm is heard whatever the gaze says. Zero is no floor: the
+    # gaze on the danger quiets the alarm at any distance, the user's call after the 2026-10-15
+    # manual test, where a desk inside the footprint kept a 0.35 s floor sounding the whole run.
+    # A run that wants the old floor passes --gaze-floor-seconds 0.35.
+    attention_floor_seconds: float = 0.0
