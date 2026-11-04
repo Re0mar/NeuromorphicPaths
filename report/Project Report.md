@@ -41,8 +41,9 @@ papers roel: mute conversation in cars
 	    - What is implemented, but not rigurously tested (and not part of the current prototype)
         - Usage of magic numbers
         - Inclusion of accelerometer and gps?
+        - Better (fancier) demo for publication?
     - Presentation mentions
-        
+    - AI declaration
 - References
 # Introduction
 In recent years, the problem of distracted people taking part in trafic has been on the rise, caused for the most part by increased usage of mobile phones and similar devices.
@@ -285,6 +286,7 @@ https://www.nature.com/articles/s41598-025-08475-4
 # Conclusion
 
 # References
+> TODO update
 1. Rijniers, R. (2017). *Ogen op de weg ☺ Een vermindering van het smartphonegebruik op de N36 middels een gedragsinterventie langs de weg* [Radboud Universiteit]. https://theses.ubn.ru.nl/items/c8935b8d-8583-455a-97e4-90905e7adb13/full
 2. Haas, G. (2023). *Towards Auditory Interaction: An Analysis of Computer-Based Auditory Interfaces in Three Settings* [Doctoral dissertation, Ulm University]. https://oparu.uni-ulm.de/server/api/core/bitstreams/c45354b6-409b-4444-81e5-d55b99acf3f1/content
 3. *[Authors]* (2025). *Interactive Inference: A Neuromorphic Theory of Human-Computer Interaction*. https://arxiv.org/abs/2502.05935 
