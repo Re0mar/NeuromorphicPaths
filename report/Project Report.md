@@ -52,7 +52,7 @@ The effects of this have been pretty clear, causing many traffic accidents which
 In an effort to reduce these collisions our group set out to research a potential aid based upon surprise theory, 
 where the user is either alerted or has the distractions on the phone muted whilst their environment is to surprising, 
 as this increase in surprise should correlate with an increased risk for accidents.
-Put into practice, our team will work with an camera device to generate a map of the surroundings, 
+Put into practice, our team will work with an camera device to generate a map of the surroundings,  
 after which Fitt's Law is used to identify areas of high surprise.
 These high surprise areas will then be used to alert the user, whilst also steering them clear of it, theoretically eliminating the potential for accidents or collisions to occur.
 
