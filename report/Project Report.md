@@ -75,9 +75,7 @@ The hardware we use also limits what we can do. The Pupil Labs Neon glasses are 
 Interactive inference describes human-computer interaction as a form of Bayesian inference, where movement is the result of the sensorimotor system reducing the difference between its predictions and what it observes [[3]](#references). In this view, Fitts' Law (the relationship between the distance to a target, its width, and the time needed to reach it) follows from this inference process. Moving towards a target is described as relaxing along a surprise potential. This potential is approximately the negative log probability of the goal distribution and equals a KL divergence. It has the same form as the potential energy of a spring [[3]](#references): the further the current state is from the goal, relative to the tolerance around it, the higher the surprise.
 
 We apply this idea to the physical environment of the user. An obstacle is a place the user should not end up. The surprise of a point in the environment depends on the signal-to-noise ratio of the gap between the user and that point:
-
 $$U = \tfrac12 \left(\frac{\Delta S}{S}\right)^2$$
-
 where $S$ is the gap and $\Delta S$ is the uncertainty of that gap. We use this formulation twice in the pipeline:
 
 1. **As a weight for every cell.** The floor plan is divided into cells. For each cell the uncertainty is the measured *wobble* $N$, and the gap is $S = d - 0.35$, which gives $U=\frac{1}{2}\left( \frac{N}{S} \right)^2$. Here $d$ is the distance between the centre of the person and the closest point of the object, and 0.35 m accounts for the forward-most part of the user. This value is the cost of a cell in the planner.
@@ -163,32 +161,28 @@ Every point that is either too high or too low to collide with is filtered out. 
 Finally, the filtered point cloud is projected onto a 2D top-down representation of the environment by using the IMU (Inertial Measurement Unit) data to determine each point's lateral and forward position. 
 
 ## Point Cloud Cost
-- **chop into cells:** surviving points flattened onto floor -> (lateral, forward) from walker -> 0.25 m squares ("cells"), 3 m each side, 6 m ahead. One cell = one obstacle from here on
-  - cells with fewer than 2 points dropped (one point as likely depth noise as a thing)
-  - each cell keeps closest point to walker + tallest point. 1.5 m or taller -> "wall"
-  - cell id = row and column on grid, so **without a position the grid moves with the walker** and a post changes id every 0.25 m walked. With `--position`, grid pinned to the world and ids stick (see Part 1)
-- **gap (S):** distance from edge of walker's footprint to cell's closest point:
+After the point cloud has been generated, each group of points gets a 'price' assigned to it. This price is effectively the surprise the user will experience when encountering this group of points, and is used by the planning algorithm to compute the optimal path using least surprise.
 
-  $$S = d - r, \qquad r = 0.35 \text{ m}$$
+The 2D top-down map of points is first chopped into a grid of $0.25m$ squares ('cells'), for a grid that extends $6m$ in front of the walker and $3m$ to either side. Cells with fewer than 2 points are filtered out as they likely the result of dept noise. For each cell, we select the single point that is closest to the walker, raise it to the height of the highest point in the cell and delete all other points. If the height of this point $e \ge 1.5m$, the entire cell is marked as a 'wall'. Every frame is analyzed at face value, so the entire grid moves with the walker.
 
-  - $d$ = distance from walker center to cell's closest point, $r$ = footprint radius (shoulder half-width plus margin), floored at 0 here, at $\epsilon = 0.06$ m in planner
-    - NOTE: 0.35 m is a circle around walker, same every direction. Old notes called it "the forward-most part of the user"
-- **wobble (N):** how much a cell's gap jumped around lately. SD of $S$ over last 0.5 s, needs at least 3 samples, never under 0.01 m:
-
-  $$N = \max\!\left(\operatorname{std}\{S_{t}\}_{t \in \text{last } 0.5\text{ s}},\; 0.01\right)$$
-
-  - steadily measured cell = small $N$, distance jumping half a meter between frames = big $N$. Paper calls this the noise, same units as $S$
-  - **in practice N is almost always 0.01 m on the glasses**: at 2.5 to 3.5 planned frames/s the 0.5 s window holds 1 or 2 samples, under the 3 needed. Measured on about 0% of obstacles, position or not (see Part 1)
-    - NOTE: this is why contact term below exists. Widening window to hold 3 samples still open
-  - window is our choice (professor's slides use 1 s), 0.01 m floor is our choice so a steady cell still costs something
-- **surprise per cell:** half the squared signal-to-noise, capped at $2 \times 10^4$:
-
-  $$U = \tfrac12 \left(\frac{N}{S}\right)^2$$
-
-  - $U$ = surprise (natural-log units, "nats", turned into bits once at end), $S$ floored at $\epsilon = 0.06$ m so touching isn't infinite. Form, cap and $\epsilon$ are the professor's
-  - wall's $N$ tripled before this, so walls avoided further out than posts (our addition)
-- what scene hands planner per cell: closest point (lateral, forward), $S$, $N$, wall flag, velocity (only with a position, planner doesn't read it yet)
-- **wobble in System Overview:** $N$ above, frame-to-frame jitter of a cell's measured gap, not of the camera
+Each point is given a surprise value based solely on the gap and wobble of that point. The gap $S$ is defined as the difference between the distance from the walker to the cell's closest point $d$ and the edge of the walker's circular footprint with radius $r$:
+$$
+S=d-r \qquad r=0.35 \text{ m}
+$$
+Wobble $N$ is a measure of how much the gap for a given cell has changed over the last few frames. For this, it evaluates values of $S$ over the last $0.5 \text{ s}$, computes the standard deviation given $\ge 3$ samples and sets the lower bound of the result to be $0.01 \text{ m}$. The value of $N$ is tripled for points $p$ in that are walls $W$ to encourage the planner to steer around them:
+$$
+N=max(SD\{S_{t} \mid t \le 0.5 \text{ s}\}, 0.01) 
+\qquad
+N = 
+     \begin{cases}
+       3N & \text{if } p \in W \\
+       N &\text{otherwise} \\ 
+     \end{cases}
+$$
+Each cell is assigned a measure of surprise $U$ which is defined as being half of the squared signal-to-noise:
+$$
+U = \frac{1}{2} \left( \frac{N}{S} \right)^2
+$$
 
 ## Planning
 - **field:** cost-per-second for every future moment and sideways position
