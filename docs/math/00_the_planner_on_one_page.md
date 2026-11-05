@@ -34,7 +34,7 @@ The alarm never reads the plan. It looks at the same scene points and nothing el
 ## 1. What comes in
 
 The scene hands over one point per 0.25 m square: sideways $`x`$, ahead $`y`$, a noise
-$`{\color{orange}{N}}`$ (how much its distance wobbled over the last 0.5 s, never below 0.01 m),
+$`{\color{orange}{N}}`$ (how much its distance wobbled over the last 1 s, never below 0.01 m),
 and a wall flag. Before any term sees a wall, its noise is tripled, so the planner treats it as
 less certain and keeps more room from it.
 

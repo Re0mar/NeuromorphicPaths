@@ -714,9 +714,9 @@ conditions they were taken under and the commands that rerun them, are in
   out on blank walls, and is unreliable on moving objects. Static obstacles first.
 - Estimator depth flickers between frames and its scale can drift. The pose never comes from it.
 - The glasses have no position unless `--position` asks for one. Without one, N is approximate
-  because the ground grid moves with the walker. With one, the grid stays put, but N still sits at
-  its floor, because the 0.5 s window holds one or two of the 2.5 to 3.5 frames planned a second
-  and N needs three. Neither way keeps obstacles that are out of view.
+  because the ground grid moves with the walker. With one, the grid stays put, and the arrow sits
+  at its limit far more often. N needs three samples in its 1 s window, which about half the cells get
+  at the 2.5 to 3.5 frames planned a second. Neither way keeps obstacles that are out of view.
 - `--position dense_slam` is about 1 m off on a recorded walk at the rate the pipeline runs, and
   `odometry` 0.2 to 0.3 m. Dense SLAM tracked to 0.18 m only with depth for every frame at 30 a
   second, which the depth model can't make as the walk happens. See
