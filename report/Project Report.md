@@ -219,6 +219,14 @@ $$
 C_{bits} = \frac{C_{nats}}{\ln 2}
 $$
 ## Collision Detection
+The prototype continuously scans for potential collisions using the data from the point cloud and alarms the user when it detects a dangerous situation. This happens independently from route planning so that it is reliable when the path is wrong. 
+
+Corridors are tricky, as their narrowness generates high levels of surprise even though the walker is experiencing low levels of danger. A corridor is a line of cells ahead of the walker on either side, spaced in such a way that continuing forward could cause a collision. To account for this, the alarm only warns the user if the obstacles are both in front of the walker and are not spaced sufficiently for the walker to fit between: 
+$$
+y>0 \, \land |x| \le 0.30 \text{ m}
+$$
+
+
 - separate from plan on purpose: reads obstacles, never the path -> still fires when plan is wrong
 - **corridor:** cells strictly ahead, within 0.30 m (body half-width) either side. Furniture being walked past isn't in it, neither are sides of a doorway you fit through
   - NOTE: 0.30 m, not the 0.35 m footprint: at 0.35 + 0.15 a 0.9 m doorway alarmed on 93 % of frames, at 0.30 it's 36 %
