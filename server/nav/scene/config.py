@@ -24,7 +24,7 @@ class SceneConfig:
     grid_half_width_meters: float = 3.0  # Old file's x_half.
     grid_forward_meters: float = 6.0  # Old file's z_max.
     min_points_per_cell: int = 2  # One point is as likely to be depth noise as an object.
-    noise_window_seconds: float = 0.5  # Half a second of history is what N is measured over.
+    noise_window_seconds: float = 1.0  # His car-following window, College 5 PDF page 65. 0.5 s left N at its floor on the glasses.
     min_history_samples: int = 3  # Below this a standard deviation says nothing.
     noise_floor_meters: float = 0.01  # N never goes below this. N is the numerator, so a steady group still costs something.
     floor_candidate_min_below_camera_meters: float = 0.5  # Old file: only points this far below the camera vote for floor.

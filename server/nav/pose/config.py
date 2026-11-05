@@ -4,7 +4,8 @@ Which position source a run uses, and the settings each one reads.
 The glasses give orientation from their IMU and no position. These are the two ways a position can
 be measured from the depth the pipeline already makes, both from Open3D's RGB-D tracking. Off by
 default. At the 2.5 to 3.5 depth frames a second this laptop makes as a walk plays, dense SLAM is
-about 1 m off and odometry 0.2 to 0.3 m, and neither changes the planner's inputs yet.
+about 1 m off and odometry 0.2 to 0.3 m. A position fixes the cells to the world, which changes
+what the planner gets, and nothing yet shows that it makes the plans better.
 docs/evaluation/neon_position_evaluation.md has the measurements.
 """
 

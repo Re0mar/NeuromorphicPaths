@@ -73,7 +73,7 @@ What the planner computes, per second, for one point:
 | 1 | $`p(x) \propto e^{-{\color{purple}{U}}}`$, $`{\color{purple}{U}} = \dfrac{(x - \mu)^2}{2\sigma^2}`$ | A bell curve is e to the minus something. Minus its log hands back that something, with the constant dropped |
 | 2 | $`{\color{teal}{S}} = x - \mu`$, $`{\color{orange}{N}} = \sigma`$, so $`{\color{purple}{U}} = \tfrac12({\color{teal}{S}}/{\color{orange}{N}})^2`$ | The error is the signal and the spread is the noise |
 | 3 | $`{\color{purple}{U}} = \tfrac12(\Delta{\color{teal}{S}}/{\color{teal}{S}})^2`$ | Avoiding a target swaps signal and noise. The gap is what keeps you safe, so it goes on the bottom |
-| 4 | $`\Delta{\color{teal}{S}} \to {\color{orange}{N}}`$, $`{\color{teal}{S}} \to d - r`$ | Our wobble over 0.5 s, and the gap from each candidate position |
+| 4 | $`\Delta{\color{teal}{S}} \to {\color{orange}{N}}`$, $`{\color{teal}{S}} \to d - r`$ | Our wobble over 1 s, and the gap from each candidate position |
 | 5 | $`\max({\color{teal}{S}}, 0.06)`$, $`\max({\color{orange}{N}}, 10^{-6})`$ | The $`{\color{teal}{S}}`$ floor keeps the fraction finite when the walker touches the point. The $`{\color{orange}{N}}`$ floor keeps a zero $`{\color{orange}{N}}`$ from reading as exactly zero. Live, the scene already floors $`{\color{orange}{N}}`$ at 0.01 m |
 | 6 | $`\min(\cdot, 2.0 \times 10^4)`$ | An upper limit on one point's surprise |
 | 7 | multiply by $`\Delta t = 0.1`$ s in the path search | It's a rate per second (section 7) |
