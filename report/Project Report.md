@@ -176,7 +176,7 @@ N =
 $$
 Each obstacle point is assigned a measure of (collision) surprise $U$, which is quantified in natural-log units (nats), which become bits when divided by $\ln 2$ [(Vertegaal & Rauterberg, 2026, Eq. 2)](#references). Surprise is defined as being half of the squared noise-to-signal ratio:
 $$
-U = \frac{1}{2} \left( \frac{N}{S} \right)^2
+U_{collision} = \frac{1}{2} \left( \frac{N}{S} \right)^2
 $$
 
 ## Planning
@@ -198,31 +198,28 @@ This is done to convert the scalar surprise into a rate per second, so it can be
 $$
 U_{contact}=\frac{-\ln \Phi\left( \frac{S_{b}}{\sigma} \right)}{\tau_{b}}
 $$
-
-
-- **field:** cost-per-second for every future moment and sideways position
-  - time: steps of $\Delta t = 0.1$ s out to a 3.8 s horizon (settings of our implementation). Sideways: 0.1 m spacing, 3 m each way (our choice)
-  - at step $k$, walker assumed $1.4 \cdot k\Delta t$ m further ahead (walking speed 1.4 m/s, our choice) -> every cell that much nearer. Obstacles held still (motion prediction exists but off)
-  - two terms added at each (step, position), both as rates per second:
-    - **professor's collision surprise:** $\tfrac12 (N/S)^2$ from Point Cloud Cost, $S$ measured from candidate position
-    - **our contact term:** how surprising for the body to touch the cell at all, whatever the noise. Professor's term alone lets a steadily measured post (small $N$) cost less to hit than to dodge, so plan walked into things
-
-      $$U_{\text{contact}} = \frac{-\ln \Phi\!\left(S_b / \sigma\right)}{\tau_b}, \qquad S_b = d - 0.30, \qquad \sigma = \sqrt{N^2 + 0.10^2}, \qquad \tau_b = \frac{2 \cdot 0.30}{1.4}$$
-
-      - $S_b$ = gap to body (half-width 0.30 m, narrower than 0.35 m footprint). $\sigma$ = spread of where body really is (cell's $N$ plus 0.10 m walker sway, an assumption, never measured). $\Phi$ = standard normal cumulative, so $\Phi(S_b/\sigma)$ = chance of getting past cleanly, $-\ln$ of it = surprise of that. $\tau_b$ = 0.43 s to walk past something. Capped at 50 per contact
-  - within one cell take worst point, across cells add up. Scene sends one point per cell today anyway
-  - **goal:** added only to last row: $\tfrac12 ((x - x_{\text{goal}}) / 1.5)^2$, $x_{\text{goal}}$ = 0 (straight ahead) or where gaze lands on floor (`--goal gaze`). Tolerance 1.5 m = half a hallway. Only breaks ties, can't pull plan through anything
-  - **previous-plan prior (our addition, on by default):** dynamic program forgets everything between frames, so with something dead ahead the arrow flipped left/right 65 to 127 times a minute on our walks. Fix in the professor's own form: prior pulling toward where last frame's plan said we'd be by now
-
-    $$U_{\text{prior}} = \tfrac12 \frac{(x - x_{\text{prev}})^2}{0.25^2 + 0.05\,\Delta T}$$
-
-    - $x_{\text{prev}}$ = last plan's position at this row, slid forward by $1.4 \cdot \Delta T$ (we assume walker followed it). $\Delta T$ = seconds since that plan. Spread 0.25 m widening with age. Only on first 1 s of rows (later rows free to replan). Dropped after a 3 s gap or when goal moves sideways more than 1.5 m. Kept in walker's frame, so no position needed
-    - after the sweep: flips 0 to 1.3 a minute instead of 65 to 127
-- **dynamic program:** cheapest sideways path through field: Hamiltonian planning [(Vertegaal, 2026c, pp. 8, 13)](#references), search itself is our implementation
-  - each step costs field at position reached + sideways effort $\tfrac12 w v_x^2$, both $\times\, \Delta t$. $v_x$ = sideways speed, max 1 m/s (one 0.1 m cell per step). $w = 6.5$ (our choice, a weight of 0.055 made plan sidestep at full speed whenever anything was ahead)
-  - cheapest cost to every (step, position) with back-pointers -> cheapest end position wins -> walk pointers back = path
-  - cost of chosen path minus what prior charged (that's memory, not scene) -> bits, $\text{bits} = \text{nats} / \ln 2$. User model reads this
-
+For each time/position pair in the field, the planner combines the two surprises to determine the surprise of the single 'worst' point in that cell:
+$$
+U_{point} = U_{collision} + U_{contact}
+$$
+Next, a goal term is used by the planner to incorporate the eye tracking data (gaze) to steer the walker into the direction they're looking in the event a tie between equally costly paths is reached. Each candidate position in the final row $x$ is used in conjunction with the desired position in the final row $x_{goal}$  to allow the user to 'choose' a preferred path. The difference between these two is divided by the tolerance $T$, which signifies the maximum acceptable lateral distance from the gaze to the goal. If the walker's gaze falls outsize of $T$, the tie is broken using random chance:
+$$
+\frac{1}{2} \left( \frac{x-x_{goal}}{T} \right)^2 \qquad T = 1.5 \text{ m}
+$$
+In order to prevent the planner from outputting a completely different path due to the slightest bit of noise, a previous plan prior is used pull the arrow towards where it was last frame. A penalty $U_{prior}$ is added to every candidate lateral position $x$ in the field, based on how much it deviates from where the previous plan predicted the walker would be now $x_{prev}$ given the time since that plan $\Delta T$:
+$$
+U_{prior} = \frac{1}{2}\cdot \frac{(x-x_{prev})^2}{0.25^2 + 0.05 \cdot \Delta T}
+$$
+This prior is added the field. A dynamic program then chooses the cheapest sideways route trough the field over time. The cost of each step is that of the entry in the field at the position reached $[k,c]$, added to the squared cost of moving sideways $v_{x}$. A weight variable $w$ is introduced to help encourage the planner to avoid overly diagonal paths.
+$$
+C_{step} = \left( F[k,c] + \frac{1}{2} \cdot w\cdot v_{x}^2 \right)\cdot \Delta t
+\qquad
+w = 6.5
+$$
+The planner uses back-pointers in a dynamic programming algorithm to compute and store the cheapest reachable state for an increasing time interval $\Delta T=0.1\text{ s}$ starting at the walker, until it reaches the temporal horizon at $t=3.8 \text{ s}$. The planner then reports the cell with the cheapest final cost and follows it's back-pointers to reconstruct the path. This value is converted from nats to bits before being read by the user model.
+$$
+C_{bits} = \frac{C_{nats}}{\ln 2}
+$$
 ## Collision Detection
 - separate from plan on purpose: reads obstacles, never the path -> still fires when plan is wrong
 - **corridor:** cells strictly ahead, within 0.30 m (body half-width) either side. Furniture being walked past isn't in it, neither are sides of a doorway you fit through
