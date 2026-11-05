@@ -231,8 +231,6 @@ $$
   - danger: while alarm is heard, ear on danger's side drops to that 10 % floor. Dead ahead ducks both
 - **what reaches the walker vs what's for us:** ear gains and alarm sound are the walker's. Arrow, red, rings, plan view, pictures and bits are evaluation/demo (walker isn't looking at a screen)
 
-## Experimental Conditions
-
 ## Hardware and Data Capture
 - camera: Neon scene camera, 1600 × 1200 at 30 fps, IMU (~100 Hz) and eye-tracking/gaze (200 Hz)
 - Server: laptop with a Quadro T2000 GPU (4 GB), runs the whole pipeline + serves the webpage
