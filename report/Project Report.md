@@ -83,7 +83,7 @@ We apply this idea to the physical environment of the user. An obstacle is a pla
 $$U = \tfrac12 \left(\frac{\Delta S}{S}\right)^2$$
 where $S$ is the gap and $\Delta S$ is the uncertainty of that gap [(Vertegaal, 2026c, pp. 61-65)](#references). We use this formulation twice in the pipeline:
 
-1. **As a weight for every cell.** The floor plan is divided into cells. For each cell the uncertainty is the measured *wobble* $N$, and the gap is $S = d - 0.35$, which gives $U=\frac{1}{2}\left( \frac{N}{S} \right)^2$. Here $d$ is the distance between the centre of the person and the closest point of the object, and 0.35 m accounts for the forward-most part of the user. This value is the cost of a cell in the planner.
+1. **As a weight for every cell.** The floor plan is divided into cells. For each cell the uncertainty is the *wobble* $N$, and the gap is $S = d - 0.35$, which gives $U=\frac{1}{2}\left( \frac{N}{S} \right)^2$. Here $d$ is the distance between the centre of the person and the closest point of the object, and 0.35 m accounts for the forward-most part of the user. This value is the cost of a cell in the planner.
 2. **As time to impact.** When the uncertainty is the distance closed in one second, the equation becomes $U=\frac{1}{2}\left( \frac{1s}{\tau} \right)^2$, where $\tau$ is the time until impact, using the ratio from course lecture slides [(Vertegaal, 2026c, p. 65)](#references). This form is used for collision detection, with the nearest obstacle straight ahead: an obstacle that will be reached soon is much more surprising than one far away, and the surprise grows quadratically as $\tau$ shrinks.
 
 Both forms express how reliably the user can predict the distance to an obstacle. The exact definitions of $N$ and the cell grid are given in the [Methodology](#methodology).
@@ -112,7 +112,7 @@ Adding an attracting goal to repelling obstacles is how artificial potential fie
 ## Neon smart glasses
 A pair of [Pupil Labs Neon smart glasses](https://pupil-labs.com/products/neon) were provided to us by the course coordinator and act as the accessory to provide a real-time stream of images to be analyzed. Included with this is a [Motorola Edge 40 Pro](https://mijnmoto.nl/product/motorola-edge-40-pro/) smartphone, which comes paired with the glasses and allows us to control, review and analyse the recordings. 
 ## Neon Companion
-The [Neon Companion](https://pupil-labs.com/products/neon/software) phone app runs on the phone the glasses are connected to and is used to read out and record the data from the camera and eye tracker on the glasses. In the prototype, the phone broadcasts the live feed from the glasses over the local network so that this data can be analyzed on a different device. Apart from a video feed, the real-time API also includes information about the glasses' camera calibration and a clock offset used to straighten every frame and sync measurements respectively (see [Appendix D](d-neon-companion-api)). The live feed moreover includes gaze data from the eye tracker, which is used in the prototype both to optionally silence the alarm when the user looks at detected danger and by the path planner as the preferred direction to walk in.
+The [Neon Companion](https://pupil-labs.com/products/neon/software) phone app runs on the phone the glasses are connected to and is used to read out and record the data from the camera and eye tracker on the glasses. In the prototype, the phone broadcasts the live feed from the glasses over the local network so that this data can be analyzed on a different device. Apart from a video feed, the real-time API also includes information about the glasses' camera calibration and a clock offset used to straighten every frame and sync measurements respectively (see [Appendix D](#d-neon-companion-api)). The live feed moreover includes gaze data from the eye tracker, which is used in the prototype both to optionally silence the alarm when the user looks at detected danger and by the path planner as the preferred direction to walk in.
 ## Image analysis
 Depth Anything 3 is a model that "predicts spatially consistent geometry from an arbitrary number of visual inputs, with or without known camera poses" [Source](https://depth-anything-3.github.io/). It is used to estimate a depth map given an input of a single image [(Lin et al., 2026)](#references).
 
@@ -122,20 +122,22 @@ Depth Anything 3 is a model that "predicts spatially consistent geometry from an
 ## System Overview
 The smart glasses stream video, inertial measurement unit (IMU) readings, and gaze data to the Neon Companion app on a paired phone. The app forwards this data over the local Wi-Fi network to the server. A background process decodes the incoming video at 30 frames per second, while the planning worker always takes the newest available frame rather than building up a queue. If processing falls behind, older frames are discarded so that the system continues to work with a recent view of the environment.
 
-Before analysis, the selected frame is corrected using the glasses camera calibration. The server associates it with the closest IMU reading, provided that reading is within 50 ms of the frame's capture time, without a sufficiently close reading, the frame is not used because its orientation cannot be determined reliably. Depth Anything 3's metric large model then estimates a depth map in metres. The model supplies depth, not a height map, so the server uses the depth and IMU data to reconstruct 3D points and estimate the floor. It filters the points to retain those between ankle and head height, then projects them onto a 2D floor grid of 0.25 m cells. Each cell is characterized by its distance from the walker and by the small changes of that distance across recent frames, which represents how much the measured gap varies over time. Camera position can also be estimated using odometry or dense SLAM, but both options are disabled by default.
+Before analysis, the selected frame is corrected using the glasses camera calibration. The server associates it with the closest IMU reading, provided that reading is within 50 ms of the frame's capture time. Without a sufficiently close reading, the frame is still used, and the server assumes the head is level. Depth Anything 3's metric large model then estimates a depth map in meters. The model supplies depth, not a height map, so the server uses the depth and IMU data to reconstruct 3D points and estimate the floor. It filters the points to retain those between ankle and head height, then projects them onto a 2D floor grid of 0.25 m cells. Each cell is characterized by its distance from the walker and by the small changes of that distance across recent frames, which represents how much the measured gap varies over time. Camera position can also be estimated using odometry or dense SLAM, but both options are disabled by default (see [Appendix G](#g-camera-position)).
 
-The planner assigns costs to the cells and uses dynamic programming to find a low-cost path over the next few seconds. It converts that path into a heading and determines whether an alarm should sound; gaze data can optionally silence the alarm when the user looks toward a detected hazard. Separately, the user model measures the avoidance cost of the resulting movement in bits. It is an evaluation component: it observes and scores the path, but does not steer the planner.
+The planner assigns costs to the cells and uses dynamic programming to find a low-cost path over the next few seconds. It converts that path into a heading and determines whether an alarm should sound. Gaze data can optionally silence the alarm when the user looks toward a detected hazard. Separately, the user model measures the avoidance cost of the resulting movement in bits. It is an evaluation component: it observes and scores the path, but does not steer the planner.
 
-For evaluation and documentation, the server sends the plan with  the heading, alarm state, and associated measurements to a webpage over HTTPS on the local network. The webpage decodes the glasses video stream and overlays the plan and other information for inspection, it is not intended to serve as the user-facing interface.
+For evaluation and documentation, the server sends the plan with the heading, alarm state, and associated measurements to a webpage over HTTPS on the local network. The webpage decodes the glasses video stream and overlays the plan and other information for inspection. It is not intended to serve as the user-facing interface.
+
+NOTE: Dense SLAM or Odometry-based camera positions are optional (see [Limitations](#limitations))
 
 ![Component Diagram|700](diagrams/ComponentDiagram.drawio.png)
 
 ## Point Cloud Generation
 Point cloud generation refers to the repeated creation of a 3D map of points that are most crucial for navigation. It is generated primarily by analyzing the video feed from the glasses, but could alternatively simply be obtained from LiDAR sensors on select smartphones and smart glasses. This would nullify the need for the additional computation discussed in this section. The general flow for point cloud generation is given in below image.
 
-![General flow point cloud generation](DataAnalyzationFlow.drawio.png)
+![General flow point cloud generation](diagrams/DataAnalyzationFlow.drawio.png)
 
-The smart glasses are equipped with a wide-angle camera, which records a barrel distorted (fisheye) image. The first step is to straighten this image using the camera's calibration, to undo the effects of distortion (see [Appendix C](c-point-cloud-details)). 
+The smart glasses are equipped with a wide-angle camera, which records a barrel distorted (fisheye) image. The first step is to straighten this image using the camera's calibration, to undo the effects of distortion (see [Appendix C](#c-point-cloud-details)). 
 
 This image is then piped into Depth Anything 3's metric model to determine a depth (distance from camera) for every point. But because this model treats each image as if it were captured on a 300 pixel focal length camera [(Lin et al., 2026)](#references), the camera's real focal must first be scaled from the resolution at which the model runs:
 $$
@@ -147,7 +149,7 @@ To help orient and interpret the meaning of these points, the position of the fl
 $$
 \hat n \cdot \mathbf p + h = 0
 $$
-With $\hat{n}$ being the unit normal pointing up and $h$ the camera height, which is determined by incorporating data from the on-board Inertial Measurement Unit (see [Appendix A](c-point-cloud-details)). After this, the distance from the floor of every point $e_{i}$ is computed in meters using:
+With $\hat{n}$ being the unit normal pointing up and $h$ the camera height, which is determined by incorporating data from the on-board Inertial Measurement Unit (see [Appendix A](#a-from-imu-to-camera-up)). After this, the distance from the floor of every point $e_{i}$ is computed in meters using:
 $$e_i = \hat n \cdot \mathbf p_i + h$$
 Every point that is either too high or too low to collide with is filtered out. In the prototype, this leaves points $\{e_{i} \mid 0.2 < e_{i} < 2.0\}$.
 
@@ -162,7 +164,7 @@ Each point is given a surprise value based solely on the gap and wobble of that 
 $$
 S=d-r \qquad r=0.35 \text{ m}
 $$
-Wobble $N$ is a measure of how much the gap for a given cell has changed over the last few frames. For this, it evaluates values of $S$ over the last $0.5 \text{ s}$, computes the standard deviation given $\ge 3$ samples and sets the lower bound of the result to be $0.01 \text{ m}$. The value of $N$ is tripled for points $p$ in that are walls $W$ to encourage the planner to steer around them:
+Wobble $N$ is a measure of how much the gap for a given cell has changed over the last few frames. For this, it evaluates values of $S$ over the last $0.5 \text{ s}$, computes the standard deviation given $\ge 3$ samples and sets the lower bound of the result to be $0.01 \text{ m}$. In our tests on the glasses $N$ stayed at this lower bound on every cell (see [**From Above**](#panel-from-above)). The value of $N$ is tripled for points $p$ in that are walls $W$ to encourage the planner to steer around them:
 $$
 N=max(SD\{S_{t} \mid t \le 0.5 \text{ s}\}, 0.01) 
 \qquad
@@ -282,26 +284,94 @@ https://www.nature.com/articles/s41598-025-08475-4
 
 # System Measurements
 
-At the end of the development process of the product, the product needed to be presented to our peers. For this presentation a demonstration of the product was made, this demonstration had next to a live demonstration also a back-up video in which a user from the development team used the glasses while walking through a lecture room at Radboud university. The image below shows a frame from this back-up video in which we see a multitude of panels further explained below the image. 
-<img width="863" height="540" alt="NMHCI_demo_screenshot" src="https://github.com/user-attachments/assets/06b57432-3772-48f0-af11-262eb068fab6" />
+At the end of the development process of the product, the product needed to be presented to our peers. For this presentation a demonstration of the product was made, this demonstration had next to a live demonstration also a back-up video in which a user from the development team used the glasses while walking through a lecture room at Radboud university. The image below shows a frame from this back-up video, with panels showing what the system measures and what it does with those measurements. Only the sound reaches the user, the other panels are there for development.
+
+<p align="center"><img width="60%" alt="NMHCI_demo_screenshot" src="diagrams/overlay_full.png" /></p>
+
+The page prints these values for the frame in the image, ~57 s into the walk:
+
+| Heading | Time to collision | Nearest | Groups | Scene vs Shape |
+|---|---|---|---|---|
+| +8° | 0.7 s | 0.52 m | 171 | 1.30 bits |
+
+The tables below come from replaying two recorded walks on the server with depth at 336 px: the demo walk in the image (~2.5 minutes) and a scripted attention walk in a tiered classroom (~45 s, up to a chair, past it, up the stairs and toward a wall). The numbers are from one run of each, not a benchmark.
+
 ## Panel: Sound
+
+<p align="center"><img width="40%" alt="Full overlay with the Sound panel highlighted and zoomed" src="diagrams/overlay_fade_sound.png" /></p>
+
 The panel at the top left is the output panel. This is the visual demonstration of what the product feeds back to the user. The top part shows the left and right speaker of the music device of the user. When encountering an obstacle with high risk it will start emitting a beeping noise from that specific side. The five bars on each side show how loud that ear is. On an alarm the ear on the side of the obstacle goes quiet, which is why the left side is gray in the image. There are also options to turn off the sound, or to switch between the **Alarm** and **Noise Cancellation** modes. The **NC** label shows that noise cancellation would be turned off while the alarm sounds.
 
+| | Demo | Attention |
+|---|---|---|
+| Alarm frames | 124 of 327 (37.9 %) | 69 of 122 (56.6 %) |
+| Alarm changes per minute | 11.4 | 20.6 |
+| Quieter ear volume, alarm | 10 % | 10 % |
+| Quieter ear volume, no alarm | 98 % | 92.5 % |
+
+In our tests the alarm was up on ~40 to ~55 % of frames, in rooms full of chairs and desks. Volumes are medians. Without an alarm the two ears usually stayed close in volume, so the steering sound is mostly subtle.
+
 ## Panel: Heading
+
+<p align="center"><img width="40%" alt="Full overlay with the Heading panel highlighted and zoomed" src="diagrams/overlay_fade_heading.png" /></p>
+
 The panel at the bottom left is the direction the user should walk towards to follow the safe path. This is not part of the output the user sees but the direction is concluded from the calculated path. The direction heading is used to steer the user by sound: the ear away from the heading becomes quieter. It also gives an entry point for different implementations to take input from, to guide the user along the safe path in other ways.
 
+| | Demo | Attention |
+|---|---|---|
+| Median heading | 12.1° | 16.0° |
+| At limit | 6.1 % | 8.2 % |
+| Full swings | 0 | 0 |
+
+Headings are sizes, left or right of straight ahead. The limit is ~36°, a full sidestep at walking speed. A full swing is the heading jumping from the limit on one side to the limit on the other in one frame, and we saw none in our tests.
+
 ## Panel: Video
+
+<p align="center"><img width="40%" alt="Full overlay with the Video panel highlighted and zoomed" src="diagrams/overlay_fade_video.png" /></p>
+
 The central panel is the field of view from the user, recorded by the camera on the Neon glasses. This video shows the lecture room environment. The video shows the rows of chairs on the right, a wall with glass on the left and the path between those. In the path is a big black bag placed that functions as an obstacle for the user. This video feed is the input for the product to apply all the earlier mentioned functionalities on.
 
+| Step | Demo median | Demo 95th percentile | Attention median | Attention 95th percentile |
+|---|---|---|---|---|
+| Depth | 381 ms | 633 ms | 334 ms | 345 ms |
+| Scene | 72.6 ms | 301 ms | 25.5 ms | 59.0 ms |
+| Planner | 110 ms | 343 ms | 52.0 ms | 80.9 ms |
+| **Total** | **646 ms** | **1343 ms** | **411 ms** | **471 ms** |
+
+In our tests the system planned ~2 to ~3 of the camera's 30 frames a second, and 95 % of frames finished within ~0.5 to ~1.3 s, with 5 % taking longer. We report that figure because the slow frames are the risky ones: at 1.4 m/s a walker covers ~0.7 to ~1.9 m in that time, and the alarm is set to go off ~1 m from an obstacle. The steps don't add up to the total because each one is taken on its own.
+
 ## Panel: From Above
-The top right panel shows the planner's view from above. The yellow dots are obstacles and the pink squares are walls, one for each 0.25 m cell that has points in it. The panel also shows colored areas below and around the dots, corresponding to the cost of walking through each spot. The cost goes from dark blue to green to yellow in order of increasing risk, and the gray areas are floor. Finally there is a big red line with an arrow to show the safe path for the user, this path is the cheapest route through these costs and is the source for the **Heading** panel and the steering sound.
+
+<p align="center"><img width="30%" alt="Full overlay with the From Above panel highlighted and zoomed" src="diagrams/overlay_fade_from_above.png" /></p>
+
+The top right panel shows the planner's view from above. The yellow dots are obstacles and the pink squares are walls, one for each 0.25 m cell that has points in it. The panel also shows colored areas below and around the dots, corresponding to the cost of walking through each spot. The cost goes from dark blue to green to yellow in order of increasing risk, and the gray areas are floor. Finally there is a big red line with an arrow to show the safe path for the user, this path is the cheapest route through these costs and is the source for the [**Heading**](#panel-heading) panel and the steering sound.
+
+| | Demo | Attention |
+|---|---|---|
+| Cells per frame | 149 | 104.5 |
+| Measured $N$ | 0 of 43,688 | 0 of 13,135 |
+
+$N$ is how much a cell's gap changed over the last 0.5 s, and it needs 3 samples in that window. At ~2 to ~3 planned frames a second the window holds 1 or 2, so in our tests every cell used the 0.01 m lower bound.
 
 ## Panel: Risk
-The bottom right panel is the depth image colored with the same costs as the **From Above** panel, from blue for low risk to red for high risk. The panel shows the high risk, dark red, areas such as the chairs on the right and the wall on the left. It determines the floor as completely safe, seen by the dark blue color, except for the black bag placed. The bag has a clear yellow which indicates it has some risk of collision. Next to the bag is the safe path shown with two red lines. These are the same path as in the **From Above** panel.
+
+<p align="center"><img width="40%" alt="Full overlay with the Risk panel highlighted and zoomed" src="diagrams/overlay_fade_risk.png" /></p>
+
+The bottom right panel is the depth image colored with the same costs as the [**From Above**](#panel-from-above) panel, from blue for low risk to red for high risk. The panel shows the high risk, dark red, areas such as the chairs on the right and the wall on the left. It determines the floor as completely safe, seen by the dark blue color, except for the black bag placed. The bag has a clear yellow which indicates it has some risk of collision. Next to the bag is the safe path shown with two red lines. These are the same path as in the [**From Above**](#panel-from-above) panel.
+
+| | Demo | Attention |
+|---|---|---|
+| Camera height | 1.63 m | 1.50 m |
+
+| | Median | Worst tenth |
+|---|---|---|
+| Depth jitter | 1.3 % (0.027 m) | 5.2 % (0.138 m) |
+
+Camera height is measured above the fitted floor, with nothing to check it against. Depth jitter is how much the depth model's depth for one 3D point changes between frames ~0.2 s apart, measured on the attention walk. The floor level was right on 48 of 49 frames we labeled by hand.
 
 # Scenarios
 
-Whilst no formal experiment was done with the prototype, several scenarios were tested to accertain the effectiveness of the technology. Each of these were chosen to reflect a situation a final version of the prototype migth be used in, focussing on collision avoidance, navigation and situational awareness. These range in a steadily increasing grade of difficulty, going from straight line obstacle avoidance to full room navigation.
+Whilst no formal experiment was done with the prototype, we describe several scenarios in which the technology could be used. Each of these were chosen to reflect a situation a final version of the prototype migth be used in, focussing on collision avoidance, navigation and situational awareness. These range in a steadily increasing grade of difficulty, going from straight line obstacle avoidance to full room navigation.
 
 
 | Scenario | Audio setting | Use of the prototype |
@@ -314,13 +384,15 @@ Whilst no formal experiment was done with the prototype, several scenarios were 
 
 ## Limitations
 
-Due to the available timeframe and resources several limitations had to be set for this project, these focussing around code implementation and the explored options for data gathering. Apart from this another limitation is also present in the current implementation, which relies on a separate server to run the calculations and stream the directions back to the user, imposing a limit due to network delay and connection requirement.
+Due to the available timeframe and resources several limitations had to be set for this project, these focussing around code implementation and the explored options for data gathering. Apart from this another limitation is also present in the current implementation, which relies on a separate server to run the calculations and stream the directions back to the user, imposing a limit due to network delay and connection requirement. Our delay figures start when a frame reaches the server, so they leave out the ~130 ms from capture to arrival on a live run and the time for the sound to play, which we did not measure on the glasses.
 
 A major factor apart from this is the usage of large language models for the implementation of the prototypes, where the limited amount of time required the usage of such tools to translate our plan, formulas and approach into a functional product. Whilst this allowed us to make the implementation feasible, its cost is also significant, as several bugs and structural mistakes were made by the LLM. Due to this the continued development of the product should involve the replacement and redesign of this prototype with a more solid implementation.
 
 To expand on this, another part requiring optimalisation would be the usage of so called magic numbers in the prototype, which are numbers our team found as working well enough for demonstrations, but might be far from the optimal values. The benefits of finding these optimal points would be debatable though, as the cost for doing so would be relatively expensive for perhaps limited improvements to the final product.
 
 Shifting to the hardware, a defining factor of our project and approach is the usage of only the camera as an information source, which whilst cheap and almost universally available, is not the most optimal sensor for this project. Applications of Lidar might have improved accuracy, but due to cost of Lidar enabled devices this avenue could not be explored, leaving the less accurate camera as the only way of generating the point cloud.
+
+The course coordinator advised us to use SLAM, so we built Open3D's dense SLAM and tested it on a recorded walk. Run offline with depth for all 30 frames a second, it tracked the walk to ~0.2 m. Our server's depth model only delivers ~3 frames a second, and at that rate the error rose to ~1 m. As a workaround we added frame-to-frame odometry, which stayed at ~0.2 m at the rate the server can deliver. Both are available through a flag and are off by default. With a position the cells stay fixed to the world, which changes the input to the planner, but in our tests we could not show that the plans got better, and $N$ still stayed at its lower bound because its window holds too few frames. With a faster server we expect dense SLAM to hold up live.
 
 <!-- - Limitations
     - Lack of Lidar
@@ -458,3 +530,17 @@ $$X = \frac{(u - c_x)\, z}{f_x}, \qquad Y = \frac{(v - c_y)\, z}{f_y}, \qquad Z 
   - page can flip: depth/risk picture, live/recording side, gaze silencing on/off. Only things it sends back
   - no path for 1.5 s -> sound stops (a beep would be pointing at a frame that's gone)
 - **also written per run:** `timing.jsonl` (per-frame capture-to-plan delays), `episodes.jsonl` (user model), optional frame log (`--record-to`)
+
+## G. Camera position
+- off by default. `--position odometry` or `dense_slam` adds a camera position. Measured on attention walk replay, 336 px depth:
+
+| Setting | Planned per second | Delay, median / 95th | Positioned | Error | 3 s drift |
+|---|---|---|---|---|---|
+| Off | 2.99 | 411 / 471 ms | 0 % | | |
+| Odometry | 2.42 | 491 / 1315 ms | 95 % | 0.20 m | 0.32 m |
+| Dense SLAM | 2.47 | 534 / 919 ms | 70 % | 1.08 m | 2.21 m |
+
+- error = median distance from reference camera path. 3 s drift = worst tenth
+- no ground truth: reference is COLMAP's path from same video [(Schönberger & Frahm, 2016)](#references), first 18.4 s (~8 m), scale from depth model
+- with a position, cells are fixed to the world and not to the walker, so planner gets different cells, and frames differ too. Alarm frames 56.6 % off, 52.5 % odometry, 60.4 % dense SLAM. No way to score which plan is better
+- $N$ stays at its lower bound with or without a position (window holds too few planned frames)
