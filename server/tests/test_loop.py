@@ -24,7 +24,7 @@ import pytest
 # Local package imports
 from nav.config import GoalMode, RunConfig, SinkKind, SourceKind, build_run_config, build_sink, build_source
 from nav.main import main
-from nav.planner.config import PlannerConfig
+from nav.planner.config import AlarmRule, PlannerConfig
 from nav.runtime.loop import EPISODES_FILENAME, RUN_CONFIG_FILENAME, FrameResult, PublisherThread, _latency_shares, _report, run
 from nav.runtime.tap import RecordingTap
 from nav.runtime.worker import NewestFrameWorker
@@ -291,7 +291,8 @@ def test_the_views_red_point_is_the_runs_alarm_threshold_in_bits(tmp_path: Path,
     monkeypatch.setattr(loop_module, "build_source_and_sink", lambda config, **hooks: (build_source(config), CapturingDebugSink()))
     log_dir = tmp_path / "log"
     _record_synthetic_log(log_dir, count=6)
-    planner = dataclasses.replace(PlannerConfig(), alarm_time_to_contact_seconds=0.9)
+    # The distance rule, since its red point is the one that follows a threshold in seconds.
+    planner = dataclasses.replace(PlannerConfig(), alarm_rule=AlarmRule.DISTANCE, alarm_time_to_contact_seconds=0.9)
     config = RunConfig(
         source_kind=SourceKind.LOGGED,
         sink_kinds=(SinkKind.NONE,),

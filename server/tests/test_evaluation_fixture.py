@@ -33,12 +33,13 @@ from nav.evaluation.fixture import (
 )
 from nav.evaluation.planner_numbers import ClearanceBand, PlannerInput, whole_walk_numbers
 from nav.evaluation.replay import replayed_frames
-from nav.planner.config import GoalMode, PlannerConfig
+from nav.planner.config import AlarmRule, GoalMode, PlannerConfig
 from nav.types import ObstaclePoint, ObstacleSet
 from nav.walker import WalkerConfig
 from synthetic_walks import write_recording
 
-PLANNER = PlannerConfig()
+# The numbers here were worked out by hand under the distance rule.
+PLANNER = PlannerConfig(alarm_rule=AlarmRule.DISTANCE)
 FRAME_SECONDS = 0.125
 ORIGIN = np.array([0.1, 1.3, -2.0])
 LATERAL = np.array([1.0, 0.0, 0.0])

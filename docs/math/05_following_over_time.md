@@ -3,7 +3,7 @@
 # 5. Following things over time
 
 One frame tells us how far away each group is. It doesn't tell us how much to trust that number.
-So the scene keeps the last half second of clearances for every group and asks how much they've
+So the scene keeps the last second of clearances for every group and asks how much they've
 been wobbling. A post whose distance jitters by a centimeter is steady. One whose distance jumps
 around by half a meter isn't. That wobble is the **noise scale**, written
 $`{\color{orange}{N}}`$, and it's the plain sample standard deviation of the group's recent
@@ -24,14 +24,14 @@ and $`{\color{orange}{N}}`$ counts that steady change as wobble too.
 > - A group id that stays on the same patch of floor from frame to frame. That needs the world
 >   ids from section 4, which need a tracked position, so only the Pixel has them.
 > - Each frame's timestamp, on the laptop's clock.
-> - The window, 0.5 s, the minimum of 3 samples, and the floor of 0.01 m under
+> - The window, 1 s, the minimum of 3 samples, and the floor of 0.01 m under
 >   $`{\color{orange}{N}}`$ (`server/nav/scene/config.py`).
 > - For the velocity, each group's middle on floor axes fixed to the world (section 4).
 
 ## The formulas
 
-**The window.** At time t, a group seen this frame keeps only samples with $`t_i \ge t - 0.5`$. A
-sample exactly 0.5 s old stays.
+**The window.** At time t, a group seen this frame keeps only samples with $`t_i \ge t - 1`$. A
+sample exactly 1 s old stays.
 
 **The noise scale.** With n samples in the window:
 
@@ -59,7 +59,7 @@ It's empty with fewer than 2 samples or a gap of zero or less.
 It's turned from world axes into the walker's axes before the planner sees it. Without a tracked
 position there's no velocity at all.
 
-**Forgetting.** After each frame, a group whose newest sample is older than $`t - 0.5`$ is deleted,
+**Forgetting.** After each frame, a group whose newest sample is older than $`t - 1`$ is deleted,
 so ids from long ago don't pile up.
 
 | Symbol | Plain English | Units | Frame | Where in the code |
@@ -80,7 +80,7 @@ so ids from long ago don't pile up.
 | Step | Expression | Why |
 |---|---|---|
 | 1 | append $`({\color{teal}{S}}, t)`$ to the group | One sample per frame the group is seen |
-| 2 | drop samples with $`t_i < t - 0.5`$ | Only the last half second counts |
+| 2 | drop samples with $`t_i < t - 1`$ | Only the last second counts |
 | 3 | if $`n < 3`$, return 0.01 | Below 3 samples a standard deviation says nothing |
 | 4 | $`\bar{{\color{teal}{S}}} = \frac{1}{n}\sum {\color{teal}{S}}_i`$ | The average gap |
 | 5 | $`\sum ({\color{teal}{S}}_i - \bar{{\color{teal}{S}}})^2`$ | How far each sample sits from it, squared |
@@ -101,25 +101,26 @@ gaps are 0.000625, 0.000625, 0.005625 and 0.005625, summing to 0.0125. Divided b
 
 **Walking straight at a post.** The Pixel at 30 frames a second, walking at 1.4 m/s toward a post
 that doesn't move, with world ids so the post keeps its id. The clearance drops by
-$`1.4/30 = 0.0467`$ m every frame. A half-second window at 30 frames a second holds 15 or 16
+$`1.4/30 = 0.0467`$ m every frame. A 1 s window at 30 frames a second holds 30 or 31
 samples. For evenly spaced values the sample standard deviation is the spacing times
 $`\sqrt{n(n+1)/12}`$:
 
 | Samples | $`\sqrt{n(n+1)/12}`$ | $`{\color{orange}{N}}`$ |
 |---|---|---|
-| 15 | $`\sqrt{15 \cdot 16/12} = \sqrt{20} = 4.472`$ | $`0.0467 \cdot 4.472 = 0.209`$ m |
-| 16 | $`\sqrt{16 \cdot 17/12} = 4.761`$ | $`0.0467 \cdot 4.761 = 0.222`$ m |
+| 30 | $`\sqrt{30 \cdot 31/12} = \sqrt{77.5} = 8.803`$ | $`0.0467 \cdot 8.803 = 0.411`$ m |
+| 31 | $`\sqrt{31 \cdot 32/12} = 9.092`$ | $`0.0467 \cdot 9.092 = 0.424`$ m |
 
-That's about 0.21 m from the approach alone, with no sensor noise at all. For scale, the median noise of
+That's about 0.42 m from the approach alone, with no sensor noise at all. For scale, the median noise of
 groups in the corridor within 2 m on the classroom walk was 0.0337 m
-(`server/tests/test_planner_pipeline.py`). On `pixel_walk_3` the same median is 0.0958 m.
+(`server/tests/test_planner_pipeline.py`). On `pixel_walk_3` the same median is 0.0958 m. Both were
+measured with the earlier 0.5 s window, and the worked examples in these pages keep using 0.0337 m.
 
 **The Neon at 1.68 planned frames a second.** On average, frames arrive $`1/1.68 = 0.595`$ s apart,
-which is longer than the window. At that pace the previous sample is usually gone by the time the
-next one arrives, so the window holds 1 sample and the group gets $`{\color{orange}{N}} = 0.01`$ m.
-To measure anything, 3 samples have to fit inside 0.5 s, which means two gaps of 0.25 s or less.
-Evenly spaced, that takes 4 frames a second or more. This is worked out from the session's average
-rate. No log of that session was read to check it frame by frame.
+so the window usually holds 2 samples and the group gets $`{\color{orange}{N}} = 0.01`$ m.
+To measure anything, 3 samples have to fit inside 1 s, which means two gaps of 0.5 s or less.
+Evenly spaced, that takes 2 frames a second or more. This is worked out from the session's average
+rate. No log of that session was read to check it frame by frame. Replays of the attention walk at
+about 3 planned frames a second measure it on 46 to 49 % of cells.
 
 **Closing rate.** A group reads 1.80 m and then 1.75 m, 1/30 s apart. That's
 $`(1.80 - 1.75) \cdot 30 = 1.5`$ m/s. A jitter of just 0.01 m between two frames reads as
@@ -130,20 +131,20 @@ $`(0.02 \cdot 30,\ -0.04 \cdot 30) = (0.6, -1.2)`$ m/s on the world's floor axes
 turned 30° to the right of the world's forward axis, a group moving $`(0, 1.0)`$ m/s in the world moves
 $`(-0.5, 0.866)`$ m/s for the walker, drifting left and pulling away.
 
-**Forgetting.** A group last seen at $`t = 10.0`$ s is kept at $`t = 10.4`$, where the cutoff is 9.9,
-and deleted at $`t = 10.6`$, where the cutoff is 10.1.
+**Forgetting.** A group last seen at $`t = 10.0`$ s is kept at $`t = 10.9`$, where the cutoff is 9.9,
+and deleted at $`t = 11.1`$, where the cutoff is 10.1.
 
 > [!WARNING]
 > - **$`{\color{orange}{N}}`$ includes the walker's own approach.** The code takes the plain sample standard
 >   deviation of $`{\color{teal}{S}}`$ with no trend removed. So the walker's own approach shows up
->   in it, about 0.21 m at 30 frames a second, as worked out above. That's six times the 0.0337 m
->   median noise of corridor groups within 2 m on the classroom walk. The docstring in `server/nav/scene/history.py` describes jitter.
+>   in it, about 0.42 m at 30 frames a second, as worked out above. That's about twelve times the 0.0337 m
+>   median noise of corridor groups within 2 m on the classroom walk, measured at the earlier 0.5 s window. The docstring in `server/nav/scene/history.py` describes jitter.
 >   This is what the code measures.
 > - **On the Neon, $`{\color{orange}{N}}`$ is approximate.** The glasses have no tracked position,
 >   so the grid moves with the walker and the same id is a different patch of floor each frame.
 >   At the 2026-10-05 glasses session's average of 1.68 frames a second it's nearly always the
->   floor, 0.01 m, so in practice it isn't measured.
-> - **Below 4 evenly spaced frames a second, $`{\color{orange}{N}}`$ is a constant.** The window
+>   floor, 0.01 m. At about 3 planned frames a second it's measured on 46 to 49 % of cells.
+> - **Below 2 evenly spaced frames a second, $`{\color{orange}{N}}`$ is a constant.** The window
 >   can't hold 3 samples, so it's 0.01 m.
 > - **The floor doesn't stop a division.** In the professor's term $`{\color{orange}{N}}`$ sits on
 >   top of the fraction (section 6), and the contact term's spread never drops below the 0.10 m
@@ -168,8 +169,8 @@ and deleted at $`t = 10.6`$, where the cutoff is 10.1.
 
 > [!TIP]
 > These are ours:
-> - **A 0.5 s window** instead of his 1 s, which was for car following. Half a second is about
->   0.7 m of walking.
+> - **Using his 1 s window for walking.** He used it for car following. A second is about 1.4 m of
+>   walking.
 > - **The sample form**, dividing by $`n - 1`$.
 > - **At least 3 samples**, because below that a standard deviation says nothing.
 > - **The 0.01 m floor.**

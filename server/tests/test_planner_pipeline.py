@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 # Local package imports
-from nav.planner.config import GoalMode, PlannerConfig
+from nav.planner.config import AlarmRule, GoalMode, PlannerConfig
 from nav.planner.contact import ContactSurprise
 from nav.planner.dynamic_programming import plan
 from nav.planner.field import cost_field
@@ -21,7 +21,9 @@ from nav.sources.framecodec import decode_path, encode_path
 from nav.types import ObstaclePoint, ObstacleSet, PlannedPath
 from nav.walker import WalkerConfig
 
-CONFIG = PlannerConfig()
+# These tests are about what follows a raised alarm, so they raise it the plain way: one frame with
+# something close, under the distance rule. The gap rule needs a run of frames to raise it.
+CONFIG = PlannerConfig(alarm_rule=AlarmRule.DISTANCE)
 WALKER = WalkerConfig(radius_meters=0.35)
 
 

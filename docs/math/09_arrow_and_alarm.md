@@ -4,16 +4,17 @@
 
 The planner hands the walker two things. The **arrow** says which way to go: it points from where
 the walker is now to where the plan has them one second from now. The **alarm** says something is
-about to be hit: it looks only at the strip straight ahead that the body would sweep, works out how
-long until the walker reaches the nearest thing in it at walking pace, and goes off under 0.7 s.
-That time is the **time to contact**, $`{\color{red}{\tau}}`$. The two are separate on purpose. The
+about to be hit. It looks only at the strip straight ahead that the body would sweep, and goes off
+when the gap to the nearest thing in it is changing fast for its size: his avoidance ratio from the
+car-following study in College 5. An older rule, `--alarm-rule distance`, goes off when the walker
+would reach that thing in under 0.7 s at walking pace, the **time to contact**, $`{\color{red}{\tau}}`$. The two are separate on purpose. The
 alarm never reads the plan.
 
 Riding a bike, you steer by looking a few meters down the road, not at your front wheel. The arrow
 works the same way, aiming at the plan one second out. The alarm is more like a car's parking
-sensor, which beeps when something is close in front. Where it stops working: a parking sensor
-measures how fast the gap is actually closing, and ours assumes the walker is moving at 1.4 m/s even
-when they're standing still.
+sensor, which beeps when something is close in front. A parking sensor measures how fast the gap
+is actually closing. The distance rule assumes 1.4 m/s even when the walker is standing still. The
+gap rule measures the closing from how the gap itself has changed.
 
 > [!NOTE]
 > **Ingredients**
@@ -27,6 +28,11 @@ when they're standing still.
 > - Frame timestamps, for the hold.
 
 ## The formulas
+
+> [!NOTE]
+> The formulas, the build table and the worked examples up to Attention are the distance rule's,
+> which also gives the path its red and the page its time to contact. The default alarm follows in
+> [The alarm from his gap ratio](#the-alarm-from-his-gap-ratio).
 
 **The arrow.** The lookahead slice is $`k_h`$. The arrow's angle compares how far sideways the plan
 goes by then with how far forward the walker gets. Positive is right.
@@ -176,6 +182,76 @@ classroom walk the arrow takes 20 different values instead of 3, and sits at its
 > - **The 0.5 s hold**, so the alarm doesn't flicker. It takes the classroom walk from 108 changes to
 >   66, and the last stretch of `pixel_walk_3` from 55 to 35.
 
+## The alarm from his gap ratio
+
+**The default alarm is his avoidance surprise, measured on the nearest gap.** In the car-following
+study (College 5, PDF pages 61 to 65) a driver keeps away from the car ahead. The surprise of the gap
+$`{\color{teal}{S}}`$ is $`\tfrac12(\Delta{\color{teal}{S}}/{\color{teal}{S}})^2`$, where
+$`\Delta{\color{teal}{S}}`$ is the spread of the gap over a moving window. He puts the limit of
+error-free performance at a signal-to-noise of 1 (PDF page 70), where that surprise reaches
+$`\tfrac12`$, and the alarm goes off there. A walker closing on a chair is the driver closing on the
+car ahead, so the formula carries over unchanged. What we choose is what goes into it, and each
+setting below is one of those inputs.
+
+| Step | Expression | Why |
+|---|---|---|
+| 1 | $`{\color{teal}{S}} = \min_{i \in \mathcal{C}} {\color{teal}{S}}_i`$ | The nearest gap in the corridor, this frame |
+| 2 | $`\Delta{\color{teal}{S}}`$ = sample standard deviation of step 1 over the last $`T`$ seconds | How much that gap has been changing, at least 3 samples |
+| 3 | raise when $`(c\,\Delta{\color{teal}{S}})^2 + D^2 \ge \max({\color{teal}{S}} - m,\ 0.06)^2`$ | His signal-to-noise of 1, with our inputs $`c`$, $`m`$ and $`D`$ |
+
+With the default $`D = 0`$, step 3 is $`c\,\Delta{\color{teal}{S}} \ge \max({\color{teal}{S}} - m,\ 0.06)`$.
+No walking speed appears. A walker standing still has no spread, so nothing near them raises it. Inside
+$`m`$ any wobble in the gap of $`0.06/c`$ or more does.
+
+**Why the warning time doesn't depend on speed.** On a steady approach at speed $`v`$ with $`n`$ frames
+evenly spread over the window, the gaps step by $`vT/(n-1)`$, and their spread is that step times
+$`\sqrt{n(n+1)/12}`$, call it $`k\,vT`$. With no margin the alarm rises at $`{\color{teal}{S}} = c\,k\,vT`$,
+which is a time to contact of $`c\,k\,T`$ whatever $`v`$ is. For 9 frames, $`k = 0.342`$.
+
+**Why $`c`$ is 1.63.** The gap is measured when the frame was captured, and the plan is done about
+0.65 s later: arrival to plan, plus about 0.13 s from capture to arrival on a live run. The walker
+keeps walking in between. On a steady approach the spread gives the speed, $`v \approx \Delta{\color{teal}{S}}/(kT)`$,
+so the gap by then is about $`{\color{teal}{S}} - \Delta{\color{teal}{S}}\,d/(kT)`$. Putting that into his
+threshold gives $`c\,\Delta{\color{teal}{S}}/{\color{teal}{S}} \ge 1`$ with
+
+```math
+c = 1 + \frac{d}{kT} = 1 + \frac{0.65}{0.342 \cdot 3} = 1.63
+```
+
+With no delay, as in his driving simulator, $`c = 1`$ and the rule is exactly his. Another system
+works out its own $`c`$ from its own delay, and one with a speed sensor could follow the delay as it
+changes.
+
+| Setting | Default | Where it comes from |
+|---|---|---|
+| $`T`$, `--alarm-window-seconds` | 3 s | His car study uses 1 s (College 5 PDF page 65). At about 3 planned frames a second 1 s holds too few samples |
+| $`c`$, `--alarm-multiplier` | 1.63 | Derived above from the delay $`d`$ |
+| $`m`$, `--alarm-margin-meters` | 0.2 m | Ours. A line 0.2 m out from the footprint, the way the footprint is a line out from the body |
+| $`D`$, `--alarm-prior-meters` | 0 m | Ours, off. A prior surprise $`\tfrac12(D/{\color{teal}{S}})^2`$ added to the gap's, the way the paper adds prior and likelihood surprise (Eq. 4 to 7) |
+
+`--alarm-rule distance` brings back the rule in the sections above.
+
+> [!WARNING]
+> - **Replayed, not walked.** On same-frame replays of 2026-11-05, 16 approaches on four odometry runs
+>   counted from 2.5 m, the default caught all of them, heard a median 0.91 s before contact with 3 of
+>   15 late. The alarm was up on 44.6 % of frames and 35 % of the slow ones. The distance rule also
+>   caught all, with 8 of 15 late, 47.6 % and 46 %. Counted from 1 m it looks better, 1.18 s heard
+>   against 0.49 s, because its 0.98 m line falls just inside that start. The measure is that fragile.
+> - **The other settings tried.** $`c = 3`$ with no margin left none late and held the alarm up on
+>   61.5 % of frames. A prior $`D`$ of 0.5 m caught the same approaches as the margin and raised the
+>   alarm on 49 % of slow frames.
+> - **The derivation over-predicts.** It assumes a steady approach filling the window, and these
+>   approaches lasted 1.4 to 2.7 s, so a 3 s window is mostly not approach.
+> - **The spread also grows when the gap opens or jumps**, such as when the head turns toward
+>   something near. It reacts to something entering the corridor at once, and it raises the alarm with
+>   nothing near more often: 15 of 48 raises against 9 of 42.
+> - **No ground truth.** Replays show how each rule behaves, not which warnings a walker needed.
+> - **What the displays show follows the rule.** The path's surprise is $`\tfrac12 r^2`$, with $`r`$
+>   the ratio step 3 compares with 1, so the path is fully red on the frame the alarm raises, at
+>   0.72 bits. The page's time to contact is the gap over the closing speed the spread implies,
+>   $`v = \Delta{\color{teal}{S}}/(k\,\text{span})`$, with no speed assumed. A gap that isn't closing has
+>   none, which the page shows as clear. The Pulse alarm's click rate follows that time.
+
 ## Attention
 
 The alarm is feedback, and feedback is worth what it tells the walker that they didn't already
@@ -286,10 +362,11 @@ page's choice, and none of it changes what the laptop sends. In Alarm mode the p
 steering tick while the alarm is down and one of three alarm sounds while it is up, at one of
 three levels: 0 dB, −6 dB and −12 dB against the level the page shipped with. The tick sits about
 8 dB under the alarm. The default alarm sound, Pulse, gets quicker as the walker gets closer. It
-reads the path's `time_to_contact_seconds`, which is the avoidance surprise turned back into
-seconds by the inverse in `server/nav/planner/alarm.py`, the same 1 s over the time to contact as
-above. Between 0.7 s and 0.2 s to contact the pulse quickens as the surprise rises, and
-outside that range it holds at its slowest or fastest rate. The modes and the sounds are
+reads the path's `time_to_contact_seconds`: under the default gap rule, the gap over the closing
+speed the spread implies, with no walking speed assumed; under the distance rule, the avoidance
+surprise turned back into seconds by the inverse in `server/nav/planner/alarm.py`. Between 0.7 s
+and 0.2 s to contact the pulse quickens, and outside that range it holds at its slowest or fastest
+rate. The modes and the sounds are
 listed in `server/README.md`.
 
 ---

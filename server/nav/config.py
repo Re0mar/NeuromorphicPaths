@@ -19,7 +19,7 @@ from enum import Enum
 from pathlib import Path
 
 # Local package imports
-from nav.planner.config import GoalMode, OnOff, PlannerConfig
+from nav.planner.config import AlarmRule, GoalMode, OnOff, PlannerConfig
 from nav.pose.config import PositionConfig, PositionSource
 from nav.pose.factory import build_position_tracker
 from nav.pose.tracking import DENSE_SLAM_INSTALL, dense_slam_is_available
@@ -264,6 +264,36 @@ def build_parser() -> argparse.ArgumentParser:
         type=_zero_or_positive_float,
         default=PlannerConfig.attention_floor_seconds,
         help="under this time to contact the alarm sounds whatever the gaze says. 0, the default, is no floor",
+    )
+    pipeline.add_argument(
+        "--alarm-rule",
+        choices=[rule.value for rule in AlarmRule],
+        default=PlannerConfig.alarm_rule.value,
+        help="what raises the alarm. gap_ratio, the default, is the course's spread of the nearest gap over its size. distance is clearance at walking pace",
+    )
+    pipeline.add_argument(
+        "--alarm-window-seconds",
+        type=_finite_positive_float,
+        default=PlannerConfig.alarm_ratio_window_seconds,
+        help="how far back gap_ratio measures the nearest gap's spread",
+    )
+    pipeline.add_argument(
+        "--alarm-multiplier",
+        type=_finite_positive_float,
+        default=PlannerConfig.alarm_ratio_multiplier,
+        help="what gap_ratio multiplies the spread by before comparing it with the gap",
+    )
+    pipeline.add_argument(
+        "--alarm-margin-meters",
+        type=_zero_or_positive_float,
+        default=PlannerConfig.alarm_ratio_margin_meters,
+        help="how far out from the footprint gap_ratio measures the gap to. 0, the default, is the footprint's edge",
+    )
+    pipeline.add_argument(
+        "--alarm-prior-meters",
+        type=_zero_or_positive_float,
+        default=PlannerConfig.alarm_ratio_prior_meters,
+        help="a prior distance gap_ratio adds as a second surprise, so anything inside it raises the alarm. 0, the default, is none",
     )
 
     video = parser.add_argument_group("video_file source")
@@ -532,6 +562,11 @@ def build_run_config(argv: list[str] | None = None) -> RunConfig:
         planner=PlannerConfig(
             gaze_silences_alarm=OnOff(arguments.gaze_silences_alarm) is OnOff.ON,
             attention_floor_seconds=arguments.gaze_floor_seconds,
+            alarm_rule=AlarmRule(arguments.alarm_rule),
+            alarm_ratio_window_seconds=arguments.alarm_window_seconds,
+            alarm_ratio_multiplier=arguments.alarm_multiplier,
+            alarm_ratio_margin_meters=arguments.alarm_margin_meters,
+            alarm_ratio_prior_meters=arguments.alarm_prior_meters,
         ),
         scene=SceneConfig(floor_max_tilt_degrees=arguments.floor_max_tilt, floor_max_offset_meters=arguments.floor_max_height),
         walker=WalkerConfig(radius_meters=arguments.walker_radius),

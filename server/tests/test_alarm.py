@@ -10,6 +10,9 @@ import pytest
 # Local package imports
 from nav.planner.alarm import (
     AlarmHold,
+    GapRatioAlarm,
+    gap_ratio_surprise_bits,
+    path_time_to_contact,
     alarm_raised,
     avoidance_surprise_bits,
     avoidance_surprise_bits_at,
@@ -18,12 +21,13 @@ from nav.planner.alarm import (
     path_red_from_bits,
     time_to_contact_from_avoidance_bits,
 )
-from nav.planner.config import PlannerConfig
+from nav.planner.config import AlarmRule, PlannerConfig
 from nav.planner.pipeline import PlannerPipeline
 from nav.types import ObstaclePoint, ObstacleSet
 from nav.walker import WalkerConfig
 
 CONFIG = PlannerConfig()
+DISTANCE = replace(CONFIG, alarm_rule=AlarmRule.DISTANCE)
 WALKER = WalkerConfig(radius_meters=0.35)
 EDGE = CONFIG.body_half_width_meters  # 0.30 m with the defaults.
 
@@ -272,20 +276,27 @@ def test_a_surprise_that_no_time_gives_is_refused(bits: float) -> None:
         time_to_contact_from_avoidance_bits(bits)
 
 
-def test_the_path_turns_red_at_the_alarms_own_threshold() -> None:
-    # 0.7 s at the shipped settings: half of (1 / 0.7) squared is 1.0204 nats, over ln 2 that is 1.4721 bits.
-    assert path_red_from_bits(CONFIG) == pytest.approx(avoidance_surprise_bits_at(CONFIG.alarm_time_to_contact_seconds))
-    assert path_red_from_bits(CONFIG) == pytest.approx(1.4721, abs=1e-4)
+def test_the_path_turns_red_at_the_distance_rules_own_threshold() -> None:
+    # 0.7 s: half of (1 / 0.7) squared is 1.0204 nats, over ln 2 that is 1.4721 bits.
+    assert path_red_from_bits(DISTANCE) == pytest.approx(avoidance_surprise_bits_at(DISTANCE.alarm_time_to_contact_seconds))
+    assert path_red_from_bits(DISTANCE) == pytest.approx(1.4721, abs=1e-4)
     # It follows the threshold rather than holding a number of its own.
-    assert path_red_from_bits(replace(CONFIG, alarm_time_to_contact_seconds=1.0)) == pytest.approx(avoidance_surprise_bits_at(1.0))
+    assert path_red_from_bits(replace(DISTANCE, alarm_time_to_contact_seconds=1.0)) == pytest.approx(avoidance_surprise_bits_at(1.0))
+
+
+def test_under_the_gap_rule_the_path_turns_red_at_a_signal_to_noise_of_1() -> None:
+    # Half of 1 squared is 0.5 nats, over ln 2 that is 0.7213 bits.
+    assert CONFIG.alarm_rule is AlarmRule.GAP_RATIO
+    assert path_red_from_bits(CONFIG) == pytest.approx(gap_ratio_surprise_bits(1.0))
+    assert path_red_from_bits(CONFIG) == pytest.approx(0.7213, abs=1e-4)
 
 
 def test_the_avoidance_surprise_and_the_red_point_share_one_formula() -> None:
     # A group whose time to contact is exactly the alarm threshold reads exactly the red point.
-    clearance = CONFIG.alarm_time_to_contact_seconds * CONFIG.walking_speed_mps
+    clearance = DISTANCE.alarm_time_to_contact_seconds * DISTANCE.walking_speed_mps
     point = ObstaclePoint(0.0, clearance + WALKER.radius_meters, 1, clearance, 0.1, None, None, False, np.zeros(3))
 
-    assert avoidance_surprise_bits(_set(point), CONFIG) == pytest.approx(path_red_from_bits(CONFIG))
+    assert avoidance_surprise_bits(_set(point), DISTANCE) == pytest.approx(path_red_from_bits(DISTANCE))
 
 
 @pytest.mark.parametrize("seconds", [0.0, -0.5, float("nan"), float("inf")])
@@ -297,3 +308,219 @@ def test_the_avoidance_formula_refuses_a_time_that_is_not_above_zero(seconds: fl
 def test_a_red_point_from_a_threshold_of_zero_is_refused_at_startup() -> None:
     with pytest.raises(ValueError, match="alarm_time_to_contact_seconds must be above zero"):
         path_red_from_bits(replace(CONFIG, alarm_time_to_contact_seconds=0.0))
+
+
+# The gap-ratio rule. Frames come 0.3 s apart and the window is 2.95 s, so a full window holds 10
+# gaps. For evenly spaced gaps the sample standard deviation is the step times sqrt(n(n+1)/12),
+# which is 3.028 steps for 10.
+GAP_RATIO = replace(
+    CONFIG,
+    alarm_rule=AlarmRule.GAP_RATIO,
+    alarm_ratio_window_seconds=2.95,
+    alarm_ratio_multiplier=1.0,
+    alarm_ratio_margin_meters=0.0,
+)
+FRAME_SECONDS = 0.3
+
+
+def _frame_at(seconds: float, gap_meters: float | None) -> ObstacleSet:
+    points = () if gap_meters is None else (_point(0.0, gap_meters + WALKER.radius_meters),)
+    return ObstacleSet(timestamp_seconds=seconds, points=points, groups_in_view=len(points))
+
+
+def _first_raise(config: PlannerConfig, start_gap: float, speed_mps: float, frames: int) -> tuple[int, float] | None:
+    alarm = GapRatioAlarm(config)
+    for index in range(frames):
+        gap = start_gap - speed_mps * FRAME_SECONDS * index
+        if alarm.raised(_frame_at(index * FRAME_SECONDS, gap), config):
+            return index, gap
+    return None
+
+
+def test_a_steady_approach_raises_where_the_spread_reaches_the_gap() -> None:
+    # 0.5 m/s is a 0.15 m step, a spread of 0.454 m. From 3.0 m the gap is 0.60 m at frame 16 and
+    # 0.45 m at frame 17, the first at or under the spread.
+    index, gap = _first_raise(GAP_RATIO, 3.0, 0.5, 30)
+    assert index == 17
+    assert gap == pytest.approx(0.45)
+
+
+def test_the_multiplier_moves_the_raise_out_in_proportion() -> None:
+    # Doubled, the spread is 0.908 m, reached at frame 14, 0.90 m out.
+    index, gap = _first_raise(replace(GAP_RATIO, alarm_ratio_multiplier=2.0), 3.0, 0.5, 30)
+    assert index == 14
+    assert gap == pytest.approx(0.90)
+
+
+def test_the_time_to_contact_at_the_raise_does_not_depend_on_walking_speed() -> None:
+    # Twice the speed doubles both the step and the spread, so the raise comes at twice the gap and
+    # the same 0.9 s from contact. Nothing in the rule assumes a speed.
+    _, slow_gap = _first_raise(GAP_RATIO, 3.0, 0.5, 30)
+    _, fast_gap = _first_raise(GAP_RATIO, 6.0, 1.0, 30)
+    assert slow_gap / 0.5 == pytest.approx(0.9)
+    assert fast_gap / 1.0 == pytest.approx(0.9)
+
+
+def test_standing_still_close_to_something_never_raises_the_gap_rule() -> None:
+    # The distance rule calls 0.5 m an alarm whatever the walker does. With no change in the gap
+    # there is no spread, so the gap rule stays down.
+    alarm = GapRatioAlarm(GAP_RATIO)
+    frames = [_frame_at(index * FRAME_SECONDS, 0.5) for index in range(20)]
+    assert not any(alarm.raised(frame, GAP_RATIO) for frame in frames)
+    assert alarm_raised(frames[-1], CONFIG)
+
+
+def test_too_few_gaps_never_raise_the_gap_rule() -> None:
+    # Two gaps falling from 2 m to almost nothing would be a huge spread, but two samples say nothing.
+    alarm = GapRatioAlarm(GAP_RATIO)
+    assert not alarm.raised(_frame_at(0.0, 2.0), GAP_RATIO)
+    assert not alarm.raised(_frame_at(0.3, 0.05), GAP_RATIO)
+
+
+def test_an_empty_corridor_adds_no_gap() -> None:
+    alarm = GapRatioAlarm(GAP_RATIO)
+    alarm.raised(_frame_at(0.0, 2.0), GAP_RATIO)
+    alarm.raised(_frame_at(0.3, 1.0), GAP_RATIO)
+    assert not alarm.raised(_frame_at(0.6, None), GAP_RATIO)
+    # Only now is there a third gap, and 2.0, 1.0, 0.05 has a spread far above 0.05.
+    assert alarm.raised(_frame_at(0.9, 0.05), GAP_RATIO)
+
+
+def test_gaps_older_than_the_window_are_dropped() -> None:
+    # A fall from 2 m to 0.05 m, then 3 s of standing at 0.05 m. Once the fall has aged out the spread
+    # is zero, so the rule goes down even though the walker is still that close.
+    alarm = GapRatioAlarm(GAP_RATIO)
+    for index, gap in enumerate([2.0, 1.0, 0.05]):
+        alarm.raised(_frame_at(index * FRAME_SECONDS, gap), GAP_RATIO)
+    assert alarm.raised(_frame_at(0.9, 0.05), GAP_RATIO)
+    assert not alarm.raised(_frame_at(0.9 + 3.0, 0.05), GAP_RATIO)
+
+
+def test_a_clock_that_went_backward_starts_the_gaps_over() -> None:
+    alarm = GapRatioAlarm(GAP_RATIO)
+    for index, gap in enumerate([2.0, 1.0, 0.05]):
+        alarm.raised(_frame_at(10.0 + index * FRAME_SECONDS, gap), GAP_RATIO)
+    assert not alarm.raised(_frame_at(1.0, 0.05), GAP_RATIO)
+
+
+@pytest.mark.parametrize(
+    ("change", "named"),
+    [
+        ({"alarm_ratio_window_seconds": 0.0}, "alarm_ratio_window_seconds"),
+        ({"alarm_ratio_window_seconds": float("nan")}, "alarm_ratio_window_seconds"),
+        ({"alarm_ratio_multiplier": 0.0}, "alarm_ratio_multiplier"),
+        ({"alarm_ratio_min_samples": 1}, "alarm_ratio_min_samples"),
+        ({"alarm_ratio_margin_meters": -0.1}, "alarm_ratio_margin_meters"),
+        ({"alarm_ratio_prior_meters": -0.1}, "alarm_ratio_prior_meters"),
+    ],
+)
+def test_gap_rule_settings_it_cannot_use_are_refused_at_startup(change: dict, named: str) -> None:
+    with pytest.raises(ValueError, match=named):
+        PlannerPipeline(replace(GAP_RATIO, **change), WALKER)
+
+
+def test_the_gap_rule_is_the_default_and_distance_is_there_on_request() -> None:
+    standing = [_frame_at(index * FRAME_SECONDS, 0.5) for index in range(12)]
+    distance = PlannerPipeline(replace(CONFIG, alarm_rule=AlarmRule.DISTANCE), WALKER)
+    gap_ratio = PlannerPipeline(CONFIG, WALKER)
+    assert CONFIG.alarm_rule is AlarmRule.GAP_RATIO
+    assert all(distance.plan(frame).alarm for frame in standing)
+    assert not any(gap_ratio.plan(frame).alarm for frame in standing)
+
+
+def test_the_margin_raises_where_the_spread_reaches_the_gap_less_the_margin() -> None:
+    # The 0.454 m spread now meets the gap less 0.2 m, so the gap at the raise is at most 0.654 m. From
+    # 3.0 m that is 0.60 m at frame 16, one frame before the plain rule's 0.45 m.
+    index, gap = _first_raise(replace(GAP_RATIO, alarm_ratio_margin_meters=0.2), 3.0, 0.5, 30)
+    assert index == 16
+    assert gap == pytest.approx(0.60)
+
+
+def test_inside_the_margin_a_wobble_raises_the_gap_rule_and_stillness_does_not() -> None:
+    # Inside a 0.3 m margin the gap less the margin is under the 0.06 m epsilon, so the rule raises
+    # on any spread of 0.06 m or more. A gap wobbling 0.1 to 0.3 m has a spread of about 0.11 m and
+    # raises it. The same wobble 1 m away doesn't, and a gap that never changes never does.
+    config = replace(GAP_RATIO, alarm_ratio_margin_meters=0.3)
+
+    def raised_on(gaps: list[float]) -> list[bool]:
+        alarm = GapRatioAlarm(config)
+        return [alarm.raised(_frame_at(index * FRAME_SECONDS, gap), config) for index, gap in enumerate(gaps)]
+
+    assert raised_on([0.1, 0.3] * 3)[-1]
+    assert not any(raised_on([0.9, 1.1] * 3))
+    assert not any(raised_on([0.2] * 6))
+
+
+def test_a_prior_raises_the_alarm_inside_its_distance_with_no_change_in_the_gap() -> None:
+    # Standing still gives no spread, so only the prior speaks: 0.4 m is inside a 0.5 m prior, 0.6 m isn't.
+    config = replace(GAP_RATIO, alarm_ratio_prior_meters=0.5)
+    inside, outside = GapRatioAlarm(config), GapRatioAlarm(config)
+    assert all(inside.raised(_frame_at(index * FRAME_SECONDS, 0.4), config) for index in range(5))
+    assert not any(outside.raised(_frame_at(index * FRAME_SECONDS, 0.6), config) for index in range(5))
+
+
+def test_the_prior_and_the_spread_add_as_squares() -> None:
+    # The 0.454 m spread and a 0.3 m prior reach sqrt(0.454^2 + 0.3^2) = 0.544 m together. The 0.60 m
+    # gap is still above that, so the raise stays at frame 17, 0.45 m. A 0.5 m prior reaches 0.675 m,
+    # which moves the raise to frame 16, 0.60 m.
+    index_small, _ = _first_raise(replace(GAP_RATIO, alarm_ratio_prior_meters=0.3), 3.0, 0.5, 30)
+    index_large, gap_large = _first_raise(replace(GAP_RATIO, alarm_ratio_prior_meters=0.5), 3.0, 0.5, 30)
+    assert index_small == 17
+    assert index_large == 16
+    assert gap_large == pytest.approx(0.60)
+
+
+def test_with_no_prior_the_rule_is_the_spread_alone() -> None:
+    assert _first_raise(GAP_RATIO, 3.0, 0.5, 30) == _first_raise(replace(GAP_RATIO, alarm_ratio_prior_meters=0.0), 3.0, 0.5, 30)
+
+
+def test_a_steady_approach_measures_its_own_time_to_contact() -> None:
+    # On evenly spaced gaps the spread over its span gives the walking speed back exactly, so the time
+    # to contact is the gap over 0.5 m/s, with no speed assumed anywhere.
+    alarm = GapRatioAlarm(GAP_RATIO)
+    for index in range(12):
+        reading = alarm.measure(_frame_at(index * FRAME_SECONDS, 3.0 - 0.5 * FRAME_SECONDS * index), GAP_RATIO)
+    assert reading.time_to_contact_seconds == pytest.approx((3.0 - 0.15 * 11) / 0.5)
+
+
+def test_a_gap_that_is_opening_or_still_measures_no_time_to_contact() -> None:
+    opening, still = GapRatioAlarm(GAP_RATIO), GapRatioAlarm(GAP_RATIO)
+    for index in range(6):
+        away = opening.measure(_frame_at(index * FRAME_SECONDS, 1.0 + 0.15 * index), GAP_RATIO)
+        standing = still.measure(_frame_at(index * FRAME_SECONDS, 0.5), GAP_RATIO)
+    assert away.time_to_contact_seconds is None
+    assert standing.time_to_contact_seconds is None
+    assert standing.ratio == 0.0
+
+
+def test_the_ratio_is_what_the_rule_compares_with_1() -> None:
+    # Spread 0.454 m against a 0.45 m gap at frame 17 of the steady approach: a ratio just over 1, raised.
+    alarm = GapRatioAlarm(GAP_RATIO)
+    readings = [alarm.measure(_frame_at(index * FRAME_SECONDS, 3.0 - 0.15 * index), GAP_RATIO) for index in range(18)]
+    assert readings[16].ratio < 1.0 and not readings[16].raised
+    assert readings[17].ratio >= 1.0 and readings[17].raised
+
+
+def test_under_the_gap_rule_the_path_goes_red_on_the_frame_the_alarm_raises() -> None:
+    # The path's surprise is his half of the ratio squared, so it reaches the red point exactly when the
+    # ratio reaches 1, the same comparison that raises the alarm.
+    config = replace(CONFIG, alarm_ratio_window_seconds=2.95, alarm_ratio_margin_meters=0.0, alarm_ratio_multiplier=1.0)
+    pipeline = PlannerPipeline(config, WALKER)
+    red = path_red_from_bits(config)
+    paths = [pipeline.plan(_frame_at(index * FRAME_SECONDS, 3.0 - 0.15 * index)) for index in range(18)]
+    assert paths[16].avoidance_surprise_bits < red and not paths[16].alarm
+    assert paths[17].avoidance_surprise_bits >= red and paths[17].alarm
+    assert paths[17].time_to_contact_measured
+    assert path_time_to_contact(paths[17]) == pytest.approx(0.45 / 0.5)
+
+
+def test_under_the_distance_rule_a_path_reads_its_time_back_from_the_surprise() -> None:
+    path = PlannerPipeline(DISTANCE, WALKER).plan(_frame_at(0.0, 1.4))
+    assert not path.time_to_contact_measured
+    assert path_time_to_contact(path) == pytest.approx(1.0, abs=0.01)
+
+
+@pytest.mark.parametrize("ratio", [-0.1, float("nan"), float("inf")])
+def test_a_gap_ratio_the_surprise_cannot_use_is_refused(ratio: float) -> None:
+    with pytest.raises(ValueError, match="gap ratio must be finite"):
+        gap_ratio_surprise_bits(ratio)

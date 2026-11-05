@@ -30,7 +30,7 @@ The scores:
 
 - **Position error**: how far the tracker's camera is from the reference camera at the same moment.
 - **Drift over 0.5 s or 3 s**: how far the tracker's movement over that span differs from the
-  reference's. 0.5 s is the window N is measured over, and 3 s is about how long the planner holds on
+  reference's. 0.5 s was N's window when the evaluation was run, and 3 s is about how long the planner holds on
   to its previous plan. A quarter of a meter is one grid cell.
 - **Fitness**: the share of a frame's pixels the tracker matched. Open3D reports it.
 
@@ -99,12 +99,12 @@ than taking longer. The laptop was otherwise idle, at 15 % CPU, on the Quadro T2
 Odometry is the better of the two at every rate the laptop reaches. At 336 px it costs a fifth of the
 planned frames and stretches the slowest delays past a second. At 280 px it costs 4 %.
 
-**A position doesn't reach the planner yet.** N was measured on about 0 % of obstacles in every run,
+**A position only partly reaches the planner.** It fixes the cells to the world, so the planner gets different cells. But N was measured on about 0 % of obstacles in every run,
 with a position or without. The position keeps an obstacle in the same cell, but N needs 3 samples
 inside its 0.5 s window, and at 2.4 to 3.5 planned frames a second the window holds 1 or 2. Obstacles
 do get velocities, 43 to 66 % of them, which only the planner's motion prediction reads, and that is
-off. So with either tracker on, the planner gets the same inputs as without one. Widening the window
-to hold 3 samples is a choice about our input, separate from this.
+off. Widening the window to hold 3 samples is a choice about our input, separate from this, and the
+update below does it.
 
 ## Dense SLAM hangs
 
@@ -128,7 +128,7 @@ CPU-only, and dense SLAM needs the CUDA build. Installing it is in `server/READM
   four grid cells.
 - Odometry tracks to 0.20 to 0.33 m at the pipeline's rate. That's one cell, at a cost of 4 to 19 % of
   the planned frames.
-- Neither changes what the planner sees today, because N's window holds too few frames.
+- Each changes the cells the planner gets, and nothing here shows that the plans get better.
 - `absent` keeps the full frame rate and works on any laptop that can run the depth model.
 
 ## How the current state came about
@@ -169,6 +169,28 @@ arrow at the time.
 
 So `absent` is the default. `odometry` and `dense_slam` stay in the pipeline behind `--position`, so
 the comparison above can be run on any recording.
+
+## Update, 2026-11-05: N's window goes to 1 s
+
+N's window was 0.5 s with no recorded reason, and that is what held N at its floor. It is now 1 s, the
+window the professor's slides use for car following (College 5 PDF page 65). Position stays off by
+default. The same walk at 336 px, as it plays, on an idle GPU:
+
+| Setting | Runs | Planned a second | Arrival to plan, median | Arrival to plan, 95th percentile | Cells with a measured N | N, median | Arrow at its limit | Alarm frames |
+|---|---|---|---|---|---|---|---|---|
+| Off, 0.5 s | 2 | 2.80 to 2.96 | 413 to 480 ms | 562 to 644 ms | 0 % | | 8.7 to 9.8 % | 55 to 57 % |
+| Off, 1 s | 2 | 2.80 to 2.93 | 447 to 482 ms | 564 to 682 ms | 46 to 49 % | 0.04 m | 6.8 to 11.6 % | 54 to 56 % |
+| Odometry, 0.5 s | 3 | 2.27 to 2.61 | 520 to 606 ms | 928 to 1167 ms | about 0 % | | 5.1 to 5.6 % | 51 to 55 % |
+| Odometry, 1 s | 3 | 2.31 to 2.85 | 435 to 605 ms | 524 to 990 ms | 42 to 50 % | 0.13 m | 21.9 to 37.6 % | 51 to 58 % |
+
+The delays overlap between the two windows, so the wider window has no cost we can measure. The same
+setting moved by up to about 170 ms at the median between runs, so the single-run delays higher up this
+page are looser than they look.
+
+With position off the grid moves with the walker, so N partly compares different spots. With odometry
+each cell stays on one spot, N comes out about three times larger, and the arrow sits at its limit far
+more often. Whether that is the gap really closing or tracker error isn't known, and nothing here scores
+whether a plan is better, which is why odometry stays off by default.
 
 ## What could still be tried
 

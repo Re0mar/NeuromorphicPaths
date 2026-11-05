@@ -24,7 +24,7 @@ flowchart TD
     nudge["Goal term on the last row<br/>previous-plan prior on the first second (section 8)"]
     dp["Dynamic program: cheapest route, one cell left, stay or right per 0.1 s<br/>sidestep effort T = ½ · 6.5 · v² (section 8)"]
     arrow["Arrow: where the plan is 1 s out<br/>cost sent in bits (section 9)"]
-    alarm["Alarm: straight-ahead corridor only<br/>time to contact under 0.7 s (section 9)"]
+    alarm["Alarm: straight-ahead corridor only<br/>his gap ratio at signal-to-noise 1 (section 9)"]
     scene --> price --> field --> nudge --> dp --> arrow
     scene --> alarm
 ```
@@ -34,7 +34,7 @@ The alarm never reads the plan. It looks at the same scene points and nothing el
 ## 1. What comes in
 
 The scene hands over one point per 0.25 m square: sideways $`x`$, ahead $`y`$, a noise
-$`{\color{orange}{N}}`$ (how much its distance wobbled over the last 0.5 s, never below 0.01 m),
+$`{\color{orange}{N}}`$ (how much its distance wobbled over the last 1 s, never below 0.01 m),
 and a wall flag. Before any term sees a wall, its noise is tripled, so the planner treats it as
 less certain and keeps more room from it.
 
@@ -152,16 +152,21 @@ Full story: [9. The arrow and the alarm](09_arrow_and_alarm.md).
 
 ## 7. The alarm
 
-Only points ahead and within the body's 0.30 m to either side count. Divide the smallest
-clearance among them by walking speed to get the time to contact $`{\color{red}{\tau}}`$. Raise
-under 0.7 s, and once raised, hold for 0.5 s.
+Only points ahead and within the body's 0.30 m to either side count. The nearest of them gives the
+gap $`{\color{teal}{S}}`$, and its spread over the last 3 s is $`\Delta{\color{teal}{S}}`$. The alarm is
+raised at his signal-to-noise of 1 from the car-following study, with our delay multiplier 1.63 and a
+0.2 m margin, and once raised it holds for 0.5 s.
 
 ```math
-{\color{red}{\tau}} = \frac{\min_{i:\ y_i > 0,\ |x_i| \le 0.30} {\color{teal}{S}}_i}{1.4}, \qquad \text{raise when } {\color{red}{\tau}} < 0.7
+\text{raise when } 1.63\,\Delta{\color{teal}{S}} \ge \max({\color{teal}{S}} - 0.2,\ 0.06)
 ```
 
-The same $`{\color{red}{\tau}}`$ feeds his avoidance form in bits, which colors the path and gives
-the page its time-to-contact readout, and nothing else. For the bits the clearance is floored at
+`--alarm-rule distance` raises it instead when the time to contact
+$`{\color{red}{\tau}} = \min_{i:\ y_i > 0,\ |x_i| \le 0.30} {\color{teal}{S}}_i / 1.4`$ is under 0.7 s.
+Under the default rule the path's color is the rule's own surprise, half the gap ratio squared, fully red
+at 0.72 bits where the alarm raises, and the page's time to contact is the gap over the closing speed
+the spread implies. Under the distance rule that $`{\color{red}{\tau}}`$ feeds his avoidance form in
+bits, which colors the path and gives the page its time-to-contact readout, and nothing else. For the bits the clearance is floored at
 0.06 m first, so the figure never runs past what 0.06 m gives. At the alarm's threshold it reads
 1.47 bits, and that is where the path turns fully red.
 

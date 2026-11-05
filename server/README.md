@@ -253,7 +253,7 @@ The browser also draws the planner's view from above, walking up the screen, abo
   has no reading. The planner treats both as empty floor.
 - **Path.** The planned path as a band the body's width, from a dot at the walker to an arrowhead
   where the plan ends. Its color runs blue to red as something in the way gets closer, fully red
-  from the moment the alarm raises, 0.7 s to contact by default. Its fill is more solid the more the scene shaped the plan, and its borders
+  from the moment the alarm raises. Its fill is more solid the more the scene shaped the plan, and its borders
   stay at one opacity so its direction always shows.
 - **Obstacles.** Each group's nearest point, amber dots for groups and magenta squares for walls,
   the same colors the depth view uses.
@@ -262,9 +262,9 @@ Under it are two numbers on one line. *Scene vs Shape Metric* is how far what th
 what the planner would do with nothing in view, in bits, measured where the arrow reads the path.
 It is not a confidence: an empty corridor gives a plan the planner is sure of and 0 bits.
 *Est. Time to Collision* is the seconds until the body reaches the nearest group in the walker's
-path at walking speed, or `clear` when nothing is in its path. The laptop reads it back from the
-course's avoidance surprise, 0.72 bits at one second to contact, and the bits show when the
-pointer rests on the time. The **?** by the card's title opens how to read it, laid over the card,
+path, at the speed the gap has been closing, or `clear` when nothing in its path is closing. Under
+`--alarm-rule distance` it is at walking speed instead, read back from the course's avoidance
+surprise, 0.72 bits at one second to contact. The bits show when the pointer rests on the time. The **?** by the card's title opens how to read it, laid over the card,
 and the Depth card has one too. Escape, a click outside, or the button again closes it. The laptop computes every color, opacity and number on the page. The page only draws them.
 To see it on a recorded walk:
 
@@ -610,6 +610,18 @@ instead.
 This only holds with `--sink web`. A run without the page, or replaying with `--neon-replay`,
 still ends when its device or its capture does, which is what recording a walk relies on.
 
+### The alarm rule
+
+**The alarm is the course's avoidance surprise on the nearest gap.** It goes off when the spread of
+the nearest gap in the corridor over the last `--alarm-window-seconds` (3), times `--alarm-multiplier`
+(1.63), reaches the gap less `--alarm-margin-meters` (0.2), which is his signal-to-noise of 1 from the
+car-following study. The 1.63 brings the gap forward over the pipeline's delay of about 0.65 s. It
+assumes no walking speed, so standing still near a desk doesn't raise it. `--alarm-prior-meters` adds
+a prior surprise for anything inside that distance, off by default. `--alarm-rule distance` brings back
+the older rule, clearance at 1.4 m/s under 0.7 s. The path turns fully red on the frame the alarm
+raises, and the page's time to collision is measured from how fast the nearest gap closes. `docs/math/09_arrow_and_alarm.md` has the formula, the
+derivation of 1.63 and the replay numbers.
+
 ### The gaze switch
 
 **With the glasses, the alarm can go quiet while the wearer's eyes are on the danger.** It's off
@@ -714,9 +726,9 @@ conditions they were taken under and the commands that rerun them, are in
   out on blank walls, and is unreliable on moving objects. Static obstacles first.
 - Estimator depth flickers between frames and its scale can drift. The pose never comes from it.
 - The glasses have no position unless `--position` asks for one. Without one, N is approximate
-  because the ground grid moves with the walker. With one, the grid stays put, but N still sits at
-  its floor, because the 0.5 s window holds one or two of the 2.5 to 3.5 frames planned a second
-  and N needs three. Neither way keeps obstacles that are out of view.
+  because the ground grid moves with the walker. With one, the grid stays put, and the arrow sits
+  at its limit far more often. N needs three samples in its 1 s window, which about half the cells get
+  at the 2.5 to 3.5 frames planned a second. Neither way keeps obstacles that are out of view.
 - `--position dense_slam` is about 1 m off on a recorded walk at the rate the pipeline runs, and
   `odometry` 0.2 to 0.3 m. Dense SLAM tracked to 0.18 m only with depth for every frame at 30 a
   second, which the depth model can't make as the walk happens. See
