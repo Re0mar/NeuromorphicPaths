@@ -45,19 +45,12 @@ papers roel: mute conversation in cars
         
 - References
 # Introduction
-In recent years, the problem of distracted people taking part in trafic has been on the rise, caused for the most part by increased usage of mobile phones and similar devices.
-The effects of this have been pretty clear, causing many traffic accidents which would've been preventable [(Rijniers, 2017)](#references).
-In an effort to reduce these collisions our group set out to research a potential aid based upon surprise theory, 
-where the user is either alerted or has the distractions on the phone muted whilst their environment is to surprising, 
-as this increase in surprise should correlate with an increased risk for accidents.
-Put into practice, our team will work with an camera device to generate a map of the surroundings,  
-after which Fitt's Law is used to identify areas of high surprise.
-These high surprise areas will then be used to alert the user, whilst also steering them clear of it, theoretically eliminating the potential for accidents or collisions to occur.
+In recent years more and more people are partaking in distracted driving, which is caused primarily by increased usage of smartphones and similar devices. The effects of this are clear; a sharp increase in preventable traffic accidents [(Rijniers, 2017)](#references) `TODO we should pick another source`. In an effort to reduce these collisions, our group has set out to research a potential aid using surprise theory, by alerting the user or muting the distraction when they should be paying attention. Previous studies have found a clear correlation between increased surprise and dangerous situations that resulted in collisions [SOURCE]. In order to build a prototype for this aid, our team will work with a head-mounted camera device to generate a map of the surroundings, after which Fitt's Law is applied to identify areas of high surprise (Is this true?).
 
 # Background
 ## Motivation
 
-A 2017 thesis published at Radboud University concluded that reminding drivers to pay attention to the road has a significant effect on subsequent accidents [(Rijniers, 2017)](#references). Many of these accidents are preventable one-sided accidents, caused by drivers, cyclists and pedestrians leaving or crossing the road by accident or at the wrong moment. Our leading theory is that wearable computer vision, as found in commercial products like smart glasses, could detect these dangerous situations and direct the user's attention back to the road before an incident occurs.
+A 2017 thesis published at Radboud University concluded that reminding drivers to pay attention to the road has a significant effect on subsequent accidents [(Rijniers, 2017)](#references) `TODO we should pick another source`. Many of these accidents are preventable one-sided accidents, caused by drivers, cyclists and pedestrians leaving or crossing the road by accident or at the wrong moment. Our leading theory is that wearable computer vision, as found in commercial products like smart glasses, could detect these dangerous situations and direct the user's attention back to the road before an incident occurs.
 
 Alerting the user is only one option. The distractions on the phone can also be muted while the environment is too surprising, similar to how conversations can be muted in cars when the driver needs to focus. 
 
