@@ -31,9 +31,15 @@ papers roel: mute conversation in cars
           - Alarm
           - Gaze tracking
     
-- Results
+- Results -> System Measurements
 	    - Mention using the neon companion app to validate server's findings
+      - Audio & Development Overlay and how they work (already drafted)
     - We have demo, but no real tests to show it works
+- Experiment Methods -> Scenarios
+    - (Conceptual) Think of 3 example scenarios, how do the features we have interact with that scenario?
+    - e.g. "A person that has their eyes pointing to the right as they walk towards a wall on their left" (sound alerts or music/noise cancelling turns off until they at least look at the obstacle)
+    - Probably pick a specific audio setting (Music, Alerts, or Noise Cancellation control) for each individual scenario
+  
     
 - Discussion
     
@@ -280,7 +286,7 @@ https://www.nature.com/articles/s41598-025-08475-4
 
 *If you did a system, follow the same procedure but instead of results you describe 3 scenarios in which the system could be used in the future. When you write the scenario, imagine you are a user using the system and describe all the little details that demonstrate how well your interactions were thought through and how it solves an existing usability problem.*
 
-# Results
+# Results -> System Measurements (rephrasing necessary?)
 
 At the end of the development process of the product, the product needed to be presented to our peers. For this presentation a demonstration of the product was made, this demonstration had next to a live demonstration also a back-up video in which a user from the development team used the glasses while walking through a lecture room at Radboud university. The image below shows a frame from this back-up video in which we see a multitude of panels further explained below the image. 
 <img width="1726" height="1079" alt="NMHCI_demo_screenshot" src="https://github.com/user-attachments/assets/06b57432-3772-48f0-af11-262eb068fab6" />
@@ -306,6 +312,7 @@ argue about the resutls
 
 # Scenarios
 
+(pick a specific audio setting for each: Music, Alerts, or Noise Cancellation control)
 1. You want to walk in a straight line but there is an object in the middle of the hallway.
 
 2. The user is walking and another pedestrian is approaching from the front and on route for collision.
