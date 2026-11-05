@@ -222,7 +222,7 @@ $$
 - separate from plan on purpose: reads obstacles, never the path -> still fires when plan is wrong
 - **corridor:** cells strictly ahead, within 0.30 m (body half-width) either side. Furniture being walked past isn't in it, neither are sides of a doorway you fit through
   - NOTE: 0.30 m, not the 0.35 m footprint: at 0.35 + 0.15 a 0.9 m doorway alarmed on 93 % of frames, at 0.30 it's 36 %
-- **gap ratio:** nearest corridor cell's gap $S$, and how much it changed over the last 3 s, $\Delta S$ (standard deviation, at least 3 frames). Slides use 1 s, too few frames at ~3 a second. No walking speed assumed, so standing still near something doesn't count
+- **gap ratio:** how fast the gap to the nearest thing ahead is closing, compared with how big that gap still is. Nearest corridor cell's gap $S$, and how much it changed over the last 3 s, $\Delta S$ (standard deviation, at least 3 frames). Slides use 1 s, too few frames at ~3 a second. No walking speed assumed, so standing still near something doesn't count
 - **alarm:** slides' signal-to-noise of 1 [(Vertegaal, 2026c, p. 70)](#references), as $c\,\Delta S \ge S - m$. $m = 0.2$ m = safety line out from the footprint, a margin specific to this use case. $c = 1 + d/(kT) = 1.63$ brings gap forward over our ~0.65 s delay $d$ (Appendix E), so with no delay $c = 1$ = slides' rule exactly. Once up, holds 0.5 s on frame timestamps so it doesn't flicker (classroom walk: 108 state changes -> 66)
 - **old rule (distance), still a switch:** $\tau = S_{\min} / 1.4 < 0.7$ s (0.98 m). Assumes walking speed, so it rang while standing still: on replays 46 % of slow frames against 35 %
 - **avoidance surprise (the form from Background):** sent with every plan, in bits:
@@ -348,7 +348,7 @@ Camera height is measured above the fitted floor, with nothing to check it again
 
 # Scenarios
 
-Whilst no formal experiment was done with the prototype, we describe several scenarios in which the technology could be used. Each of these were chosen to reflect a situation a final version of the prototype might be used in, focusing on collision avoidance, navigation and situational awareness. These range in a steadily increasing grade of difficulty, going from straight line obstacle avoidance to full room navigation.
+While no formal experiment was done with the prototype, we describe several scenarios in which the technology could be used. Each of these were chosen to reflect a situation a final version of the prototype might be used in, focusing on collision avoidance, navigation and situational awareness. These range in a steadily increasing grade of difficulty, going from straight line obstacle avoidance to full room navigation.
 
 
 | Scenario | Desired Response (Prototype) | Expectation | Additional Context |
@@ -371,11 +371,11 @@ Whilst no formal experiment was done with the prototype, we describe several sce
 
 Due to the available timeframe and resources several limitations had to be set for this project, these focusing around code implementation and the explored options for data gathering. Apart from this another limitation is also present in the current implementation, which relies on a separate server to run the calculations and stream the directions back to the user, imposing a limit due to network delay and connection requirement. Our delay figures start when a frame reaches the server, so they leave out the ~130 ms from capture to arrival on a live run and the time for the sound to play, which we did not measure on the glasses.
 
-A major factor apart from this is the usage of large language models for the implementation of the prototypes, where the limited amount of time required the usage of such tools to translate our plan, formulas and approach into a functional product. Whilst this allowed us to make the implementation feasible, its cost is also significant, as several bugs and structural mistakes were made by the LLM. Due to this the continued development of the product should involve the replacement and redesign of this prototype with a more solid implementation.
+A major factor apart from this is the usage of large language models for the implementation of the prototypes, where the limited amount of time required the usage of such tools to translate our plan, formulas and approach into a functional product. While this allowed us to make the implementation feasible, its cost is also significant, as several bugs and structural mistakes were made by the LLM. Due to this the continued development of the product should involve the replacement and redesign of this prototype with a more solid implementation.
 
 To expand on this, another part requiring optimization would be the usage of so called magic numbers in the prototype, which are numbers our team found as working well enough for demonstrations, but might be far from the optimal values. The benefits of finding these optimal points would be debatable though, as the cost for doing so would be relatively expensive for perhaps limited improvements to the final product.
 
-Shifting to the hardware, a defining factor of our project and approach is the usage of only the camera as an information source, which whilst cheap and almost universally available, is not the most optimal sensor for this project. Applications of Lidar might have improved accuracy, but due to cost of Lidar enabled devices this avenue could not be explored, leaving the less accurate camera as the only way of generating the point cloud.
+Shifting to the hardware, a defining factor of our project and approach is the usage of only the camera as an information source, which while cheap and almost universally available, is not the most optimal sensor for this project. Applications of Lidar might have improved accuracy, but due to cost of Lidar enabled devices this avenue could not be explored, leaving the less accurate camera as the only way of generating the point cloud.
 
 The course coordinator advised us to use SLAM, so we built Open3D's dense SLAM and tested it on a recorded walk. Run offline with depth for all 30 frames a second, it tracked the walk to ~0.2 m. Our server's depth model only delivers ~3 frames a second, and at that rate the error rose to ~1 m. As a workaround we added frame-to-frame odometry, which stayed at ~0.2 m at the rate the server can deliver. Both are available through a flag and are off by default. With a position the cells stay fixed to the world, which changes the input to the planner, but in our tests we could not show that the plans got better, and the plan sat at its heading limit more often (~20 to ~40 % of frames, against ~5 %). With a faster server we expect dense SLAM to hold up live.
 
@@ -394,7 +394,7 @@ The course coordinator advised us to use SLAM, so we built Open3D's dense SLAM a
 
 Based upon the research and resulting prototype, several avenues for further applications and improvements open up. These are divided between new applications of the technology and ways to improve performance. Last are some experiments for more specific use cases, investigating how the technology holds up in environments less suited to what it was originally designed for.
 
-Beginning with the possible improvements, a major focus of any next step would be the incorporation of a longer stage planning strategy, allowing the technology to look further ahead than a couple of meters. The benefits of this would be that a user may now be guided towards an objective whilst remaining clear of high risk areas, where a location would be set in advance and the relative position to this location be measured using gps. During operation a slight increase of risk may then be applied to areas leading away from the target. These should not be high enough to divert a user into a high risk area to reach their objective, but would be sufficient to keep them from going in circles without arriving anywhere.
+Beginning with the possible improvements, a major focus of any next step would be the incorporation of a longer stage planning strategy, allowing the technology to look further ahead than a couple of meters. The benefits of this would be that a user may now be guided towards an objective while remaining clear of high risk areas, where a location would be set in advance and the relative position to this location be measured using gps. During operation a slight increase of risk may then be applied to areas leading away from the target. These should not be high enough to divert a user into a high risk area to reach their objective, but would be sufficient to keep them from going in circles without arriving anywhere.
 
 Continuing on the application of gps, apart from including directions, it may be used to automatically designate certain areas as higher risk than others, serving as another input for the planning part of the program. This would assign a higher risk to areas known to be dangerous beforehand, such as highways or lakes, alongside adjusting a path to make use of a designated crossing site for roads. A limitation in this extension could show up in the accuracy of the gps, which depending on device might not be accurate enough to distinguish between a sidewalk and the bicycle lane a meter next to it.
 
@@ -402,7 +402,7 @@ Apart from this, another avenue of providing more information about the risk of 
 
 Continuing with further experiments, one that needs to be included for certain is the performance on high speeds, as the faster movements might interfere with the point cloud formation. Besides this another issue would be the time required for processing, as a collision might have already taken place by the time the user is notified of the risk to do so, or the advised path would be too short as the user travels its entirety before the next section could be calculated.
 
-Last, whilst we acknowledge that our current prototype is very generic in its applications and could be used in many of them with little adjustment, a few areas exist which we would designate as the most logical next steps, these in part decided due to the benefits it might bring to society. First would of course be those with impaired sight, this technology serving a similar role as a guide dog to those unable to see their surroundings themselves, allowing them freedom without the many expenses needed for conventional solutions. Besides this the potential for autonomous vehicles exists as well, with cars and drones relying upon this technology being capable of navigating unseen areas without a human operator.
+Last, while we acknowledge that our current prototype is very generic in its applications and could be used in many of them with little adjustment, a few areas exist which we would designate as the most logical next steps, these in part decided due to the benefits it might bring to society. First would of course be those with impaired sight, this technology serving a similar role as a guide dog to those unable to see their surroundings themselves, allowing them freedom without the many expenses needed for conventional solutions. Besides this the potential for autonomous vehicles exists as well, with cars and drones relying upon this technology being capable of navigating unseen areas without a human operator.
 
 <!-- 
 - Further research
@@ -461,14 +461,12 @@ Last, whilst we acknowledge that our current prototype is very generic in its ap
   - except: recent floor (median of last 10) within 0.25 m of a nearer surface and not of the deepest (like looking down at a lower tier) -> nearer one wins, until the deeper one has been passed over 5 frames in a row
 - *without gravity:* one plane fit by RANSAC (300 tries, 5 cm tolerance)
 - either way, plane has to pass sanity check: leans at most 35° from up, camera sits more than 0.3 m and at most 2.2 m above it. Nothing passes -> keep last frame's floor
-  - NOTE: no height map comes from the model. Heights come from the floor fit here. Old notes' "too high to care @2.2 m" mixed up two numbers: 2.2 m is the highest a camera can sit above a believable floor (find floor). The "too high to care" cut is 2.00 m
 
 ## C. Point cloud details
 - OpenCV picks new camera matrix that crops away black border (`alpha = 0`), same 1600 × 1200 size out
 - different focals per axis (636 vs 754 px) squashed the picture 16% sideways. Both set to the bigger one, $f = 754.4$ px, so pixels stay square (like the model was trained on)
 - field of view: 103.4° wide -> $2 \arctan(800 / 754.4) \approx 93.4°$
 - Neon Player's depth plugin does the same conversion: its saved maps measured 0.9343 times model's raw output vs 0.9353 predicted, so conversion checks out
-  - NOTE: Neon Player only checked this depth conversion. Gaze was never checked with it (old notes said both)
 
 $$X = \frac{(u - c_x)\, z}{f_x}, \qquad Y = \frac{(v - c_y)\, z}{f_y}, \qquad Z = z$$
 
