@@ -243,11 +243,22 @@ $$
   - looked + switch on -> alarm still red on page, but not heard. Never changes path or alarm itself. No gaze -> counts as not looked, so fails to "heard"
 
 ## Overlay
-- **stereo cue (decided on the Server, page just applies the numbers):**
-  - steering: ear on far side from planned heading $\theta$ (the arrow, Appendix E) gets quieter, walker turns away from quiet ear. Gain = $e^{-\frac12 (\theta / \sigma_\theta)^2}$ with $\sigma_\theta = \arctan(1.5 / 4) = 20.6°$ (goal tolerance seen as an angle). 4° head wobble leaves it at 98 %, 35.5° sidestep limit at 22.5 %. Never under 10 % (silent ear reads as broken headphones)
-  - danger: while alarm is heard, ear on danger's side drops to that 10 % floor. Dead ahead ducks both
-- **what reaches the walker vs what's for us:** ear gains and alarm sound are the walker's. Arrow, red, rings, plan view, pictures and bits are evaluation/demo (walker isn't looking at a screen)
-
+The stereo cue is an automatic alarm that plays at different levels in both ears of the walker, working both to warn them and to steering them towards a desired direction. Although this cue is part of the overlay, the values are determined on the server. The gain of either ear is based on the heading angle $\theta$, which is the direction of the arrow relative to walking straight ahead:
+$$
+\text{direction} = 
+\begin{cases}
+	 \text{left} &\theta < 0 \\ 
+	 \text{straight} &\theta = 0 \\
+     \text{right} &\theta > 0 \\
+\end{cases}
+$$
+The volume is increased on the side the turn goes to, so a path curving to the left would increase gain on the left ear whilst lowering it on the right. If the desired path is straight ahead, neither ear's volume is lowered. Gain $g$ is computed with a goal tolerance $\sigma_{\theta}$ of $1.5 \text{ m}$ over a $4\text{ m}$ distance:
+$$
+g=e^{-\frac{1}{2}\left( \frac{\theta}{\sigma_{\theta}} \right)}
+\qquad
+\sigma_{\theta}=\arctan\left( \frac{1.5}{4} \right) \approx 20.6\degree
+$$
+Using this formula, the far side ear retains roughly at least $22.5\%$ volume when active. When danger is detected, the volume on the side of the danger drops to $10\%$, which is done for both visualized in the top left corner of the overlay (see [Panel sound](#panel-sound)).
 ## Hardware and Data Capture
 - camera: Neon scene camera, 1600 × 1200 at 30 fps, IMU (~100 Hz) and eye-tracking/gaze (200 Hz)
 - Server: laptop with a Quadro T2000 GPU (4 GB), runs the whole pipeline + serves the webpage
