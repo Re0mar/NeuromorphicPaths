@@ -312,12 +312,14 @@ argue about the resutls
 
 # Scenarios
 
-(pick a specific audio setting for each: Music, Alerts, or Noise Cancellation control)
-1. You want to walk in a straight line but there is an object in the middle of the hallway.
+Whilst no formal experiment was done with the prototype, several scenarios were tested to accertain the effectiveness of the technology. Each of these were chosen to reflect a situation a final version of the prototype migth be used in, focussing on collision avoidance, navigation and situational awareness. These range in a steadily increasing grade of difficulty, going from straight line obstacle avoidance to full room navigation.
 
-2. The user is walking and another pedestrian is approaching from the front and on route for collision.
 
-3. Visually impaired person will not see an object but the product will help the user avoid it by showing it in a way the person can perceive.
+| Scenario | Audio setting | Use of the prototype |
+|---|---|---|
+| Walking straight down a hallway with an object in the way | Music | The user continues listening to music while the system lowers the volume in the ear nearest the obstacle and provides an alert, helping them steer around it. |
+| An approaching pedestrian is on a collision course | Alerts | The user receives an immediate directional alert so they can react to the approaching pedestrian. |
+| A visually impaired person encounters an obstacle they cannot see | Noise Cancellation control | The system uses directional audio feedback to indicate the obstacle and guide the user toward a safer path. |
 
 # Discussion
 
