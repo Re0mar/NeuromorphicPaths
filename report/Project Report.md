@@ -202,7 +202,7 @@ U_{point} = U_{collision} + U_{contact}
 $$
 Next, a goal term is used by the planner to incorporate the eye tracking data (gaze) to steer the walker into the direction they're looking in the event a tie between equally costly paths is reached. Each candidate position in the final row $x$ is used in conjunction with the desired position in the final row $x_{goal}$  to allow the user to 'choose' a preferred path. The difference between these two is divided by the tolerance $T$, which signifies the maximum acceptable lateral distance from the gaze to the goal. If the walker's gaze falls outsize of $T$, the tie is broken using random chance:
 $$
-\frac{1}{2} \left( \frac{x-x_{goal}}{T} \right)^2 \qquad T = 1.5 \text{ m}
+U_{goal}=\frac{1}{2} \left( \frac{x-x_{goal}}{T} \right)^2 \qquad T = 1.5 \text{ m}
 $$
 In order to prevent the planner from outputting a completely different path due to the slightest bit of noise, a previous plan prior is used pull the arrow towards where it was last frame. A penalty $U_{prior}$ is added to every candidate lateral position $x$ in the field, based on how much it deviates from where the previous plan predicted the walker would be now $x_{prev}$ given the time since that plan $\Delta T$:
 $$

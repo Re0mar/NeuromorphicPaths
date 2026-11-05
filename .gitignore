@@ -27,3 +27,9 @@ local.properties
 
 # Kotlin 2 session data beside each Gradle project.
 .kotlin/
+
+# Latex files
+report/**
+!report/**/*.md
+!report/**/*.tex
+!report/**/*.pdf
