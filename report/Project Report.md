@@ -164,9 +164,9 @@ Each point is given a surprise value based solely on the gap and wobble of that 
 $$
 S=d-r \qquad r=0.35 \text{ m}
 $$
-Wobble $N$ is a measure of how much the gap for a given cell has changed over the last few frames. For this, it evaluates values of $S$ over the last $0.5 \text{ s}$, computes the standard deviation given $\ge 3$ samples and sets the lower bound of the result to be $0.01 \text{ m}$. In our tests on the glasses $N$ stayed at this lower bound on every cell (see [**From Above**](#panel-from-above)). The value of $N$ is tripled for points $p$ in that are walls $W$ to encourage the planner to steer around them:
+Wobble $N$ is a measure of how much the gap for a given cell has changed over the last few frames. For this, it evaluates values of $S$ over the last $1 \text{ s}$, computes the standard deviation given $\ge 3$ samples and sets the lower bound of the result to be $0.01 \text{ m}$. In our tests on the glasses ~40 % of cells had enough samples and the rest used this lower bound (see [**From Above**](#panel-from-above)). The value of $N$ is tripled for points $p$ in that are walls $W$ to encourage the planner to steer around them:
 $$
-N=max(SD\{S_{t} \mid t \le 0.5 \text{ s}\}, 0.01) 
+N=max(SD\{S_{t} \mid t \le 1 \text{ s}\}, 0.01) 
 \qquad
 N = 
      \begin{cases}
@@ -304,10 +304,10 @@ The panel at the top left is the output panel. This is the visual demonstration 
 
 | | Demo | Attention |
 |---|---|---|
-| Alarm frames | 124 of 327 (37.9 %) | 69 of 122 (56.6 %) |
-| Alarm changes per minute | 11.4 | 20.6 |
+| Alarm frames | 117 of 315 (37.1 %) | 60 of 112 (53.6 %) |
+| Alarm changes per minute | 13.0 | 20.6 |
 | Quieter ear volume, alarm | 10 % | 10 % |
-| Quieter ear volume, no alarm | 98 % | 92.5 % |
+| Quieter ear volume, no alarm | 92.5 % | 92.5 % |
 
 In our tests the alarm was up on ~40 to ~55 % of frames, in rooms full of chairs and desks. Volumes are medians. Without an alarm the two ears usually stayed close in volume, so the steering sound is mostly subtle.
 
@@ -320,7 +320,7 @@ The panel at the bottom left is the direction the user should walk towards to fo
 | | Demo | Attention |
 |---|---|---|
 | Median heading | 12.1° | 16.0° |
-| At limit | 6.1 % | 8.2 % |
+| At limit | 10.2 % | 6.2 % |
 | Full swings | 0 | 0 |
 
 Headings are sizes, left or right of straight ahead. The limit is ~36°, a full sidestep at walking speed. A full swing is the heading jumping from the limit on one side to the limit on the other in one frame, and we saw none in our tests.
@@ -333,12 +333,12 @@ The central panel is the field of view from the user, recorded by the camera on 
 
 | Step | Demo median | Demo 95th percentile | Attention median | Attention 95th percentile |
 |---|---|---|---|---|
-| Depth | 381 ms | 633 ms | 334 ms | 345 ms |
-| Scene | 72.6 ms | 301 ms | 25.5 ms | 59.0 ms |
-| Planner | 110 ms | 343 ms | 52.0 ms | 80.9 ms |
-| **Total** | **646 ms** | **1343 ms** | **411 ms** | **471 ms** |
+| Depth | 411 ms | 720 ms | 340 ms | 480 ms |
+| Scene | 83.6 ms | 410 ms | 58.3 ms | 145 ms |
+| Planner | 141 ms | 350 ms | 99.5 ms | 157 ms |
+| **Total** | **646 ms** | **1535 ms** | **514 ms** | **688 ms** |
 
-In our tests the system planned ~2 to ~3 of the camera's 30 frames a second, and 95 % of frames finished within ~0.5 to ~1.3 s, with 5 % taking longer. We report that figure because the slow frames are the risky ones: at 1.4 m/s a walker covers ~0.7 to ~1.9 m in that time, and the alarm is set to go off ~1 m from an obstacle. The steps don't add up to the total because each one is taken on its own.
+In our tests the system planned ~2 to ~3 of the camera's 30 frames a second, and 95 % of frames finished within ~0.7 to ~1.5 s, with 5 % taking longer. We report that figure because the slow frames are the risky ones: at 1.4 m/s a walker covers ~1 to ~2 m in that time, and the alarm is set to go off ~1 m from an obstacle. The steps don't add up to the total because each one is taken on its own.
 
 ## Panel: From Above
 
@@ -348,10 +348,11 @@ The top right panel shows the planner's view from above. The yellow dots are obs
 
 | | Demo | Attention |
 |---|---|---|
-| Cells per frame | 149 | 104.5 |
-| Measured $N$ | 0 of 43,688 | 0 of 13,135 |
+| Cells per frame | 141 | 111.5 |
+| Measured $N$ | 15,704 of 41,944 (37.4 %) | 5,633 of 12,730 (44.2 %) |
+| $N$, median | 0.033 m | 0.041 m |
 
-$N$ is how much a cell's gap changed over the last 0.5 s, and it needs 3 samples in that window. At ~2 to ~3 planned frames a second the window holds 1 or 2, so in our tests every cell used the 0.01 m lower bound.
+$N$ is how much a cell's gap changed over the last 1 s, and it needs 3 samples in that window. At ~2 to ~3 planned frames a second ~40 % of cells had enough in our tests, and the rest used the 0.01 m lower bound. The grid moves with the walker, so $N$ partly compares different spots.
 
 ## Panel: Risk
 
@@ -361,7 +362,7 @@ The bottom right panel is the depth image colored with the same costs as the [**
 
 | | Demo | Attention |
 |---|---|---|
-| Camera height | 1.63 m | 1.50 m |
+| Camera height | 1.62 m | 1.47 m |
 
 | | Median | Worst tenth |
 |---|---|---|
@@ -400,7 +401,7 @@ To expand on this, another part requiring optimalisation would be the usage of s
 
 Shifting to the hardware, a defining factor of our project and approach is the usage of only the camera as an information source, which whilst cheap and almost universally available, is not the most optimal sensor for this project. Applications of Lidar might have improved accuracy, but due to cost of Lidar enabled devices this avenue could not be explored, leaving the less accurate camera as the only way of generating the point cloud.
 
-The course coordinator advised us to use SLAM, so we built Open3D's dense SLAM and tested it on a recorded walk. Run offline with depth for all 30 frames a second, it tracked the walk to ~0.2 m. Our server's depth model only delivers ~3 frames a second, and at that rate the error rose to ~1 m. As a workaround we added frame-to-frame odometry, which stayed at ~0.2 m at the rate the server can deliver. Both are available through a flag and are off by default. With a position the cells stay fixed to the world, which changes the input to the planner, but in our tests we could not show that the plans got better, and $N$ still stayed at its lower bound because its window holds too few frames. With a faster server we expect dense SLAM to hold up live.
+The course coordinator advised us to use SLAM, so we built Open3D's dense SLAM and tested it on a recorded walk. Run offline with depth for all 30 frames a second, it tracked the walk to ~0.2 m. Our server's depth model only delivers ~3 frames a second, and at that rate the error rose to ~1 m. As a workaround we added frame-to-frame odometry, which stayed at ~0.2 m at the rate the server can deliver. Both are available through a flag and are off by default. With a position the cells stay fixed to the world, which changes the input to the planner, but in our tests we could not show that the plans got better, and the plan sat at its heading limit more often (~20 to ~40 % of frames, against ~5 %). With a faster server we expect dense SLAM to hold up live.
 
 <!-- - Limitations
     - Lack of Lidar
@@ -540,7 +541,7 @@ $$X = \frac{(u - c_x)\, z}{f_x}, \qquad Y = \frac{(v - c_y)\, z}{f_y}, \qquad Z 
 - **also written per run:** `timing.jsonl` (per-frame capture-to-plan delays), `episodes.jsonl` (user model), optional frame log (`--record-to`)
 
 ## G. Camera position
-- off by default. `--position odometry` or `dense_slam` adds a camera position. Measured on attention walk replay, 336 px depth:
+- off by default. `--position odometry` or `dense_slam` adds a camera position. Measured on attention walk replay, 336 px depth, $N$ window 0.5 s:
 
 | Setting | Planned per second | Delay, median / 95th | Positioned | Error | 3 s drift |
 |---|---|---|---|---|---|
@@ -551,4 +552,15 @@ $$X = \frac{(u - c_x)\, z}{f_x}, \qquad Y = \frac{(v - c_y)\, z}{f_y}, \qquad Z 
 - error = median distance from reference camera path. 3 s drift = worst tenth
 - no ground truth: reference is COLMAP's path from same video [(Schönberger & Frahm, 2016)](#references), first 18.4 s (~8 m), scale from depth model
 - with a position, cells are fixed to the world and not to the walker, so planner gets different cells, and frames differ too. Alarm frames 56.6 % off, 52.5 % odometry, 60.4 % dense SLAM. No way to score which plan is better
-- $N$ stays at its lower bound with or without a position (window holds too few planned frames)
+- $N$ window 0.5 s against 1 s, same walk and depth, idle GPU, ranges over runs:
+
+| Setting | Runs | Planned per second | Delay, median | Delay, 95th | Measured $N$ | $N$, median | Heading at limit |
+|---|---|---|---|---|---|---|---|
+| Off, 0.5 s | 2 | 2.80-2.96 | 413-480 ms | 562-644 ms | 0 % | | 8.7-9.8 % |
+| Off, 1 s | 2 | 2.80-2.93 | 447-482 ms | 564-682 ms | 46-49 % | 0.04 m | 6.8-11.6 % |
+| Odometry, 0.5 s | 3 | 2.27-2.61 | 520-606 ms | 928-1167 ms | ~0 % | | 5.1-5.6 % |
+| Odometry, 1 s | 3 | 2.31-2.85 | 435-605 ms | 524-990 ms | 42-50 % | 0.13 m | 21.9-37.6 % |
+
+- wider window: no delay cost we can measure. Odometry's $N$ ~3 times larger and plan at heading limit far more often. With cells fixed to the world, $N$ includes walker's own approach, which likely explains much of that. Can't separate it from tracker error here
+- same setting moves up to ~170 ms at the median between runs, so first table (one run each, 0.5 s window) is looser than it looks
+- NOTE: may need a fuller appendix table comparing performance, accuracy, etc. across these settings
