@@ -163,8 +163,10 @@ raised at his signal-to-noise of 1 from the car-following study, with our delay 
 
 `--alarm-rule distance` raises it instead when the time to contact
 $`{\color{red}{\tau}} = \min_{i:\ y_i > 0,\ |x_i| \le 0.30} {\color{teal}{S}}_i / 1.4`$ is under 0.7 s.
-That $`{\color{red}{\tau}}`$ feeds his avoidance form in bits, which colors the path and gives
-the page its time-to-contact readout, and nothing else. For the bits the clearance is floored at
+Under the default rule the path's color is the rule's own surprise, half the gap ratio squared, fully red
+at 0.72 bits where the alarm raises, and the page's time to contact is the gap over the closing speed
+the spread implies. Under the distance rule that $`{\color{red}{\tau}}`$ feeds his avoidance form in
+bits, which colors the path and gives the page its time-to-contact readout, and nothing else. For the bits the clearance is floored at
 0.06 m first, so the figure never runs past what 0.06 m gives. At the alarm's threshold it reads
 1.47 bits, and that is where the path turns fully red.
 

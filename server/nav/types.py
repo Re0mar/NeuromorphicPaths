@@ -311,6 +311,11 @@ class PlannedPath:
     # Whether the display should make the alarm heard. False only while the alarm is up and quieted
     # by the gaze switch. None resolves to alarm, so a path built without it sounds as before.
     alarm_audible: bool | None = None
+    # The time to contact the gap rule measured from how fast the nearest gap closed, None when it
+    # isn't closing. Read only when time_to_contact_measured is True. Otherwise a display reads the
+    # time back from the avoidance surprise, which is how the distance rule and older paths carry it.
+    time_to_contact_seconds: float | None = None
+    time_to_contact_measured: bool = False
 
     def __post_init__(self) -> None:
         if self.alarm_audible is None:
@@ -338,6 +343,8 @@ class PlannedPath:
             value = getattr(self, field_name)
             if not np.isfinite(value) or value < 0.0:
                 raise ValueError(f"{field_name} must be finite and zero or more, got {value}")
+        if self.time_to_contact_seconds is not None and (not np.isfinite(self.time_to_contact_seconds) or self.time_to_contact_seconds < 0.0):
+            raise ValueError(f"time_to_contact_seconds must be finite and zero or more, got {self.time_to_contact_seconds}")
         if self.alarm_pan is not None and (not np.isfinite(self.alarm_pan) or not -1.0 <= self.alarm_pan <= 1.0):
             raise ValueError(f"alarm_pan must be from -1 to 1, got {self.alarm_pan}")
         if self.alarm_pan is not None and not self.alarm:

@@ -253,7 +253,7 @@ The browser also draws the planner's view from above, walking up the screen, abo
   has no reading. The planner treats both as empty floor.
 - **Path.** The planned path as a band the body's width, from a dot at the walker to an arrowhead
   where the plan ends. Its color runs blue to red as something in the way gets closer, fully red
-  from the moment the alarm raises, 0.7 s to contact by default. Its fill is more solid the more the scene shaped the plan, and its borders
+  from the moment the alarm raises. Its fill is more solid the more the scene shaped the plan, and its borders
   stay at one opacity so its direction always shows.
 - **Obstacles.** Each group's nearest point, amber dots for groups and magenta squares for walls,
   the same colors the depth view uses.
@@ -262,9 +262,9 @@ Under it are two numbers on one line. *Scene vs Shape Metric* is how far what th
 what the planner would do with nothing in view, in bits, measured where the arrow reads the path.
 It is not a confidence: an empty corridor gives a plan the planner is sure of and 0 bits.
 *Est. Time to Collision* is the seconds until the body reaches the nearest group in the walker's
-path at walking speed, or `clear` when nothing is in its path. The laptop reads it back from the
-course's avoidance surprise, 0.72 bits at one second to contact, and the bits show when the
-pointer rests on the time. The **?** by the card's title opens how to read it, laid over the card,
+path, at the speed the gap has been closing, or `clear` when nothing in its path is closing. Under
+`--alarm-rule distance` it is at walking speed instead, read back from the course's avoidance
+surprise, 0.72 bits at one second to contact. The bits show when the pointer rests on the time. The **?** by the card's title opens how to read it, laid over the card,
 and the Depth card has one too. Escape, a click outside, or the button again closes it. The laptop computes every color, opacity and number on the page. The page only draws them.
 To see it on a recorded walk:
 
@@ -618,8 +618,8 @@ the nearest gap in the corridor over the last `--alarm-window-seconds` (3), time
 car-following study. The 1.63 brings the gap forward over the pipeline's delay of about 0.65 s. It
 assumes no walking speed, so standing still near a desk doesn't raise it. `--alarm-prior-meters` adds
 a prior surprise for anything inside that distance, off by default. `--alarm-rule distance` brings back
-the older rule, clearance at 1.4 m/s under 0.7 s. The page's time-to-collision readout and the path's
-red still come from the distance form. `docs/math/09_arrow_and_alarm.md` has the formula, the
+the older rule, clearance at 1.4 m/s under 0.7 s. The path turns fully red on the frame the alarm
+raises, and the page's time to collision is measured from how fast the nearest gap closes. `docs/math/09_arrow_and_alarm.md` has the formula, the
 derivation of 1.63 and the replay numbers.
 
 ### The gaze switch

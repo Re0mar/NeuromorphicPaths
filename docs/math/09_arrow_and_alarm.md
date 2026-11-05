@@ -246,7 +246,11 @@ changes.
 >   something near. It reacts to something entering the corridor at once, and it raises the alarm with
 >   nothing near more often: 15 of 48 raises against 9 of 42.
 > - **No ground truth.** Replays show how each rule behaves, not which warnings a walker needed.
-> - The page's time-to-collision readout and the path's red still come from the distance form.
+> - **What the displays show follows the rule.** The path's surprise is $`\tfrac12 r^2`$, with $`r`$
+>   the ratio step 3 compares with 1, so the path is fully red on the frame the alarm raises, at
+>   0.72 bits. The page's time to contact is the gap over the closing speed the spread implies,
+>   $`v = \Delta{\color{teal}{S}}/(k\,\text{span})`$, with no speed assumed. A gap that isn't closing has
+>   none, which the page shows as clear. The Pulse alarm's click rate follows that time.
 
 ## Attention
 
@@ -358,10 +362,11 @@ page's choice, and none of it changes what the laptop sends. In Alarm mode the p
 steering tick while the alarm is down and one of three alarm sounds while it is up, at one of
 three levels: 0 dB, −6 dB and −12 dB against the level the page shipped with. The tick sits about
 8 dB under the alarm. The default alarm sound, Pulse, gets quicker as the walker gets closer. It
-reads the path's `time_to_contact_seconds`, which is the avoidance surprise turned back into
-seconds by the inverse in `server/nav/planner/alarm.py`, the same 1 s over the time to contact as
-above. Between 0.7 s and 0.2 s to contact the pulse quickens as the surprise rises, and
-outside that range it holds at its slowest or fastest rate. The modes and the sounds are
+reads the path's `time_to_contact_seconds`: under the default gap rule, the gap over the closing
+speed the spread implies, with no walking speed assumed; under the distance rule, the avoidance
+surprise turned back into seconds by the inverse in `server/nav/planner/alarm.py`. Between 0.7 s
+and 0.2 s to contact the pulse quickens, and outside that range it holds at its slowest or fastest
+rate. The modes and the sounds are
 listed in `server/README.md`.
 
 ---

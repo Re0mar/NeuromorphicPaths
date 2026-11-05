@@ -3,8 +3,9 @@
 # 14. How the path looks
 
 **The plain idea.** The planned path is drawn on the depth view and on the web page. Its color says how
-close something in the walker's way is: blue when nothing is near, fully red once the alarm raises,
-when something is 0.7 s away at walking pace. How solid the fill is says how much what the camera saw bent the plan: 70 % opaque
+close something in the walker's way is: blue when nothing is near, fully red on the frame the alarm raises.
+Under the default rule that's his avoidance surprise reaching a signal-to-noise of 1. Under
+`--alarm-rule distance` it's something 0.7 s away at walking pace. How solid the fill is says how much what the camera saw bent the plan: 70 % opaque
 when the scene changed nothing, fully solid once the scene information from section 10 reaches 1 bit.
 
 **An analogy.** A kettle with a color-changing base: blue when cold, red when it's hot enough to burn.
@@ -30,6 +31,10 @@ once it's red, so it can't show the difference between 0.7 s and 0.3 s to contac
 $`U_{\text{red}}`$ is the same formula at the alarm's threshold, $`{\color{red}{\tau}} = 0.7`$ s:
 $`(1/0.7)^2 / (2\ln 2) = 2.0408 / 1.3863 = 1.47`$ bits. The planner works it out from the threshold
 and hands it to both displays, so changing the threshold moves the red with it.
+
+Under the default gap rule the path's surprise is the rule's own, his $`\tfrac12 r^2`$ in bits, where
+$`r`$ is the ratio the rule compares with 1 (section 9). The red point is that at $`r = 1`$:
+$`0.5 / \ln 2 = 0.72`$ bits. The path reaches full red on the same comparison that raises the alarm.
 
 OKLab is a color space built so that equal steps look like equal changes to the eye. Blending there
 keeps the middle of the ramp from going muddy, which a plain RGB average tends to do.
@@ -106,9 +111,10 @@ So the fill is solid more often than it was. On every planned frame of `pixel_wa
 The depth view and the web page call the same style functions, so they always agree.
 
 > [!WARNING]
-> - **The ramp saturates.** Everything closer than 0.98 m looks the same red.
-> - **Red and the alarm line up, but the alarm holds.** The path reaches full red at the same 0.7 s
->   the alarm raises at. The alarm then stays up for at least 0.5 s, while the color follows each
+> - **The ramp saturates.** Everything past the red point looks the same red: under the distance
+>   rule, everything closer than 0.98 m.
+> - **Red and the alarm line up, but the alarm holds.** The path reaches full red on the frame the
+>   alarm raises. The alarm then stays up for at least 0.5 s, while the color follows each
 >   frame, so the color can fall back before the alarm clears.
 > - **Before 2026-10-07 the path went red at 0.72 bits**, one second to contact, ahead of the alarm.
 >   From 1.40 m down to 0.98 m of clearance the path was fully red with the alarm still off.

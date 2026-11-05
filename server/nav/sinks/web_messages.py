@@ -24,7 +24,7 @@ from dataclasses import dataclass
 import numpy as np
 
 # Local package imports
-from nav.planner.alarm import time_to_contact_from_avoidance_bits
+from nav.planner.alarm import path_time_to_contact
 from nav.planner.config import OnOff
 from nav.scene.config import SceneConfig
 from nav.sinks.floor_geometry import floor_hidden_mask, floor_seen_mask, gaze_ring, group_rings
@@ -155,8 +155,8 @@ def plan_view_message(path: PlannedPath, field: np.ndarray, grid: np.ndarray, vi
         ],
         "scene_information_bits": float(path.scene_information_bits),
         "avoidance_surprise_bits": float(path.avoidance_surprise_bits),
-        # None when the corridor is empty, which JSON carries as null.
-        "time_to_contact_seconds": time_to_contact_from_avoidance_bits(path.avoidance_surprise_bits),
+        # None when nothing is closing, which JSON carries as null.
+        "time_to_contact_seconds": path_time_to_contact(path),
         "path_color_rgb": list(path_color_rgb(path.avoidance_surprise_bits, view.path_red_from_bits)),
         "path_fill_opacity": path_fill_opacity(path.scene_information_bits),
         "path_border_opacity": BORDER_OPACITY,
