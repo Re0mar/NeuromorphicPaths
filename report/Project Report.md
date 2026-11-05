@@ -54,6 +54,8 @@ Put into practice, our team will work with an camera device to generate a map of
 after which Fitt's Law is used to identify areas of high surprise.
 These high surprise areas will then be used to alert the user, whilst also steering them clear of it, theoretically eliminating the potential for accidents or collisions to occur.
 
+The project was done as part of the course "An introduction to Neuromorphic Human-Computer Interaction" at the Radboud University, where our team expanded on the work of Professor Doctor Roel Vertegaal, who was teaching the course. Whilst he held only an advisory position in our team, much of our work would not have been possible without his advice.
+
 # Background
 ## Motivation
 
@@ -281,6 +283,56 @@ https://www.nature.com/articles/s41598-025-08475-4
 3. Visually impaired person will not see an object but the product will help the user avoid it by showing it in a way the person can perceive.
 
 # Discussion
+
+## Limitations
+
+Due to the available timeframe and resources several limitations had to be set for this project, these focussing around code implementation and the explored options for data gathering. Apart from this another limitation is also present in the current implementation, which relies on a separate server to run the calculations and stream the directions back to the user, imposing a limit due to network delay and connection requirement.
+
+A major factor apart from this is the usage of large language models for the implementation of the prototypes, where the limited amount of time required the usage of such tools to translate our plan, formulas and approach into a functional product. Whilst this allowed us to make the implementation feasible, its cost is also significant, as several bugs and structural mistakes were made by the LLM. Due to this the continued development of the product should involve the replacement and redesign of this prototype with a more solid implementation.
+
+To expand on this, another part requiring optimalisation would be the usage of so called magic numbers in the prototype, which are numbers our team found as working well enough for demonstrations, but might be far from the optimal values. The benefits of finding these optimal points would be debatable though, as the cost for doing so would be relatively expensive for perhaps limited improvements to the final product.
+
+Shifting to the hardware, a defining factor of our project and approach is the usage of only the camera as an information source, which whilst cheap and almost universally available, is not the most optimal sensor for this project. Applications of Lidar might have improved accuracy, but due to cost of Lidar enabled devices this avenue could not be explored, leaving the less accurate camera as the only way of generating the point cloud.
+
+<!-- - Limitations
+    - Lack of Lidar
+    - usage of magic numbers
+    - Inclusion of further components
+        - Accelerometer
+        - gps
+        - lidar
+        - more cameras?
+    - General AI writing of code
+    - hardware needs, lack of server or something? -->
+
+## Next Steps
+
+Based upon the research and resulting prototype, several avenues for further applications and improvements open up. These are devided between new applications of the technology and ways to improve performance. Last are some experiments for more specific usecases, investigating how the technology holds up in environments less suited to what it was originally designed for.
+
+Beginning with the possible improvements, a major focus of any next step would be the incorporation of a longer stage planing strategy, allowing the technology to look further ahead than a couple of meters. The benefits of this would be that a user may now be guided towards an objective whilst remaining clear of high risk areas, where a location would be set in advance and the relative position to this location be measured using gps. During operation a slight increase of risk may then be applied to areas leading away from the target. These should not be high enough to divert a user into a high risk area to reach their objective, but would be sufficient to keep them from going in circles without arriving anywhere.
+
+Continuing on the application of gps, apart from including directions, it may be used to automatically designate certain areas as higher risk than others, serving as another input for the planning part of the program. This would assign a higher risk to areas known to be dangerous beforehand, such as highways or lakes, alongside adjusting a path to make use of a designated crossing site for roads. A limitation in this extension could show up in the accuracy of the gps, which depending on device might not be accurate enough to distinguish between a sidewalk and the bicyle lane a meter next to it.
+
+Apart from this, another avenue of providing more infomation about the risk of surrounding areas could be gained from the application of bluetooth communication between user devices, which would notifiy each other of their respective locations and take these into account when assigning risk. This should allow devices to keep from collision even if the other device is no in the camera field of view.
+
+Continuing with further experiments, one that needs to be included for certain is the performance on high speeds, as the faster movements might interfere with the point cloud formation. Besides this another issue would be the time required for processing, as a collision might have already taken place by the time the user is notified of the risk to do so, or the advised path would be to short as the user travels its entirity before the next section could be calculated.
+
+Last, whilst we acknowledge that our current prototype is very generic in its applications and could be used in many of them with little adjustment, a few areas exist which we would designate as the most logical next steps, these in part decided due to the benifits it might bring to society. First would of course be those with impaired sight, this technology serving a similar role as a guide dog to those unable to see their surroundings themselves, allowing them freedom without the many expenses needed for conventional solutions. Besides this the potential for autonomous vehicles exists as well, with cars and drones relying upon this technology being capable of navigating unseen areas without a human operator.
+
+<!-- 
+- Further research
+    - High speed applications
+    - Detection of other users through communication between devices?
+    - Alternative means of 'steering the user'
+    - Incorporation of longer stage planning, not just the next few meters but further along a path
+    - Actual testing
+    - Exploration of implementation for visually impaired users
+        - Acknowledge it's not the main aim of the project but would help many people quickly, providing funds and test data for further development
+    - Exploration of implementation on autonomous robots, see how robot car or robot dog navigates room based on this -->
+
+
+
+
 
 # Conclusion
 
