@@ -50,11 +50,11 @@ papers roel: mute conversation in cars
     - Presentation mentions
         
 - References (Nolan)
-- Appedices (Nolan)
+- Appendices (Nolan)
 # Introduction
-The problem of autonomous collision avoidance is one that has plagued autonomous navigation for as long as it has existed, with many proposed solutions with varying levels of succes having been attempted already[(K. Berntorp, 2017)](#references). One trait all of these hold in common is their cost, with reliance on either expensive sensors or extensively trained machine learning models to function, something our team attempts to negate in this project. 
+The problem of autonomous collision avoidance is one that has plagued autonomous navigation for as long as it has existed, with many proposed solutions with varying levels of success having been attempted already[(K. Berntorp, 2017)](#references). One trait all of these hold in common is their cost, with reliance on either expensive sensors or extensively trained machine learning models to function, something our team attempts to negate in this project. 
 
-Advancing from an application of surpise theory and Fitt's Law in particular, our proposed solution functions by taking the input of a single camera and formulating a suprise field from its feed. This suprise field corresponds to the amount of risk each section of the area in the camera's view would pose to the user upon entering, where a Lagrangian is then used to formulate a path through this area that would pose the least risk. Based upon this path the user may be advised or directly steered to follow this path.
+Advancing from an application of surprise theory and Fitts' Law in particular, our proposed solution functions by taking the input of a single camera and formulating a surprise field from its feed. This surprise field corresponds to the amount of risk each section of the area in the camera's view would pose to the user upon entering, where a Lagrangian is then used to formulate a path through this area that would pose the least risk. Based upon this path the user may be advised or directly steered to follow this path.
 
 Central to this project was the desire to have the so called 'user' be as generic as possible, where our solution would work no matter if the user is an autonomous car, a camera mounted on a drone or a person wearing glasses with an integrated camera. The motivation behind this objective is showing how the application of this technology is not just limited to one specific problem, instead aiding from autonomous navigation to aiding those with impaired vision.
 
@@ -83,7 +83,7 @@ We apply this idea to the physical environment of the user. An obstacle is a pla
 $$U = \tfrac12 \left(\frac{\Delta S}{S}\right)^2$$
 where $S$ is the gap and $\Delta S$ is the uncertainty of that gap [(Vertegaal, 2026c, pp. 61-65)](#references). We use this formulation twice in the pipeline:
 
-1. **As a weight for every cell.** The floor plan is divided into cells. For each cell the uncertainty is the *wobble* $N$, and the gap is $S = d - 0.35$, which gives $U=\frac{1}{2}\left( \frac{N}{S} \right)^2$. Here $d$ is the distance between the centre of the person and the closest point of the object, and 0.35 m accounts for the forward-most part of the user. This value is the cost of a cell in the planner.
+1. **As a weight for every cell.** The floor plan is divided into cells. For each cell the uncertainty is the *wobble* $N$, and the gap is $S = d - 0.35$, which gives $U=\frac{1}{2}\left( \frac{N}{S} \right)^2$. Here $d$ is the distance between the center of the person and the closest point of the object, and 0.35 m accounts for the forward-most part of the user. This value is the cost of a cell in the planner.
 2. **As a collision warning.** When the uncertainty is how much the gap to the nearest obstacle straight ahead has changed recently, $\Delta S$, the equation becomes $U=\frac{1}{2}\left( \frac{\Delta S}{S} \right)^2$, using the ratio from course lecture slides [(Vertegaal, 2026c, p. 65)](#references). This form is used for collision detection: an obstacle that is being closed on quickly is much more surprising than one far away, and the surprise grows quadratically as the gap shrinks.
 
 Both forms express how reliably the user can predict the distance to an obstacle. The exact definitions of $N$ and the cell grid are given in the [Methodology](#methodology).
@@ -110,7 +110,7 @@ Adding an attracting goal to repelling obstacles is how artificial potential fie
 
 # Materials
 ## Neon smart glasses
-A pair of [Pupil Labs Neon smart glasses](https://pupil-labs.com/products/neon) were provided to us by the course coordinator and act as the accessory to provide a real-time stream of images to be analyzed. Included with this is a [Motorola Edge 40 Pro](https://mijnmoto.nl/product/motorola-edge-40-pro/) smartphone, which comes paired with the glasses and allows us to control, review and analyse the recordings. 
+A pair of [Pupil Labs Neon smart glasses](https://pupil-labs.com/products/neon) were provided to us by the course coordinator and act as the accessory to provide a real-time stream of images to be analyzed. Included with this is a [Motorola Edge 40 Pro](https://mijnmoto.nl/product/motorola-edge-40-pro/) smartphone, which comes paired with the glasses and allows us to control, review and analyze the recordings. 
 ## Neon Companion
 The [Neon Companion](https://pupil-labs.com/products/neon/software) phone app runs on the phone the glasses are connected to and is used to read out and record the data from the camera and eye tracker on the glasses. In the prototype, the phone broadcasts the live feed from the glasses over the local network so that this data can be analyzed on a different device. Apart from a video feed, the real-time API also includes information about the glasses' camera calibration and a clock offset used to straighten every frame and sync measurements respectively (see [Appendix D](#d-neon-companion-api)). The live feed moreover includes gaze data from the eye tracker, which is used in the prototype both to optionally silence the alarm when the user looks at detected danger and by the path planner as the preferred direction to walk in.
 ## Image analysis
@@ -143,7 +143,7 @@ This image is then piped into Depth Anything 3's metric model to determine a dep
 $$
 z = z_{raw}\cdot \frac{\bar{f}}{300} \qquad \bar{f}=\frac{f_{x}+f_{y}}{2}
 $$
-The scaled (actual) depth $z$ and depth returned by the model $z_{raw}$ are both in meters. The horizontal and vertical focal length values $f_{x}$ and $f_{y}$, which correspond to the dept map produced by the model, are measured in pixels. The average focal length is signified with $\bar{f}$. Every pixel is then sent back along its ray as far as the estimated dept specifies, to generate a 3D image of the visible environment.
+The scaled (actual) depth $z$ and depth returned by the model $z_{raw}$ are both in meters. The horizontal and vertical focal length values $f_{x}$ and $f_{y}$, which correspond to the depth map produced by the model, are measured in pixels. The average focal length is signified with $\bar{f}$. Every pixel is then sent back along its ray as far as the estimated depth specifies, to generate a 3D image of the visible environment.
 
 To help orient and interpret the meaning of these points, the position of the floor is estimated for each frame. The floor is defined as a plane:
 $$
@@ -158,7 +158,7 @@ Finally, the filtered point cloud is projected onto a 2D top-down representation
 ## Point Cloud Cost
 After the point cloud has been generated, each group of points gets a 'price' assigned to it. This price is effectively the surprise the user will experience when encountering this group of points, and is used by the planning algorithm to compute the optimal path using least surprise.
 
-The 2D top-down map of points is first chopped into a grid of $0.25m$ squares ('cells'), for a grid that extends $6m$ in front of the walker and $3m$ to either side. Cells with fewer than 2 points are filtered out as they likely the result of dept noise. For each cell, we select the single point that is closest to the walker, raise it to the height of the highest point in the cell and delete all other points. If the height of this point $e \ge 1.5m$, the entire cell is marked as a 'wall'. Every frame is analyzed at face value, so the entire grid moves with the walker.
+The 2D top-down map of points is first chopped into a grid of $0.25m$ squares ('cells'), for a grid that extends $6m$ in front of the walker and $3m$ to either side. Cells with fewer than 2 points are filtered out as they are likely the result of depth noise. For each cell, we select the single point that is closest to the walker, raise it to the height of the highest point in the cell and delete all other points. If the height of this point $e \ge 1.5m$, the entire cell is marked as a 'wall'. Every frame is analyzed at face value, so the entire grid moves with the walker.
 
 Each point is given a surprise value based solely on the gap and wobble of that point. The gap $S$ is defined as the difference between the distance from the walker to the cell's closest point $d$ and the edge of the walker's circular footprint with radius $r$:
 $$
@@ -180,7 +180,7 @@ U_{collision} = \frac{1}{2} \left( \frac{N}{S} \right)^2
 $$
 
 ## Planning
-To find the optimal path to guide the user in, the planner first computes the cost of the paths for all reachable states. This is represented as a field of time/position pairs with a temporal interval $\Delta t = 0.1\text{ s}$ and a spacial interval of $0.1 \text{ m}$ for each lateral position over couple second horizon. The walker is assumed to be moving at some constant speed $v = 1.4 \text{ m/s}$, such that at step $k$, they would be $v\cdot k\cdot \Delta t$ meters further ahead. Because of this, obstacle points are predicted to always come closer for higher values of $k$. 
+To find the optimal path to guide the user in, the planner first computes the cost of the paths for all reachable states. This is represented as a field of time/position pairs with a temporal interval $\Delta t = 0.1\text{ s}$ and a spatial interval of $0.1 \text{ m}$ for each lateral position over couple second horizon. The walker is assumed to be moving at some constant speed $v = 1.4 \text{ m/s}$, such that at step $k$, they would be $v\cdot k\cdot \Delta t$ meters further ahead. Because of this, obstacle points are predicted to always come closer for higher values of $k$. 
 
 At each step and position in the field, two terms are added together to determine the surprise of that entry. The first is collision surprise, already given as the cost of the point in the point cloud. The second is contact surprise, which is the cost of the walker's body probably touching the obstacle. Let $d$ be the distance from a candidate walker's center to an obstacle point and $r$ be the circular footprint of the walker. The clearance $S$ then becomes:
 $$
@@ -210,7 +210,7 @@ In order to prevent the planner from outputting a completely different path due 
 $$
 U_{prior} = \frac{1}{2}\cdot \frac{(x-x_{prev})^2}{0.25^2 + 0.05 \cdot \Delta T}
 $$
-This prior is added the field. A dynamic program then chooses the cheapest sideways route trough the field over time. The cost of each step is that of the entry in the field at the position reached $[k,c]$, added to the squared cost of moving sideways $v_{x}$. A weight variable $w$ is introduced to help encourage the planner to avoid overly diagonal paths.
+This prior is added the field. A dynamic program then chooses the cheapest sideways route through the field over time. The cost of each step is that of the entry in the field at the position reached $[k,c]$, added to the squared cost of moving sideways $v_{x}$. A weight variable $w$ is introduced to help encourage the planner to avoid overly diagonal paths.
 $$
 C_{step} = \left( F[k,c] + \frac{1}{2} \cdot w\cdot v_{x}^2 \right)\cdot \Delta t
 \qquad
@@ -370,18 +370,18 @@ Camera height is measured above the fitted floor, with nothing to check it again
 
 # Scenarios
 
-Whilst no formal experiment was done with the prototype, we describe several scenarios in which the technology could be used. Each of these were chosen to reflect a situation a final version of the prototype migth be used in, focussing on collision avoidance, navigation and situational awareness. These range in a steadily increasing grade of difficulty, going from straight line obstacle avoidance to full room navigation.
+Whilst no formal experiment was done with the prototype, we describe several scenarios in which the technology could be used. Each of these were chosen to reflect a situation a final version of the prototype might be used in, focusing on collision avoidance, navigation and situational awareness. These range in a steadily increasing grade of difficulty, going from straight line obstacle avoidance to full room navigation.
 
 
-| Scenario | Expected response from the prototype | Passed | Additional context |
+| Scenario | Desired Response (Prototype) | Expectation | Additional Context |
 |---|---|---|---|
-| Walking straight down a hallway with an object in the way. | The user continues listening to music while the system lowers the volume in the ear nearest the obstacle and provides an alert, helping them steer around it. | V | |
-| An approaching pedestrian is on a collision course to the user. | The user receives an immediate  alert so they can react to the approaching pedestrian. | V | |
-| An object is on a collision course to the user. | The user has their noice cancelation negated temporarily until the obstruction is out of sight. | V | |
-| A visually impaired person moves throughout a room without sight. | The system uses directional audio feedback to indicate the obstacles and guide the user toward a safer path through the room. | V | |
+| Walking straight down a hallway with an object in the way. | The user continues listening to music while the system lowers the volume in the ear nearest the obstacle and provides an alert, helping them steer around it. | V | Shown in the demo video, with a bag in the aisle of a lecture room. |
+| An approaching pedestrian is on a collision course to the user. | The user receives an immediate alert so they can react to the approaching pedestrian. | V | In its current form the system does detect an approaching pedestrian, since the alarm reacts to how fast the gap closes. The limit is processing speed: a fast approach closes much of the gap before the user hears the alarm. |
+| An object is on a collision course to the user. | The user has their noise cancellation negated temporarily until the alarm clears. | V | In the demo video the **NC OFF** label appears while the alarm is active. |
+| A visually impaired person moves throughout a room without sight. | The system uses directional audio feedback to indicate the obstacles and guide the user toward a safer path through the room. | V | Informally tested during development by short sessions navigating with closed eyes and audio cues. |
 | A user moves at high speed towards an obstacle. | The system uses directional audio feedback to indicate the obstacle and guide the user around it | X | The system doesn't plot far enough in advance to avoid the object. |
-| Walking towards a pair of stairs next to chairs in the cinima. | The system guides the user along a path over the stairs, avoiding the chairs | V | |
-| Walking along the beach, the user attempts to walk into the water | The system guides the user away from the water, back onto the less risky sand | X | The system can't distinguish between surface types, making calm water just as safe of a surface as a solid wooden floor. |
+| Walking towards a pair of stairs next to chairs in the cinema. | The system guides the user along a path over the stairs, avoiding the chairs | V | Recorded walking up and down the stairs of a tiered lecture room. |
+| Walking along the beach, the user attempts to walk into the water | The system guides the user away from the water, back onto the less risky sand | X | As designed, the system is not expected to distinguish between surface types, making calm water just as safe of a surface as a solid wooden floor. This is untested. |
 
 
 
@@ -391,11 +391,11 @@ Whilst no formal experiment was done with the prototype, we describe several sce
 
 ## Limitations
 
-Due to the available timeframe and resources several limitations had to be set for this project, these focussing around code implementation and the explored options for data gathering. Apart from this another limitation is also present in the current implementation, which relies on a separate server to run the calculations and stream the directions back to the user, imposing a limit due to network delay and connection requirement. Our delay figures start when a frame reaches the server, so they leave out the ~130 ms from capture to arrival on a live run and the time for the sound to play, which we did not measure on the glasses.
+Due to the available timeframe and resources several limitations had to be set for this project, these focusing around code implementation and the explored options for data gathering. Apart from this another limitation is also present in the current implementation, which relies on a separate server to run the calculations and stream the directions back to the user, imposing a limit due to network delay and connection requirement. Our delay figures start when a frame reaches the server, so they leave out the ~130 ms from capture to arrival on a live run and the time for the sound to play, which we did not measure on the glasses.
 
 A major factor apart from this is the usage of large language models for the implementation of the prototypes, where the limited amount of time required the usage of such tools to translate our plan, formulas and approach into a functional product. Whilst this allowed us to make the implementation feasible, its cost is also significant, as several bugs and structural mistakes were made by the LLM. Due to this the continued development of the product should involve the replacement and redesign of this prototype with a more solid implementation.
 
-To expand on this, another part requiring optimalisation would be the usage of so called magic numbers in the prototype, which are numbers our team found as working well enough for demonstrations, but might be far from the optimal values. The benefits of finding these optimal points would be debatable though, as the cost for doing so would be relatively expensive for perhaps limited improvements to the final product.
+To expand on this, another part requiring optimization would be the usage of so called magic numbers in the prototype, which are numbers our team found as working well enough for demonstrations, but might be far from the optimal values. The benefits of finding these optimal points would be debatable though, as the cost for doing so would be relatively expensive for perhaps limited improvements to the final product.
 
 Shifting to the hardware, a defining factor of our project and approach is the usage of only the camera as an information source, which whilst cheap and almost universally available, is not the most optimal sensor for this project. Applications of Lidar might have improved accuracy, but due to cost of Lidar enabled devices this avenue could not be explored, leaving the less accurate camera as the only way of generating the point cloud.
 
@@ -414,17 +414,17 @@ The course coordinator advised us to use SLAM, so we built Open3D's dense SLAM a
 
 ## Next Steps
 
-Based upon the research and resulting prototype, several avenues for further applications and improvements open up. These are devided between new applications of the technology and ways to improve performance. Last are some experiments for more specific usecases, investigating how the technology holds up in environments less suited to what it was originally designed for.
+Based upon the research and resulting prototype, several avenues for further applications and improvements open up. These are divided between new applications of the technology and ways to improve performance. Last are some experiments for more specific use cases, investigating how the technology holds up in environments less suited to what it was originally designed for.
 
-Beginning with the possible improvements, a major focus of any next step would be the incorporation of a longer stage planing strategy, allowing the technology to look further ahead than a couple of meters. The benefits of this would be that a user may now be guided towards an objective whilst remaining clear of high risk areas, where a location would be set in advance and the relative position to this location be measured using gps. During operation a slight increase of risk may then be applied to areas leading away from the target. These should not be high enough to divert a user into a high risk area to reach their objective, but would be sufficient to keep them from going in circles without arriving anywhere.
+Beginning with the possible improvements, a major focus of any next step would be the incorporation of a longer stage planning strategy, allowing the technology to look further ahead than a couple of meters. The benefits of this would be that a user may now be guided towards an objective whilst remaining clear of high risk areas, where a location would be set in advance and the relative position to this location be measured using gps. During operation a slight increase of risk may then be applied to areas leading away from the target. These should not be high enough to divert a user into a high risk area to reach their objective, but would be sufficient to keep them from going in circles without arriving anywhere.
 
-Continuing on the application of gps, apart from including directions, it may be used to automatically designate certain areas as higher risk than others, serving as another input for the planning part of the program. This would assign a higher risk to areas known to be dangerous beforehand, such as highways or lakes, alongside adjusting a path to make use of a designated crossing site for roads. A limitation in this extension could show up in the accuracy of the gps, which depending on device might not be accurate enough to distinguish between a sidewalk and the bicyle lane a meter next to it.
+Continuing on the application of gps, apart from including directions, it may be used to automatically designate certain areas as higher risk than others, serving as another input for the planning part of the program. This would assign a higher risk to areas known to be dangerous beforehand, such as highways or lakes, alongside adjusting a path to make use of a designated crossing site for roads. A limitation in this extension could show up in the accuracy of the gps, which depending on device might not be accurate enough to distinguish between a sidewalk and the bicycle lane a meter next to it.
 
-Apart from this, another avenue of providing more infomation about the risk of surrounding areas could be gained from the application of bluetooth communication between user devices, which would notifiy each other of their respective locations and take these into account when assigning risk. This should allow devices to keep from collision even if the other device is no in the camera field of view.
+Apart from this, another avenue of providing more information about the risk of surrounding areas could be gained from the application of bluetooth communication between user devices, which would notify each other of their respective locations and take these into account when assigning risk. This should allow devices to keep from collision even if the other device is no in the camera field of view.
 
-Continuing with further experiments, one that needs to be included for certain is the performance on high speeds, as the faster movements might interfere with the point cloud formation. Besides this another issue would be the time required for processing, as a collision might have already taken place by the time the user is notified of the risk to do so, or the advised path would be to short as the user travels its entirity before the next section could be calculated.
+Continuing with further experiments, one that needs to be included for certain is the performance on high speeds, as the faster movements might interfere with the point cloud formation. Besides this another issue would be the time required for processing, as a collision might have already taken place by the time the user is notified of the risk to do so, or the advised path would be too short as the user travels its entirety before the next section could be calculated.
 
-Last, whilst we acknowledge that our current prototype is very generic in its applications and could be used in many of them with little adjustment, a few areas exist which we would designate as the most logical next steps, these in part decided due to the benifits it might bring to society. First would of course be those with impaired sight, this technology serving a similar role as a guide dog to those unable to see their surroundings themselves, allowing them freedom without the many expenses needed for conventional solutions. Besides this the potential for autonomous vehicles exists as well, with cars and drones relying upon this technology being capable of navigating unseen areas without a human operator.
+Last, whilst we acknowledge that our current prototype is very generic in its applications and could be used in many of them with little adjustment, a few areas exist which we would designate as the most logical next steps, these in part decided due to the benefits it might bring to society. First would of course be those with impaired sight, this technology serving a similar role as a guide dog to those unable to see their surroundings themselves, allowing them freedom without the many expenses needed for conventional solutions. Besides this the potential for autonomous vehicles exists as well, with cars and drones relying upon this technology being capable of navigating unseen areas without a human operator.
 
 <!-- 
 - Further research
