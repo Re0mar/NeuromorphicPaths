@@ -374,11 +374,19 @@ Camera height is measured above the fitted floor, with nothing to check it again
 Whilst no formal experiment was done with the prototype, we describe several scenarios in which the technology could be used. Each of these were chosen to reflect a situation a final version of the prototype migth be used in, focussing on collision avoidance, navigation and situational awareness. These range in a steadily increasing grade of difficulty, going from straight line obstacle avoidance to full room navigation.
 
 
-| Scenario | Audio setting | Use of the prototype |
-|---|---|---|
-| Walking straight down a hallway with an object in the way | Music | The user continues listening to music while the system lowers the volume in the ear nearest the obstacle and provides an alert, helping them steer around it. |
-| An approaching pedestrian is on a collision course | Alerts | The user receives an immediate directional alert so they can react to the approaching pedestrian. |
-| A visually impaired person encounters an obstacle they cannot see | Noise Cancellation control | The system uses directional audio feedback to indicate the obstacle and guide the user toward a safer path. |
+| Scenario | Expected response from the prototype | Passed | Additional context |
+|---|---|---|---|
+| Walking straight down a hallway with an object in the way. | The user continues listening to music while the system lowers the volume in the ear nearest the obstacle and provides an alert, helping them steer around it. | V | |
+| An approaching pedestrian is on a collision course to the user. | The user receives an immediate  alert so they can react to the approaching pedestrian. | V | |
+| An object is on a collision course to the user. | The user has their noice cancelation negated temporarily until the obstruction is out of sight. | V | |
+| A visually impaired person moves throughout a room without sight. | The system uses directional audio feedback to indicate the obstacles and guide the user toward a safer path through the room. | V | |
+| A user moves at high speed towards an obstacle. | The system uses directional audio feedback to indicate the obstacle and guide the user around it | X | The system doesn't plot far enough in advance to avoid the object. |
+| Walking towards a pair of stairs next to chairs in the cinima. | The system guides the user along a path over the stairs, avoiding the chairs | V | |
+| Walking along the beach, the user attempts to walk into the water | The system guides the user away from the water, back onto the less risky sand | X | The system can't distinguish between surface types, making calm water just as safe of a surface as a solid wooden floor. |
+
+
+
+
 
 # Discussion
 
