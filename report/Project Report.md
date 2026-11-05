@@ -45,21 +45,14 @@ papers roel: mute conversation in cars
         
 - References
 # Introduction
-In recent years, the problem of distracted people taking part in trafic has been on the rise, caused for the most part by increased usage of mobile phones and similar devices.
-The effects of this have been pretty clear, causing many traffic accidents which would've been preventable [(Rijniers, 2017)](#references).
-In an effort to reduce these collisions our group set out to research a potential aid based upon surprise theory, 
-where the user is either alerted or has the distractions on the phone muted whilst their environment is to surprising, 
-as this increase in surprise should correlate with an increased risk for accidents.
-Put into practice, our team will work with an camera device to generate a map of the surroundings,  
-after which Fitt's Law is used to identify areas of high surprise.
-These high surprise areas will then be used to alert the user, whilst also steering them clear of it, theoretically eliminating the potential for accidents or collisions to occur.
+In recent years more and more people are partaking in distracted driving, which is caused primarily by increased usage of smartphones and similar devices. The effects of this are clear; a sharp increase in preventable traffic accidents [(Rijniers, 2017)](#references) `TODO we should pick another source`. In an effort to reduce these collisions, our group has set out to research a potential aid using surprise theory, by alerting the user or muting the distraction when they should be paying attention. Previous studies have found a clear correlation between increased surprise and dangerous situations that resulted in collisions [SOURCE]. In order to build a prototype for this aid, our team will work with a head-mounted camera device to generate a map of the surroundings, after which Fitt's Law is applied to identify areas of high surprise (Is this true?).
 
 The project was done as part of the course "An introduction to Neuromorphic Human-Computer Interaction" at the Radboud University, where our team expanded on the work of Professor Doctor Roel Vertegaal, who was teaching the course. Whilst he held only an advisory position in our team, much of our work would not have been possible without his advice.
 
 # Background
 ## Motivation
 
-A 2017 thesis published at Radboud University concluded that reminding drivers to pay attention to the road has a significant effect on subsequent accidents [(Rijniers, 2017)](#references). Many of these accidents are preventable one-sided accidents, caused by drivers, cyclists and pedestrians leaving or crossing the road by accident or at the wrong moment. Our leading theory is that wearable computer vision, as found in commercial products like smart glasses, could detect these dangerous situations and direct the user's attention back to the road before an incident occurs.
+A 2017 thesis published at Radboud University concluded that reminding drivers to pay attention to the road has a significant effect on subsequent accidents [(Rijniers, 2017)](#references) `TODO we should pick another source`. Many of these accidents are preventable one-sided accidents, caused by drivers, cyclists and pedestrians leaving or crossing the road by accident or at the wrong moment. Our leading theory is that wearable computer vision, as found in commercial products like smart glasses, could detect these dangerous situations and direct the user's attention back to the road before an incident occurs.
 
 Alerting the user is only one option. The distractions on the phone can also be muted while the environment is too surprising, similar to how conversations can be muted in cars when the driver needs to focus. 
 
@@ -76,9 +69,7 @@ The hardware we use also limits what we can do. The Pupil Labs Neon glasses are 
 Interactive inference describes human-computer interaction as a form of Bayesian inference, where movement is the result of the sensorimotor system reducing the difference between its predictions and what it observes [[3]](#references). In this view, Fitts' Law (the relationship between the distance to a target, its width, and the time needed to reach it) follows from this inference process. Moving towards a target is described as relaxing along a surprise potential. This potential is approximately the negative log probability of the goal distribution and equals a KL divergence. It has the same form as the potential energy of a spring [[3]](#references): the further the current state is from the goal, relative to the tolerance around it, the higher the surprise.
 
 We apply this idea to the physical environment of the user. An obstacle is a place the user should not end up. The surprise of a point in the environment depends on the signal-to-noise ratio of the gap between the user and that point:
-
 $$U = \tfrac12 \left(\frac{\Delta S}{S}\right)^2$$
-
 where $S$ is the gap and $\Delta S$ is the uncertainty of that gap. We use this formulation twice in the pipeline:
 
 1. **As a weight for every cell.** The floor plan is divided into cells. For each cell the uncertainty is the measured *wobble* $N$, and the gap is $S = d - 0.35$, which gives $U=\frac{1}{2}\left( \frac{N}{S} \right)^2$. Here $d$ is the distance between the centre of the person and the closest point of the object, and 0.35 m accounts for the forward-most part of the user. This value is the cost of a cell in the planner.
@@ -126,18 +117,6 @@ Depth Anything 3 is a model that "predicts spatially consistent geometry from an
 
 ![Component Diagram|700](diagrams/ComponentDiagram.drawio.png)
 
-## Hardware and Data Capture
-- camera: Neon scene camera, 1600 × 1200 at 30 fps, IMU (~100 Hz) and eye-tracking/gaze (200 Hz)
-- Server: laptop with a Quadro T2000 GPU (4 GB), runs the whole pipeline + serves the webpage
-- types of recordings + what we use them for:
-  - **Companion Recording:** phone app records everything itself (video + IMU + gaze + calibration), sometimes saved to Server afterward
-    - USED FOR: our "raw data" archive, kept for future tests/dev/demos (example: presentation demo)
-  - **Stream Capture:** Server saves exactly what glasses send over wifi (compressed video packets + IMU + gaze + calibration). No decoding while recording! This is what we used to get "real" samples that included network behavior, and then use it for test/dev of our decoding afterward
-    - USED FOR: what the Server actually receives, so replaying it tests everything (decoder, timing, IMU matching) simulating live behavior. Replays lost packets but not network delay. Used and then archived
-  - **Frame Log (`--record-to`):** Server saves depth frames coming out of depth model
-    - USED FOR: faster testing for all of the math AFTER the depth model (logs let us skip straight to scene + planner). Can't test anything before depth model. Used and then archived
-- replay: capture → exact same live route and Server treats it like glasses are on (demos + live-route tests ran this way)
-
 ### Neon Companion
 The [Neon Companion](https://pupil-labs.com/products/neon/software) phone app runs on the phone the glasses are connected to and is used to read out and record the data from the camera and eye tracker on the glasses. In the prototype, the phone broadcasts the live feed from the glasses over the local network so that this data can be analyzed on a different device. Apart from a video feed, the real-time API also includes information about the glasses' camera calibration and a clock offset used to straighten every frame and sync measurements respectively (see [Appendix D](d-neon-companion-api)). The live feed moreover includes gaze data from the eye tracker, which is used in the prototype both to optionally silence the alarm when the user looks at detected danger and by the path planner as the preferred direction to walk in.
 ## Point Cloud Generation
@@ -164,34 +143,50 @@ Every point that is either too high or too low to collide with is filtered out. 
 Finally, the filtered point cloud is projected onto a 2D top-down representation of the environment by using the IMU (Inertial Measurement Unit) data to determine each point's lateral and forward position. 
 
 ## Point Cloud Cost
-- **chop into cells:** surviving points flattened onto floor -> (lateral, forward) from walker -> 0.25 m squares ("cells"), 3 m each side, 6 m ahead. One cell = one obstacle from here on
-  - cells with fewer than 2 points dropped (one point as likely depth noise as a thing)
-  - each cell keeps closest point to walker + tallest point. 1.5 m or taller -> "wall"
-  - cell id = row and column on grid, so **without a position the grid moves with the walker** and a post changes id every 0.25 m walked. With `--position`, grid pinned to the world and ids stick (see Part 1)
-- **gap (S):** distance from edge of walker's footprint to cell's closest point:
+After the point cloud has been generated, each group of points gets a 'price' assigned to it. This price is effectively the surprise the user will experience when encountering this group of points, and is used by the planning algorithm to compute the optimal path using least surprise.
 
-  $$S = d - r, \qquad r = 0.35 \text{ m}$$
+The 2D top-down map of points is first chopped into a grid of $0.25m$ squares ('cells'), for a grid that extends $6m$ in front of the walker and $3m$ to either side. Cells with fewer than 2 points are filtered out as they likely the result of dept noise. For each cell, we select the single point that is closest to the walker, raise it to the height of the highest point in the cell and delete all other points. If the height of this point $e \ge 1.5m$, the entire cell is marked as a 'wall'. Every frame is analyzed at face value, so the entire grid moves with the walker.
 
-  - $d$ = distance from walker center to cell's closest point, $r$ = footprint radius (shoulder half-width plus margin), floored at 0 here, at $\epsilon = 0.06$ m in planner
-    - NOTE: 0.35 m is a circle around walker, same every direction. Old notes called it "the forward-most part of the user"
-- **wobble (N):** how much a cell's gap jumped around lately. SD of $S$ over last 0.5 s, needs at least 3 samples, never under 0.01 m:
-
-  $$N = \max\!\left(\operatorname{std}\{S_{t}\}_{t \in \text{last } 0.5\text{ s}},\; 0.01\right)$$
-
-  - steadily measured cell = small $N$, distance jumping half a meter between frames = big $N$. Paper calls this the noise, same units as $S$
-  - **in practice N is almost always 0.01 m on the glasses**: at 2.5 to 3.5 planned frames/s the 0.5 s window holds 1 or 2 samples, under the 3 needed. Measured on about 0% of obstacles, position or not (see Part 1)
-    - NOTE: this is why contact term below exists. Widening window to hold 3 samples still open
-  - window is our choice (professor's slides use 1 s), 0.01 m floor is our choice so a steady cell still costs something
-- **surprise per cell:** half the squared signal-to-noise, capped at $2 \times 10^4$:
-
-  $$U = \tfrac12 \left(\frac{N}{S}\right)^2$$
-
-  - $U$ = surprise (natural-log units, "nats", turned into bits once at end), $S$ floored at $\epsilon = 0.06$ m so touching isn't infinite. Form, cap and $\epsilon$ are the professor's
-  - wall's $N$ tripled before this, so walls avoided further out than posts (our addition)
-- what scene hands planner per cell: closest point (lateral, forward), $S$, $N$, wall flag, velocity (only with a position, planner doesn't read it yet)
-- **wobble in System Overview:** $N$ above, frame-to-frame jitter of a cell's measured gap, not of the camera
+Each point is given a surprise value based solely on the gap and wobble of that point. The gap $S$ is defined as the difference between the distance from the walker to the cell's closest point $d$ and the edge of the walker's circular footprint with radius $r$:
+$$
+S=d-r \qquad r=0.35 \text{ m}
+$$
+Wobble $N$ is a measure of how much the gap for a given cell has changed over the last few frames. For this, it evaluates values of $S$ over the last $0.5 \text{ s}$, computes the standard deviation given $\ge 3$ samples and sets the lower bound of the result to be $0.01 \text{ m}$. The value of $N$ is tripled for points $p$ in that are walls $W$ to encourage the planner to steer around them:
+$$
+N=max(SD\{S_{t} \mid t \le 0.5 \text{ s}\}, 0.01) 
+\qquad
+N = 
+     \begin{cases}
+       3N & \text{if } p \in W \\
+       N &\text{otherwise} \\ 
+     \end{cases}
+$$
+Each obstacle point is assigned a measure of (collision) surprise $U$, which is quantified in natural-log units dubbed 'bits' in this project. Surprise is defined as being half of the squared signal-to-noise:
+$$
+U = \frac{1}{2} \left( \frac{N}{S} \right)^2
+$$
 
 ## Planning
+To find the optimal path to guide the user in, the planner first computes the cost of the paths for all reachable states. This is represented as a field of time/position pairs with a temporal interval $\Delta t = 0.1\text{ s}$ and a spacial interval of $0.1 \text{ m}$ for each lateral position over couple second horizon. The walker is assumed to be moving at some constant speed $v = 1.4 \text{ m/s}$, such that at step $k$, they would be $v\cdot k\cdot \Delta t$ meters further ahead. Because of this, obstacle points are predicted to always come closer for higher values of $k$. 
+
+At each step and position in the field, two terms are added together to determine the surprise of that entry. The first is collision surprise, already given as the cost of the point in the point cloud. The second is contact surprise, which is the cost of the walker's body probably touching the obstacle. Let $d$ be the distance from a candidate walker's center to an obstacle point and $r$ be the circular footprint of the walker. The clearance $S$ then becomes:
+$$
+S_{b} = d - r \qquad r=0.30 \text{ m}
+$$
+The body's positional uncertainty is quantified as the standard deviation $\sigma$ of the assumed normally distributed clearance $S_{b}$. This is a combination two independent sources of uncertainty: noise $N$ and assumed sway $s$:
+$$
+\sigma = \sqrt{ N^2 + s^2 } \qquad s=0.10 \text{ m}
+$$
+The chance of walking past an obstacle without contacting it is the standard normal cumulative $\Phi\left( \frac{S_{b}}{\sigma} \right)$. The negative logarithm of this number is taken to convert the probability into surprise, by mapping a high probability of passing to low surprise and vice versa. This surprise is divided by time-to-impact $\tau_{b}$, which is the estimated time required for the walker's body with radius $r$ to move past the obstacle at a constant speed $v$.
+$$
+\tau_{b}=\frac{2r}{v}=\frac{2\cdot 0.30}{1.4}\approx 0.43\text{ s}
+$$
+This is done to convert the scalar surprise into a rate per second, so it can be integrated consistently over the planner's time steps. Contact surprise is defined as:
+$$
+U_{contact}=\frac{-\ln \Phi\left( \frac{S_{b}}{\sigma} \right)}{\tau_{b}}
+$$
+
+
 - **field:** cost-per-second for every future moment and sideways position
   - time: steps of $\Delta t = 0.1$ s out to a 3.8 s horizon (professor's values). Sideways: 0.1 m spacing, 3 m each way (our choice)
   - at step $k$, walker assumed $1.4 \cdot k\Delta t$ m further ahead (walking speed 1.4 m/s, our choice, professor's is 5 m/s for a cyclist) -> every cell that much nearer. Obstacles held still (motion prediction exists but off)
@@ -237,6 +232,21 @@ Finally, the filtered point cloud is projected onto a 2D top-down representation
 - **what reaches the walker vs what's for us:** ear gains and alarm sound are the walker's. Arrow, red, rings, plan view, pictures and bits are evaluation/demo (walker isn't looking at a screen)
 
 ## Experimental Conditions
+
+## Hardware and Data Capture
+- camera: Neon scene camera, 1600 × 1200 at 30 fps, IMU (~100 Hz) and eye-tracking/gaze (200 Hz)
+- Server: laptop with a Quadro T2000 GPU (4 GB), runs the whole pipeline + serves the webpage
+- types of recordings + what we use them for:
+  - **Companion Recording:** phone app records everything itself (video + IMU + gaze + calibration), sometimes saved to Server afterward
+    - USED FOR: our "raw data" archive, kept for future tests/dev/demos (example: presentation demo)
+  - **Stream Capture:** Server saves exactly what glasses send over wifi (compressed video packets + IMU + gaze + calibration). No decoding while recording! This is what we used to get "real" samples that included network behavior, and then use it for test/dev of our decoding afterward
+    - USED FOR: what the Server actually receives, so replaying it tests everything (decoder, timing, IMU matching) simulating live behavior. Replays lost packets but not network delay. Used and then archived
+  - **Frame Log (`--record-to`):** Server saves depth frames coming out of depth model
+    - USED FOR: faster testing for all of the math AFTER the depth model (logs let us skip straight to scene + planner). Can't test anything before depth model. Used and then archived
+- replay: capture → exact same live route and Server treats it like glasses are on (demos + live-route tests ran this way)
+
+> TODO merge near identical text above with text below. 
+
 - all three parts run on recordings, through the exact live route (`--neon-replay` on a capture), on Server (Quadro T2000, 4 GB), otherwise idle. Same code path as a live walk, so frame rate and delays real, network delay isn't
 - recordings (walking) we have (all on glasses, all indoors):
   - 2026-10-05: first live session, two 240 s classroom captures. (only the second works for real, first one had sensor issues)
@@ -261,18 +271,29 @@ https://www.nature.com/articles/s41598-025-08475-4
 
 *If you did a system, follow the same procedure but instead of results you describe 3 scenarios in which the system could be used in the future. When you write the scenario, imagine you are a user using the system and describe all the little details that demonstrate how well your interactions were thought through and how it solves an existing usability problem.*
 
-# Experiment
+# Results
 
-> Outline. Each part points back at its methodology section.
+At the end of the development process of the product, the product needed to be presented to our peers. For this presentation a demonstration of the product was made, this demonstration had next to a live demonstration also a back-up video in which a user from the development team used the glasses while walking through a lecture room at Radboud university. The image below shows a frame from this back-up video in which we see a multitude of panels further explained below the image. 
+<img width="1726" height="1079" alt="NMHCI_demo_screenshot" src="https://github.com/user-attachments/assets/06b57432-3772-48f0-af11-262eb068fab6" />
+## Panel: Sound
+The panel at the top left is the output panel. This is the visual demonstration of what the product feeds back to the user. The top part shows the left and right speaker of the music device of the user. When encountering an obstacle with high risk it will start emitting a beeping noise from that specific side. The five bars on each side show how loud that ear is. On an alarm the ear on the side of the obstacle goes quiet, which is why the left side is gray in the image. There are also options to turn off the sound, or to switch between the **Alarm** and **Noise Cancellation** modes. The **NC** label shows that noise cancellation would be turned off while the alarm sounds.
 
-## Part 1: A position for the glasses
-> IMU-only (today's pipeline) vs odometry vs dense SLAM, on the attention walk against a COLMAP reference. Measured, see `docs/evaluation/neon_position_evaluation.md`. Bullets come when we get here.
+## Panel: Heading
+The panel at the bottom left is the direction the user should walk towards to follow the safe path. This is not part of the output the user sees but the direction is concluded from the calculated path. The direction heading is used to steer the user by sound: the ear away from the heading becomes quieter. It also gives an entry point for different implementations to take input from, to guide the user along the safe path in other ways.
 
-## Part 2: Planning
-> Results of the surprise functions for the path. Which measurements exist still needs checking.
+## Panel: Video
+The central panel is the field of view from the user, recorded by the camera on the Neon glasses. This video shows the lecture room environment. The video shows the rows of chairs on the right, a wall with glass on the left and the path between those. In the path is a big black bag placed that functions as an obstacle for the user. This video feed is the input for the product to apply all the earlier mentioned functionalities on.
 
-## Part 3: Collision detection
-> Results of the surprise functions for the alarm. Which measurements exist still needs checking.
+## Panel: From Above
+The top right panel shows the planner's view from above. The yellow dots are obstacles and the pink squares are walls, one for each 0.25 m cell that has points in it. The panel also shows colored areas below and around the dots, corresponding to the cost of walking through each spot. The cost goes from dark blue to green to yellow in order of increasing risk, and the gray areas are floor. Finally there is a big red line with an arrow to show the safe path for the user, this path is the cheapest route through these costs and is the source for the **Heading** panel and the steering sound.
+
+## Panel: Risk
+The bottom right panel is the depth image colored with the same costs as the **From Above** panel, from blue for low risk to red for high risk. The panel shows the high risk, dark red, areas such as the chairs on the right and the wall on the left. It determines the floor as completely safe, seen by the dark blue color, except for the black bag placed. The bag has a clear yellow which indicates it has some risk of collision. Next to the bag is the safe path shown with two red lines. These are the same path as in the **From Above** panel.
+
+Link to the demonstration video
+Explain the demonstration video.
+
+argue about the resutls
 
 # Scenarios
 
