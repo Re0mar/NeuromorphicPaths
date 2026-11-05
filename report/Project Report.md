@@ -120,19 +120,13 @@ Depth Anything 3 is a model that "predicts spatially consistent geometry from an
 # Methodology
 
 ## System Overview
-- glasses stream video + IMU + gaze to Neon-paired phone Companion app, which then streams over wifi to Server
-- background process on Server decodes all 30 fps but keeps only newest frame, older ones get tossed
-- frame gets straightened with glasses' calibration, and gets IMU reading closest to when it was captured (within 50 ms, or we can't figure out orientation at all and ignore it)
-- Depth Anything 3 (metric large) turns it into a depth picture (meters). Only depth comes out, no height map from model
-- *(optional, off by default)* `--position odometry` or `dense_slam` adds a camera position at this step. (see Part 1 of experiment section)
-- scene: depth → 3D points → find the ground/floor → only keep points between ankle and head height → chop into 0.25 m floor cells → each cell's distance and wobble (N)
-  - <define wobble better here, word is ambiguous>
-- planner: cost field over next few seconds, dynamic program for cheapest path, generate arrow heading (not directly shared with user), then alarm + gaze silencing
-- "user model" for actual navigation: just measures what each avoidance cost in bits, doesn't steer anything
-- planning runs on a worker thread that always grabs newest frame, so when it's busy frames get dropped (not queued! always as "live" as possible)
-- output: Server sends plan (arrow, alarm, numbers) to webpage over HTTPS -> page decodes the glasses' video itself and draws extra info on it (for evaluation/documentation, the webpage isn't expected to be shared with user).
-    - NOTE: fixes vs old step list: depth only (no height map from the model), no dense SLAM by default, planner is field + dynamic program (the Lagrangian side is the user model measuring afterwards), page draws over the video, local network not internet
-    - NOTE: the component diagram still has a "Dense SLAM" box, needs redrawing!
+The smart glasses stream video, inertial measurement unit (IMU) readings, and gaze data to the Neon Companion app on a paired phone. The app forwards this data over the local Wi-Fi network to the server. A background process decodes the incoming video at 30 frames per second, while the planning worker always takes the newest available frame rather than building up a queue. If processing falls behind, older frames are discarded so that the system continues to work with a recent view of the environment.
+
+Before analysis, the selected frame is corrected using the glasses camera calibration. The server associates it with the closest IMU reading, provided that reading is within 50 ms of the frame's capture time, without a sufficiently close reading, the frame is not used because its orientation cannot be determined reliably. Depth Anything 3's metric large model then estimates a depth map in metres. The model supplies depth, not a height map, so the server uses the depth and IMU data to reconstruct 3D points and estimate the floor. It filters the points to retain those between ankle and head height, then projects them onto a 2D floor grid of 0.25 m cells. Each cell is characterized by its distance from the walker and by the small changes of that distance across recent frames, which represents how much the measured gap varies over time. Camera position can also be estimated using odometry or dense SLAM, but both options are disabled by default.
+
+The planner assigns costs to the cells and uses dynamic programming to find a low-cost path over the next few seconds. It converts that path into a heading and determines whether an alarm should sound; gaze data can optionally silence the alarm when the user looks toward a detected hazard. Separately, the user model measures the avoidance cost of the resulting movement in bits. It is an evaluation component: it observes and scores the path, but does not steer the planner.
+
+For evaluation and documentation, the server sends the plan with  the heading, alarm state, and associated measurements to a webpage over HTTPS on the local network. The webpage decodes the glasses video stream and overlays the plan and other information for inspection, it is not intended to serve as the user-facing interface.
 
 ![Component Diagram|700](diagrams/ComponentDiagram.drawio.png)
 
