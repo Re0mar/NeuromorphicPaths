@@ -32,7 +32,7 @@ papers roel: mute conversation in cars
           - Gaze tracking
     
 - Results
-    
+	    - Mention using the neon companion app to validate server's findings
     - We have demo, but no real tests to show it works
     
 - Discussion
@@ -43,7 +43,8 @@ papers roel: mute conversation in cars
         - Inclusion of accelerometer and gps?
     - Presentation mentions
         
-- References
+- References (Nolan)
+- Appedices (Nolan)
 # Introduction
 The problem of autonomous collision avoidance is one that has plagued autonomous navigation for as long as it has existed, with many proposed solutions with varying levels of succes having been attempted already[(K. Berntorp, 2017)](#references). One trait all of these hold in common is their cost, with reliance on either expensive sensors or extensively trained machine learning models to function, something our team attempts to negate in this project. 
 
@@ -70,38 +71,46 @@ The hardware we use also limits what we can do. The Pupil Labs Neon glasses are 
 
 ## Surprise
 
-Interactive inference describes human-computer interaction as a form of Bayesian inference, where movement is the result of the sensorimotor system reducing the difference between its predictions and what it observes [[3]](#references). In this view, Fitts' Law (the relationship between the distance to a target, its width, and the time needed to reach it) follows from this inference process. Moving towards a target is described as relaxing along a surprise potential. This potential is approximately the negative log probability of the goal distribution and equals a KL divergence. It has the same form as the potential energy of a spring [[3]](#references): the further the current state is from the goal, relative to the tolerance around it, the higher the surprise.
+Interactive inference describes human-computer interaction as a form of Bayesian inference, where movement is the result of the sensorimotor system reducing the difference between its predictions and what it observes [(Vertegaal et al., 2025)](#references). In this view, Fitts' Law (the relationship between the distance to a target, its width, and the time needed to reach it) follows from this inference process. Moving towards a target is described as relaxing along a surprise potential. This potential is approximately the negative log probability of the goal distribution and equals a KL divergence. It has the same form as the potential energy of a spring [(Vertegaal et al., 2025; Vertegaal, 2026b, pp. 5-23)](#references): the further the current state is from the goal, relative to the tolerance around it, the higher the surprise.
 
 We apply this idea to the physical environment of the user. An obstacle is a place the user should not end up. The surprise of a point in the environment depends on the signal-to-noise ratio of the gap between the user and that point:
 $$U = \tfrac12 \left(\frac{\Delta S}{S}\right)^2$$
-where $S$ is the gap and $\Delta S$ is the uncertainty of that gap. We use this formulation twice in the pipeline:
+where $S$ is the gap and $\Delta S$ is the uncertainty of that gap [(Vertegaal, 2026c, pp. 61-65)](#references). We use this formulation twice in the pipeline:
 
 1. **As a weight for every cell.** The floor plan is divided into cells. For each cell the uncertainty is the measured *wobble* $N$, and the gap is $S = d - 0.35$, which gives $U=\frac{1}{2}\left( \frac{N}{S} \right)^2$. Here $d$ is the distance between the centre of the person and the closest point of the object, and 0.35 m accounts for the forward-most part of the user. This value is the cost of a cell in the planner.
-2. **As time to impact.** When the uncertainty is one second of movement, the equation becomes $U=\frac{1}{2}\left( \frac{1s}{\tau} \right)^2$, where $\tau$ is the time until impact. This form is used for collision detection, with the nearest obstacle straight ahead: an obstacle that will be reached soon is much more surprising than one far away, and the surprise grows quadratically as $\tau$ shrinks.
+2. **As time to impact.** When the uncertainty is the distance closed in one second, the equation becomes $U=\frac{1}{2}\left( \frac{1s}{\tau} \right)^2$, where $\tau$ is the time until impact, using the ratio from course lecture slides [(Vertegaal, 2026c, p. 65)](#references). This form is used for collision detection, with the nearest obstacle straight ahead: an obstacle that will be reached soon is much more surprising than one far away, and the surprise grows quadratically as $\tau$ shrinks.
 
 Both forms express how reliably the user can predict the distance to an obstacle. The exact definitions of $N$ and the cell grid are given in the [Methodology](#methodology).
 
 ## Depth Estimation
 
-Depth Anything 3 is a model that "predicts spatially consistent geometry from an arbitrary number of visual inputs, with or without known camera poses" ([source](https://depth-anything-3.github.io/)). We use the metric large variant, which turns a single frame from the glasses into a depth map in meters. This is important for our application, since the surprise equations above require real distances rather than relative depth. The model only outputs depth, so the ground and the height of points have to be derived afterwards from this depth map and the IMU data of the glasses.
+Depth Anything 3 is a model that "predicts spatially consistent geometry from an arbitrary number of visual inputs, with or without known camera poses" ([source](https://depth-anything-3.github.io/)). We use the metric large variant [(Lin et al., 2026)](#references), which turns a single frame from the glasses into a depth map in meters. This is important for our application, since the surprise equations above require real distances rather than relative depth. The model only outputs depth, so the ground and the height of points have to be derived afterwards from this depth map and the IMU data of the glasses.
 
 ## Path Planning
 
-Once every cell of the environment has a surprise value, the next question is which route through them is best. Following the idea that movement is the relaxation along a surprise potential [[3]](#references), the safest route is the one that accumulates the least surprise over the next few seconds. This is computed as a minimum-cost path through the cost field (Hamiltonian path planning, solved by dynamic programming), which is then reduced to a single heading for the user. The cost of following the resulting path, expressed in bits of surprise, can also be measured afterwards by the user model, which only observes and does not steer anything.
+Once every cell of the environment has a surprise value, the next question is which route through them is best. Following the idea that movement is the relaxation along a surprise potential [(Vertegaal et al., 2025)](#references), the safest route is the one that accumulates the least surprise over the next few seconds [(Vertegaal, 2026c, pp. 8, 13, 15, 17)](#references). This is computed as a minimum-cost path through the cost field (Hamiltonian path planning, solved by dynamic programming), which is then reduced to a single heading for the user. The cost of following the resulting path, expressed in bits of surprise, can also be measured afterwards by the user model, which only observes and does not steer anything.
 
 ## 3D Reconstruction
 
-[Dense SLAM](https://www.open3d.org/html/tutorial/t_reconstruction_system/dense_slam.html) (**S**imultaneous **L**ocalization **a**nd **M**apping), as implemented in the Open3D library, builds a 3D reconstruction of the environment from RGB-D input while tracking the movement of the camera through it. Because the surprise of a cell depends on how it changes over previous frames, knowing the movement of the camera is useful in principle. In the current prototype this is an optional component that is disabled by default (see the [Methodology](#methodology)).
+[Dense SLAM](https://www.open3d.org/html/tutorial/t_reconstruction_system/dense_slam.html) (**S**imultaneous **L**ocalization **a**nd **M**apping), as implemented in the Open3D library [(Zhou et al., 2018)](#references), builds a 3D reconstruction of the environment from RGB-D input while tracking the movement of the camera through it. Because the surprise of a cell depends on how it changes over previous frames, knowing the movement of the camera is useful in principle. In the current prototype this is an optional component that is disabled by default (see the [Methodology](#methodology)).
+
+## Previous Research
+
+Earlier walking aids warn about obstacles too. CrashAlert puts a depth camera on a tablet, shows a strip of the depth picture along the screen edge, and turns red for obstacles under 2 m. Users dodged and slowed down earlier [(Hincapié-Ramos & Irani, 2013)](#references). BumpAlert uses the phone's speaker, microphones and rear camera, and vibrates when both detectors find the same object 2 to 4 m ahead [(Tung & Shin, 2018)](#references).
+
+Driving research has used similar ideas. Engström et al. describe driving as acting on predictions [(Engström et al., 2018)](#references), and later simulate a driver who trades progress against caution by minimizing expected free energy [(Engström et al., 2024)](#references).
+
+Adding an attracting goal to repelling obstacles is how artificial potential fields work [(Khatib, 1986)](#references). The closest published match to our search is the path step in Baidu Apollo's planner, which sums smoothness, obstacle and guidance costs over sideways positions and finds the cheapest route with a dynamic program [(Fan et al., 2018)](#references). Apollo's grid runs along distance and our grid runs along time, and Apollo's costs are chosen by the designers.
 
 # Materials
 ## Neon smart glasses
 A pair of [Pupil Labs Neon smart glasses](https://pupil-labs.com/products/neon) were provided to us by the course coordinator and act as the accessory to provide a real-time stream of images to be analyzed. Included with this is a [Motorola Edge 40 Pro](https://mijnmoto.nl/product/motorola-edge-40-pro/) smartphone, which comes paired with the glasses and allows us to control, review and analyse the recordings. 
-
+## Neon Companion
+The [Neon Companion](https://pupil-labs.com/products/neon/software) phone app runs on the phone the glasses are connected to and is used to read out and record the data from the camera and eye tracker on the glasses. In the prototype, the phone broadcasts the live feed from the glasses over the local network so that this data can be analyzed on a different device. Apart from a video feed, the real-time API also includes information about the glasses' camera calibration and a clock offset used to straighten every frame and sync measurements respectively (see [Appendix D](d-neon-companion-api)). The live feed moreover includes gaze data from the eye tracker, which is used in the prototype both to optionally silence the alarm when the user looks at detected danger and by the path planner as the preferred direction to walk in.
 ## Image analysis
-Depth Anything 3 is a model that "predicts spatially consistent geometry from an arbitrary number of visual inputs, with or without known camera poses" [Source](https://depth-anything-3.github.io/). It is used to estimate a depth map given an input of a single image.
+Depth Anything 3 is a model that "predicts spatially consistent geometry from an arbitrary number of visual inputs, with or without known camera poses" [Source](https://depth-anything-3.github.io/). It is used to estimate a depth map given an input of a single image [(Lin et al., 2026)](#references).
 
-[RGB-D SLAM](https://www.open3d.org/html/tutorial/t_reconstruction_system/dense_slam.html) is a (dense) implementation of **S**imultaneous **L**ocalization **a**nd **M**apping included in the Open3D library. The depth maps generated by Depth Anything 3 can optionally be fed into SLAM (disabled by default), which builds a 3D reconstruction of the environment and the movement of the camera through it.
-
+[RGB-D SLAM](https://www.open3d.org/html/tutorial/t_reconstruction_system/dense_slam.html) is a (dense) implementation of **S**imultaneous **L**ocalization **a**nd **M**apping included in the Open3D library [(Zhou et al., 2018)](#references). The depth maps generated by Depth Anything 3 can optionally be fed into SLAM (disabled by default), which builds a 3D reconstruction of the environment and the movement of the camera through it.
 # Methodology
 
 ## System Overview
@@ -121,8 +130,6 @@ Depth Anything 3 is a model that "predicts spatially consistent geometry from an
 
 ![Component Diagram|700](diagrams/ComponentDiagram.drawio.png)
 
-### Neon Companion
-The [Neon Companion](https://pupil-labs.com/products/neon/software) phone app runs on the phone the glasses are connected to and is used to read out and record the data from the camera and eye tracker on the glasses. In the prototype, the phone broadcasts the live feed from the glasses over the local network so that this data can be analyzed on a different device. Apart from a video feed, the real-time API also includes information about the glasses' camera calibration and a clock offset used to straighten every frame and sync measurements respectively (see [Appendix D](d-neon-companion-api)). The live feed moreover includes gaze data from the eye tracker, which is used in the prototype both to optionally silence the alarm when the user looks at detected danger and by the path planner as the preferred direction to walk in.
 ## Point Cloud Generation
 Point cloud generation refers to the repeated creation of a 3D map of points that are most crucial for navigation. It is generated primarily by analyzing the video feed from the glasses, but could alternatively simply be obtained from LiDAR sensors on select smartphones and smart glasses. This would nullify the need for the additional computation discussed in this section. The general flow for point cloud generation is given in below image.
 
@@ -130,7 +137,7 @@ Point cloud generation refers to the repeated creation of a 3D map of points tha
 
 The smart glasses are equipped with a wide-angle camera, which records a barrel distorted (fisheye) image. The first step is to straighten this image using the camera's calibration, to undo the effects of distortion (see [Appendix C](c-point-cloud-details)). 
 
-This image is then piped into Depth Anything 3's metric model to determine a depth (distance from camera) for every point. But because this model treats each image as if it were captured on a 300 pixel focal length camera, the camera's real focal must first be scaled from the resolution at which the model runs:
+This image is then piped into Depth Anything 3's metric model to determine a depth (distance from camera) for every point. But because this model treats each image as if it were captured on a 300 pixel focal length camera [(Lin et al., 2026)](#references), the camera's real focal must first be scaled from the resolution at which the model runs:
 $$
 z = z_{raw}\cdot \frac{\bar{f}}{300} \qquad \bar{f}=\frac{f_{x}+f_{y}}{2}
 $$
@@ -165,7 +172,7 @@ N =
        N &\text{otherwise} \\ 
      \end{cases}
 $$
-Each obstacle point is assigned a measure of (collision) surprise $U$, which is quantified in natural-log units dubbed 'bits' in this project. Surprise is defined as being half of the squared signal-to-noise:
+Each obstacle point is assigned a measure of (collision) surprise $U$, which is quantified in natural-log units (nats), which become bits when divided by $\ln 2$ [(Vertegaal & Rauterberg, 2026, Eq. 2)](#references). Surprise is defined as being half of the squared noise-to-signal ratio:
 $$
 U = \frac{1}{2} \left( \frac{N}{S} \right)^2
 $$
@@ -181,7 +188,7 @@ The body's positional uncertainty is quantified as the standard deviation $\sigm
 $$
 \sigma = \sqrt{ N^2 + s^2 } \qquad s=0.10 \text{ m}
 $$
-The chance of walking past an obstacle without contacting it is the standard normal cumulative $\Phi\left( \frac{S_{b}}{\sigma} \right)$. The negative logarithm of this number is taken to convert the probability into surprise, by mapping a high probability of passing to low surprise and vice versa. This surprise is divided by time-to-impact $\tau_{b}$, which is the estimated time required for the walker's body with radius $r$ to move past the obstacle at a constant speed $v$.
+The chance of walking past an obstacle without contacting it is the standard normal cumulative $\Phi\left( \frac{S_{b}}{\sigma} \right)$. The negative logarithm of this number is taken to convert the probability into surprise [(Vertegaal, 2026a, p. 43)](#references), by mapping a high probability of passing to low surprise and vice versa. This surprise is divided by time-to-impact $\tau_{b}$, which is the estimated time required for the walker's body with radius $r$ to move past the obstacle at a constant speed $v$.
 $$
 \tau_{b}=\frac{2r}{v}=\frac{2\cdot 0.30}{1.4}\approx 0.43\text{ s}
 $$
@@ -192,8 +199,8 @@ $$
 
 
 - **field:** cost-per-second for every future moment and sideways position
-  - time: steps of $\Delta t = 0.1$ s out to a 3.8 s horizon (professor's values). Sideways: 0.1 m spacing, 3 m each way (our choice)
-  - at step $k$, walker assumed $1.4 \cdot k\Delta t$ m further ahead (walking speed 1.4 m/s, our choice, professor's is 5 m/s for a cyclist) -> every cell that much nearer. Obstacles held still (motion prediction exists but off)
+  - time: steps of $\Delta t = 0.1$ s out to a 3.8 s horizon (settings of our implementation). Sideways: 0.1 m spacing, 3 m each way (our choice)
+  - at step $k$, walker assumed $1.4 \cdot k\Delta t$ m further ahead (walking speed 1.4 m/s, our choice) -> every cell that much nearer. Obstacles held still (motion prediction exists but off)
   - two terms added at each (step, position), both as rates per second:
     - **professor's collision surprise:** $\tfrac12 (N/S)^2$ from Point Cloud Cost, $S$ measured from candidate position
     - **our contact term:** how surprising for the body to touch the cell at all, whatever the noise. Professor's term alone lets a steadily measured post (small $N$) cost less to hit than to dodge, so plan walked into things
@@ -201,16 +208,16 @@ $$
       $$U_{\text{contact}} = \frac{-\ln \Phi\!\left(S_b / \sigma\right)}{\tau_b}, \qquad S_b = d - 0.30, \qquad \sigma = \sqrt{N^2 + 0.10^2}, \qquad \tau_b = \frac{2 \cdot 0.30}{1.4}$$
 
       - $S_b$ = gap to body (half-width 0.30 m, narrower than 0.35 m footprint). $\sigma$ = spread of where body really is (cell's $N$ plus 0.10 m walker sway, an assumption, never measured). $\Phi$ = standard normal cumulative, so $\Phi(S_b/\sigma)$ = chance of getting past cleanly, $-\ln$ of it = surprise of that. $\tau_b$ = 0.43 s to walk past something. Capped at 50 per contact
-  - within one cell take worst point, across cells add up (professor's rule). Scene sends one point per cell today anyway
+  - within one cell take worst point, across cells add up. Scene sends one point per cell today anyway
   - **goal:** added only to last row: $\tfrac12 ((x - x_{\text{goal}}) / 1.5)^2$, $x_{\text{goal}}$ = 0 (straight ahead) or where gaze lands on floor (`--goal gaze`). Tolerance 1.5 m = half a hallway. Only breaks ties, can't pull plan through anything
-  - **previous-plan prior (our addition, on by default):** professor's dynamic program forgets everything between frames, so with something dead ahead the arrow flipped left/right 65 to 127 times a minute on our walks. Fix in the professor's own form: prior pulling toward where last frame's plan said we'd be by now
+  - **previous-plan prior (our addition, on by default):** dynamic program forgets everything between frames, so with something dead ahead the arrow flipped left/right 65 to 127 times a minute on our walks. Fix in the professor's own form: prior pulling toward where last frame's plan said we'd be by now
 
     $$U_{\text{prior}} = \tfrac12 \frac{(x - x_{\text{prev}})^2}{0.25^2 + 0.05\,\Delta T}$$
 
     - $x_{\text{prev}}$ = last plan's position at this row, slid forward by $1.4 \cdot \Delta T$ (we assume walker followed it). $\Delta T$ = seconds since that plan. Spread 0.25 m widening with age. Only on first 1 s of rows (later rows free to replan). Dropped after a 3 s gap or when goal moves sideways more than 1.5 m. Kept in walker's frame, so no position needed
     - after the sweep: flips 0 to 1.3 a minute instead of 65 to 127
-- **dynamic program:** cheapest sideways path through field (Hamiltonian planning, professor's, written from the slides)
-  - each step costs field at position reached + sideways effort $\tfrac12 w v_x^2$, both $\times\, \Delta t$. $v_x$ = sideways speed, max 1 m/s (one 0.1 m cell per step). $w = 6.5$ (our choice, professor's 0.055 made plan sidestep at full speed whenever anything was ahead)
+- **dynamic program:** cheapest sideways path through field: Hamiltonian planning [(Vertegaal, 2026c, pp. 8, 13)](#references), search itself is our implementation
+  - each step costs field at position reached + sideways effort $\tfrac12 w v_x^2$, both $\times\, \Delta t$. $v_x$ = sideways speed, max 1 m/s (one 0.1 m cell per step). $w = 6.5$ (our choice, a weight of 0.055 made plan sidestep at full speed whenever anything was ahead)
   - cheapest cost to every (step, position) with back-pointers -> cheapest end position wins -> walk pointers back = path
   - cost of chosen path minus what prior charged (that's memory, not scene) -> bits, $\text{bits} = \text{nats} / \ln 2$. User model reads this
 
@@ -257,7 +264,7 @@ $$
   - 2026-10-09: demo walk (148 s, starts by a big window)
   - 2026-10-14: attention walk (44 s, scripted: stare at a chair, walk past it looking and not looking, stairs, toward a wall)
     - NOTE: none outdoors, none with pedestrians or other moving obstacles. maybe worth a re-record since he wants us to make a full demo vid anyway? (we know these work, but processing time still an issue)
-- **part 1 (position):** attention walk 2026-10-14 (44 s, tiered classroom: chair, stairs, whiteboard wall). One run per setting: `--position` absent, odometry or dense_slam, at 336 or 280 px depth resolution. Measured: planned frames/s, arrival-to-plan delay, share of frames with a position, position error and 3 s drift against reference camera path rebuilt from the video by COLMAP (structure-from-motion software) (first 18.4 s, 8 m, scale from depth model, aligned by rotation + shift only), share of obstacles with measured N
+- **part 1 (position):** attention walk 2026-10-14 (44 s, tiered classroom: chair, stairs, whiteboard wall). One run per setting: `--position` absent, odometry or dense_slam, at 336 or 280 px depth resolution. Measured: planned frames/s, arrival-to-plan delay, share of frames with a position, position error and 3 s drift against reference camera path rebuilt from the video by COLMAP (structure-from-motion software) [(Schönberger & Frahm, 2016)](#references) (first 18.4 s, 8 m, scale from depth model, aligned by rotation + shift only), share of obstacles with measured N
   - NOTE: no ground truth exists, COLMAP is the reference. Report has to state this
 - **part 2 (planning):** replays through the evaluation's `check_planner` on frame logs, planner settings swept. Numbers to report: arrow flips per minute, arrow at sidestep limit with something 3 to 5.32 m ahead (band), 90th pct plan disagreement, alarm share. Walks: classroom (2026-10-08 A), pixel_walk_3 and contact_walk_1 for the prior sweep (Pixel-era logs, say so)
   - NOTE: which runs go in the report still to pick. Config comments carry every number above with the walk it came from
@@ -365,16 +372,33 @@ Last, whilst we acknowledge that our current prototype is very generic in its ap
 3. *[Authors]* (2025). *Interactive Inference: A Neuromorphic Theory of Human-Computer Interaction*. https://arxiv.org/abs/2502.05935 
 4. K. Berntorp, "Path planning and integrated collision avoidance for autonomous vehicles," 2017 American Control Conference (ACC), Seattle, WA, USA, 2017, pp. 4023-4028, doi: 10.23919/ACC.2017.7963572.
 keywords: {Robot sensing systems}
+- Engström, J., Bärgman, J., Nilsson, D., Seppelt, B., Markkula, G., Piccinini, G. F., & Victor, T. (2018). Great expectations: A predictive processing account of automobile driving. *Theoretical Issues in Ergonomics Science, 19*(2), 156-194. https://doi.org/10.1080/1463922X.2017.1306148
+- Engström, J., Wei, R., McDonald, A. D., Garcia, A., O'Kelly, M., & Johnson, L. (2024). Resolving uncertainty on the fly: Modeling adaptive driving behavior as active inference. *Frontiers in Neurorobotics, 18*, 1341750. https://doi.org/10.3389/fnbot.2024.1341750
+- Fan, H., Zhu, F., Liu, C., Zhang, L., Zhuang, L., Li, D., Zhu, W., Hu, J., Li, H., & Kong, Q. (2018). *Baidu Apollo EM motion planner*. arXiv:1807.08048. https://arxiv.org/abs/1807.08048
+- Haas, G. (2023). *Towards Auditory Interaction: An Analysis of Computer-Based Auditory Interfaces in Three Settings* [Doctoral dissertation, Ulm University]. https://oparu.uni-ulm.de/server/api/core/bitstreams/c45354b6-409b-4444-81e5-d55b99acf3f1/content
+- Hincapié-Ramos, J. D., & Irani, P. (2013). CrashAlert: Enhancing peripheral alertness for eyes-busy mobile interaction while walking. In *Proceedings of the SIGCHI Conference on Human Factors in Computing Systems (CHI '13)* (pp. 3385-3388). ACM. https://doi.org/10.1145/2470654.2466463
+- Khatib, O. (1986). Real-time obstacle avoidance for manipulators and mobile robots. *The International Journal of Robotics Research, 5*(1), 90-98. https://doi.org/10.1177/027836498600500106
+- Lin, H., Chen, S., Liew, J. H., Chen, D. Y., Li, Z., Zhao, Y., Peng, S., Guo, H., Zhou, X., Shi, G., Feng, J., & Kang, B. (2026). Depth Anything 3: Recovering the visual space from any views. In *International Conference on Learning Representations (ICLR 2026)*. https://arxiv.org/abs/2511.10647
+- Pupil Labs. (n.d.). *IMU transformations*. https://docs.pupil-labs.com/alpha-lab/imu-transformations/
+- Rijniers, R. (2017). *Ogen op de weg ☺ Een vermindering van het smartphonegebruik op de N36 middels een gedragsinterventie langs de weg* [Radboud Universiteit]. https://theses.ubn.ru.nl/items/c8935b8d-8583-455a-97e4-90905e7adb13/full
+- Schönberger, J. L., & Frahm, J.-M. (2016). Structure-from-motion revisited. In *Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition (CVPR)* (pp. 4104-4113). https://doi.org/10.1109/CVPR.2016.445
+- Tung, Y.-C., & Shin, K. G. (2018). Use of phone sensors to enhance distracted pedestrians' safety. *IEEE Transactions on Mobile Computing, 17*(6), 1469-1482. https://doi.org/10.1109/TMC.2017.2764909
+- Vertegaal, R. (2026a). *College 3. Bayes theorem, relative entropy and interactive inference* [Lecture slides]. Radboud University.
+- Vertegaal, R. (2026b). *College 4. Interactive inference* [Lecture slides]. Radboud University.
+- Vertegaal, R. (2026c). *College 5. Interactive inference (2): Models and metrics* [Lecture slides]. Radboud University.
+- Vertegaal, R., Merritt, T., Greenberg, S., Tarun, A. P., Li, Z., & Fountas, Z. (2025). *Interactive Inference: A Neuromorphic Theory of Human-Computer Interaction*. https://arxiv.org/abs/2502.05935
+- Vertegaal, R., & Rauterberg, M. (2026). *Stationary interaction: A variational account of user models as generative energy potentials*. Manuscript under review at the International Journal of Human-Computer Studies.
+- Zhou, Q.-Y., Park, J., & Koltun, V. (2018). *Open3D: A modern library for 3D data processing*. arXiv:1801.09847. https://arxiv.org/abs/1801.09847
 
 # Appendix
 
 ## A. From IMU to camera up
-- **which way is up:** fused IMU orientation says how glasses are turned against gravity. IMU measures in a world with z up -> two fixed turns (from Pupil Labs' docs) move it onto our camera and our world (y up):
+- **which way is up:** fused IMU orientation says how glasses are turned against gravity. IMU measures in a world with z up -> two fixed turns move it onto our camera (from Pupil Labs' docs) and our world (y up):
 
   $$R = R_x(-90°)\; R_{\text{IMU}}\; R_x(-102°), \qquad \hat u_{\text{cam}} = R^\top \begin{pmatrix} 0 \\ 1 \\ 0 \end{pmatrix}$$
 
   - $R_{\text{IMU}}$ = IMU orientation, $R_x(\theta)$ = turn by $\theta$ about x axis, $R$ = turns camera directions into world directions, $\hat u_{\text{cam}}$ = "up" as camera sees it
-  - −102° = camera sits 90° plus a 12° downward tilt from the IMU. Both angles from the docs, nobody measured them on our glasses
+  - −102° = camera sits 90° plus a 12° downward tilt from the IMU. Both angles from the docs [(Pupil Labs, n.d.)](#references), nobody measured them on our glasses
   - each frame takes IMU reading closest to its capture time (within 50 ms). None -> up falls back to image up, $(0, -1, 0)$, so we assume the head is level
     - NOTE: only glasses' fused orientation is used. Raw accelerometer, gyroscope and magnetometer aren't (old notes listed all three)
 
