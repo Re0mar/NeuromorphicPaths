@@ -37,7 +37,7 @@ from nav.sources.config import (
     TapConfig,
     VideoConfig,
 )
-from nav.planner.config import PlannerConfig
+from nav.planner.config import AlarmRule, PlannerConfig
 from nav.pose.config import PositionConfig, PositionSource
 from nav.pose.tracking import dense_slam_is_available
 from nav.runtime.tap import RecordingTap
@@ -1090,3 +1090,46 @@ def test_a_run_with_a_position_gets_the_tracker_behind_the_depth_model() -> None
 
 def test_a_run_without_a_position_gets_the_depth_model_alone() -> None:
     assert isinstance(build_source(_run_config_for(SourceKind.NEON_RECORDING)), EstimatedDepthSource)
+
+
+def test_the_alarm_rule_defaults_to_the_gap_ratio_with_its_settings_from_the_config() -> None:
+    planner = build_run_config(MINIMAL_VIDEO_ARGV).planner
+    assert planner.alarm_rule is AlarmRule.GAP_RATIO
+    assert planner.alarm_ratio_window_seconds == PlannerConfig.alarm_ratio_window_seconds
+    assert planner.alarm_ratio_multiplier == PlannerConfig.alarm_ratio_multiplier
+    assert planner.alarm_ratio_margin_meters == PlannerConfig.alarm_ratio_margin_meters
+
+
+def test_the_gap_ratio_rule_and_its_settings_are_read() -> None:
+    argv = [
+        *MINIMAL_VIDEO_ARGV,
+        "--alarm-rule",
+        "gap_ratio",
+        "--alarm-window-seconds",
+        "2",
+        "--alarm-multiplier",
+        "1.63",
+        "--alarm-margin-meters",
+        "0.2",
+        "--alarm-prior-meters",
+        "0.5",
+    ]
+    planner = build_run_config(argv).planner
+    assert planner.alarm_rule is AlarmRule.GAP_RATIO
+    assert planner.alarm_ratio_window_seconds == 2.0
+    assert planner.alarm_ratio_multiplier == 1.63
+    assert planner.alarm_ratio_margin_meters == 0.2
+    assert planner.alarm_ratio_prior_meters == 0.5
+
+
+@pytest.mark.parametrize("flag", ["--alarm-window-seconds", "--alarm-multiplier"])
+def test_a_gap_setting_of_zero_is_refused_as_a_usage_error(flag: str, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        build_run_config([*MINIMAL_VIDEO_ARGV, flag, "0"])
+    assert "must be greater than zero" in capsys.readouterr().err
+
+
+def test_an_alarm_rule_outside_the_vocabulary_is_refused(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        build_run_config([*MINIMAL_VIDEO_ARGV, "--alarm-rule", "ratio"])
+    assert "invalid choice" in capsys.readouterr().err

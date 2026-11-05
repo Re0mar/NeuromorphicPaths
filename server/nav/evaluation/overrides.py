@@ -8,6 +8,7 @@ own type, so the command can refuse it by name without also swallowing every oth
 # Standard library imports
 import dataclasses
 import math
+from enum import Enum
 from typing import TypeVar
 
 ConfigType = TypeVar("ConfigType")
@@ -40,13 +41,26 @@ def apply_overrides(config: ConfigType, overrides: list[str]) -> tuple[ConfigTyp
             raise OverrideRefused(f"an override is FIELD=VALUE, got {override!r}")
         if name not in fields:
             raise OverrideRefused(f"{type(config).__name__} has no field {name!r}. Valid fields: {', '.join(sorted(fields))}")
-        changes[name] = _parse(name, _type_name(fields[name].type), text)
+        declared = fields[name].type
+        # A curated set is spelled by its value, the way the command line spells it.
+        if isinstance(declared, type) and issubclass(declared, Enum):
+            changes[name] = _parse_enum(name, declared, text)
+        else:
+            changes[name] = _parse(name, _type_name(declared), text)
     try:
         return dataclasses.replace(config, **changes), frozenset(changes)
     except ValueError as refused_by_config:
         # The value parsed, and the config's own checks refused it. Still the user's input, so it is
         # refused by name like any other bad override, with the config's reason.
         raise OverrideRefused(f"{type(config).__name__} refused {', '.join(overrides)}: {refused_by_config}") from refused_by_config
+
+
+def _parse_enum(name: str, enum_type: type[Enum], text: str) -> Enum:
+    try:
+        return enum_type(text)
+    except ValueError:
+        valid = ", ".join(str(member.value) for member in enum_type)
+        raise OverrideRefused(f"{name} wants one of {valid}, got {text!r}") from None
 
 
 def _type_name(declared: object) -> str:

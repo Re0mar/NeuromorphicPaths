@@ -6,12 +6,14 @@ import pytest
 
 # Local package imports
 from nav.planner.alarm import nearest_corridor_point
-from nav.planner.config import PlannerConfig
+from nav.planner.config import AlarmRule, PlannerConfig
 from nav.planner.pipeline import PlannerPipeline
 from nav.types import ObstaclePoint, ObstacleSet
 from nav.walker import WalkerConfig
 
-CONFIG = PlannerConfig()
+# These tests are about what follows a raised alarm, so they raise it the plain way: one frame with
+# something close, under the distance rule. The gap rule needs a run of frames to raise it.
+CONFIG = PlannerConfig(alarm_rule=AlarmRule.DISTANCE)
 WALKER = WalkerConfig(radius_meters=0.35)
 
 

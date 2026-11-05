@@ -18,7 +18,7 @@ import pytest
 from nav.config import GoalMode, RunConfig, SinkKind, SourceKind
 from nav.planner.alarm import nearest_corridor_point
 from nav.planner.attention import alarm_audible, check_attention_config
-from nav.planner.config import PlannerConfig
+from nav.planner.config import AlarmRule, PlannerConfig
 from nav.planner.pipeline import PlannerPipeline
 from nav.runtime.loop import run
 from nav.runtime.tap import RecordingTap
@@ -29,7 +29,9 @@ from nav.types import CameraOutline, DepthFrame, GazeSamples, ObstaclePoint, Obs
 from nav.walker import WalkerConfig
 from synthetic_depth import clean_scene
 
-PLANNER = PlannerConfig()
+# These tests are about what follows a raised alarm, so they raise it the plain way: one frame with
+# something close, under the distance rule. The gap rule needs a run of frames to raise it.
+PLANNER = PlannerConfig(alarm_rule=AlarmRule.DISTANCE)
 SWITCH_ON = dataclasses.replace(PLANNER, gaze_silences_alarm=True)
 # The shipped default has no floor. The floor's own tests put one back at the old 0.35 s.
 FLOORED = dataclasses.replace(PLANNER, attention_floor_seconds=0.35)

@@ -10,6 +10,7 @@ import pytest
 # Local package imports
 from nav.planner.alarm import (
     AlarmHold,
+    GapRatioAlarm,
     alarm_raised,
     avoidance_surprise_bits,
     avoidance_surprise_bits_at,
@@ -18,7 +19,7 @@ from nav.planner.alarm import (
     path_red_from_bits,
     time_to_contact_from_avoidance_bits,
 )
-from nav.planner.config import PlannerConfig
+from nav.planner.config import AlarmRule, PlannerConfig
 from nav.planner.pipeline import PlannerPipeline
 from nav.types import ObstaclePoint, ObstacleSet
 from nav.walker import WalkerConfig
@@ -297,3 +298,167 @@ def test_the_avoidance_formula_refuses_a_time_that_is_not_above_zero(seconds: fl
 def test_a_red_point_from_a_threshold_of_zero_is_refused_at_startup() -> None:
     with pytest.raises(ValueError, match="alarm_time_to_contact_seconds must be above zero"):
         path_red_from_bits(replace(CONFIG, alarm_time_to_contact_seconds=0.0))
+
+
+# The gap-ratio rule. Frames come 0.3 s apart and the window is 2.95 s, so a full window holds 10
+# gaps. For evenly spaced gaps the sample standard deviation is the step times sqrt(n(n+1)/12),
+# which is 3.028 steps for 10.
+GAP_RATIO = replace(
+    CONFIG,
+    alarm_rule=AlarmRule.GAP_RATIO,
+    alarm_ratio_window_seconds=2.95,
+    alarm_ratio_multiplier=1.0,
+    alarm_ratio_margin_meters=0.0,
+)
+FRAME_SECONDS = 0.3
+
+
+def _frame_at(seconds: float, gap_meters: float | None) -> ObstacleSet:
+    points = () if gap_meters is None else (_point(0.0, gap_meters + WALKER.radius_meters),)
+    return ObstacleSet(timestamp_seconds=seconds, points=points, groups_in_view=len(points))
+
+
+def _first_raise(config: PlannerConfig, start_gap: float, speed_mps: float, frames: int) -> tuple[int, float] | None:
+    alarm = GapRatioAlarm(config)
+    for index in range(frames):
+        gap = start_gap - speed_mps * FRAME_SECONDS * index
+        if alarm.raised(_frame_at(index * FRAME_SECONDS, gap), config):
+            return index, gap
+    return None
+
+
+def test_a_steady_approach_raises_where_the_spread_reaches_the_gap() -> None:
+    # 0.5 m/s is a 0.15 m step, a spread of 0.454 m. From 3.0 m the gap is 0.60 m at frame 16 and
+    # 0.45 m at frame 17, the first at or under the spread.
+    index, gap = _first_raise(GAP_RATIO, 3.0, 0.5, 30)
+    assert index == 17
+    assert gap == pytest.approx(0.45)
+
+
+def test_the_multiplier_moves_the_raise_out_in_proportion() -> None:
+    # Doubled, the spread is 0.908 m, reached at frame 14, 0.90 m out.
+    index, gap = _first_raise(replace(GAP_RATIO, alarm_ratio_multiplier=2.0), 3.0, 0.5, 30)
+    assert index == 14
+    assert gap == pytest.approx(0.90)
+
+
+def test_the_time_to_contact_at_the_raise_does_not_depend_on_walking_speed() -> None:
+    # Twice the speed doubles both the step and the spread, so the raise comes at twice the gap and
+    # the same 0.9 s from contact. Nothing in the rule assumes a speed.
+    _, slow_gap = _first_raise(GAP_RATIO, 3.0, 0.5, 30)
+    _, fast_gap = _first_raise(GAP_RATIO, 6.0, 1.0, 30)
+    assert slow_gap / 0.5 == pytest.approx(0.9)
+    assert fast_gap / 1.0 == pytest.approx(0.9)
+
+
+def test_standing_still_close_to_something_never_raises_the_gap_rule() -> None:
+    # The distance rule calls 0.5 m an alarm whatever the walker does. With no change in the gap
+    # there is no spread, so the gap rule stays down.
+    alarm = GapRatioAlarm(GAP_RATIO)
+    frames = [_frame_at(index * FRAME_SECONDS, 0.5) for index in range(20)]
+    assert not any(alarm.raised(frame, GAP_RATIO) for frame in frames)
+    assert alarm_raised(frames[-1], CONFIG)
+
+
+def test_too_few_gaps_never_raise_the_gap_rule() -> None:
+    # Two gaps falling from 2 m to almost nothing would be a huge spread, but two samples say nothing.
+    alarm = GapRatioAlarm(GAP_RATIO)
+    assert not alarm.raised(_frame_at(0.0, 2.0), GAP_RATIO)
+    assert not alarm.raised(_frame_at(0.3, 0.05), GAP_RATIO)
+
+
+def test_an_empty_corridor_adds_no_gap() -> None:
+    alarm = GapRatioAlarm(GAP_RATIO)
+    alarm.raised(_frame_at(0.0, 2.0), GAP_RATIO)
+    alarm.raised(_frame_at(0.3, 1.0), GAP_RATIO)
+    assert not alarm.raised(_frame_at(0.6, None), GAP_RATIO)
+    # Only now is there a third gap, and 2.0, 1.0, 0.05 has a spread far above 0.05.
+    assert alarm.raised(_frame_at(0.9, 0.05), GAP_RATIO)
+
+
+def test_gaps_older_than_the_window_are_dropped() -> None:
+    # A fall from 2 m to 0.05 m, then 3 s of standing at 0.05 m. Once the fall has aged out the spread
+    # is zero, so the rule goes down even though the walker is still that close.
+    alarm = GapRatioAlarm(GAP_RATIO)
+    for index, gap in enumerate([2.0, 1.0, 0.05]):
+        alarm.raised(_frame_at(index * FRAME_SECONDS, gap), GAP_RATIO)
+    assert alarm.raised(_frame_at(0.9, 0.05), GAP_RATIO)
+    assert not alarm.raised(_frame_at(0.9 + 3.0, 0.05), GAP_RATIO)
+
+
+def test_a_clock_that_went_backward_starts_the_gaps_over() -> None:
+    alarm = GapRatioAlarm(GAP_RATIO)
+    for index, gap in enumerate([2.0, 1.0, 0.05]):
+        alarm.raised(_frame_at(10.0 + index * FRAME_SECONDS, gap), GAP_RATIO)
+    assert not alarm.raised(_frame_at(1.0, 0.05), GAP_RATIO)
+
+
+@pytest.mark.parametrize(
+    ("change", "named"),
+    [
+        ({"alarm_ratio_window_seconds": 0.0}, "alarm_ratio_window_seconds"),
+        ({"alarm_ratio_window_seconds": float("nan")}, "alarm_ratio_window_seconds"),
+        ({"alarm_ratio_multiplier": 0.0}, "alarm_ratio_multiplier"),
+        ({"alarm_ratio_min_samples": 1}, "alarm_ratio_min_samples"),
+        ({"alarm_ratio_margin_meters": -0.1}, "alarm_ratio_margin_meters"),
+        ({"alarm_ratio_prior_meters": -0.1}, "alarm_ratio_prior_meters"),
+    ],
+)
+def test_gap_rule_settings_it_cannot_use_are_refused_at_startup(change: dict, named: str) -> None:
+    with pytest.raises(ValueError, match=named):
+        PlannerPipeline(replace(GAP_RATIO, **change), WALKER)
+
+
+def test_the_gap_rule_is_the_default_and_distance_is_there_on_request() -> None:
+    standing = [_frame_at(index * FRAME_SECONDS, 0.5) for index in range(12)]
+    distance = PlannerPipeline(replace(CONFIG, alarm_rule=AlarmRule.DISTANCE), WALKER)
+    gap_ratio = PlannerPipeline(CONFIG, WALKER)
+    assert CONFIG.alarm_rule is AlarmRule.GAP_RATIO
+    assert all(distance.plan(frame).alarm for frame in standing)
+    assert not any(gap_ratio.plan(frame).alarm for frame in standing)
+
+
+def test_the_margin_raises_where_the_spread_reaches_the_gap_less_the_margin() -> None:
+    # The 0.454 m spread now meets the gap less 0.2 m, so the gap at the raise is at most 0.654 m. From
+    # 3.0 m that is 0.60 m at frame 16, one frame before the plain rule's 0.45 m.
+    index, gap = _first_raise(replace(GAP_RATIO, alarm_ratio_margin_meters=0.2), 3.0, 0.5, 30)
+    assert index == 16
+    assert gap == pytest.approx(0.60)
+
+
+def test_inside_the_margin_a_wobble_raises_the_gap_rule_and_stillness_does_not() -> None:
+    # Inside a 0.3 m margin the gap less the margin is under the 0.06 m epsilon, so the rule raises
+    # on any spread of 0.06 m or more. A gap wobbling 0.1 to 0.3 m has a spread of about 0.11 m and
+    # raises it. The same wobble 1 m away doesn't, and a gap that never changes never does.
+    config = replace(GAP_RATIO, alarm_ratio_margin_meters=0.3)
+
+    def raised_on(gaps: list[float]) -> list[bool]:
+        alarm = GapRatioAlarm(config)
+        return [alarm.raised(_frame_at(index * FRAME_SECONDS, gap), config) for index, gap in enumerate(gaps)]
+
+    assert raised_on([0.1, 0.3] * 3)[-1]
+    assert not any(raised_on([0.9, 1.1] * 3))
+    assert not any(raised_on([0.2] * 6))
+
+
+def test_a_prior_raises_the_alarm_inside_its_distance_with_no_change_in_the_gap() -> None:
+    # Standing still gives no spread, so only the prior speaks: 0.4 m is inside a 0.5 m prior, 0.6 m isn't.
+    config = replace(GAP_RATIO, alarm_ratio_prior_meters=0.5)
+    inside, outside = GapRatioAlarm(config), GapRatioAlarm(config)
+    assert all(inside.raised(_frame_at(index * FRAME_SECONDS, 0.4), config) for index in range(5))
+    assert not any(outside.raised(_frame_at(index * FRAME_SECONDS, 0.6), config) for index in range(5))
+
+
+def test_the_prior_and_the_spread_add_as_squares() -> None:
+    # The 0.454 m spread and a 0.3 m prior reach sqrt(0.454^2 + 0.3^2) = 0.544 m together. The 0.60 m
+    # gap is still above that, so the raise stays at frame 17, 0.45 m. A 0.5 m prior reaches 0.675 m,
+    # which moves the raise to frame 16, 0.60 m.
+    index_small, _ = _first_raise(replace(GAP_RATIO, alarm_ratio_prior_meters=0.3), 3.0, 0.5, 30)
+    index_large, gap_large = _first_raise(replace(GAP_RATIO, alarm_ratio_prior_meters=0.5), 3.0, 0.5, 30)
+    assert index_small == 17
+    assert index_large == 16
+    assert gap_large == pytest.approx(0.60)
+
+
+def test_with_no_prior_the_rule_is_the_spread_alone() -> None:
+    assert _first_raise(GAP_RATIO, 3.0, 0.5, 30) == _first_raise(replace(GAP_RATIO, alarm_ratio_prior_meters=0.0), 3.0, 0.5, 30)

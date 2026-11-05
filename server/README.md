@@ -610,6 +610,18 @@ instead.
 This only holds with `--sink web`. A run without the page, or replaying with `--neon-replay`,
 still ends when its device or its capture does, which is what recording a walk relies on.
 
+### The alarm rule
+
+**The alarm is the course's avoidance surprise on the nearest gap.** It goes off when the spread of
+the nearest gap in the corridor over the last `--alarm-window-seconds` (3), times `--alarm-multiplier`
+(1.63), reaches the gap less `--alarm-margin-meters` (0.2), which is his signal-to-noise of 1 from the
+car-following study. The 1.63 brings the gap forward over the pipeline's delay of about 0.65 s. It
+assumes no walking speed, so standing still near a desk doesn't raise it. `--alarm-prior-meters` adds
+a prior surprise for anything inside that distance, off by default. `--alarm-rule distance` brings back
+the older rule, clearance at 1.4 m/s under 0.7 s. The page's time-to-collision readout and the path's
+red still come from the distance form. `docs/math/09_arrow_and_alarm.md` has the formula, the
+derivation of 1.63 and the replay numbers.
+
 ### The gaze switch
 
 **With the glasses, the alarm can go quiet while the wearer's eyes are on the danger.** It's off

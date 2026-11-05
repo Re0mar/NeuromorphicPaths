@@ -16,6 +16,9 @@ Once raised it stays up for a minimum time. A signal computed at 30 Hz chatters 
 whatever it measures, and a display that flickers five times a second tells the walker nothing.
 """
 
+# Standard library imports
+from collections import deque
+
 # Third party imports
 import numpy as np
 
@@ -38,6 +41,24 @@ def check_alarm_config(config: PlannerConfig) -> None:
     _check_body_half_width(config)
     _check_walking_speed(config)
     _check_threshold(config)
+    _check_gap_ratio(config)
+
+
+def _check_gap_ratio(config: PlannerConfig) -> None:
+    window = config.alarm_ratio_window_seconds
+    if not np.isfinite(window) or window <= 0:
+        raise ValueError(f"alarm_ratio_window_seconds must be above zero, got {window}")
+    multiplier = config.alarm_ratio_multiplier
+    if not np.isfinite(multiplier) or multiplier <= 0:
+        raise ValueError(f"alarm_ratio_multiplier must be above zero, got {multiplier}")
+    prior = config.alarm_ratio_prior_meters
+    if not np.isfinite(prior) or prior < 0:
+        raise ValueError(f"alarm_ratio_prior_meters must be zero or more, got {prior}")
+    margin = config.alarm_ratio_margin_meters
+    if not np.isfinite(margin) or margin < 0:
+        raise ValueError(f"alarm_ratio_margin_meters must be zero or more, got {margin}")
+    if config.alarm_ratio_min_samples < 2:
+        raise ValueError(f"alarm_ratio_min_samples must be 2 or more, got {config.alarm_ratio_min_samples}")
 
 
 def _check_body_half_width(config: PlannerConfig) -> None:
@@ -209,6 +230,67 @@ def alarm_raised(obstacles: ObstacleSet, config: PlannerConfig) -> bool:
     _check_threshold(config)
     contact = corridor_time_to_contact(obstacles, config)
     return contact is not None and contact < config.alarm_time_to_contact_seconds
+
+
+class GapRatioAlarm:
+    """
+    His avoidance surprise as the alarm, measured instead of assumed.
+
+    The course writes it as half of (Delta S over S) squared, Delta S the spread of a gap over a
+    window and S the gap, and puts the limit of safe performance at a signal-to-noise of 1. Here S
+    is the nearest corridor gap now and Delta S its sample standard deviation over the window, times
+    our multiplier. The alarm rises when that reaches the gap, less our margin. No walking speed is
+    assumed, so a walker standing still beside a desk gives no spread and no alarm. Inside the margin
+    any wobble in the gap above the epsilon is enough.
+
+    An optional prior adds a second surprise, half of (D over the gap) squared, as the course adds
+    prior and likelihood surprise. The two together are compared with the same threshold, so the
+    alarm rises when (c Delta S) squared plus D squared reaches the gap squared.
+
+    The spread also grows when the gap opens or jumps, such as when the head turns toward something
+    near. That is part of what it measures, and it is why the multiplier is ours to set.
+    """
+
+    def __init__(self, config: PlannerConfig) -> None:
+        _check_gap_ratio(config)
+        self._window_seconds = config.alarm_ratio_window_seconds
+        self._multiplier = config.alarm_ratio_multiplier
+        self._margin = config.alarm_ratio_margin_meters
+        self._prior = config.alarm_ratio_prior_meters
+        self._min_samples = config.alarm_ratio_min_samples
+        self._epsilon = config.clearance_epsilon_meters
+        self._samples: deque[tuple[float, float]] = deque()
+
+    def raised(self, obstacles: ObstacleSet, config: PlannerConfig) -> bool:
+        """
+        Record this frame's nearest gap and say whether the ratio has reached the threshold.
+
+        :param obstacles: This frame's groups, with its timestamp.
+        :param config: The body half-width that bounds the corridor.
+        :return: True when the measured and prior terms together reach the gap less the margin.
+        :rtype: bool
+        :raises ValueError: When the timestamp is not a finite number.
+        """
+        now = obstacles.timestamp_seconds
+        if not np.isfinite(now):
+            raise ValueError(f"timestamp must be finite, got {now}")
+        # A clock that went backward is a new session or recording segment, so the old gaps go.
+        if self._samples and now < self._samples[-1][0]:
+            self._samples.clear()
+        while self._samples and self._samples[0][0] < now - self._window_seconds:
+            self._samples.popleft()
+        nearest = nearest_corridor_point(obstacles, config)
+        # An empty corridor has no gap to add. Its frames leave the window to age out on its own.
+        if nearest is None:
+            return False
+        gap = nearest.clearance_meters
+        self._samples.append((now, gap))
+        if len(self._samples) < self._min_samples:
+            # Too few gaps for a spread. The prior alone still speaks for something already inside D.
+            return self._prior >= max(gap - self._margin, self._epsilon)
+        spread = float(np.std([sample for _, sample in self._samples], ddof=1))
+        reach = max(gap - self._margin, self._epsilon)
+        return (self._multiplier * spread) ** 2 + self._prior**2 >= reach**2
 
 
 class AlarmHold:

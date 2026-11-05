@@ -41,7 +41,7 @@ from nav.evaluation.replay import (
 )
 from nav.evaluation.track import floor_heading_radians
 from nav.evaluation.turns import TurnTag
-from nav.planner.config import GoalMode, PlannerConfig
+from nav.planner.config import AlarmRule, GoalMode, PlannerConfig
 from nav.planner.pipeline import PlannerPipeline
 from nav.scene.config import SceneConfig
 from nav.types import FloorSource
@@ -517,3 +517,15 @@ def test_a_cache_entry_in_the_old_row_shape_is_rebuilt_not_misread(recording: Pa
 
     assert rebuilt.cache_state.startswith("miss") and "unreadable entry (TypeError)" in rebuilt.cache_state
     assert [row.camera_height_meters for row in rebuilt.planned] == [row.camera_height_meters for row in fresh.planned]
+
+
+def test_an_enum_field_is_overridden_by_its_value() -> None:
+    planner, names = apply_overrides(PlannerConfig(), ["alarm_rule=gap_ratio", "alarm_ratio_multiplier=1.63"])
+    assert planner.alarm_rule is AlarmRule.GAP_RATIO
+    assert planner.alarm_ratio_multiplier == 1.63
+    assert names == frozenset({"alarm_rule", "alarm_ratio_multiplier"})
+
+
+def test_an_enum_value_outside_the_set_is_refused_with_the_valid_ones() -> None:
+    with pytest.raises(OverrideRefused, match="distance, gap_ratio"):
+        apply_overrides(PlannerConfig(), ["alarm_rule=ratio"])
