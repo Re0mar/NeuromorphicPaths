@@ -14,6 +14,7 @@ from nav.planner.alarm import (
     alarm_raised,
     avoidance_surprise_bits,
     check_alarm_config,
+    gap_ratio_surprise_bits,
     corridor_time_to_contact,
     nearest_corridor_point,
 )
@@ -169,13 +170,22 @@ class PlannerPipeline:
             prior_field += previous_plan_field
         start_cell = start_cell_index(self._grid, start_lateral_meters)
         information = scene_information_bits(field, prior_field, start_cell, self._grid, config, self._lookahead_index)
-        avoidance = avoidance_surprise_bits(obstacles, config)
+        if self._gap_ratio is None:
+            avoidance = avoidance_surprise_bits(obstacles, config)
+            raised_now = alarm_raised(obstacles, config)
+            measured_time: float | None = None
+        else:
+            # His avoidance surprise for the ratio the rule just compared, so the path's red and the
+            # alarm come from one number, and the time to contact from the closing it measured.
+            reading = self._gap_ratio.measure(obstacles, config)
+            avoidance = gap_ratio_surprise_bits(reading.ratio)
+            raised_now = reading.raised
+            measured_time = reading.time_to_contact_seconds
         after_information = time.perf_counter()
 
         # Where the arrow points: at where the path is a lookahead from now, not at its first step.
         heading = lookahead_heading(offsets, self._lookahead_index, config)
 
-        raised_now = alarm_raised(obstacles, config) if self._gap_ratio is None else self._gap_ratio.raised(obstacles, config)
         alarm = self._alarm_hold.update(raised_now, obstacles.timestamp_seconds)
         # The danger's side is read on the frames that raise the alarm and kept through the hold, so
         # the cue stays on the side the walker last heard it rather than jumping to center the
@@ -221,6 +231,8 @@ class PlannerPipeline:
             ear_gain_right=ear_right,
             danger_noticed=self._danger_noticed,
             alarm_audible=audible,
+            time_to_contact_seconds=measured_time,
+            time_to_contact_measured=self._gap_ratio is not None,
         )
 
     def _attend(self, obstacles: ObstacleSet, gaze: GazeSamples | None, alarm: bool) -> bool:

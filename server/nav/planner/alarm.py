@@ -18,14 +18,15 @@ whatever it measures, and a display that flickers five times a second tells the 
 
 # Standard library imports
 from collections import deque
+from dataclasses import dataclass
 
 # Third party imports
 import numpy as np
 
 # Local package imports
-from nav.planner.config import PlannerConfig
+from nav.planner.config import AlarmRule, PlannerConfig
 from nav.planner.units import NATS_PER_BIT, bits_from_nats
-from nav.types import ObstaclePoint, ObstacleSet
+from nav.types import ObstaclePoint, ObstacleSet, PlannedPath
 
 # His dt in the avoidance form. The surprise compares time to contact against one second.
 AVOIDANCE_REFERENCE_SECONDS = 1.0
@@ -160,8 +161,9 @@ def time_to_contact_from_avoidance_bits(avoidance_bits: float) -> float | None:
     """
     The time to contact an avoidance surprise stands for. The inverse of avoidance_surprise_bits_at.
 
-    The planned path carries the surprise, not the time, so a display that shows the time reads it
-    back from the surprise here, next to the formula it undoes.
+    Under the distance rule the path carries no measured time, so a display reads it back from the
+    surprise here. Under the gap rule the path carries a measured time and `path_time_to_contact`
+    returns that instead.
 
     example: 0.72 bits -> about 1.0 s
 
@@ -177,12 +179,25 @@ def time_to_contact_from_avoidance_bits(avoidance_bits: float) -> float | None:
     return float(AVOIDANCE_REFERENCE_SECONDS / np.sqrt(2.0 * avoidance_bits * NATS_PER_BIT))
 
 
+def path_time_to_contact(path: PlannedPath) -> float | None:
+    """
+    The time to contact a display shows for a path: the gap rule's measured one, or the distance form's.
+
+    :param path: A planned path.
+    :return: Seconds, or None when nothing is closing.
+    :rtype: float | None
+    """
+    if path.time_to_contact_measured:
+        return path.time_to_contact_seconds
+    return time_to_contact_from_avoidance_bits(path.avoidance_surprise_bits)
+
+
 def path_red_from_bits(config: PlannerConfig) -> float:
     """
     The avoidance surprise at which the drawn path is fully red: the moment the alarm raises.
 
-    The alarm raises at alarm_time_to_contact_seconds, so the path reaches red at that time's surprise
-    and no earlier. 1.47 bits at the shipped 0.7 s.
+    Under the gap rule that's his half-squared at a ratio of 1, 0.72 bits. Under the distance rule
+    it's his avoidance form at `alarm_time_to_contact_seconds`, 1.47 bits at the shipped 0.7 s.
 
     :param config: The alarm's threshold.
     :return: Bits, above zero.
@@ -190,6 +205,9 @@ def path_red_from_bits(config: PlannerConfig) -> float:
     :raises ValueError: When the threshold is not above zero.
     """
     _check_threshold(config)
+    if config.alarm_rule is AlarmRule.GAP_RATIO:
+        # His surprise at a signal-to-noise of 1, the point where the gap rule raises.
+        return gap_ratio_surprise_bits(1.0)
     return avoidance_surprise_bits_at(config.alarm_time_to_contact_seconds)
 
 
@@ -232,6 +250,50 @@ def alarm_raised(obstacles: ObstacleSet, config: PlannerConfig) -> bool:
     return contact is not None and contact < config.alarm_time_to_contact_seconds
 
 
+@dataclass(frozen=True)
+class GapReading:
+    """One frame of the gap rule: whether it raises, the ratio it compared, and the time it measured."""
+
+    raised: bool
+    # The multiplied spread over the gap less the margin, prior included. The rule raises at 1.
+    ratio: float
+    # Seconds to contact at the closing speed the spread implies. None when the gap isn't closing.
+    time_to_contact_seconds: float | None
+
+
+def gap_ratio_surprise_bits(ratio: float) -> float:
+    """
+    His avoidance surprise for a gap ratio, half of the ratio squared, in bits.
+
+    example: 1.0 -> 0.72 bits, the signal-to-noise of 1 where the gap rule raises
+
+    :param ratio: From a GapReading, zero or more.
+    :return: Bits.
+    :rtype: float
+    :raises ValueError: When the ratio is negative or not a finite number.
+    """
+    if not np.isfinite(ratio) or ratio < 0:
+        raise ValueError(f"gap ratio must be finite and zero or more, got {ratio}")
+    return float(bits_from_nats(0.5 * ratio**2))
+
+
+def _spread_per_span(count: int) -> float:
+    """The sample standard deviation of `count` evenly spaced values, per unit of the span they cover."""
+    return float(np.sqrt(count * (count + 1) / 12.0) / (count - 1))
+
+
+def _measured_time_to_contact(gaps: np.ndarray, stamps: np.ndarray, spread: float) -> float | None:
+    span = float(stamps[-1] - stamps[0])
+    # A gap opening or wobbling in place has a spread too, so the direction comes from where the gap
+    # is now against its average over the window.
+    if span <= 0 or spread <= 0 or gaps[-1] >= gaps.mean():
+        return None
+    # On a steady approach the spread is the speed times the span times this factor, so the factor
+    # turns the spread back into a speed without assuming one.
+    speed = spread / (_spread_per_span(len(gaps)) * span)
+    return float(max(float(gaps[-1]), 0.0) / speed)
+
+
 class GapRatioAlarm:
     """
     His avoidance surprise as the alarm, measured instead of assumed.
@@ -271,6 +333,18 @@ class GapRatioAlarm:
         :rtype: bool
         :raises ValueError: When the timestamp is not a finite number.
         """
+        return self.measure(obstacles, config).raised
+
+    def measure(self, obstacles: ObstacleSet, config: PlannerConfig) -> GapReading:
+        """
+        Record this frame's nearest gap, and give the ratio, whether it raises, and the time it measured.
+
+        :param obstacles: This frame's groups, with its timestamp.
+        :param config: The body half-width that bounds the corridor.
+        :return: This frame's reading. A ratio of 0 and no time when the corridor is empty.
+        :rtype: GapReading
+        :raises ValueError: When the timestamp is not a finite number.
+        """
         now = obstacles.timestamp_seconds
         if not np.isfinite(now):
             raise ValueError(f"timestamp must be finite, got {now}")
@@ -282,15 +356,19 @@ class GapRatioAlarm:
         nearest = nearest_corridor_point(obstacles, config)
         # An empty corridor has no gap to add. Its frames leave the window to age out on its own.
         if nearest is None:
-            return False
+            return GapReading(raised=False, ratio=0.0, time_to_contact_seconds=None)
         gap = nearest.clearance_meters
         self._samples.append((now, gap))
+        reach = max(gap - self._margin, self._epsilon)
         if len(self._samples) < self._min_samples:
             # Too few gaps for a spread. The prior alone still speaks for something already inside D.
-            return self._prior >= max(gap - self._margin, self._epsilon)
-        spread = float(np.std([sample for _, sample in self._samples], ddof=1))
-        reach = max(gap - self._margin, self._epsilon)
-        return (self._multiplier * spread) ** 2 + self._prior**2 >= reach**2
+            ratio = self._prior / reach
+            return GapReading(raised=ratio >= 1.0, ratio=ratio, time_to_contact_seconds=None)
+        stamps = np.array([stamp for stamp, _ in self._samples])
+        gaps = np.array([sample for _, sample in self._samples])
+        spread = float(np.std(gaps, ddof=1))
+        ratio = float(np.hypot(self._multiplier * spread, self._prior) / reach)
+        return GapReading(raised=ratio >= 1.0, ratio=ratio, time_to_contact_seconds=_measured_time_to_contact(gaps, stamps, spread))
 
 
 class AlarmHold:
