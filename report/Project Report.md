@@ -52,7 +52,7 @@ papers roel: mute conversation in cars
 - References (Nolan)
 - Appendices (Nolan)
 # Introduction
-The problem of autonomous collision avoidance is one that has plagued autonomous navigation for as long as it has existed, with many proposed solutions with varying levels of success having been attempted already[(K. Berntorp, 2017)](#references). One trait all of these hold in common is their cost, with reliance on either expensive sensors or extensively trained machine learning models to function, something our team attempts to negate in this project. 
+The problem of autonomous collision avoidance is one that has plagued autonomous navigation for as long as it has existed, with many proposed solutions with varying levels of success having been attempted already [(Berntorp, 2017)](#references). One trait all of these hold in common is their cost, with reliance on either expensive sensors or extensively trained machine learning models to function, something our team attempts to negate in this project. 
 
 Advancing from an application of surprise theory and Fitts' Law in particular, our proposed solution functions by taking the input of a single camera and formulating a surprise field from its feed. This surprise field corresponds to the amount of risk each section of the area in the camera's view would pose to the user upon entering, where a Lagrangian is then used to formulate a path through this area that would pose the least risk. Based upon this path the user may be advised or directly steered to follow this path.
 
@@ -63,11 +63,9 @@ This project was done as part of the course "An introduction to Neuromorphic Hum
 # Background
 ## Motivation
 
-A 2017 thesis published at Radboud University concluded that reminding drivers to pay attention to the road has a significant effect on subsequent accidents [(Rijniers, 2017)](#references) `TODO we should pick another source`. Many of these accidents are preventable one-sided accidents, caused by drivers, cyclists and pedestrians leaving or crossing the road by accident or at the wrong moment. Our leading theory is that wearable computer vision, as found in commercial products like smart glasses, could detect these dangerous situations and direct the user's attention back to the road before an incident occurs.
+A 2017 thesis published at Radboud University concluded that reminding drivers to pay attention to the road has a significant effect on subsequent accidents [(Rijniers, 2017)](#references). Many of these accidents are preventable one-sided accidents, caused by drivers, cyclists and pedestrians leaving or crossing the road by accident or at the wrong moment. Our leading theory is that wearable computer vision, as found in commercial products like smart glasses, could detect these dangerous situations and direct the user's attention back to the road before an incident occurs.
 
-Alerting the user is only one option. The distractions on the phone can also be muted while the environment is too surprising, similar to how conversations can be muted in cars when the driver needs to focus. 
-
->> *[Roels papers on muting conversation in cars and summarize]*
+Alerting the user is only one option. The distractions on the phone can also be muted while the environment is too surprising, similar to how conversations can be muted in cars when the driver needs to focus. The car study referenced in this course applied the same real-time ratio to notification and dialog management in a car interface, based on danger [(Vertegaal, 2026c, pp. 71-72)](#references).
 
 Research on auditory interfaces gives some support for muting as a strategy. Hearing is always available and cannot be turned off, which is why people use headphones to curate their own soundscape. This comes at a cost, since it lowers situational awareness and carries distinct safety risks when used on the move [(Haas, 2023)](#references). Haas also found that when people are asked which sounds in their environment they want to change, they rarely want a sound louder, but often want it muted or reduced, while keeping the information the sound carries. A simple interface with a few discrete states (muted, quieter, unaltered, louder) was preferred over continuous control, although this difference was not statistically significant [(Haas, 2023)](#references). This fits our approach, where distractions are only reduced when the surroundings require it.
 
@@ -252,33 +250,13 @@ $$
     - USED FOR: what the Server actually receives, so replaying it tests everything (decoder, timing, IMU matching) simulating live behavior. Replays lost packets but not network delay. Used and then archived
   - **Frame Log (`--record-to`):** Server saves depth frames coming out of depth model
     - USED FOR: faster testing for all of the math AFTER the depth model (logs let us skip straight to scene + planner). Can't test anything before depth model. Used and then archived
-- replay: capture → exact same live route and Server treats it like glasses are on (demos + live-route tests ran this way)
-
-> TODO merge near identical text above with text below. 
-
-- all three parts run on recordings, through the exact live route (`--neon-replay` on a capture), on Server (Quadro T2000, 4 GB), otherwise idle. Same code path as a live walk, so frame rate and delays real, network delay isn't
+- replay: capture → exact same live route and Server treats it like glasses are on (demos + live-route tests ran this way). Uses the same processing as a live user, so frame rate and delays are real, network delay is not a factor.
 - recordings (walking) we have (all on glasses, all indoors):
   - 2026-10-05: first live session, two 240 s classroom captures. (only the second works for real, first one had sensor issues)
   - 2026-10-08: walk A (214 s, between classroom desks), walk B (27 s)
   - 2026-10-08, demo room: hallway into classroom (194 s), up and down stairs (121 s), standing on the tiers (263 s)
   - 2026-10-09: demo walk (148 s, starts by a big window)
   - 2026-10-14: attention walk (44 s, scripted: stare at a chair, walk past it looking and not looking, stairs, toward a wall)
-    - NOTE: none outdoors, none with pedestrians or other moving obstacles. maybe worth a re-record since he wants us to make a full demo vid anyway? (we know these work, but processing time still an issue)
-- **part 1 (position):** attention walk 2026-10-14 (44 s, tiered classroom: chair, stairs, whiteboard wall). One run per setting: `--position` absent, odometry or dense_slam, at 336 or 280 px depth resolution. Measured: planned frames/s, arrival-to-plan delay, share of frames with a position, position error and 3 s drift against reference camera path rebuilt from the video by COLMAP (structure-from-motion software) [(Schönberger & Frahm, 2016)](#references) (first 18.4 s, 8 m, scale from depth model, aligned by rotation + shift only), share of obstacles with measured N
-  - NOTE: no ground truth exists, COLMAP is the reference. Report has to state this
-- **part 2 (planning):** replays through the evaluation's `check_planner` on frame logs, planner settings swept. Numbers to report: arrow flips per minute, arrow at sidestep limit with something 3 to 5.32 m ahead (band), 90th pct plan disagreement, alarm share. Walks: classroom (2026-10-08 A), pixel_walk_3 and contact_walk_1 for the prior sweep (Pixel-era logs, say so)
-  - NOTE: which runs go in the report still to pick. Config comments carry every number above with the walk it came from
-- **part 3 (collision):** alarm share and state changes per walk with corridor/hold on vs off, gaze silencing on the scripted attention walk (looks at the chair vs walking past it not looking)
-  - NOTE: the 2026-10-09 demo walk hasn't been watched/described yet, and no walk has pedestrians
-
-## Literature
-https://www.nature.com/articles/s41598-025-08475-4
-
-(How we did it)
-
-*If you did an experiment, write about the motivation, earlier experiments in literature and why they didn't show what you are showing, used apparatus, participants and methods, results (just plain results in tables with statistical tests described in text), and a discussion of the results in light of the prior literature.*
-
-*If you did a system, follow the same procedure but instead of results you describe 3 scenarios in which the system could be used in the future. When you write the scenario, imagine you are a user using the system and describe all the little details that demonstrate how well your interactions were thought through and how it solves an existing usability problem.*
 
 # System Measurements
 
@@ -336,7 +314,7 @@ The central panel is the field of view from the user, recorded by the camera on 
 | Planner | 141 ms | 350 ms | 99.5 ms | 157 ms |
 | **Total** | **646 ms** | **1535 ms** | **514 ms** | **688 ms** |
 
-In our tests the system planned ~2 to ~3 of the camera's 30 frames a second, and 95 % of frames finished within ~0.7 to ~1.5 s, with 5 % taking longer. We report that figure because the slow frames are the risky ones: at 1.4 m/s a walker covers ~1 to ~2 m in that time, which is why the alarm makes up for the delay (see Collision Detection). The steps don't add up to the total because each one is taken on its own.
+In our tests the system planned ~2 to ~3 of the camera's 30 frames a second, and 95 % of frames finished within ~0.7 to ~1.5 s, with 5 % taking longer. We report that figure because the slow frames are the risky ones: at 1.4 m/s a walker covers ~1 to ~2 m in that time, which is why the alarm makes up for the delay (see Collision Detection). The steps don't add up to the total because each one is measured separately.
 
 ## Panel: From Above
 
@@ -444,11 +422,7 @@ Last, whilst we acknowledge that our current prototype is very generic in its ap
 # Conclusion
 
 # References
-1. Rijniers, R. (2017). *Ogen op de weg ☺ Een vermindering van het smartphonegebruik op de N36 middels een gedragsinterventie langs de weg* [Radboud Universiteit]. https://theses.ubn.ru.nl/items/c8935b8d-8583-455a-97e4-90905e7adb13/full
-2. Haas, G. (2023). *Towards Auditory Interaction: An Analysis of Computer-Based Auditory Interfaces in Three Settings* [Doctoral dissertation, Ulm University]. https://oparu.uni-ulm.de/server/api/core/bitstreams/c45354b6-409b-4444-81e5-d55b99acf3f1/content
-3. *[Authors]* (2025). *Interactive Inference: A Neuromorphic Theory of Human-Computer Interaction*. https://arxiv.org/abs/2502.05935 
-4. K. Berntorp, "Path planning and integrated collision avoidance for autonomous vehicles," 2017 American Control Conference (ACC), Seattle, WA, USA, 2017, pp. 4023-4028, doi: 10.23919/ACC.2017.7963572.
-keywords: {Robot sensing systems}
+- Berntorp, K. (2017). Path planning and integrated collision avoidance for autonomous vehicles. In *2017 American Control Conference (ACC)* (pp. 4023-4028). https://doi.org/10.23919/ACC.2017.7963572
 - Engström, J., Bärgman, J., Nilsson, D., Seppelt, B., Markkula, G., Piccinini, G. F., & Victor, T. (2018). Great expectations: A predictive processing account of automobile driving. *Theoretical Issues in Ergonomics Science, 19*(2), 156-194. https://doi.org/10.1080/1463922X.2017.1306148
 - Engström, J., Wei, R., McDonald, A. D., Garcia, A., O'Kelly, M., & Johnson, L. (2024). Resolving uncertainty on the fly: Modeling adaptive driving behavior as active inference. *Frontiers in Neurorobotics, 18*, 1341750. https://doi.org/10.3389/fnbot.2024.1341750
 - Fan, H., Zhu, F., Liu, C., Zhang, L., Zhuang, L., Li, D., Zhu, W., Hu, J., Li, H., & Kong, Q. (2018). *Baidu Apollo EM motion planner*. arXiv:1807.08048. https://arxiv.org/abs/1807.08048
@@ -477,7 +451,7 @@ keywords: {Robot sensing systems}
   - $R_{\text{IMU}}$ = IMU orientation, $R_x(\theta)$ = turn by $\theta$ about x axis, $R$ = turns camera directions into world directions, $\hat u_{\text{cam}}$ = "up" as camera sees it
   - −102° = camera sits 90° plus a 12° downward tilt from the IMU. Both angles from the docs [(Pupil Labs, n.d.)](#references), nobody measured them on our glasses
   - each frame takes IMU reading closest to its capture time (within 50 ms). None -> up falls back to image up, $(0, -1, 0)$, so we assume the head is level
-    - NOTE: only glasses' fused orientation is used. Raw accelerometer, gyroscope and magnetometer aren't (old notes listed all three)
+    - NOTE: only glasses' fused orientation is used. Raw accelerometer, gyroscope and magnetometer aren't
 
 ## B. Finding the floor
 - only points well below camera can be floor: drop $\delta_i = -\mathbf p_i \cdot \hat u_{\text{cam}}$ over 0.5 m, and at least 200 of them
@@ -561,6 +535,5 @@ $$X = \frac{(u - c_x)\, z}{f_x}, \qquad Y = \frac{(v - c_y)\, z}{f_y}, \qquad Z 
 | Odometry, 0.5 s | 3 | 2.27-2.61 | 520-606 ms | 928-1167 ms | ~0 % | | 5.1-5.6 % |
 | Odometry, 1 s | 3 | 2.31-2.85 | 435-605 ms | 524-990 ms | 42-50 % | 0.13 m | 21.9-37.6 % |
 
-- wider window: no delay cost we can measure. Odometry's $N$ ~3 times larger and plan at heading limit far more often. With cells fixed to the world, $N$ includes walker's own approach, which likely explains much of that. Can't separate it from tracker error here
+- wider window: no delay cost we can measure. Odometry's $N$ ~3 times larger and plan at heading limit far more often. With cells fixed to the world, $N$ includes the walker's approach, which likely explains much of that. Can't separate it from tracker error here
 - same setting moves up to ~170 ms at the median between runs, so first table (one run each, 0.5 s window) is looser than it looks
-- NOTE: may need a fuller appendix table comparing performance, accuracy, etc. across these settings
