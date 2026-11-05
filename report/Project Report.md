@@ -84,7 +84,7 @@ $$U = \tfrac12 \left(\frac{\Delta S}{S}\right)^2$$
 where $S$ is the gap and $\Delta S$ is the uncertainty of that gap [(Vertegaal, 2026c, pp. 61-65)](#references). We use this formulation twice in the pipeline:
 
 1. **As a weight for every cell.** The floor plan is divided into cells. For each cell the uncertainty is the *wobble* $N$, and the gap is $S = d - 0.35$, which gives $U=\frac{1}{2}\left( \frac{N}{S} \right)^2$. Here $d$ is the distance between the centre of the person and the closest point of the object, and 0.35 m accounts for the forward-most part of the user. This value is the cost of a cell in the planner.
-2. **As time to impact.** When the uncertainty is the distance closed in one second, the equation becomes $U=\frac{1}{2}\left( \frac{1s}{\tau} \right)^2$, where $\tau$ is the time until impact, using the ratio from course lecture slides [(Vertegaal, 2026c, p. 65)](#references). This form is used for collision detection, with the nearest obstacle straight ahead: an obstacle that will be reached soon is much more surprising than one far away, and the surprise grows quadratically as $\tau$ shrinks.
+2. **As a collision warning.** When the uncertainty is how much the gap to the nearest obstacle straight ahead has changed recently, $\Delta S$, the equation becomes $U=\frac{1}{2}\left( \frac{\Delta S}{S} \right)^2$, using the ratio from course lecture slides [(Vertegaal, 2026c, p. 65)](#references). This form is used for collision detection: an obstacle that is being closed on quickly is much more surprising than one far away, and the surprise grows quadratically as the gap shrinks.
 
 Both forms express how reliably the user can predict the distance to an obstacle. The exact definitions of $N$ and the cell grid are given in the [Methodology](#methodology).
 
@@ -224,13 +224,14 @@ $$
 - separate from plan on purpose: reads obstacles, never the path -> still fires when plan is wrong
 - **corridor:** cells strictly ahead, within 0.30 m (body half-width) either side. Furniture being walked past isn't in it, neither are sides of a doorway you fit through
   - NOTE: 0.30 m, not the 0.35 m footprint: at 0.35 + 0.15 a 0.9 m doorway alarmed on 93 % of frames, at 0.30 it's 36 %
-- **time to contact:** nearest corridor cell's gap over walking speed, $\tau = S_{\min} / 1.4$. Walking speed, not measured closing rate: that's a two-frame difference, 1 cm depth jitter reads as 0.3 m/s. Cost: someone walking at you looks no more urgent than a wall
-- **alarm:** $\tau < 0.7$ s (0.98 m at 1.4 m/s, our choice). Once up, holds 0.5 s on frame timestamps so it doesn't flicker (classroom walk: 108 state changes -> 66)
-- **avoidance surprise (the $\tau$ form from Background):** sent with every plan, in bits:
+- **gap ratio:** nearest corridor cell's gap $S$, and how much it changed over the last 3 s, $\Delta S$ (standard deviation, at least 3 frames). Slides use 1 s, too few frames at ~3 a second. No walking speed assumed, so standing still near something doesn't count
+- **alarm:** slides' signal-to-noise of 1 [(Vertegaal, 2026c, p. 70)](#references), as $c\,\Delta S \ge S - m$. $m = 0.2$ m = line out from footprint (our choice). $c = 1 + d/(kT) = 1.63$ brings gap forward over our ~0.65 s delay $d$ (Appendix E), so with no delay $c = 1$ = slides' rule exactly. Once up, holds 0.5 s on frame timestamps so it doesn't flicker (classroom walk: 108 state changes -> 66)
+- **old rule (distance), still a switch:** $\tau = S_{\min} / 1.4 < 0.7$ s (0.98 m). Assumes walking speed, so it rang while standing still: on replays 46 % of slow frames against 35 %
+- **avoidance surprise (the form from Background):** sent with every plan, in bits:
 
-  $$U_{\text{avoid}} = \tfrac12 \left(\frac{1\text{ s}}{\tau}\right)^2 \Big/ \ln 2$$
+  $$U_{\text{avoid}} = \tfrac12 \left(\frac{c\,\Delta S}{S - m}\right)^2 \Big/ \ln 2$$
 
-  - 0 with empty corridor, 0.72 bits at 1 s, 1.47 bits at the 0.7 s alarm point. Page's path goes from normal color to full red at 1.47 bits. **Only the alarm and the page read this form.** Planner's field never does
+  - 0 with empty corridor, 0.72 bits at the alarm point (ratio of 1). Page's path goes from normal color to full red at 0.72 bits, same frame the alarm goes up. Page's time to collision = gap over the closing speed the spread implies, no speed assumed. **Only the alarm and the page read this form.** Planner's field never does
 - **gaze silencing (switch, off by default):** a beep about a chair you just looked at says nothing new
   - looked = any gaze sample within 0.1 s of the frame lands within 2° of the object's outline in the picture (Neon accuracy 1.8°). Look remembered 2 s, slid toward walker at 1.4 m/s (what counts as "the object": Appendix E)
   - looked + switch on -> alarm still red on page, but not heard. Never changes path or alarm itself. No gaze -> counts as not looked, so fails to "heard"
@@ -301,12 +302,12 @@ The panel at the top left is the output panel. This is the visual demonstration 
 
 | | Demo | Attention |
 |---|---|---|
-| Alarm frames | 117 of 315 (37.1 %) | 60 of 112 (53.6 %) |
-| Alarm changes per minute | 13.0 | 20.6 |
+| Alarm frames | 97 of 315 (30.8 %) | 56 of 112 (50.0 %) |
+| Alarm changes per minute | 16.7 | 25.0 |
 | Quieter ear volume, alarm | 10 % | 10 % |
-| Quieter ear volume, no alarm | 92.5 % | 92.5 % |
+| Quieter ear volume, no alarm | 84.1 % | 84.1 % |
 
-In our tests the alarm was up on ~40 to ~55 % of frames, in rooms full of chairs and desks. Volumes are medians. Without an alarm the two ears usually stayed close in volume, so the steering sound is mostly subtle.
+In our tests the alarm was up on ~30 to ~50 % of frames, in rooms full of chairs and desks. Volumes are medians. Without an alarm the two ears usually stayed close in volume, so the steering sound is mostly subtle.
 
 ## Panel: Heading
 
@@ -335,7 +336,7 @@ The central panel is the field of view from the user, recorded by the camera on 
 | Planner | 141 ms | 350 ms | 99.5 ms | 157 ms |
 | **Total** | **646 ms** | **1535 ms** | **514 ms** | **688 ms** |
 
-In our tests the system planned ~2 to ~3 of the camera's 30 frames a second, and 95 % of frames finished within ~0.7 to ~1.5 s, with 5 % taking longer. We report that figure because the slow frames are the risky ones: at 1.4 m/s a walker covers ~1 to ~2 m in that time, and the alarm is set to go off ~1 m from an obstacle. The steps don't add up to the total because each one is taken on its own.
+In our tests the system planned ~2 to ~3 of the camera's 30 frames a second, and 95 % of frames finished within ~0.7 to ~1.5 s, with 5 % taking longer. We report that figure because the slow frames are the risky ones: at 1.4 m/s a walker covers ~1 to ~2 m in that time, which is why the alarm makes up for the delay (see Collision Detection). The steps don't add up to the total because each one is taken on its own.
 
 ## Panel: From Above
 
@@ -514,6 +515,8 @@ $$X = \frac{(u - c_x)\, z}{f_x}, \qquad Y = \frac{(v - c_y)\, z}{f_y}, \qquad Z 
 - recordings don't store depth (frame logs do), recomputed from video every run (so a newer depth model applies to old recordings automatically)
 
 ## E. Planner and alarm details
+- **why $c = 1.63$:** gap is from capture, plan done ~0.65 s later (arrival to plan + ~0.13 s capture to arrival). Steady approach: spread $\Delta S = k\,v\,T$, so $v \approx \Delta S/(kT)$, and gap by then $\approx S - \Delta S\,d/(kT)$. Into slides' ratio: $c\,\Delta S/S \ge 1$ with $c = 1 + d/(kT)$, $k = 0.342$ for 9 frames, $T = 3$ s. Fires at a time to contact of $c\,k\,T$ whatever the speed
+  - replays, approaches from 2.5 m: 0 missed, 3 of 15 warnings late against 8 of 15 for the distance rule. No ground truth
 - **arrow:** angle from where walker stands to where path is 1 s ahead (our choice of 1 s: reading only the first 0.1 s step gave just 3 possible angles, since one step moves at most one cell)
 
   $$\theta = \arctan\!\left(\frac{x_{1\text{s}} - x_0}{1.4 \cdot 1\text{ s}}\right)$$
@@ -532,7 +535,7 @@ $$X = \frac{(u - c_x)\, z}{f_x}, \qquad Y = \frac{(v - c_y)\, z}{f_y}, \qquad Z 
   - page decodes glasses' compressed video itself (second websocket, one access unit per frame), draws over it: arrow, red on alarm, gaze ring, cell rings
   - top-down plan view: field, path through it, obstacles. Path color goes to red by avoidance bits, fill opacity by information bits
   - depth picture (or "risk" = depth recolored by the field) as PNG, at most 10 a second, about 50 ms each, drawn on its own thread so it never delays a plan
-  - sounds: steering tick every 0.7 s (220 Hz, about 8 dB under the alarm) while alarm's down, alarm sound while it's heard. Default "Pulse", a 330 Hz click whose rate goes from 250 ms at 0.7 s or more to contact down to 100 ms at 0.2 s, parking-sensor style. Three volumes 6 dB apart. Optional music bed under the ear gains
+  - sounds: steering tick every 0.7 s (220 Hz, about 8 dB under the alarm) while alarm's down, alarm sound while it's heard. Default "Pulse", a 330 Hz click whose rate goes from 250 ms at 0.7 s or more to contact down to 100 ms at 0.2 s (time measured from how fast the gap closes), parking-sensor style. Three volumes 6 dB apart. Optional music bed under the ear gains
   - page can flip: depth/risk picture, live/recording side, gaze silencing on/off. Only things it sends back
   - no path for 1.5 s -> sound stops (a beep would be pointing at a frame that's gone)
 - **also written per run:** `timing.jsonl` (per-frame capture-to-plan delays), `episodes.jsonl` (user model), optional frame log (`--record-to`)
