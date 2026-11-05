@@ -280,10 +280,10 @@ https://www.nature.com/articles/s41598-025-08475-4
 
 *If you did a system, follow the same procedure but instead of results you describe 3 scenarios in which the system could be used in the future. When you write the scenario, imagine you are a user using the system and describe all the little details that demonstrate how well your interactions were thought through and how it solves an existing usability problem.*
 
-# Results -> System Measurements (rephrasing necessary?)
+# System Measurements
 
 At the end of the development process of the product, the product needed to be presented to our peers. For this presentation a demonstration of the product was made, this demonstration had next to a live demonstration also a back-up video in which a user from the development team used the glasses while walking through a lecture room at Radboud university. The image below shows a frame from this back-up video in which we see a multitude of panels further explained below the image. 
-<img width="1726" height="1079" alt="NMHCI_demo_screenshot" src="https://github.com/user-attachments/assets/06b57432-3772-48f0-af11-262eb068fab6" />
+<img width="863" height="540" alt="NMHCI_demo_screenshot" src="https://github.com/user-attachments/assets/06b57432-3772-48f0-af11-262eb068fab6" />
 ## Panel: Sound
 The panel at the top left is the output panel. This is the visual demonstration of what the product feeds back to the user. The top part shows the left and right speaker of the music device of the user. When encountering an obstacle with high risk it will start emitting a beeping noise from that specific side. The five bars on each side show how loud that ear is. On an alarm the ear on the side of the obstacle goes quiet, which is why the left side is gray in the image. There are also options to turn off the sound, or to switch between the **Alarm** and **Noise Cancellation** modes. The **NC** label shows that noise cancellation would be turned off while the alarm sounds.
 
@@ -298,11 +298,6 @@ The top right panel shows the planner's view from above. The yellow dots are obs
 
 ## Panel: Risk
 The bottom right panel is the depth image colored with the same costs as the **From Above** panel, from blue for low risk to red for high risk. The panel shows the high risk, dark red, areas such as the chairs on the right and the wall on the left. It determines the floor as completely safe, seen by the dark blue color, except for the black bag placed. The bag has a clear yellow which indicates it has some risk of collision. Next to the bag is the safe path shown with two red lines. These are the same path as in the **From Above** panel.
-
-Link to the demonstration video
-Explain the demonstration video.
-
-argue about the resutls
 
 # Scenarios
 
