@@ -19,6 +19,15 @@ class GoalMode(Enum):
     GAZE = "gaze"
 
 
+class AlarmRule(Enum):
+    """Which rule raises the alarm. Values are the command line spellings."""
+
+    # The nearest thing in the corridor closer than walking speed times the threshold time.
+    DISTANCE = "distance"
+    # His avoidance ratio on the nearest gap, its spread over its size, at a signal-to-noise of 1.
+    GAP_RATIO = "gap_ratio"
+
+
 class OnOff(Enum):
     """A run-wide switch as the page and the command line spell it. The config holds it as a bool."""
 
@@ -78,6 +87,28 @@ class PlannerConfig:
     # Ours. How long a raised alarm stays up before it may clear. Takes the classroom walk from 108
     # state changes to 66, and the last segment of pixel_walk_3 from 55 to 35.
     alarm_hold_seconds: float = 0.5
+    # Which rule raises the alarm. gap_ratio is his avoidance ratio on the nearest gap, measured.
+    # distance is the older clearance at an assumed walking pace.
+    alarm_rule: AlarmRule = AlarmRule.GAP_RATIO
+    # Ours. How far back gap_ratio takes the spread of the nearest gap. His car study uses 1 s
+    # (College 5 PDF page 65). At about 3 planned frames a second 1 s holds too few samples, and on
+    # replays of 2026-11-05 a 1 s window missed 3 to 7 of 17 approaches where 2 to 3 s missed none.
+    alarm_ratio_window_seconds: float = 3.0
+    # Ours, derived. Brings the gap forward over our delay. The plan is done about 0.65 s after the frame
+    # was captured, and on a steady approach the walker closes Delta S d / (k T) meanwhile. That makes
+    # c = 1 + d / (k T), 1.63 at T 3 s with k 0.342 for 9 samples. With no delay it is 1, his rule exactly.
+    alarm_ratio_multiplier: float = 1.63
+    # Ours. Where gap_ratio measures the gap to, this far out from the planner's footprint, the way the
+    # footprint is itself a line out from the body. On the replays 0.2 m left 3 of 15 approaches late
+    # against 5 with none, and the alarm on 35 % of frames where the walker was slow against 46 % for distance.
+    alarm_ratio_margin_meters: float = 0.2
+    # Ours, off. A prior surprise added to the gap's, half of (D over the gap) squared, the way the paper
+    # adds prior and likelihood surprise (Eq. 4 to 7). It raises the alarm inside D even with no change in
+    # the gap. On the replays 0.5 m caught no approach earlier than the margin and raised the alarm on
+    # 49 % of slow frames against 35 %.
+    alarm_ratio_prior_meters: float = 0.0
+    # Below 3 samples a standard deviation says nothing, the same rule N uses.
+    alarm_ratio_min_samples: int = 3
     # Ours. The arrow points at where the path is this far ahead. On the classroom walk the arrow
     # takes 20 values instead of 3, and sits at the sidestep limit on 75.8 % of frames instead of 87.6 %.
     heading_lookahead_seconds: float = 1.0

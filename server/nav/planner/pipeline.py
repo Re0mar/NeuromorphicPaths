@@ -10,6 +10,7 @@ import numpy as np
 # Local package imports
 from nav.planner.alarm import (
     AlarmHold,
+    GapRatioAlarm,
     alarm_raised,
     avoidance_surprise_bits,
     check_alarm_config,
@@ -25,7 +26,7 @@ from nav.planner.attention import (
     tolerance_radians,
 )
 from nav.planner.audio import alarm_pan, check_audio_config, ear_gains
-from nav.planner.config import GoalMode, PlannerConfig
+from nav.planner.config import AlarmRule, GoalMode, PlannerConfig
 from nav.planner.contact import ContactSurprise, check_contact_config
 from nav.planner.dynamic_programming import plan, start_cell_index
 from nav.planner.field import CostTerm, cost_field, lateral_grid, step_count
@@ -73,6 +74,8 @@ class PlannerPipeline:
         check_contact_config(config)
         self._terms = planner_terms(config)
         self._alarm_hold = AlarmHold(config.alarm_hold_seconds)
+        # Kept across frames, since the gap rule needs the recent gaps. None under the distance rule.
+        self._gap_ratio = GapRatioAlarm(config) if config.alarm_rule is AlarmRule.GAP_RATIO else None
         # Checked at construction even when off, so switching it on can't start a run with a bad constant.
         check_previous_plan_config(config)
         self._previous_plan = PreviousPlanPrior(config, self._times) if config.previous_plan_prior_enabled else None
@@ -172,7 +175,7 @@ class PlannerPipeline:
         # Where the arrow points: at where the path is a lookahead from now, not at its first step.
         heading = lookahead_heading(offsets, self._lookahead_index, config)
 
-        raised_now = alarm_raised(obstacles, config)
+        raised_now = alarm_raised(obstacles, config) if self._gap_ratio is None else self._gap_ratio.raised(obstacles, config)
         alarm = self._alarm_hold.update(raised_now, obstacles.timestamp_seconds)
         # The danger's side is read on the frames that raise the alarm and kept through the hold, so
         # the cue stays on the side the walker last heard it rather than jumping to center the

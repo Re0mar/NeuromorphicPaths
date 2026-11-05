@@ -42,7 +42,7 @@ from nav.evaluation.config import PlannerNumbersConfig
 from nav.evaluation.fixture import read_fixture
 from nav.evaluation.planner_numbers import ClearanceBand, PlannerNumbers, whole_walk_numbers
 from nav.evaluation.replay import replayed_frames
-from nav.planner.config import GoalMode, PlannerConfig
+from nav.planner.config import AlarmRule, GoalMode, PlannerConfig
 from nav.walker import WalkerConfig
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -124,12 +124,15 @@ EXPECTED = {
 SLICES = {name: read_fixture(FIXTURES / name) for name in EXPECTED}
 
 
+# The pinned numbers were recorded under the distance rule, and the alarm share is one of them.
+GOLDEN_PLANNER = PlannerConfig(alarm_rule=AlarmRule.DISTANCE)
+
 def numbers_for(name: str) -> PlannerNumbers:
     golden = SLICES[name]
     golden.require_walker(WalkerConfig())
     goal_mode = GoalMode(golden.provenance["cut_from"]["goal_mode"])
-    frames = replayed_frames(golden.inputs, PlannerConfig(), WalkerConfig(), goal_mode)
-    return whole_walk_numbers(frames, PlannerConfig(), PlannerNumbersConfig())
+    frames = replayed_frames(golden.inputs, GOLDEN_PLANNER, WalkerConfig(), goal_mode)
+    return whole_walk_numbers(frames, GOLDEN_PLANNER, PlannerNumbersConfig())
 
 
 def percent(count: int, total: int) -> float:
