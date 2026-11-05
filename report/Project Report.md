@@ -45,9 +45,13 @@ papers roel: mute conversation in cars
         
 - References
 # Introduction
-In recent years more and more people are partaking in distracted driving, which is caused primarily by increased usage of smartphones and similar devices. The effects of this are clear; a sharp increase in preventable traffic accidents [(Rijniers, 2017)](#references) `TODO we should pick another source`. In an effort to reduce these collisions, our group has set out to research a potential aid using surprise theory, by alerting the user or muting the distraction when they should be paying attention. Previous studies have found a clear correlation between increased surprise and dangerous situations that resulted in collisions [SOURCE]. In order to build a prototype for this aid, our team will work with a head-mounted camera device to generate a map of the surroundings, after which Fitt's Law is applied to identify areas of high surprise (Is this true?).
+The problem of autonomous collision avoidance is one that has plagued autonomous navigation for as long as it has existed, with many proposed solutions with varying levels of succes having been attempted already[(K. Berntorp, 2017)](#references). One trait all of these hold in common is their cost, with reliance on either expensive sensors or extensively trained machine learning models to function, something our team attempts to negate in this project. 
 
-The project was done as part of the course "An introduction to Neuromorphic Human-Computer Interaction" at the Radboud University, where our team expanded on the work of Professor Doctor Roel Vertegaal, who was teaching the course. Whilst he held only an advisory position in our team, much of our work would not have been possible without his advice.
+Advancing from an application of surpise theory and Fitt's Law in particular, our proposed solution functions by taking the input of a single camera and formulating a suprise field from its feed. This suprise field corresponds to the amount of risk each section of the area in the camera's view would pose to the user upon entering, where a Lagrangian is then used to formulate a path through this area that would pose the least risk. Based upon this path the user may be advised or directly steered to follow this path.
+
+Central to this project was the desire to have the so called 'user' be as generic as possible, where our solution would work no matter if the user is an autonomous car, a camera mounted on a drone or a person wearing glasses with an integrated camera. The motivation behind this objective is showing how the application of this technology is not just limited to one specific problem, instead aiding from autonomous navigation to aiding those with impaired vision.
+
+This project was done as part of the course "An introduction to Neuromorphic Human-Computer Interaction" at the Radboud University, taught by Professor Doctor Roel Vertegaal. The work done as part of this project is a continuation upon his work, with his advice having gone a long way to making this project possible.
 
 # Background
 ## Motivation
@@ -359,6 +363,8 @@ Last, whilst we acknowledge that our current prototype is very generic in its ap
 1. Rijniers, R. (2017). *Ogen op de weg ☺ Een vermindering van het smartphonegebruik op de N36 middels een gedragsinterventie langs de weg* [Radboud Universiteit]. https://theses.ubn.ru.nl/items/c8935b8d-8583-455a-97e4-90905e7adb13/full
 2. Haas, G. (2023). *Towards Auditory Interaction: An Analysis of Computer-Based Auditory Interfaces in Three Settings* [Doctoral dissertation, Ulm University]. https://oparu.uni-ulm.de/server/api/core/bitstreams/c45354b6-409b-4444-81e5-d55b99acf3f1/content
 3. *[Authors]* (2025). *Interactive Inference: A Neuromorphic Theory of Human-Computer Interaction*. https://arxiv.org/abs/2502.05935 
+4. K. Berntorp, "Path planning and integrated collision avoidance for autonomous vehicles," 2017 American Control Conference (ACC), Seattle, WA, USA, 2017, pp. 4023-4028, doi: 10.23919/ACC.2017.7963572.
+keywords: {Robot sensing systems}
 
 # Appendix
 
