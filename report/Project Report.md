@@ -174,25 +174,28 @@ $$
 ## Collision Detection
 The prototype continuously scans for potential collisions using the data from the point cloud and alarms the user when it detects a dangerous situation. This happens independently from route planning so that it is reliable when the path is wrong. 
 
-Corridors are tricky, as their narrowness generates high levels of surprise even though the user is experiencing low levels of danger. A corridor is a line of cells ahead of the user on either side, spaced in such a way that continuing forward could cause a collision. To account for this, the alarm only warns the user if the obstacles are both in front of the user and are not spaced sufficiently for the user to fit between: 
+Corridors are tricky, as their narrowness generates high levels of surprise even though the user is experiencing low levels of danger. A corridor is a line of cells ahead of the user on either side, spaced in such a way that continuing forward could cause a collision. To account for this, the alarm only warns the user if the obstacles are both in front of the user and are not spaced sufficiently to fit between: 
 $$
 y>0 \, \land |x| \le 0.30 \text{ m}
 $$
+The gap ratio is used for collision detection by measuring how fast the distance to the obstacle ahead is lowering relative to the gap, independent of assumed walking speed. The current gap $S$ marks the distance to the closest cell in the corridor, and $\Delta S$ represents the variation in that gap over the past $t = 3 \text{ seconds}$. 
 
-- separate from plan on purpose: reads obstacles, never the path -> still fires when plan is wrong
-- **corridor:** cells strictly ahead, within 0.30 m (body half-width) either side. Furniture being walked past isn't in it, neither are sides of a doorway you fit through
-  - NOTE: 0.30 m, not the 0.35 m footprint: at 0.35 + 0.15 a 0.9 m doorway alarmed on 93 % of frames, at 0.30 it's 36 %
-- **gap ratio:** how fast the gap to the nearest thing ahead is closing, compared with how big that gap still is. Nearest corridor cell's gap $S$, and how much it changed over the last 3 s, $\Delta S$ (standard deviation, at least 3 frames). Slides use 1 s [(Vertegaal, 2026c, p. 65)](#references), too few frames at ~3 a second. No walking speed assumed, so standing still near something doesn't count
-- **alarm:** slides' signal-to-noise of 1 [(Vertegaal, 2026c, p. 70)](#references), as $c\,\Delta S \ge S - m$. $m = 0.2$ m = safety line out from the footprint, a margin specific to this use case. $c = 1 + d/(kT) = 1.63$ brings gap forward over our ~0.65 s delay $d$ (Appendix E), so with no delay $c = 1$ = slides' rule exactly. Once up, holds 0.5 s on frame timestamps so it doesn't flicker (classroom walk: 108 state changes -> 66)
-- **old rule (distance), still a switch:** $\tau = S_{\min} / 1.4 < 0.7$ s (0.98 m). Assumes walking speed, so it rang while standing still: on replays 46 % of slow frames against 35 %
-- **avoidance surprise (the form from Background):** sent with every plan, in bits:
 
-  $$U_{\text{avoid}} = \tfrac12 \left(\frac{c\,\Delta S}{S - m}\right)^2 \Big/ \ln 2$$
-
-  - 0 with empty corridor, 0.72 bits at the alarm point (ratio of 1). Page's path goes from normal color to full red at 0.72 bits, same frame the alarm goes up. Page's time to collision = gap over the closing speed the spread implies, no speed assumed. **Only the alarm and the page read this form.** Planner's field never does
-- **gaze silencing (switch, off by default):** a beep about a chair you just looked at says nothing new
-  - looked = any gaze sample within 0.1 s of the frame lands within 2° of the object's outline in the picture (Neon accuracy 1.8°). Look remembered 2 s, slid toward user at 1.4 m/s (what counts as "the object": Appendix E)
-  - looked + switch on -> alarm still red on page, but not heard. Never changes path or alarm itself. No gaze -> counts as not looked, so fails to "heard"
+The alarm uses a signal-to-noise threshold of 1 and is activated when $\Delta S$ reaches the remaining gap to the safety line. A constant $c$ is used to compensate for the processing delay $d = 0.65 \text{ s}$, using the observation window $T = 3 \text{ s}$ and estimated empirical fraction on that window $K=0.342$:
+$$
+c\Delta S \ge S-m
+\qquad c = 1+ \frac{d}{kT} \approx 1.63
+\qquad m=0.2 \text{ m}
+$$
+Optionally, the distance-only rule can be toggled on for comparison. It estimates time-till-impact $\tau$ assuming a constant walking speed $v=1.4 \text{ m/s}$ and activates the alarm when $\tau < 0.7 \text{ s}$. This means that it also triggers unnecessarily near obstacles if the walker is stationary.
+$$
+\tau=\frac{S}{v}
+$$
+Avoidance surprise $U_{avoid}$ is computed with every plan and represents the alarm's gap ratio surprise. It returns $0$ when the corridor is empty and ~$0.72 \text { bits}$ at the alarm threshold of $R_{gap} \ge1$. This value is only used in the prototype only by the alarm and overlay. 
+$$
+U_{avoid}=\frac{1}{2} \left( \frac{c\Delta S}{S} \right)^2 \Big/ \ln 2
+$$
+Optionally, the gaze silencing can be turned on to silence an alarm if the user recently looked at the object generating it. More specifically, the alarm is dismissed if the gaze falls within $2^{\circ}$ of the detected object's outline in any of the 20 samples from the last $2\text{ s}$. This feature only mutes the sound of the alarm, but it remains visible on the web page and doesn't affect the planner.
 
 ## Overlay
 The stereo cue is an automatic alarm that plays at different levels in both ears of the user, working both to warn them and to steering them towards a desired direction. Although this cue is part of the overlay, the values are determined on the server. The gain of either ear is based on the heading angle $\theta$, which is the direction of the arrow relative to walking straight ahead:
@@ -216,7 +219,6 @@ Using this formula, the far side ear retains roughly at least $22.5\%$ volume wh
 The glasses are equipped with a forward-facing camera that films 1600 × 1200 pixels at 30 frames a second, a motion sensor called an IMU (inertial measurement unit) read at ~110 Hz, and eye cameras that report gaze at 200 Hz. All processing runs on a laptop with a Quadro T2000 GPU (4 GB), which also serves the web page.
 
 We recorded walks in three ways, each suited to a different kind of testing:
-
 - **Companion Recording:** The Companion app on the phone records everything itself, meaning the video, IMU, gaze, and camera calibration. These recordings are our raw data archive, kept for later tests and demos such as the presentation demo.
 - **Stream Capture:** The server saves exactly what the glasses send over Wi-Fi, the compressed video packets along with IMU, gaze, and calibration, without decoding anything while recording. Replaying a capture tests everything the server does on a live walk, from decoding to timing and matching IMU readings to frames. It replays lost packets, but not the network delay.
 - **Frame Log:** The server saves the depth frames coming out of the depth model (`--record-to`). Replaying a log skips straight to building the point cloud and planning, which makes testing the math after the depth model much faster. It cannot test anything before the depth model.
