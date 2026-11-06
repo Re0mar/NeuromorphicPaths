@@ -115,7 +115,7 @@ Each point is given a surprise value based solely on the gap and wobble of that 
 $$
 S=d-r \qquad r=0.35 \text{ m}
 $$
-Wobble $N$ is a measure of how much the gap for a given cell has changed over the last few frames. For this, it evaluates values of $S$ over the last $1 \text{ s}$, computes the standard deviation given $\ge 3$ samples, and sets the lower bound of the result to be $0.01 \text{ m}$. In our tests on the glasses ~40 % of cells had enough samples and the rest used this lower bound (see [**From Above**](#panel-from-above)). The value of $N$ is tripled for points $p$ in that are walls $W$ to encourage the planner to steer around them:
+Wobble $N$ is a measure of how much the gap for a given cell has changed over the last few frames. For this, it evaluates values of $S$ over the last $1 \text{ s}$, computes the standard deviation given $\ge 3$ samples, and sets the lower bound of the result to be $0.01 \text{ m}$. In our tests on the glasses ~40 % of cells had enough samples and the rest used this lower bound (see [From Above](#panel-from-above)). The value of $N$ is tripled for points $p$ in that are walls $W$ to encourage the planner to steer around them:
 $$
 N=max(SD\{S_{t} \mid t \le 1 \text{ s}\}, 0.01) 
 \qquad
@@ -208,7 +208,7 @@ The volume is increased on the side the turn goes to, so a path curving to the l
 $$
 g=e^{-\frac{1}{2}\left( \frac{\theta}{\sigma_{\theta}} \right)}
 \qquad
-\sigma_{\theta}=\arctan\left( \frac{1.5}{4} \right) \approx 20.6\degree
+\sigma_{\theta}=\arctan\left( \frac{1.5}{4} \right) \approx 20.6^\circ
 $$
 Using this formula, the far side ear retains roughly at least $22.5\%$ volume when active. When danger is detected, the volume on the side of the danger drops to $10\%$, which is done for both visualized in the top left corner of the overlay (see [Panel sound](#panel-sound)).
 
@@ -291,7 +291,7 @@ In our tests the system planned ~2 to ~3 of the camera's 30 frames a second, and
 ## Panel: From Above
 ![Full overlay with the From Above panel highlighted and zoomed|360](diagrams/overlay_fade_from_above.png)
 
-The top right panel shows the planner's view from above. The yellow dots are obstacles and the pink squares are walls, one for each 0.25 m cell that has points in it. The panel also shows colored areas below and around the dots, corresponding to the cost of walking through each spot. The cost goes from dark blue to green to yellow in order of increasing risk, and the gray areas are floor. Finally there is a big red line with an arrow to show the safe path for the user, this path is the cheapest route through these costs and is the source for the [**Heading**](#panel-heading) panel and the steering sound.
+The top right panel shows the planner's view from above. The yellow dots are obstacles and the pink squares are walls, one for each 0.25 m cell that has points in it. The panel also shows colored areas below and around the dots, corresponding to the cost of walking through each spot. The cost goes from dark blue to green to yellow in order of increasing risk, and the gray areas are floor. Finally there is a big red line with an arrow to show the safe path for the user, this path is the cheapest route through these costs and is the source for the [Heading](#panel-heading) panel and the steering sound.
 
 |                 | Demo                      | Attention                |
 |-----------------|---------------------------|--------------------------|
@@ -305,7 +305,7 @@ $N$ is how much a cell's gap changed over the last 1 s, and it needs 3 samples i
 
 ![Full overlay with the Risk panel highlighted and zoomed|360](diagrams/overlay_fade_risk.png)
 
-The bottom right panel is the depth image colored with the same costs as the [**From Above**](#panel-from-above) panel, from blue for low risk to red for high risk. The panel shows the high risk, dark red, areas such as the chairs on the right and the wall on the left. It determines the floor as completely safe, seen by the dark blue color, except for the black bag placed. The bag has a clear yellow which indicates it has some risk of collision. Next to the bag is the safe path shown with two red lines. These are the same path as in the [**From Above**](#panel-from-above) panel.
+The bottom right panel is the depth image colored with the same costs as the [From Above](#panel-from-above) panel, from blue for low risk to red for high risk. The panel shows the high risk, dark red, areas such as the chairs on the right and the wall on the left. It determines the floor as completely safe, seen by the dark blue color, except for the black bag placed. The bag has a clear yellow which indicates it has some risk of collision. Next to the bag is the safe path shown with two red lines. These are the same path as in the [From Above](#panel-from-above) panel.
 
 |               | Demo   | Attention |
 |---------------|--------|-----------|
@@ -379,7 +379,7 @@ The most pressing limitations for this implementation are in the inputs and the 
 - Khatib, O. (1986). Real-time obstacle avoidance for manipulators and mobile robots. *The International Journal of Robotics Research, 5*(1), 90-98. https://doi.org/10.1177/027836498600500106
 - Lin, H., Chen, S., Liew, J. H., Chen, D. Y., Li, Z., Zhao, Y., Peng, S., Guo, H., Zhou, X., Shi, G., Feng, J., & Kang, B. (2026). Depth Anything 3: Recovering the visual space from any views. In *International Conference on Learning Representations (ICLR 2026)*. https://arxiv.org/abs/2511.10647
 - Pupil Labs. (n.d.). *IMU transformations*. https://docs.pupil-labs.com/alpha-lab/imu-transformations/
-- Rijniers, R. (2017). *Ogen op de weg ☺ Een vermindering van het smartphonegebruik op de N36 middels een gedragsinterventie langs de weg* [Radboud Universiteit]. https://theses.ubn.ru.nl/items/c8935b8d-8583-455a-97e4-90905e7adb13/full
+- Rijniers, R. (2017). *Ogen op de weg Een vermindering van het smartphonegebruik op de N36 middels een gedragsinterventie langs de weg* [Radboud Universiteit]. https://theses.ubn.ru.nl/items/c8935b8d-8583-455a-97e4-90905e7adb13/full
 - Schönberger, J. L., & Frahm, J.-M. (2016). Structure-from-motion revisited. In *Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition (CVPR)* (pp. 4104-4113). https://doi.org/10.1109/CVPR.2016.445
 - Tung, Y.-C., & Shin, K. G. (2018). Use of phone sensors to enhance distracted pedestrians' safety. *IEEE Transactions on Mobile Computing, 17*(6), 1469-1482. https://doi.org/10.1109/TMC.2017.2764909
 - Vertegaal, R. (2026a). *College 3. Bayes theorem, relative entropy and interactive inference* [Lecture slides]. Radboud University.
@@ -397,7 +397,7 @@ The most pressing limitations for this implementation are in the inputs and the 
   $$R = R_x(-90°)\; R_{\text{IMU}}\; R_x(-102°), \qquad \hat u_{\text{cam}} = R^\top \begin{pmatrix} 0 \\ 1 \\ 0 \end{pmatrix}$$
 
   - $R_{\text{IMU}}$ = IMU orientation, $R_x(\theta)$ = turn by $\theta$ about x axis, $R$ = turns camera directions into world directions, $\hat u_{\text{cam}}$ = "up" as camera sees it
-  - −102° = camera sits 90° plus a 12° downward tilt from the IMU. Both angles from the docs [(Pupil Labs, n.d.)](#references), nobody measured them on our glasses
+  - -102° = camera sits 90° plus a 12° downward tilt from the IMU. Both angles from the docs [(Pupil Labs, n.d.)](#references), nobody measured them on our glasses
   - Each frame takes IMU reading closest to its capture time (within 50 ms). With none, up falls back to image up, $(0, -1, 0)$, so we assume the head is level
     - NOTE: only glasses' fused orientation is used. Raw accelerometer, gyroscope, and magnetometer aren't
 
@@ -413,7 +413,7 @@ The most pressing limitations for this implementation are in the inputs and the 
 ## C. Point cloud details
 - OpenCV picks new camera matrix that crops away black border (`alpha = 0`), same 1600 × 1200 size out
 - Different focals per axis (636 vs 754 px) squashed the picture 16% sideways. Both set to the bigger one, $f = 754.4$ px, so pixels stay square (like the model was trained on)
-- Field of view: 103.4° wide before, $2 \arctan(800 / 754.4) \approx 93.4°$ after
+- Field of view: 103.4° wide before, $2 \arctan(800 / 754.4) \approx 93.4^\circ$ after
 - Neon Player's depth plugin does the same conversion: its saved maps measured 0.9343 times model's raw output vs 0.9353 predicted, so conversion checks out
 
 $$X = \frac{(u - c_x)\, z}{f_x}, \qquad Y = \frac{(v - c_y)\, z}{f_y}, \qquad Z = z$$
@@ -443,14 +443,14 @@ $$X = \frac{(u - c_x)\, z}{f_x}, \qquad Y = \frac{(v - c_y)\, z}{f_y}, \qquad Z 
 
 - **Camera Information:** In bits, for evaluation. How far what camera saw moved the plan vs a planner seeing nothing (goal + prior only).
   - **How It's Computed:** Both fields become a distribution over positions 1 s ahead, $p \propto e^{-\text{cost}}$, then how far the two differ (KL divergence), in bits. Empty corridor = 0 bits, not "unsure"
-- **User Model:** Measures only. Avoidance episode opens when planner asks for a turn (alarm, or arrow past 3°), closes when planner and walker's actual heading (IMU yaw against 5 s running average) both back under 3°. Work = path cost at open − cost at close, in bits
+- **User Model:** Measures only. Avoidance episode opens when planner asks for a turn (alarm, or arrow past 3°), closes when planner and walker's actual heading (IMU yaw against 5 s running average) both back under 3°. Work = path cost at open - cost at close, in bits
   - **Predicted Turn Time:** Also predicts how long turn takes: heading error $s$ shrinks as fast as it can without overshooting ("critically damped"), $s'' + (2/b)s' + s/b^2 = 0$, with $b = 0.25$ s/bit how quick this walker is (placeholder, never measured). Episodes go to `episodes.jsonl`, nothing in pipeline reads them
   - NOTE: the Lagrangian side of the professor's math is only here, measuring after the fact. Nothing on the live path uses it
 - "danger" = corridor cell that'd be hit first + cells chained to it within 0.4 m on the floor (up to 0.6 m out), so a look at the chair's back counts, not just its feet
 - Time-to-contact floor under which it's always heard = 0 (set after the 2026-10-15 manual test, where a desk inside the footprint kept a 0.35 s floor sounding the whole run)
 
 ## F. Webpage and sounds
-- Every plan goes out as one JSON message: path offsets, arrow angle, alarm (and whether it's heard), avoidance bits, information bits, path cost bits, danger side (−1 left to +1 right), left and right ear gains. Same message to webpage and phone app socket (phone app not used on the glasses runs)
+- Every plan goes out as one JSON message: path offsets, arrow angle, alarm (and whether it's heard), avoidance bits, information bits, path cost bits, danger side (-1 left to +1 right), left and right ear gains. Same message to webpage and phone app socket (phone app not used on the glasses runs)
 - **Webpage:** HTTPS with a self-signed certificate, because the browser's video decoder only runs on a secure origin.
   - Page decodes glasses' compressed video itself (second websocket, one access unit per frame), draws over it: arrow, red on alarm, gaze ring, cell rings
   - Top-down plan view: field, path through it, obstacles. Path color goes to red by avoidance bits, fill opacity by information bits
