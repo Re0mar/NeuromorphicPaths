@@ -134,7 +134,7 @@ For evaluation and documentation, the server sends the plan with the heading, al
 
 NOTE: Dense SLAM or Odometry-based camera positions are optional (see [Limitations](#limitations))
 
-![Component Diagram|700](diagrams/ComponentDiagram.drawio.png)
+![General Component Diagram|700](diagrams/ComponentDiagram.drawio.png)
 
 ## Point Cloud Generation
 Point cloud generation refers to the repeated creation of a 3D map of points that are most crucial for navigation. It is generated primarily by analyzing the video feed from the glasses, but could alternatively simply be obtained from LiDAR sensors on select smartphones and smart glasses. This would nullify the need for the additional computation discussed in this section. The general flow for point cloud generation is given in below image.
@@ -253,9 +253,9 @@ The stereo cue is an automatic alarm that plays at different levels in both ears
 $$
 \text{direction} = 
 \begin{cases}
-	 \text{left} &\theta < 0 \\ 
-	 \text{straight} &\theta = 0 \\
-     \text{right} &\theta > 0 \\
+	 \text{left} & \theta < 0 \\ 
+	 \text{straight} & \theta = 0 \\
+     \text{right} & \theta > 0 \\
 \end{cases}
 $$
 The volume is increased on the side the turn goes to, so a path curving to the left would increase gain on the left ear whilst lowering it on the right. If the desired path is straight ahead, neither ear's volume is lowered. Gain $g$ is computed with a goal tolerance $\sigma_{\theta}$ of $1.5 \text{ m}$ over a $4\text{ m}$ distance:
@@ -287,7 +287,7 @@ Using this formula, the far side ear retains roughly at least $22.5\%$ volume wh
 
 At the end of the development process of the product, the product needed to be presented to our peers. For this presentation a demonstration of the product was made, this demonstration had next to a live demonstration also a back-up video in which a user from the development team used the glasses while walking through a lecture room at Radboud university. The image below shows a frame from this back-up video, with panels showing what the system measures and what it does with those measurements. Only the sound reaches the user, the other panels are there for development.
 
-<p align="center"><img width="60%" alt="NMHCI_demo_screenshot" src="diagrams/overlay_full.png" /></p>
+![Prototype Interface Overlay|440](diagrams/overlay_full.png)
 
 The page prints these values for the frame in the image, ~57 s into the walk:
 
@@ -298,8 +298,7 @@ The page prints these values for the frame in the image, ~57 s into the walk:
 The tables below come from replaying two recorded walks on the server with depth at 336 px: the demo walk in the image (~2.5 minutes) and a scripted attention walk in a tiered classroom (~45 s, up to a chair, past it, up the stairs, and toward a wall). The numbers are from one run of each, not a benchmark.
 
 ## Panel: Sound
-
-<p align="center"><img width="40%" alt="Full overlay with the Sound panel highlighted and zoomed" src="diagrams/overlay_fade_sound.png" /></p>
+![Full overlay with the Sound panel highlighted and zoomed|360](diagrams/overlay_fade_sound.png)
 
 The panel at the top left is the output panel. This is the visual demonstration of what the product feeds back to the user. The top part shows the left and right speaker of the music device of the user. When encountering an obstacle with high risk it will start emitting a beeping noise from that specific side. The five bars on each side show how loud that ear is. On an alarm the ear on the side of the obstacle goes quiet, which is why the left side is gray in the image. There are also options to turn off the sound, or to switch between the **Alarm** and **Noise Cancellation** modes. The **NC** label shows that noise cancellation would be turned off while the alarm sounds.
 
@@ -313,8 +312,7 @@ The panel at the top left is the output panel. This is the visual demonstration 
 In our tests the alarm was up on ~30 to ~50 % of frames, in rooms full of chairs and desks. Volumes are medians. Without an alarm the two ears usually stayed close in volume, so the steering sound is mostly subtle.
 
 ## Panel: Heading
-
-<p align="center"><img width="40%" alt="Full overlay with the Heading panel highlighted and zoomed" src="diagrams/overlay_fade_heading.png" /></p>
+![Full overlay with the Heading panel highlighted and zoomed|360](diagrams/overlay_fade_heading.png)
 
 The panel at the bottom left is the direction the user should walk towards to follow the safe path. This is not part of the output the user sees but the direction is concluded from the calculated path. The direction heading is used to steer the user by sound: the ear away from the heading becomes quieter. It also gives an entry point for different implementations to take input from, to guide the user along the safe path in other ways.
 
@@ -327,8 +325,7 @@ The panel at the bottom left is the direction the user should walk towards to fo
 Headings are sizes, left or right of straight ahead. The limit is ~36°, a full sidestep at walking speed. A full swing is the heading jumping from the limit on one side to the limit on the other in one frame, and we saw none in our tests.
 
 ## Panel: Video
-
-<p align="center"><img width="40%" alt="Full overlay with the Video panel highlighted and zoomed" src="diagrams/overlay_fade_video.png" /></p>
+![Full overlay with the Video panel highlighted and zoomed|360](diagrams/overlay_fade_video.png)
 
 The central panel is the field of view from the user, recorded by the camera on the Neon glasses. This video shows the lecture room environment. The video shows the rows of chairs on the right, a wall with glass on the left, and the path between those. In the path is a big black bag placed that functions as an obstacle for the user. This video feed is the input for the product to apply all the earlier mentioned functionalities on.
 
@@ -342,8 +339,7 @@ The central panel is the field of view from the user, recorded by the camera on 
 In our tests the system planned ~2 to ~3 of the camera's 30 frames a second, and 95 % of frames finished within ~0.7 to ~1.5 s, with 5 % taking longer. We report that figure because the slow frames are the risky ones: at 1.4 m/s a walker covers ~1 to ~2 m in that time, which is why the alarm makes up for the delay (see Collision Detection). The steps don't add up to the total because each one is measured separately.
 
 ## Panel: From Above
-
-<p align="center"><img width="30%" alt="Full overlay with the From Above panel highlighted and zoomed" src="diagrams/overlay_fade_from_above.png" /></p>
+![Full overlay with the From Above panel highlighted and zoomed|360](diagrams/overlay_fade_from_above.png)
 
 The top right panel shows the planner's view from above. The yellow dots are obstacles and the pink squares are walls, one for each 0.25 m cell that has points in it. The panel also shows colored areas below and around the dots, corresponding to the cost of walking through each spot. The cost goes from dark blue to green to yellow in order of increasing risk, and the gray areas are floor. Finally there is a big red line with an arrow to show the safe path for the user, this path is the cheapest route through these costs and is the source for the [**Heading**](#panel-heading) panel and the steering sound.
 
@@ -357,7 +353,7 @@ $N$ is how much a cell's gap changed over the last 1 s, and it needs 3 samples i
 
 ## Panel: Risk
 
-<p align="center"><img width="40%" alt="Full overlay with the Risk panel highlighted and zoomed" src="diagrams/overlay_fade_risk.png" /></p>
+![Full overlay with the Risk panel highlighted and zoomed|360](diagrams/overlay_fade_risk.png)
 
 The bottom right panel is the depth image colored with the same costs as the [**From Above**](#panel-from-above) panel, from blue for low risk to red for high risk. The panel shows the high risk, dark red, areas such as the chairs on the right and the wall on the left. It determines the floor as completely safe, seen by the dark blue color, except for the black bag placed. The bag has a clear yellow which indicates it has some risk of collision. Next to the bag is the safe path shown with two red lines. These are the same path as in the [**From Above**](#panel-from-above) panel.
 
