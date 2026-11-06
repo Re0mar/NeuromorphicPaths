@@ -51,19 +51,25 @@ papers roel: mute conversation in cars
         
 - References (Nolan)
 - Appendices (Nolan)
+# Abstract
+
+People who walk while looking at a phone, or with headphones on, often notice an obstacle only when they are about to walk into it. We built a walking aid that guides by sound and uses surprise functions to calculate cost. A pair of Neon eye-tracking glasses from Pupil Labs films what the user is seeing, and a laptop estimates the depth of everything in that view with Depth Anything 3. Each 0.25 m cell ahead of the user is assigned a cost from the obstacles in it, how close they are, and how steadily they are measured. The planner then picks the route with the least total surprise and effort over the next few seconds. The user hears a quiet tick toward the side the planner is guiding them to, and an alarm when the gap to something ahead is closing too fast for its size at a signal-to-noise ratio of 1. In development testing on recorded walks, the alarm came late on 3 of 15 approaches, against 8 of 15 for an alarm based on distance alone. The main limit is processing speed, at ~2 to ~3 planned frames a second on our laptop.
+
+**Keywords:** surprise, obstacle avoidance, path planning, monocular depth estimation, eye tracking, audio feedback
+
 # Introduction
 The problem of autonomous collision avoidance is one that has plagued autonomous navigation for as long as it has existed, with many proposed solutions with varying levels of success having been attempted already [(Berntorp, 2017)](#references). One trait all of these hold in common is their cost, with reliance on either expensive sensors or extensively trained machine learning models to function, something our team attempts to negate in this project. 
 
 Advancing from an application of surprise theory and Fitts' Law in particular, our proposed solution functions by taking the input of a single camera and formulating a surprise field from its feed. This surprise field corresponds to the amount of risk each section of the area in the camera's view would pose to the user upon entering, where a Lagrangian is then used to formulate a path through this area that would pose the least risk. Based upon this path the user may be advised or directly steered to follow this path.
 
-Central to this project was the desire to have the so called 'user' be as generic as possible, where our solution would work no matter if the user is an autonomous car, a camera mounted on a drone or a person wearing glasses with an integrated camera. The motivation behind this objective is showing how the application of this technology is not just limited to one specific problem, instead aiding from autonomous navigation to aiding those with impaired vision.
+Central to this project was the desire to have the so called 'user' be as generic as possible, where our solution would work no matter if the user is an autonomous car, a camera mounted on a drone, or a person wearing glasses with an integrated camera. The motivation behind this objective is showing how the application of this technology is not just limited to one specific problem, instead aiding from autonomous navigation to aiding those with impaired vision.
 
 This project was done as part of the course "An introduction to Neuromorphic Human-Computer Interaction" at the Radboud University, taught by Professor Doctor Roel Vertegaal. The work done as part of this project is a continuation upon his work, with his advice having gone a long way to making this project possible.
 
 # Background
 ## Motivation
 
-A 2017 thesis published at Radboud University concluded that reminding drivers to pay attention to the road has a significant effect on subsequent accidents [(Rijniers, 2017)](#references). Many of these accidents are preventable one-sided accidents, caused by drivers, cyclists and pedestrians leaving or crossing the road by accident or at the wrong moment. Our leading theory is that wearable computer vision, as found in commercial products like smart glasses, could detect these dangerous situations and direct the user's attention back to the road before an incident occurs.
+A 2017 thesis published at Radboud University concluded that reminding drivers to pay attention to the road has a significant effect on subsequent accidents [(Rijniers, 2017)](#references). Many of these accidents are preventable one-sided accidents, caused by drivers, cyclists, and pedestrians leaving or crossing the road by accident or at the wrong moment. Our leading theory is that wearable computer vision, as found in commercial products like smart glasses, could detect these dangerous situations and direct the user's attention back to the road before an incident occurs.
 
 Alerting the user is only one option. The distractions on the phone can also be muted while the environment is too surprising, similar to how conversations can be muted in cars when the driver needs to focus. The car study referenced in this course applied the same real-time ratio to notification and dialog management in a car interface, based on danger [(Vertegaal, 2026c, pp. 71-72)](#references).
 
@@ -100,15 +106,15 @@ Once every cell of the environment has a surprise value, the next question is wh
 
 ## Previous Research
 
-Earlier walking aids warn about obstacles too. CrashAlert puts a depth camera on a tablet, shows a strip of the depth picture along the screen edge, and turns red for obstacles under 2 m. Users dodged and slowed down earlier [(Hincapié-Ramos & Irani, 2013)](#references). BumpAlert uses the phone's speaker, microphones and rear camera, and vibrates when both detectors find the same object 2 to 4 m ahead [(Tung & Shin, 2018)](#references).
+Earlier walking aids warn about obstacles too. CrashAlert puts a depth camera on a tablet, shows a strip of the depth picture along the screen edge, and turns red for obstacles under 2 m. Users dodged and slowed down earlier [(Hincapié-Ramos & Irani, 2013)](#references). BumpAlert uses the phone's speaker, microphones, and rear camera, and vibrates when both detectors find the same object 2 to 4 m ahead [(Tung & Shin, 2018)](#references).
 
 Driving research has used similar ideas. Engström et al. describe driving as acting on predictions [(Engström et al., 2018)](#references), and later simulate a driver who trades progress against caution by minimizing expected free energy [(Engström et al., 2024)](#references).
 
-Adding an attracting goal to repelling obstacles is how artificial potential fields work [(Khatib, 1986)](#references). The closest published match to our search is the path step in Baidu Apollo's planner, which sums smoothness, obstacle and guidance costs over sideways positions and finds the cheapest route with a dynamic program [(Fan et al., 2018)](#references). Apollo's grid runs along distance and our grid runs along time, and Apollo's costs are chosen by the designers.
+Adding an attracting goal to repelling obstacles is how artificial potential fields work [(Khatib, 1986)](#references). The closest published match to our search is the path step in Baidu Apollo's planner, which sums smoothness, obstacle, and guidance costs over sideways positions and finds the cheapest route with a dynamic program [(Fan et al., 2018)](#references). Apollo's grid runs along distance and our grid runs along time, and Apollo's costs are chosen by the designers.
 
 # Materials
 ## Neon smart glasses
-A pair of [Pupil Labs Neon smart glasses](https://pupil-labs.com/products/neon) were provided to us by the course coordinator and act as the accessory to provide a real-time stream of images to be analyzed. Included with this is a [Motorola Edge 40 Pro](https://mijnmoto.nl/product/motorola-edge-40-pro/) smartphone, which comes paired with the glasses and allows us to control, review and analyze the recordings. 
+A pair of [Pupil Labs Neon smart glasses](https://pupil-labs.com/products/neon) were provided to us by the course coordinator and act as the accessory to provide a real-time stream of images to be analyzed. Included with this is a [Motorola Edge 40 Pro](https://mijnmoto.nl/product/motorola-edge-40-pro/) smartphone, which comes paired with the glasses and allows us to control, review, and analyze the recordings. 
 ## Neon Companion
 The [Neon Companion](https://pupil-labs.com/products/neon/software) phone app runs on the phone the glasses are connected to and is used to read out and record the data from the camera and eye tracker on the glasses. In the prototype, the phone broadcasts the live feed from the glasses over the local network so that this data can be analyzed on a different device. Apart from a video feed, the real-time API also includes information about the glasses' camera calibration and a clock offset used to straighten every frame and sync measurements respectively (see [Appendix D](#d-neon-companion-api)). The live feed moreover includes gaze data from the eye tracker, which is used in the prototype both to optionally silence the alarm when the user looks at detected danger and by the path planner as the preferred direction to walk in.
 ## Image analysis
@@ -162,7 +168,7 @@ Each point is given a surprise value based solely on the gap and wobble of that 
 $$
 S=d-r \qquad r=0.35 \text{ m}
 $$
-Wobble $N$ is a measure of how much the gap for a given cell has changed over the last few frames. For this, it evaluates values of $S$ over the last $1 \text{ s}$, computes the standard deviation given $\ge 3$ samples and sets the lower bound of the result to be $0.01 \text{ m}$. In our tests on the glasses ~40 % of cells had enough samples and the rest used this lower bound (see [**From Above**](#panel-from-above)). The value of $N$ is tripled for points $p$ in that are walls $W$ to encourage the planner to steer around them:
+Wobble $N$ is a measure of how much the gap for a given cell has changed over the last few frames. For this, it evaluates values of $S$ over the last $1 \text{ s}$, computes the standard deviation given $\ge 3$ samples, and sets the lower bound of the result to be $0.01 \text{ m}$. In our tests on the glasses ~40 % of cells had enough samples and the rest used this lower bound (see [**From Above**](#panel-from-above)). The value of $N$ is tripled for points $p$ in that are walls $W$ to encourage the planner to steer around them:
 $$
 N=max(SD\{S_{t} \mid t \le 1 \text{ s}\}, 0.01) 
 \qquad
@@ -230,7 +236,7 @@ $$
 - separate from plan on purpose: reads obstacles, never the path -> still fires when plan is wrong
 - **corridor:** cells strictly ahead, within 0.30 m (body half-width) either side. Furniture being walked past isn't in it, neither are sides of a doorway you fit through
   - NOTE: 0.30 m, not the 0.35 m footprint: at 0.35 + 0.15 a 0.9 m doorway alarmed on 93 % of frames, at 0.30 it's 36 %
-- **gap ratio:** how fast the gap to the nearest thing ahead is closing, compared with how big that gap still is. Nearest corridor cell's gap $S$, and how much it changed over the last 3 s, $\Delta S$ (standard deviation, at least 3 frames). Slides use 1 s, too few frames at ~3 a second. No walking speed assumed, so standing still near something doesn't count
+- **gap ratio:** how fast the gap to the nearest thing ahead is closing, compared with how big that gap still is. Nearest corridor cell's gap $S$, and how much it changed over the last 3 s, $\Delta S$ (standard deviation, at least 3 frames). Slides use 1 s [(Vertegaal, 2026c, p. 65)](#references), too few frames at ~3 a second. No walking speed assumed, so standing still near something doesn't count
 - **alarm:** slides' signal-to-noise of 1 [(Vertegaal, 2026c, p. 70)](#references), as $c\,\Delta S \ge S - m$. $m = 0.2$ m = safety line out from the footprint, a margin specific to this use case. $c = 1 + d/(kT) = 1.63$ brings gap forward over our ~0.65 s delay $d$ (Appendix E), so with no delay $c = 1$ = slides' rule exactly. Once up, holds 0.5 s on frame timestamps so it doesn't flicker (classroom walk: 108 state changes -> 66)
 - **old rule (distance), still a switch:** $\tau = S_{\min} / 1.4 < 0.7$ s (0.98 m). Assumes walking speed, so it rang while standing still: on replays 46 % of slow frames against 35 %
 - **avoidance surprise (the form from Background):** sent with every plan, in bits:
@@ -260,7 +266,7 @@ g=e^{-\frac{1}{2}\left( \frac{\theta}{\sigma_{\theta}} \right)}
 $$
 Using this formula, the far side ear retains roughly at least $22.5\%$ volume when active. When danger is detected, the volume on the side of the danger drops to $10\%$, which is done for both visualized in the top left corner of the overlay (see [Panel sound](#panel-sound)).
 ## Hardware and Data Capture
-- camera: Neon scene camera, 1600 × 1200 at 30 fps, IMU (~100 Hz) and eye-tracking/gaze (200 Hz)
+- camera: Neon scene camera, 1600 × 1200 at 30 fps, IMU (~100 Hz), and eye-tracking/gaze (200 Hz)
 - Server: laptop with a Quadro T2000 GPU (4 GB), runs the whole pipeline + serves the webpage
 - types of recordings + what we use them for:
   - **Companion Recording:** phone app records everything itself (video + IMU + gaze + calibration), sometimes saved to Server afterward
@@ -289,7 +295,7 @@ The page prints these values for the frame in the image, ~57 s into the walk:
 |---|---|---|---|---|
 | +8° | 0.7 s | 0.52 m | 171 | 1.30 bits |
 
-The tables below come from replaying two recorded walks on the server with depth at 336 px: the demo walk in the image (~2.5 minutes) and a scripted attention walk in a tiered classroom (~45 s, up to a chair, past it, up the stairs and toward a wall). The numbers are from one run of each, not a benchmark.
+The tables below come from replaying two recorded walks on the server with depth at 336 px: the demo walk in the image (~2.5 minutes) and a scripted attention walk in a tiered classroom (~45 s, up to a chair, past it, up the stairs, and toward a wall). The numbers are from one run of each, not a benchmark.
 
 ## Panel: Sound
 
@@ -324,7 +330,7 @@ Headings are sizes, left or right of straight ahead. The limit is ~36°, a full 
 
 <p align="center"><img width="40%" alt="Full overlay with the Video panel highlighted and zoomed" src="diagrams/overlay_fade_video.png" /></p>
 
-The central panel is the field of view from the user, recorded by the camera on the Neon glasses. This video shows the lecture room environment. The video shows the rows of chairs on the right, a wall with glass on the left and the path between those. In the path is a big black bag placed that functions as an obstacle for the user. This video feed is the input for the product to apply all the earlier mentioned functionalities on.
+The central panel is the field of view from the user, recorded by the camera on the Neon glasses. This video shows the lecture room environment. The video shows the rows of chairs on the right, a wall with glass on the left, and the path between those. In the path is a big black bag placed that functions as an obstacle for the user. This video feed is the input for the product to apply all the earlier mentioned functionalities on.
 
 | Step | Demo median | Demo 95th percentile | Attention median | Attention 95th percentile |
 |---|---|---|---|---|
@@ -367,7 +373,7 @@ Camera height is measured above the fitted floor, with nothing to check it again
 
 # Scenarios
 
-While no formal experiment was done with the prototype, we describe several scenarios in which the technology could be used. Each of these were chosen to reflect a situation a final version of the prototype might be used in, focusing on collision avoidance, navigation and situational awareness. These range in a steadily increasing grade of difficulty, going from straight line obstacle avoidance to full room navigation.
+While no formal experiment was done with the prototype, we describe several scenarios in which the technology could be used. Each of these were chosen to reflect a situation a final version of the prototype might be used in, focusing on collision avoidance, navigation, and situational awareness. These range in a steadily increasing grade of difficulty, going from straight line obstacle avoidance to full room navigation.
 
 
 | Scenario | Desired Response (Prototype) | Expectation | Additional Context |
@@ -390,7 +396,7 @@ While no formal experiment was done with the prototype, we describe several scen
 
 Due to the available timeframe and resources several limitations had to be set for this project, these focusing around code implementation and the explored options for data gathering. Apart from this another limitation is also present in the current implementation, which relies on a separate server to run the calculations and stream the directions back to the user, imposing a limit due to network delay and connection requirement. Our delay figures start when a frame reaches the server, so they leave out the ~130 ms from capture to arrival on a live run and the time for the sound to play, which we did not measure on the glasses.
 
-A major factor apart from this is the usage of large language models for the implementation of the prototypes, where the limited amount of time required the usage of such tools to translate our plan, formulas and approach into a functional product. While this allowed us to make the implementation feasible, its cost is also significant, as several bugs and structural mistakes were made by the LLM. Due to this the continued development of the product should involve the replacement and redesign of this prototype with a more solid implementation.
+A major factor apart from this is the usage of large language models for the implementation of the prototypes, where the limited amount of time required the usage of such tools to translate our plan, formulas, and approach into a functional product. While this allowed us to make the implementation feasible, its cost is also significant, as several bugs and structural mistakes were made by the LLM. Due to this the continued development of the product should involve the replacement and redesign of this prototype with a more solid implementation.
 
 To expand on this, another part requiring optimization would be the usage of so called magic numbers in the prototype, which are numbers our team found as working well enough for demonstrations, but might be far from the optimal values. The benefits of finding these optimal points would be debatable though, as the cost for doing so would be relatively expensive for perhaps limited improvements to the final product.
 
@@ -442,9 +448,9 @@ Last, while we acknowledge that our current prototype is very generic in its app
 
 We built a walking aid that guides by sound and uses the surprise as its cost function. A pair of Neon glasses films the view ahead, a laptop estimates the depth of everything in that view, and each 0.25 m cell ahead of the user is assigned a cost from the obstacles in it and proximity. The planner then picks the route with the least total surprise and effort over the next few seconds. The user hears this guidance as a quiet tick toward the side to walk to and an alarm when the gap to something ahead is closing too fast for its size, indicating a potential collision. The whole chain runs live end-to-end, from the camera to the headphones, but can also be tested and improved quickly by recording specific scenarios.
 
-To accommodate a user that is walking, rather than the driving examples from the lectures, we added a contact term to supplement the collision term, leaving the surprise as the primary factor but giving us a way to adjust for obstacles that are measured steadily. A stationary obstacle that is measured steadily has little noise, so under the surprise term alone walking straight into it cost almost nothing. A prior on the previous plan keeps the direction from flipping between frames. Without it the cues to the user were too rapid and chaotic to be useful, with early tests showing rapid swings in guidance, sometimes more than 100 times per minute. 
+To accommodate a user that is walking, rather than the driving examples the collision term was built on [(Vertegaal, 2026c, p. 65)](#references), we added a contact term to supplement the collision term, leaving the surprise as the primary factor but giving us a way to adjust for obstacles that are measured steadily. A stationary obstacle that is measured steadily has little noise, so under the surprise term alone walking straight into it cost almost nothing. A prior on the previous plan keeps the direction from flipping between frames. Without it the cues to the user were too rapid and chaotic to be useful, with early tests showing rapid swings in guidance, sometimes more than 100 times per minute. 
 
-The alarm itself aligns with the mathematics we covered in this course: the surprise of a closing gap from the car-following example in the lectures, half the squared ratio of the gap's change to the gap itself. It raises when the gap's change over the last few seconds is as large as the gap remaining, which corresponds to a signal-to-noise ratio of 1, adjusted for our processing delay, so it needs no assumed walking speed. However, the terms and resulting estimate can still be refined further, as development testing revealed that it occurred late on roughly 1 in 5 instances of approaching collisions. This was still a notable improvement when compared to the distance-only calculations, which occurred late more than 1 in 2 instances.
+The alarm itself follows the surprise of a closing gap from the car-following example [(Vertegaal, 2026c, p. 65)](#references), half the squared ratio of the gap's change to the gap itself. It raises when the gap's change over the last few seconds is as large as the gap remaining, which corresponds to a signal-to-noise ratio of 1, adjusted for our processing delay, so it needs no assumed walking speed. However, the terms and resulting estimate can still be refined further, as development testing revealed that it occurred late on roughly 1 in 5 instances of approaching collisions. This was still a notable improvement when compared to the distance-only calculations, which occurred late more than 1 in 2 instances.
 
 The most pressing limitations for this implementation are in the inputs and the processing speed. The laptop used for planning could process around 2 to 3 frames per second, so the noise in the surprise term is measured on only ~40 % of cells, and a frame takes ~0.5 to ~0.7 s from arrival to plan. Initial measurements were performed with team members performing loosely-scripted scenarios, which were recorded to be used for reproducible repeated measurements and testing. The proposed next steps are a faster depth estimate, and then a study of people walking with the sound as their only guide.
 
@@ -478,7 +484,7 @@ The most pressing limitations for this implementation are in the inputs and the 
   - $R_{\text{IMU}}$ = IMU orientation, $R_x(\theta)$ = turn by $\theta$ about x axis, $R$ = turns camera directions into world directions, $\hat u_{\text{cam}}$ = "up" as camera sees it
   - −102° = camera sits 90° plus a 12° downward tilt from the IMU. Both angles from the docs [(Pupil Labs, n.d.)](#references), nobody measured them on our glasses
   - each frame takes IMU reading closest to its capture time (within 50 ms). None -> up falls back to image up, $(0, -1, 0)$, so we assume the head is level
-    - NOTE: only glasses' fused orientation is used. Raw accelerometer, gyroscope and magnetometer aren't
+    - NOTE: only glasses' fused orientation is used. Raw accelerometer, gyroscope, and magnetometer aren't
 
 ## B. Finding the floor
 - only points well below camera can be floor: drop $\delta_i = -\mathbf p_i \cdot \hat u_{\text{cam}}$ over 0.5 m, and at least 200 of them
@@ -514,7 +520,7 @@ $$X = \frac{(u - c_x)\, z}{f_x}, \qquad Y = \frac{(v - c_y)\, z}{f_y}, \qquad Z 
 - recordings don't store depth (frame logs do), recomputed from video every run (so a newer depth model applies to old recordings automatically)
 
 ## E. Planner and alarm details
-- **why $c = 1.63$:** gap is from capture, plan done ~0.65 s later (arrival to plan + ~0.13 s capture to arrival). Steady approach: spread $\Delta S = k\,v\,T$, so $v \approx \Delta S/(kT)$, and gap by then $\approx S - \Delta S\,d/(kT)$. Into slides' ratio: $c\,\Delta S/S \ge 1$ with $c = 1 + d/(kT)$, $k = 0.342$ for 9 frames, $T = 3$ s. Fires at a time to contact of $c\,k\,T$ whatever the speed
+- **why $c = 1.63$:** gap is from capture, plan done ~0.65 s later (arrival to plan + ~0.13 s capture to arrival). Steady approach: spread $\Delta S = k\,v\,T$, so $v \approx \Delta S/(kT)$, and gap by then $\approx S - \Delta S\,d/(kT)$. Into slides' ratio [(Vertegaal, 2026c, p. 65)](#references): $c\,\Delta S/S \ge 1$ with $c = 1 + d/(kT)$, $k = 0.342$ for 9 frames, $T = 3$ s. Fires at a time to contact of $c\,k\,T$ whatever the speed
   - replays, approaches from 2.5 m: 0 missed, 3 of 15 warnings late against 8 of 15 for the distance rule. No ground truth
 - **arrow:** angle from where walker stands to where path is 1 s ahead (1 s, set for this use case: reading only the first 0.1 s step gave just 3 possible angles, since one step moves at most one cell)
 
