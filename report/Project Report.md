@@ -1,56 +1,3 @@
-# THE PLAN
-- Abstract
-  
-- Introduction (Daniël)
-    - Explain the problem
-    - General approach idea?
-
-- Background (Kars)
-    Why the problem?
-    - Motivation
-        - Prior knowledge
-      - Explain Depth Map (Depth anything 3)
-      - Explain Surprise Equations (using it twice (weight and tau)) (docs/math)
-      - Hamiltonian path routing
-      - Open 3d dense slam
-papers roel: mute conversation in cars
-
-- Methods (Nolan & Dirk)
-    
-    - Formulation of Depth map from surroundings
-    - 4 main math formulas from presentation
-      - Possible additional content from NeuromorphicPaths\docs\math if relevant & significant
-    - Explain pipeline
-        - Translating Depth map to Surprise Map
-          - Brief mention of height map usage (floor and ceiling so we narrow what points we actually care about from depth map)
-        - Choosing the next step of least surprise -> cost/risk
-            - Forming Path through Surprise Map
-        - Gaining output from the path
-        - Collision detection
-          - Surprise
-          - Alarm
-          - Gaze tracking
-    
-- Results -> System Measurements
-	    - Mention using the neon companion app to validate server's findings
-      - Audio & Development Overlay and how they work (already drafted)
-    - We have demo, but no real tests to show it works
-- Experiment Methods -> Scenarios
-    - (Conceptual) Think of 3 example scenarios, how do the features we have interact with that scenario?
-    - e.g. "A person that has their eyes pointing to the right as they walk towards a wall on their left" (sound alerts or music/noise cancelling turns off until they at least look at the obstacle)
-    - Probably pick a specific audio setting (Music, Alerts, or Noise Cancellation control) for each individual scenario
-  
-    
-- Discussion
-    
-    - Next steps
-	    - What is implemented, but not rigurously tested (and not part of the current prototype)
-        - Usage of magic numbers
-        - Inclusion of accelerometer and gps?
-    - Presentation mentions
-        
-- References (Nolan)
-- Appendices (Nolan)
 # Abstract
 
 People who walk while looking at a phone, or with headphones on, often notice an obstacle only when they are about to walk into it. We built a walking aid that guides by sound and uses surprise functions to calculate cost. A pair of Neon eye-tracking glasses from Pupil Labs films what the user is seeing, and a laptop estimates the depth of everything in that view with Depth Anything 3. Each 0.25 m cell ahead of the user is assigned a cost from the obstacles in it, how close they are, and how steadily they are measured. The planner then picks the route with the least total surprise and effort over the next few seconds. The user hears a quiet tick toward the side the planner is guiding them to, and an alarm when the gap to something ahead is closing too fast for its size at a signal-to-noise ratio of 1. In development testing on recorded walks, the alarm came late on 3 of 15 approaches, against 8 of 15 for an alarm based on distance alone. The main limit is processing speed, at ~2 to ~3 planned frames a second on our laptop.
@@ -232,7 +179,6 @@ $$
 y>0 \, \land |x| \le 0.30 \text{ m}
 $$
 
-
 - separate from plan on purpose: reads obstacles, never the path -> still fires when plan is wrong
 - **corridor:** cells strictly ahead, within 0.30 m (body half-width) either side. Furniture being walked past isn't in it, neither are sides of a doorway you fit through
   - NOTE: 0.30 m, not the 0.35 m footprint: at 0.35 + 0.15 a 0.9 m doorway alarmed on 93 % of frames, at 0.30 it's 36 %
@@ -299,7 +245,7 @@ The page prints these values for the frame in the image, ~57 s into the walk:
 |---|---|---|---|---|
 | +8° | 0.7 s | 0.52 m | 171 | 1.30 bits |
 
-The tables below come from replaying two recorded walks on the server with depth at 336 px: the demo walk in the image (~2.5 minutes) and a scripted attention walk in a tiered classroom (~45 s, up to a chair, past it, up the stairs, and toward a wall). The numbers are from one run of each, not a benchmark.
+The tables below come from replaying two recorded walks on the server with depth at 336 px: the Walking Demo in the image (~2.5 minutes) and the scripted Attention Demo in a tiered classroom (~45 s, up to a chair, past it, up the stairs, and toward a wall). The numbers are from one run of each, not a benchmark.
 
 ## Panel: Sound
 
@@ -373,12 +319,11 @@ The bottom right panel is the depth image colored with the same costs as the [**
 |---|---|---|
 | Depth jitter | 1.3 % (0.027 m) | 5.2 % (0.138 m) |
 
-Camera height is measured above the fitted floor, with nothing to check it against. Depth jitter is how much the depth model's depth for one 3D point changes between frames ~0.2 s apart, measured on the attention walk. The floor level was right on 48 of 49 frames we labeled by hand.
+Camera height is measured above the fitted floor, with nothing to check it against. Depth jitter is how much the depth model's depth for one 3D point changes between frames ~0.2 s apart, measured on the Attention Demo. The floor level was right on 48 of 49 frames we labeled by hand.
 
 # Scenarios
 
 While no formal experiment was done with the prototype, we describe several scenarios in which the technology could be used. Each of these were chosen to reflect a situation a final version of the prototype might be used in, focusing on collision avoidance, navigation, and situational awareness. These range in a steadily increasing grade of difficulty, going from straight line obstacle avoidance to full room navigation.
-
 
 | Scenario | Desired Response (Prototype) | Expectation | Additional Context |
 |---|---|---|---|
@@ -389,10 +334,6 @@ While no formal experiment was done with the prototype, we describe several scen
 | A user moves at high speed towards an obstacle. | The system uses directional audio feedback to indicate the obstacle and guide the user around it | X | The system doesn't plot far enough in advance to avoid the object. |
 | Walking towards a pair of stairs next to chairs in the cinema. | The system guides the user along a path over the stairs, avoiding the chairs | V | Recorded walking up and down the stairs of a tiered lecture room. |
 | Walking along the beach, the user attempts to walk into the water | The system guides the user away from the water, back onto the less risky sand | X | As designed, the system is not expected to distinguish between surface types, making calm water just as safe of a surface as a solid wooden floor. This is untested. |
-
-
-
-
 
 # Discussion
 
@@ -408,17 +349,6 @@ Shifting to the hardware, a defining factor of our project and approach is the u
 
 The course coordinator advised us to use SLAM, so we built Open3D's dense SLAM and tested it on a recorded walk. Run offline with depth for all 30 frames a second, it tracked the walk to ~0.2 m. Our server's depth model only delivers ~3 frames a second, and at that rate the error rose to ~1 m. As a workaround we added frame-to-frame odometry, which stayed at ~0.2 m at the rate the server can deliver. Both are available through a flag and are off by default. With a position the cells stay fixed to the world, which changes the input to the planner, but in our tests we could not show that the plans got better, and the plan sat at its heading limit more often (~20 to ~40 % of frames, against ~5 %). With a faster server we expect dense SLAM to hold up live.
 
-<!-- - Limitations
-    - Lack of Lidar
-    - usage of magic numbers
-    - Inclusion of further components
-        - Accelerometer
-        - gps
-        - lidar
-        - more cameras?
-    - General AI writing of code
-    - hardware needs, lack of server or something? -->
-
 ## Next Steps
 
 Based upon the research and resulting prototype, several avenues for further applications and improvements open up. These are divided between new applications of the technology and ways to improve performance. Last are some experiments for more specific use cases, investigating how the technology holds up in environments less suited to what it was originally designed for.
@@ -432,21 +362,6 @@ Apart from this, another avenue of providing more information about the risk of 
 Continuing with further experiments, one that needs to be included for certain is the performance on high speeds, as the faster movements might interfere with the point cloud formation. Besides this another issue would be the time required for processing, as a collision might have already taken place by the time the user is notified of the risk to do so, or the advised path would be too short as the user travels its entirety before the next section could be calculated.
 
 Last, while we acknowledge that our current prototype is very generic in its applications and could be used in many of them with little adjustment, a few areas exist which we would designate as the most logical next steps, these in part decided due to the benefits it might bring to society. First would of course be those with impaired sight, this technology serving a similar role as a guide dog to those unable to see their surroundings themselves, allowing them freedom without the many expenses needed for conventional solutions. Besides this the potential for autonomous vehicles exists as well, with cars and drones relying upon this technology being capable of navigating unseen areas without a human operator.
-
-<!-- 
-- Further research
-    - High speed applications
-    - Detection of other users through communication between devices?
-    - Alternative means of 'steering the user'
-    - Incorporation of longer stage planning, not just the next few meters but further along a path
-    - Actual testing
-    - Exploration of implementation for visually impaired users
-        - Acknowledge it's not the main aim of the project but would help many people quickly, providing funds and test data for further development
-    - Exploration of implementation on autonomous robots, see how robot car or robot dog navigates room based on this -->
-
-
-
-
 
 # Conclusion
 
@@ -550,7 +465,7 @@ $$X = \frac{(u - c_x)\, z}{f_x}, \qquad Y = \frac{(v - c_y)\, z}{f_y}, \qquad Z 
 - **Also Written per Run:** `timing.jsonl` (per-frame capture-to-plan delays), `episodes.jsonl` (user model), optional frame log (`--record-to`)
 
 ## G. Camera position
-- Off by default. `--position odometry` or `dense_slam` adds a camera position. Measured on attention walk replay, 336 px depth, $N$ window 0.5 s:
+- Off by default. `--position odometry` or `dense_slam` adds a camera position. Measured on Attention Demo replay, 336 px depth, $N$ window 0.5 s:
 
 | Setting | Planned per second | Delay, median / 95th | Positioned | Error | 3 s drift |
 |---|---|---|---|---|---|
