@@ -5,9 +5,9 @@ People who walk while looking at a phone, or with headphones on, often notice an
 **Keywords:** surprise, obstacle avoidance, path planning, monocular depth estimation, eye tracking, audio feedback
 
 # Introduction
-The problem of autonomous collision avoidance is one that has plagued autonomous navigation for as long as it has existed, with many proposed solutions with varying levels of success having been attempted already [(Berntorp, 2017)](#references). One trait all of these hold in common is their cost, with reliance on either expensive sensors or extensively trained machine learning models to function, something our team attempts to negate in this project. 
+The problem of autonomous collision avoidance is one that has plagued autonomous navigation for as long as it has existed, with many proposed solutions with varying levels of success having been attempted already [(Berntorp, 2017)](#references). One trait all of these hold in common is their cost, with reliance on either expensive sensors or machine learning models trained extensively for the task, something our team attempts to negate in this project. Our system uses a single camera and an existing depth model, without training any new model or classifying obstacles.
 
-Advancing from an application of surprise theory and Fitts' Law in particular, our proposed solution functions by taking the input of a single camera and formulating a surprise field from its feed. This surprise field corresponds to the amount of risk each section of the area in the camera's view would pose to the user upon entering, where a Lagrangian is then used to formulate a path through this area that would pose the least risk. Based upon this path the user may be advised or directly steered to follow this path.
+Advancing from an application of surprise theory and Fitts' Law in particular, our proposed solution functions by taking the input of a single camera and formulating a surprise field from its feed. This surprise field corresponds to the amount of risk each section of the area in the camera's view would pose to the user upon entering, where the Hamiltonian is then used to plan a path through this area that would pose the least risk. Based upon this path the user may be advised or directly steered to follow this path.
 
 Central to this project was the desire to have the so called 'user' be as generic as possible, where our solution would work no matter if the user is an autonomous car, a camera mounted on a drone, or a person wearing glasses with an integrated camera. The motivation behind this objective is showing how the application of this technology is not just limited to one specific problem, instead aiding from autonomous navigation to aiding those with impaired vision.
 
@@ -45,7 +45,7 @@ Depth Anything 3 is a model that "predicts spatially consistent geometry from an
 
 ## Path Planning
 
-Once every cell of the environment has a surprise value, the next question is which route through them is best. Following the idea that movement is the relaxation along a surprise potential [(Vertegaal et al., 2025)](#references), the safest route is the one that accumulates the least surprise over the next few seconds [(Vertegaal, 2026c, pp. 8, 13, 15, 17)](#references). This is computed as a minimum-cost path through the cost field (Hamiltonian path planning, solved by dynamic programming), which is then reduced to a single heading for the user. The cost of following the resulting path, expressed in bits of surprise, can also be measured afterwards by the user model, which only observes and does not steer anything.
+Once every cell of the environment has a surprise value, the next question is which route through them is best. Following the idea that movement is the relaxation along a surprise potential [(Vertegaal et al., 2025)](#references), the safest route is the one that accumulates the least surprise over the next few seconds [(Vertegaal, 2026c, pp. 8, 13, 15, 17)](#references). This is computed as a minimum-cost path through the cost field (planning with the Hamiltonian, solved by dynamic programming), which is then reduced to a single heading for the user. The cost of following the resulting path, expressed in bits of surprise, can also be measured afterwards by the user model, which only observes and does not steer anything.
 
 ## 3D Reconstruction
 
@@ -53,11 +53,11 @@ Once every cell of the environment has a surprise value, the next question is wh
 
 ## Previous Research
 
-Earlier walking aids warn about obstacles too. CrashAlert puts a depth camera on a tablet, shows a strip of the depth picture along the screen edge, and turns red for obstacles under 2 m. Users dodged and slowed down earlier [(Hincapié-Ramos & Irani, 2013)](#references). BumpAlert uses the phone's speaker, microphones, and rear camera, and vibrates when both detectors find the same object 2 to 4 m ahead [(Tung & Shin, 2018)](#references).
+Earlier walking aids warn about obstacles too. CrashAlert puts a depth camera on a tablet, shows a strip of the depth picture along the screen edge, and turns red for obstacles under 2 m. Users dodged and slowed down earlier [(Hincapié-Ramos & Irani, 2013)](#references). BumpAlert uses the phone's speaker, microphones, and rear camera, and vibrates when both detectors find the same object 2 to 4 m ahead [(Tung & Shin, 2018)](#references). Both warn based on distance alone so anything inside the range sets them off, whether or not the user has already seen it, and neither suggests a way around it.
 
-Driving research has used similar ideas. Engström et al. describe driving as acting on predictions [(Engström et al., 2018)](#references), and later simulate a driver who trades progress against caution by minimizing expected free energy [(Engström et al., 2024)](#references).
+Driving research has used similar ideas. Engström et al. describe driving as acting on predictions [(Engström et al., 2018)](#references), and later simulate a driver who trades progress against caution by minimizing expected free energy [(Engström et al., 2024)](#references). These works measure or model a driver, and they start from a known gap to one car. None of them guides a person, and a walking aid first has to find the obstacles, from one camera on the head.
 
-Adding an attracting goal to repelling obstacles is how artificial potential fields work [(Khatib, 1986)](#references). The closest published match to our search is the path step in Baidu Apollo's planner, which sums smoothness, obstacle, and guidance costs over sideways positions and finds the cheapest route with a dynamic program [(Fan et al., 2018)](#references). Apollo's grid runs along distance and our grid runs along time, and Apollo's costs are chosen by the designers.
+Adding an attracting goal to repelling obstacles is how artificial potential fields work [(Khatib, 1986)](#references). The closest published match to our search is the path step in Baidu Apollo's planner, which sums smoothness, obstacle, and guidance costs over sideways positions and finds the cheapest route with a dynamic program [(Fan et al., 2018)](#references). Apollo's grid runs along distance and our grid runs along time, and Apollo's costs are chosen by the designers. In our planner the cost of each obstacle comes from the surprise of the gap between the user and that obstacle.
 
 # Materials
 ## Neon smart glasses
@@ -73,7 +73,7 @@ Depth Anything 3 is a model that "predicts spatially consistent geometry from an
 ## System Overview
 The smart glasses stream video, inertial measurement unit (IMU) readings, and gaze data to the Neon Companion app on a paired phone. The app forwards this data over the local Wi-Fi network to the server. A background process decodes the incoming video at 30 frames per second, while the planning worker always takes the newest available frame rather than building up a queue. If processing falls behind, older frames are discarded so that the system continues to work with a recent view of the environment.
 
-Before analysis, the selected frame is corrected using the glasses camera calibration. The server associates it with the closest IMU reading, provided that reading is within 50 ms of the frame's capture time. Without a sufficiently close reading, the frame is still used, and the server assumes the head is level. Depth Anything 3's metric large model then estimates a depth map in meters. The model supplies depth, not a height map, so the server uses the depth and IMU data to reconstruct 3D points and estimate the floor. It filters the points to retain those between ankle and head height, then projects them onto a 2D floor grid of 0.25 m cells. Each cell is characterized by its distance from the walker and by the small changes of that distance across recent frames, which represents how much the measured gap varies over time. Camera position can also be estimated using odometry or dense SLAM, but both options are disabled by default (see [Appendix G](#g-camera-position)).
+Before analysis, the selected frame is corrected using the glasses camera calibration. The server associates it with the closest IMU reading, provided that reading is within 50 ms of the frame's capture time. Without a sufficiently close reading, the frame is still used, and the server assumes the head is level. Depth Anything 3's metric large model then estimates a depth map in meters. The model supplies depth, not a height map, so the server uses the depth and IMU data to reconstruct 3D points and estimate the floor. It filters the points to retain those between ankle and head height, then projects them onto a 2D floor grid of 0.25 m cells. Each cell is characterized by its distance from the user and by the small changes of that distance across recent frames, which represents how much the measured gap varies over time. Camera position can also be estimated using odometry or dense SLAM, but both options are disabled by default (see [Appendix G](#g-camera-position)).
 
 The planner assigns costs to the cells and uses dynamic programming to find a low-cost path over the next few seconds. It converts that path into a heading and determines whether an alarm should sound. Gaze data can optionally silence the alarm when the user looks toward a detected hazard. Separately, the user model measures the avoidance cost of the resulting movement in bits. It is an evaluation component: it observes and scores the path, but does not steer the planner.
 
@@ -109,9 +109,9 @@ Finally, the filtered point cloud is projected onto a 2D top-down representation
 ## Point Cloud Cost
 After the point cloud has been generated, each group of points gets a 'price' assigned to it. This price is effectively the surprise the user will experience when encountering this group of points, and is used by the planning algorithm to compute the optimal path using least surprise.
 
-The 2D top-down map of points is first chopped into a grid of $0.25\text{ m}$ squares ('cells'), for a grid that extends $6\text{ m}$ in front of the walker and $3\text{ m}$ to either side. Cells with fewer than 2 points are filtered out as they are likely the result of depth noise. For each cell, we select the single point that is closest to the walker, raise it to the height of the highest point in the cell and delete all other points. If the height of this point $e \ge 1.5\text{ m}$, the entire cell is marked as a 'wall'. Every frame is analyzed at face value, so the entire grid moves with the walker.
+The 2D top-down map of points is first chopped into a grid of $0.25\text{ m}$ squares ('cells'), for a grid that extends $6\text{ m}$ in front of the user and $3\text{ m}$ to either side. Cells with fewer than 2 points are filtered out as they are likely the result of depth noise. For each cell, we select the single point that is closest to the user, raise it to the height of the highest point in the cell and delete all other points. If the height of this point $e \ge 1.5\text{ m}$, the entire cell is marked as a 'wall'. Every frame is analyzed at face value, so the entire grid moves with the user.
 
-Each point is given a surprise value based solely on the gap and wobble of that point. The gap $S$ is defined as the difference between the distance from the walker to the cell's closest point $d$ and the edge of the walker's circular footprint with radius $r$:
+Each point is given a surprise value based solely on the gap and wobble of that point. The gap $S$ is defined as the difference between the distance from the user to the cell's closest point $d$ and the edge of the user's circular footprint with radius $r$:
 $$
 S=d-r \qquad r=0.35 \text{ m}
 $$
@@ -131,9 +131,9 @@ U_{collision} = \frac{1}{2} \left( \frac{N}{S} \right)^2
 $$
 
 ## Planning
-To find the optimal path to guide the user in, the planner first computes the cost of the paths for all reachable states. This is represented as a field of time/position pairs with a temporal interval $\Delta t = 0.1\text{ s}$ and a spatial interval of $0.1 \text{ m}$ for each lateral position over a horizon of a few seconds. The walker is assumed to be moving at some constant speed $v = 1.4 \text{ m/s}$, such that at step $k$, they would be $v\cdot k\cdot \Delta t$ meters further ahead. Because of this, obstacle points are predicted to always come closer for higher values of $k$. 
+To find the optimal path to guide the user in, the planner first computes the cost of the paths for all reachable states. This is represented as a field of time/position pairs with a temporal interval $\Delta t = 0.1\text{ s}$ and a spatial interval of $0.1 \text{ m}$ for each lateral position over a horizon of a few seconds. The user is assumed to be moving at some constant speed $v = 1.4 \text{ m/s}$, such that at step $k$, they would be $v\cdot k\cdot \Delta t$ meters further ahead. Because of this, obstacle points are predicted to always come closer for higher values of $k$. 
 
-At each step and position in the field, two terms are added together to determine the surprise of that entry. The first is collision surprise, already given as the cost of the point in the point cloud. The second is contact surprise, which is the cost of the walker's body probably touching the obstacle. Let $d$ be the distance from a candidate walker's center to an obstacle point and $r$ be the circular footprint of the walker. The clearance $S$ then becomes:
+At each step and position in the field, two terms are added together to determine the surprise of that entry. The first is collision surprise, already given as the cost of the point in the point cloud. The second is contact surprise, which is the cost of the user's body probably touching the obstacle. Let $d$ be the distance from the center of a candidate user position to an obstacle point and $r$ be the circular footprint of the user. The clearance $S$ then becomes:
 $$
 S_{b} = d - r \qquad r=0.30 \text{ m}
 $$
@@ -141,7 +141,7 @@ The body's positional uncertainty is quantified as the standard deviation $\sigm
 $$
 \sigma = \sqrt{ N^2 + s^2 } \qquad s=0.10 \text{ m}
 $$
-The chance of walking past an obstacle without contacting it is the standard normal cumulative $\Phi\left( \frac{S_{b}}{\sigma} \right)$. The negative logarithm of this number is taken to convert the probability into surprise [(Vertegaal, 2026a, p. 43)](#references), by mapping a high probability of passing to low surprise and vice versa. This surprise is divided by time-to-impact $\tau_{b}$, which is the estimated time required for the walker's body with radius $r$ to move past the obstacle at a constant speed $v$.
+The chance of walking past an obstacle without contacting it is the standard normal cumulative $\Phi\left( \frac{S_{b}}{\sigma} \right)$. The negative logarithm of this number is taken to convert the probability into surprise [(Vertegaal, 2026a, p. 43)](#references), by mapping a high probability of passing to low surprise and vice versa. This surprise is divided by time-to-impact $\tau_{b}$, which is the estimated time required for the user's body with radius $r$ to move past the obstacle at a constant speed $v$.
 $$
 \tau_{b}=\frac{2r}{v}=\frac{2\cdot 0.30}{1.4}\approx 0.43\text{ s}
 $$
@@ -153,11 +153,11 @@ For each time/position pair in the field, the planner combines the two surprises
 $$
 U_{point} = U_{collision} + U_{contact}
 $$
-Next, a goal term is used by the planner to incorporate the eye tracking data (gaze) to steer the walker into the direction they're looking in the event a tie between equally costly paths is reached. Each candidate position in the final row $x$ is used in conjunction with the desired position in the final row $x_{goal}$  to allow the user to 'choose' a preferred path. The difference between these two is divided by the tolerance $T$, which signifies the maximum acceptable lateral distance from the gaze to the goal. If the walker's gaze falls outside of $T$, the tie is broken using random chance:
+Next, a goal term is used by the planner to incorporate the eye tracking data (gaze) to steer the user into the direction they're looking in the event a tie between equally costly paths is reached. Each candidate position in the final row $x$ is used in conjunction with the desired position in the final row $x_{goal}$  to allow the user to 'choose' a preferred path. The difference between these two is divided by the tolerance $T$, which signifies the maximum acceptable lateral distance from the gaze to the goal. If the user's gaze falls outside of $T$, the tie is broken using random chance:
 $$
 U_{goal}=\frac{1}{2} \left( \frac{x-x_{goal}}{T} \right)^2 \qquad T = 1.5 \text{ m}
 $$
-In order to prevent the planner from outputting a completely different path due to the slightest bit of noise, a previous plan prior is used to pull the arrow towards where it was last frame. A penalty $U_{prior}$ is added to every candidate lateral position $x$ in the field, based on how much it deviates from where the previous plan predicted the walker would be now $x_{prev}$ given the time since that plan $\Delta T$:
+In order to prevent the planner from outputting a completely different path due to the slightest bit of noise, a previous plan prior is used to pull the arrow towards where it was last frame. A penalty $U_{prior}$ is added to every candidate lateral position $x$ in the field, based on how much it deviates from where the previous plan predicted the user would be now $x_{prev}$ given the time since that plan $\Delta T$:
 $$
 U_{prior} = \frac{1}{2}\cdot \frac{(x-x_{prev})^2}{0.25^2 + 0.05 \cdot \Delta T}
 $$
@@ -167,14 +167,14 @@ C_{step} = \left( F[k,c] + \frac{1}{2} \cdot w\cdot v_{x}^2 \right)\cdot \Delta 
 \qquad
 w = 6.5
 $$
-The planner uses back-pointers in a dynamic programming algorithm to compute and store the cheapest reachable state for an increasing time interval $\Delta T=0.1\text{ s}$ starting at the walker, until it reaches the temporal horizon at $t=3.8 \text{ s}$. The planner then reports the cell with the cheapest final cost and follows its back-pointers to reconstruct the path. This value is converted from nats to bits before being read by the user model.
+The planner uses back-pointers in a dynamic programming algorithm to compute and store the cheapest reachable state for an increasing time interval $\Delta T=0.1\text{ s}$ starting at the user, until it reaches the temporal horizon at $t=3.8 \text{ s}$. The planner then reports the cell with the cheapest final cost and follows its back-pointers to reconstruct the path. This value is converted from nats to bits before being read by the user model.
 $$
 C_{bits} = \frac{C_{nats}}{\ln 2}
 $$
 ## Collision Detection
 The prototype continuously scans for potential collisions using the data from the point cloud and alarms the user when it detects a dangerous situation. This happens independently from route planning so that it is reliable when the path is wrong. 
 
-Corridors are tricky, as their narrowness generates high levels of surprise even though the walker is experiencing low levels of danger. A corridor is a line of cells ahead of the walker on either side, spaced in such a way that continuing forward could cause a collision. To account for this, the alarm only warns the user if the obstacles are both in front of the walker and are not spaced sufficiently for the walker to fit between: 
+Corridors are tricky, as their narrowness generates high levels of surprise even though the user is experiencing low levels of danger. A corridor is a line of cells ahead of the user on either side, spaced in such a way that continuing forward could cause a collision. To account for this, the alarm only warns the user if the obstacles are both in front of the user and are not spaced sufficiently for the user to fit between: 
 $$
 y>0 \, \land |x| \le 0.30 \text{ m}
 $$
@@ -191,11 +191,11 @@ $$
 
   - 0 with empty corridor, 0.72 bits at the alarm point (ratio of 1). Page's path goes from normal color to full red at 0.72 bits, same frame the alarm goes up. Page's time to collision = gap over the closing speed the spread implies, no speed assumed. **Only the alarm and the page read this form.** Planner's field never does
 - **gaze silencing (switch, off by default):** a beep about a chair you just looked at says nothing new
-  - looked = any gaze sample within 0.1 s of the frame lands within 2° of the object's outline in the picture (Neon accuracy 1.8°). Look remembered 2 s, slid toward walker at 1.4 m/s (what counts as "the object": Appendix E)
+  - looked = any gaze sample within 0.1 s of the frame lands within 2° of the object's outline in the picture (Neon accuracy 1.8°). Look remembered 2 s, slid toward user at 1.4 m/s (what counts as "the object": Appendix E)
   - looked + switch on -> alarm still red on page, but not heard. Never changes path or alarm itself. No gaze -> counts as not looked, so fails to "heard"
 
 ## Overlay
-The stereo cue is an automatic alarm that plays at different levels in both ears of the walker, working both to warn them and to steering them towards a desired direction. Although this cue is part of the overlay, the values are determined on the server. The gain of either ear is based on the heading angle $\theta$, which is the direction of the arrow relative to walking straight ahead:
+The stereo cue is an automatic alarm that plays at different levels in both ears of the user, working both to warn them and to steering them towards a desired direction. Although this cue is part of the overlay, the values are determined on the server. The gain of either ear is based on the heading angle $\theta$, which is the direction of the arrow relative to walking straight ahead:
 $$
 \text{direction} = 
 \begin{cases}
@@ -223,7 +223,7 @@ We recorded walks in three ways, each suited to a different kind of testing:
 
 A replayed recording or capture goes through the same processing as a live user, as if the glasses were on, so frame rate and delays are real. Network delay is not a factor. The demos and the measurements in this report ran this way.
 
-In total we recorded ~25 minutes of walking, all with the glasses and all indoors. The table below lists a sample of those recordings, the ones used in this report.
+In total team members recorded ~25 minutes of walking, all with the glasses and all indoors. The table below lists a sample of those recordings, the ones used in this report.
 
 | Recording          | Date       | Length | Used For                                    |
 |--------------------|------------|--------|---------------------------------------------|
@@ -232,6 +232,8 @@ In total we recorded ~25 minutes of walking, all with the glasses and all indoor
 | Tiered Room Stairs | 2026-10-08 | 121 s  | Stairs scenario                             |
 
 The Walking Demo goes through a lecture room past rows of chairs and a bag in the aisle. The Attention Demo follows a script: stare at a chair, walk past it once looking at it and once not, go up the stairs, and walk toward a wall. The Tiered Room Stairs recording walks up and down the stairs of a tiered lecture room.
+
+Nothing else was moving in any of these recordings. The measurements in this report are counts and medians from replays of them, without statistical tests.
 
 # System Measurements
 
@@ -286,7 +288,7 @@ The central panel is the field of view from the user, recorded by the camera on 
 | Planner     | 141 ms      | 350 ms               | 99.5 ms          | 157 ms                    |
 | **Total**   | **646 ms**  | **1535 ms**          | **514 ms**       | **688 ms**                |
 
-In our tests the system planned ~2 to ~3 of the camera's 30 frames a second, and 95 % of frames finished within ~0.7 to ~1.5 s, with 5 % taking longer. We report that figure because the slow frames are the risky ones: at 1.4 m/s a walker covers ~1 to ~2 m in that time, which is why the alarm makes up for the delay (see Collision Detection). The steps don't add up to the total because each one is measured separately.
+In our tests the system planned ~2 to ~3 of the camera's 30 frames a second, and 95 % of frames finished within ~0.7 to ~1.5 s, with 5 % taking longer. We report that figure because the slow frames are the risky ones: at 1.4 m/s a person walking covers ~1 to ~2 m in that time, which is why the alarm makes up for the delay (see Collision Detection). The steps don't add up to the total because each one is measured separately.
 
 ## Panel: From Above
 ![Full overlay with the From Above panel highlighted and zoomed|360](diagrams/overlay_fade_from_above.png)
@@ -299,7 +301,7 @@ The top right panel shows the planner's view from above. The yellow dots are obs
 | Measured $N$    | 15,704 of 41,944 (37.4 %) | 5,633 of 12,730 (44.2 %) |
 | $N$, median     | 0.033 m                   | 0.041 m                  |
 
-$N$ is how much a cell's gap changed over the last 1 s, and it needs 3 samples in that window. At ~2 to ~3 planned frames a second ~40 % of cells had enough in our tests, and the rest used the 0.01 m lower bound. The grid moves with the walker, so $N$ partly compares different spots.
+$N$ is how much a cell's gap changed over the last 1 s, and it needs 3 samples in that window. At ~2 to ~3 planned frames a second ~40 % of cells had enough in our tests, and the rest used the 0.01 m lower bound. The grid moves with the user, so $N$ partly compares different spots.
 
 ## Panel: Risk
 
@@ -332,6 +334,14 @@ While no formal experiment was done with the prototype, we describe several scen
 | Walking along the beach, the user attempts to walk into the water | The system guides the user away from the water, back onto the less risky sand                                                                                 | X           | As designed, the system is not expected to distinguish between surface types, making calm water just as safe of a surface as a solid wooden floor. This is untested.                                                              |
 
 # Discussion
+
+## Comparison with Previous Research
+
+CrashAlert and BumpAlert warn when something is inside a fixed distance [(Hincapié-Ramos & Irani, 2013; Tung & Shin, 2018)](#references). Our alarm reacts to how fast the gap is closing compared with how large it still is, so a user standing still next to a desk is not warned, and the planner also gives a direction around the obstacle. The planners of Khatib and Fan et al. add up costs whose sizes their designers chose [(Khatib, 1986; Fan et al., 2018)](#references). In our planner the cost of each obstacle comes from the surprise of its gap, and surprise also decides when the alarm activates.
+
+The car-following example has one thing to avoid, a lead car that is always moving [(Vertegaal, 2026c, pp. 61-65)](#references). A room is full of objects that do not move and are measured steadily, and for those the surprise term alone gives almost no cost, even at zero distance. The contact term supplements it for that case, and the previous-plan prior keeps the direction from flipping between passing on the left and on the right. The surprise remains the main cost.
+
+The limit we found is in the inputs. The surprise term needs a noise, and a noise needs the same obstacle measured several times within its window. The car-following example starts from a known gap [(Vertegaal, 2026c, p. 65)](#references), while our laptop produces ~2 to ~3 depth frames a second, so the noise is measured on ~40 % of cells. The same shortage affected position tracking (see [Limitations](#limitations)) and the alarm, which has to make up for a ~0.65 s delay. A faster depth estimate would help all three.
 
 ## Limitations
 
@@ -437,14 +447,14 @@ $$X = \frac{(u - c_x)\, z}{f_x}, \qquad Y = \frac{(v - c_y)\, z}{f_y}, \qquad Z 
 ## E. Planner and alarm details
 - **Why $c = 1.63$:** Gap is from capture, plan done ~0.65 s later (arrival to plan + ~0.13 s capture to arrival). Steady approach: spread $\Delta S = k\,v\,T$, so $v \approx \Delta S/(kT)$, and gap by then $\approx S - \Delta S\,d/(kT)$. Into slides' ratio [(Vertegaal, 2026c, p. 65)](#references): $c\,\Delta S/S \ge 1$ with $c = 1 + d/(kT)$, $k = 0.342$ for 9 frames, $T = 3$ s. Fires at a time to contact of $c\,k\,T$ whatever the speed
   - Replays, approaches from 2.5 m: 0 missed, 3 of 15 warnings late against 8 of 15 for the distance rule. No ground truth
-- **Arrow:** Angle from where walker stands to where path is 1 s ahead (1 s, set for this use case: reading only the first 0.1 s step gave just 3 possible angles, because one step moves at most one cell)
+- **Arrow:** Angle from where user stands to where path is 1 s ahead (1 s, set for this use case: reading only the first 0.1 s step gave just 3 possible angles, because one step moves at most one cell)
 
   $$\theta = \arctan\!\left(\frac{x_{1\text{s}} - x_0}{1.4 \cdot 1\text{ s}}\right)$$
 
 - **Camera Information:** In bits, for evaluation. How far what camera saw moved the plan vs a planner seeing nothing (goal + prior only).
   - **How It's Computed:** Both fields become a distribution over positions 1 s ahead, $p \propto e^{-\text{cost}}$, then how far the two differ (KL divergence), in bits. Empty corridor = 0 bits, not "unsure"
-- **User Model:** Measures only. Avoidance episode opens when planner asks for a turn (alarm, or arrow past 3°), closes when planner and walker's actual heading (IMU yaw against 5 s running average) both back under 3°. Work = path cost at open - cost at close, in bits
-  - **Predicted Turn Time:** Also predicts how long turn takes: heading error $s$ shrinks as fast as it can without overshooting ("critically damped"), $s'' + (2/b)s' + s/b^2 = 0$, with $b = 0.25$ s/bit how quick this walker is (placeholder, never measured). Episodes go to `episodes.jsonl`, nothing in pipeline reads them
+- **User Model:** Measures only. Avoidance episode opens when planner asks for a turn (alarm, or arrow past 3°), closes when planner and user's actual heading (IMU yaw against 5 s running average) both back under 3°. Work = path cost at open - cost at close, in bits
+  - **Predicted Turn Time:** Also predicts how long turn takes: heading error $s$ shrinks as fast as it can without overshooting ("critically damped"), $s'' + (2/b)s' + s/b^2 = 0$, with $b = 0.25$ s/bit how quick this user is (placeholder, never measured). Episodes go to `episodes.jsonl`, nothing in pipeline reads them
   - NOTE: the Lagrangian side of the professor's math is only here, measuring after the fact. Nothing on the live path uses it
 - "danger" = corridor cell that'd be hit first + cells chained to it within 0.4 m on the floor (up to 0.6 m out), so a look at the chair's back counts, not just its feet
 - Time-to-contact floor under which it's always heard = 0 (set after the 2026-10-15 manual test, where a desk inside the footprint kept a 0.35 s floor sounding the whole run)
@@ -471,7 +481,7 @@ $$X = \frac{(u - c_x)\, z}{f_x}, \qquad Y = \frac{(v - c_y)\, z}{f_y}, \qquad Z 
 
 - Error = median distance from reference camera path. 3 s drift = worst tenth
 - No ground truth: reference is COLMAP's path from same video [(Schönberger & Frahm, 2016)](#references), first 18.4 s (~8 m), scale from depth model
-- With a position, cells are fixed to the world and not to the walker, so planner gets different cells, and frames differ too. Alarm frames 56.6 % off, 52.5 % odometry, 60.4 % dense SLAM. No way to score which plan is better
+- With a position, cells are fixed to the world and not to the user, so planner gets different cells, and frames differ too. Alarm frames 56.6 % off, 52.5 % odometry, 60.4 % dense SLAM. No way to score which plan is better
 - $N$ window 0.5 s against 1 s, same walk and depth, idle GPU, ranges over runs:
 
 | Setting         | Runs | Planned per second | Delay, median | Delay, 95th | Measured $N$ | $N$, median | Heading at limit |
@@ -481,5 +491,5 @@ $$X = \frac{(u - c_x)\, z}{f_x}, \qquad Y = \frac{(v - c_y)\, z}{f_y}, \qquad Z 
 | Odometry, 0.5 s | 3    | 2.27-2.61          | 520-606 ms    | 928-1167 ms | ~0 %         |             | 5.1-5.6 %        |
 | Odometry, 1 s   | 3    | 2.31-2.85          | 435-605 ms    | 524-990 ms  | 42-50 %      | 0.13 m      | 21.9-37.6 %      |
 
-- Wider window: no delay cost we can measure. Odometry's $N$ ~3 times larger and plan at heading limit far more often. With cells fixed to the world, $N$ includes the walker's approach, which likely explains much of that. Can't separate it from tracker error here
+- Wider window: no delay cost we can measure. Odometry's $N$ ~3 times larger and plan at heading limit far more often. With cells fixed to the world, $N$ includes the user's approach, which likely explains much of that. Can't separate it from tracker error here
 - Same setting moves up to ~170 ms at the median between runs, so first table (one run each, 0.5 s window) is looser than it looks
