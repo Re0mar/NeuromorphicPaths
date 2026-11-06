@@ -73,7 +73,7 @@ A 2017 thesis published at Radboud University concluded that reminding drivers t
 
 Alerting the user is only one option. The distractions on the phone can also be muted while the environment is too surprising, similar to how conversations can be muted in cars when the driver needs to focus. The car study referenced in this course applied the same real-time ratio to notification and dialog management in a car interface, based on danger [(Vertegaal, 2026c, pp. 71-72)](#references).
 
-Research on auditory interfaces gives some support for muting as a strategy. Hearing is always available and cannot be turned off, which is why people use headphones to curate their own soundscape. This comes at a cost, since it lowers situational awareness and carries distinct safety risks when used on the move [(Haas, 2023)](#references). Haas also found that when people are asked which sounds in their environment they want to change, they rarely want a sound louder, but often want it muted or reduced, while keeping the information the sound carries. A simple interface with a few discrete states (muted, quieter, unaltered, louder) was preferred over continuous control, although this difference was not statistically significant [(Haas, 2023)](#references). This fits our approach, where distractions are only reduced when the surroundings require it.
+Research on auditory interfaces gives some support for muting as a strategy. Hearing is always available and cannot be turned off, which is why people use headphones to curate their own soundscape. This comes at a cost, because it lowers situational awareness and carries distinct safety risks when used on the move [(Haas, 2023)](#references). Haas also found that when people are asked which sounds in their environment they want to change, they rarely want a sound louder, but often want it muted or reduced, while keeping the information the sound carries. A simple interface with a few discrete states (muted, quieter, unaltered, louder) was preferred over continuous control, although this difference was not statistically significant [(Haas, 2023)](#references). This fits our approach, where distractions are only reduced when the surroundings require it.
 
 The same work also warns about the downside of automation. Systems that alter the soundscape automatically may give the user the illusion of an unaltered environment and an incomplete picture of the situation, and Haas therefore recommends that users keep control over such alterations [(Haas, 2023)](#references). For our system this means that muting should be limited to moments of clear risk, and that the user should always be able to see why something was muted or flagged.
 
@@ -94,7 +94,7 @@ Both forms express how reliably the user can predict the distance to an obstacle
 
 ## Depth Estimation
 
-Depth Anything 3 is a model that "predicts spatially consistent geometry from an arbitrary number of visual inputs, with or without known camera poses" ([source](https://depth-anything-3.github.io/)). We use the metric large variant [(Lin et al., 2026)](#references), which turns a single frame from the glasses into a depth map in meters. This is important for our application, since the surprise equations above require real distances rather than relative depth. The model only outputs depth, so the ground and the height of points have to be derived afterwards from this depth map and the IMU data of the glasses.
+Depth Anything 3 is a model that "predicts spatially consistent geometry from an arbitrary number of visual inputs, with or without known camera poses" ([source](https://depth-anything-3.github.io/)). We use the metric large variant [(Lin et al., 2026)](#references), which turns a single frame from the glasses into a depth map in meters. This is important for our application, because the surprise equations above require real distances rather than relative depth. The model only outputs depth, so the ground and the height of points have to be derived afterwards from this depth map and the IMU data of the glasses.
 
 ## Path Planning
 
@@ -265,23 +265,27 @@ g=e^{-\frac{1}{2}\left( \frac{\theta}{\sigma_{\theta}} \right)}
 \sigma_{\theta}=\arctan\left( \frac{1.5}{4} \right) \approx 20.6\degree
 $$
 Using this formula, the far side ear retains roughly at least $22.5\%$ volume when active. When danger is detected, the volume on the side of the danger drops to $10\%$, which is done for both visualized in the top left corner of the overlay (see [Panel sound](#panel-sound)).
+
 ## Hardware and Data Capture
-- camera: Neon scene camera, 1600 × 1200 at 30 fps, IMU (~100 Hz), and eye-tracking/gaze (200 Hz)
-- Server: laptop with a Quadro T2000 GPU (4 GB), runs the whole pipeline + serves the webpage
-- types of recordings + what we use them for:
-  - **Companion Recording:** phone app records everything itself (video + IMU + gaze + calibration), sometimes saved to Server afterward
-    - USED FOR: our "raw data" archive, kept for future tests/dev/demos (example: presentation demo)
-  - **Stream Capture:** Server saves exactly what glasses send over wifi (compressed video packets + IMU + gaze + calibration). No decoding while recording! This is what we used to get "real" samples that included network behavior, and then use it for test/dev of our decoding afterward
-    - USED FOR: what the Server actually receives, so replaying it tests everything (decoder, timing, IMU matching) simulating live behavior. Replays lost packets but not network delay. Used and then archived
-  - **Frame Log (`--record-to`):** Server saves depth frames coming out of depth model
-    - USED FOR: faster testing for all of the math AFTER the depth model (logs let us skip straight to scene + planner). Can't test anything before depth model. Used and then archived
-- replay: capture → exact same live route and Server treats it like glasses are on (demos + live-route tests ran this way). Uses the same processing as a live user, so frame rate and delays are real, network delay is not a factor.
-- recordings (walking) we have (all on glasses, all indoors):
-  - 2026-10-05: first live session, two 240 s classroom captures. (only the second works for real, first one had sensor issues)
-  - 2026-10-08: walk A (214 s, between classroom desks), walk B (27 s)
-  - 2026-10-08, demo room: hallway into classroom (194 s), up and down stairs (121 s), standing on the tiers (263 s)
-  - 2026-10-09: demo walk (148 s, starts by a big window)
-  - 2026-10-14: attention walk (44 s, scripted: stare at a chair, walk past it looking and not looking, stairs, toward a wall)
+The glasses are equipped with a forward-facing camera that films 1600 × 1200 pixels at 30 frames a second, a motion sensor called an IMU (inertial measurement unit) read at ~110 Hz, and eye cameras that report gaze at 200 Hz. All processing runs on a laptop with a Quadro T2000 GPU (4 GB), which also serves the web page.
+
+We recorded walks in three ways, each suited to a different kind of testing:
+
+- **Companion Recording:** The Companion app on the phone records everything itself, meaning the video, IMU, gaze, and camera calibration. These recordings are our raw data archive, kept for later tests and demos such as the presentation demo.
+- **Stream Capture:** The server saves exactly what the glasses send over Wi-Fi, the compressed video packets along with IMU, gaze, and calibration, without decoding anything while recording. Replaying a capture tests everything the server does on a live walk, from decoding to timing and matching IMU readings to frames. It replays lost packets, but not the network delay.
+- **Frame Log:** The server saves the depth frames coming out of the depth model (`--record-to`). Replaying a log skips straight to building the point cloud and planning, which makes testing the math after the depth model much faster. It cannot test anything before the depth model.
+
+A replayed recording or capture goes through the same processing as a live user, as if the glasses were on, so frame rate and delays are real. Network delay is not a factor. The demos and the measurements in this report ran this way.
+
+In total we recorded ~25 minutes of walking, all with the glasses and all indoors. The table below lists a sample of those recordings, the ones used in this report.
+
+| Recording | Date | Length | Used For |
+|---|---|---|---|
+| Walking Demo | 2026-10-09 | 148 s | Demo video, overview figure, measurements |
+| Attention Demo | 2026-10-14 | 44 s | Measurements, depth jitter, camera position |
+| Tiered Room Stairs | 2026-10-08 | 121 s | Stairs scenario |
+
+The Walking Demo goes through a lecture room past rows of chairs and a bag in the aisle. The Attention Demo follows a script: stare at a chair, walk past it once looking at it and once not, go up the stairs, and walk toward a wall. The Tiered Room Stairs recording walks up and down the stairs of a tiered lecture room.
 
 # System Measurements
 
@@ -335,7 +339,7 @@ The central panel is the field of view from the user, recorded by the camera on 
 | Step | Demo median | Demo 95th percentile | Attention median | Attention 95th percentile |
 |---|---|---|---|---|
 | Depth | 411 ms | 720 ms | 340 ms | 480 ms |
-| Scene | 83.6 ms | 410 ms | 58.3 ms | 145 ms |
+| Point cloud | 83.6 ms | 410 ms | 58.3 ms | 145 ms |
 | Planner | 141 ms | 350 ms | 99.5 ms | 157 ms |
 | **Total** | **646 ms** | **1535 ms** | **514 ms** | **688 ms** |
 
@@ -379,7 +383,7 @@ While no formal experiment was done with the prototype, we describe several scen
 | Scenario | Desired Response (Prototype) | Expectation | Additional Context |
 |---|---|---|---|
 | Walking straight down a hallway with an object in the way. | The user continues listening to music while the system lowers the volume in the ear nearest the obstacle and provides an alert, helping them steer around it. | V | Shown in the demo video, with a bag in the aisle of a lecture room. |
-| An approaching pedestrian is on a collision course to the user. | The user receives an immediate alert so they can react to the approaching pedestrian. | V | In its current form the system does detect an approaching pedestrian, since the alarm reacts to how fast the gap closes. The limit is processing speed: a fast approach closes much of the gap before the user hears the alarm. |
+| An approaching pedestrian is on a collision course to the user. | The user receives an immediate alert so they can react to the approaching pedestrian. | V | In its current form the system does detect an approaching pedestrian, because the alarm reacts to how fast the gap closes. The limit is processing speed: a fast approach closes much of the gap before the user hears the alarm. |
 | An object is on a collision course to the user. | The user has their noise cancellation negated temporarily until the alarm clears. | V | In the demo video the **NC OFF** label appears while the alarm is active. |
 | A visually impaired person moves throughout a room without sight. | The system uses directional audio feedback to indicate the obstacles and guide the user toward a safer path through the room. | V | Informally tested during development by short sessions navigating with closed eyes and audio cues. |
 | A user moves at high speed towards an obstacle. | The system uses directional audio feedback to indicate the obstacle and guide the user around it | X | The system doesn't plot far enough in advance to avoid the object. |
@@ -477,76 +481,76 @@ The most pressing limitations for this implementation are in the inputs and the 
 # Appendix
 
 ## A. From IMU to camera up
-- **which way is up:** fused IMU orientation says how glasses are turned against gravity. IMU measures in a world with z up -> two fixed turns move it onto our camera (from Pupil Labs' docs) and our world (y up):
+- **Camera Orientation:** Fused IMU orientation says how glasses are turned against gravity. IMU measures in a world with z up, so two fixed turns move it onto our camera (from Pupil Labs' docs) and our world (y up):
 
   $$R = R_x(-90°)\; R_{\text{IMU}}\; R_x(-102°), \qquad \hat u_{\text{cam}} = R^\top \begin{pmatrix} 0 \\ 1 \\ 0 \end{pmatrix}$$
 
   - $R_{\text{IMU}}$ = IMU orientation, $R_x(\theta)$ = turn by $\theta$ about x axis, $R$ = turns camera directions into world directions, $\hat u_{\text{cam}}$ = "up" as camera sees it
   - −102° = camera sits 90° plus a 12° downward tilt from the IMU. Both angles from the docs [(Pupil Labs, n.d.)](#references), nobody measured them on our glasses
-  - each frame takes IMU reading closest to its capture time (within 50 ms). None -> up falls back to image up, $(0, -1, 0)$, so we assume the head is level
+  - Each frame takes IMU reading closest to its capture time (within 50 ms). With none, up falls back to image up, $(0, -1, 0)$, so we assume the head is level
     - NOTE: only glasses' fused orientation is used. Raw accelerometer, gyroscope, and magnetometer aren't
 
 ## B. Finding the floor
-- only points well below camera can be floor: drop $\delta_i = -\mathbf p_i \cdot \hat u_{\text{cam}}$ over 0.5 m, and at least 200 of them
-- *with gravity (normal case on glasses):* drops -> histogram with 2 cm bins, smoothed over 3 bins -> each peak = a level surface (floor, desk tops, stair treads, tiers)
-  - surface needs at least 200 points and at least 8% of candidates within 5 cm of it. Refit as a plane by least squares, may lean at most 8°
-  - deepest surface wins, since everything else stands on it
-  - except: recent floor (median of last 10) within 0.25 m of a nearer surface and not of the deepest (like looking down at a lower tier) -> nearer one wins, until the deeper one has been passed over 5 frames in a row
-- *without gravity:* one plane fit by RANSAC (300 tries, 5 cm tolerance)
-- either way, plane has to pass sanity check: leans at most 35° from up, camera sits more than 0.3 m and at most 2.2 m above it. Nothing passes -> keep last frame's floor
+- Only points well below camera can be floor: drop $\delta_i = -\mathbf p_i \cdot \hat u_{\text{cam}}$ over 0.5 m, and at least 200 of them
+- *With Gravity:* The normal case on the glasses. Drops go into a histogram with 2 cm bins, smoothed over 3 bins, and each peak = a level surface (floor, desk tops, stair treads, tiers)
+  - Surface needs at least 200 points and at least 8% of candidates within 5 cm of it. Refit as a plane by least squares, may lean at most 8°
+  - Deepest surface wins, because the floor is the lowest level surface in view
+  - Except: recent floor (median of last 10) within 0.25 m of a nearer surface and not of the deepest (like looking down at a lower tier), so nearer one wins, until the deeper one has been passed over 5 frames in a row
+- *Without Gravity:* One plane fit by RANSAC (300 tries, 5 cm tolerance)
+- Either way, plane has to pass sanity check: leans at most 35° from up, camera sits more than 0.3 m and at most 2.2 m above it. If nothing passes, keep last frame's floor
 
 ## C. Point cloud details
 - OpenCV picks new camera matrix that crops away black border (`alpha = 0`), same 1600 × 1200 size out
-- different focals per axis (636 vs 754 px) squashed the picture 16% sideways. Both set to the bigger one, $f = 754.4$ px, so pixels stay square (like the model was trained on)
-- field of view: 103.4° wide -> $2 \arctan(800 / 754.4) \approx 93.4°$
+- Different focals per axis (636 vs 754 px) squashed the picture 16% sideways. Both set to the bigger one, $f = 754.4$ px, so pixels stay square (like the model was trained on)
+- Field of view: 103.4° wide before, $2 \arctan(800 / 754.4) \approx 93.4°$ after
 - Neon Player's depth plugin does the same conversion: its saved maps measured 0.9343 times model's raw output vs 0.9353 predicted, so conversion checks out
 
 $$X = \frac{(u - c_x)\, z}{f_x}, \qquad Y = \frac{(v - c_y)\, z}{f_y}, \qquad Z = z$$
 
 - $(u, v)$ = pixel column and row, $(c_x, c_y)$ = picture center ("principal point"), $(X, Y, Z)$ = point in camera's frame (x right, y down, z forward, meters)
-- only every 2nd pixel each way, only depths 0.1 m (closer = smudged lens) to 30 m (further = sky)
-- thinned to one point per 5 cm cube (Open3D voxel downsample, only Open3D call in the scene)
+- Only every 2nd pixel each way, only depths 0.1 m (closer = smudged lens) to 30 m (further = sky)
+- Thinned to one point per 5 cm cube (Open3D voxel downsample, only Open3D call in the point cloud step)
 
 ## D. Neon Companion API
-- **Discovery:** finds phone on network automatically, or by typed-in address (Radboud wifi blocks discovery)
-- **Clock Offset:** used for timing delays from the moment of capture. Capture time on server's clock:
+- **Discovery:** Finds phone on network automatically, or by typed-in address (Radboud wifi blocks discovery)
+- **Clock Offset:** Used for timing delays from the moment of capture. Capture time on server's clock:
 
   $$t_{\text{server}} = t_{\text{Neon}} + \Delta$$
 
   - $t_{\text{Neon}}$ = glasses' timestamp, $\Delta$ = measured offset (median of many round trips)
-- **IMU stream only serves ONE client at a time!** (other connections get empty readings, glasses only support one connection at a time)
-- **Recording:** app can record on its own (Companion Recording above), server never starts/stops it
-- Companion recording → capture conversion takes a few seconds, so recordings and captures replay the same way
-- recordings don't store depth (frame logs do), recomputed from video every run (so a newer depth model applies to old recordings automatically)
+- **One Client Only:** The IMU stream serves one client at a time. Other connections get empty readings
+- **Recording:** App can record on its own (Companion Recording above), server never starts/stops it
+- Conversion from Companion recording to capture takes a few seconds, so recordings and captures replay the same way
+- Recordings don't store depth (frame logs do), recomputed from video every run (so a newer depth model applies to old recordings automatically)
 
 ## E. Planner and alarm details
-- **why $c = 1.63$:** gap is from capture, plan done ~0.65 s later (arrival to plan + ~0.13 s capture to arrival). Steady approach: spread $\Delta S = k\,v\,T$, so $v \approx \Delta S/(kT)$, and gap by then $\approx S - \Delta S\,d/(kT)$. Into slides' ratio [(Vertegaal, 2026c, p. 65)](#references): $c\,\Delta S/S \ge 1$ with $c = 1 + d/(kT)$, $k = 0.342$ for 9 frames, $T = 3$ s. Fires at a time to contact of $c\,k\,T$ whatever the speed
-  - replays, approaches from 2.5 m: 0 missed, 3 of 15 warnings late against 8 of 15 for the distance rule. No ground truth
-- **arrow:** angle from where walker stands to where path is 1 s ahead (1 s, set for this use case: reading only the first 0.1 s step gave just 3 possible angles, since one step moves at most one cell)
+- **Why $c = 1.63$:** Gap is from capture, plan done ~0.65 s later (arrival to plan + ~0.13 s capture to arrival). Steady approach: spread $\Delta S = k\,v\,T$, so $v \approx \Delta S/(kT)$, and gap by then $\approx S - \Delta S\,d/(kT)$. Into slides' ratio [(Vertegaal, 2026c, p. 65)](#references): $c\,\Delta S/S \ge 1$ with $c = 1 + d/(kT)$, $k = 0.342$ for 9 frames, $T = 3$ s. Fires at a time to contact of $c\,k\,T$ whatever the speed
+  - Replays, approaches from 2.5 m: 0 missed, 3 of 15 warnings late against 8 of 15 for the distance rule. No ground truth
+- **Arrow:** Angle from where walker stands to where path is 1 s ahead (1 s, set for this use case: reading only the first 0.1 s step gave just 3 possible angles, because one step moves at most one cell)
 
   $$\theta = \arctan\!\left(\frac{x_{1\text{s}} - x_0}{1.4 \cdot 1\text{ s}}\right)$$
 
-- **scene information (bits, for evaluation):** how far what camera saw moved the plan vs a planner seeing nothing (goal + prior only).
-  - **how it's computed:** Both fields -> distribution over positions 1 s ahead, $p \propto e^{-\text{cost}}$ -> how far the two differ (KL divergence), in bits. Empty corridor = 0 bits, not "unsure"
-- **user model:** measures only. Avoidance episode opens when planner asks for a turn (alarm, or arrow past 3°), closes when planner and walker's actual heading (IMU yaw against 5 s running average) both back under 3°. Work = path cost at open − cost at close, in bits
-  - **predicted turn time:** Also predicts how long turn takes: heading error $s$ shrinks as fast as it can without overshooting ("critically damped"), $s'' + (2/b)s' + s/b^2 = 0$, with $b = 0.25$ s/bit how quick this walker is (placeholder, never measured). Episodes go to `episodes.jsonl`, nothing in pipeline reads them
+- **Camera Information:** In bits, for evaluation. How far what camera saw moved the plan vs a planner seeing nothing (goal + prior only).
+  - **How It's Computed:** Both fields become a distribution over positions 1 s ahead, $p \propto e^{-\text{cost}}$, then how far the two differ (KL divergence), in bits. Empty corridor = 0 bits, not "unsure"
+- **User Model:** Measures only. Avoidance episode opens when planner asks for a turn (alarm, or arrow past 3°), closes when planner and walker's actual heading (IMU yaw against 5 s running average) both back under 3°. Work = path cost at open − cost at close, in bits
+  - **Predicted Turn Time:** Also predicts how long turn takes: heading error $s$ shrinks as fast as it can without overshooting ("critically damped"), $s'' + (2/b)s' + s/b^2 = 0$, with $b = 0.25$ s/bit how quick this walker is (placeholder, never measured). Episodes go to `episodes.jsonl`, nothing in pipeline reads them
   - NOTE: the Lagrangian side of the professor's math is only here, measuring after the fact. Nothing on the live path uses it
 - "danger" = corridor cell that'd be hit first + cells chained to it within 0.4 m on the floor (up to 0.6 m out), so a look at the chair's back counts, not just its feet
-- time-to-contact floor under which it's always heard = 0 (set after the 2026-10-15 manual test, where a desk inside the footprint kept a 0.35 s floor sounding the whole run)
+- Time-to-contact floor under which it's always heard = 0 (set after the 2026-10-15 manual test, where a desk inside the footprint kept a 0.35 s floor sounding the whole run)
 
 ## F. Webpage and sounds
-- every plan goes out as one JSON message: path offsets, arrow angle, alarm (and whether it's heard), avoidance bits, information bits, path cost bits, danger side (−1 left to +1 right), left and right ear gains. Same message to webpage and phone app socket (phone app not used on the glasses runs)
-- **webpage (HTTPS, self-signed cert, needed because the browser's video decoder only runs on a secure origin):**
-  - page decodes glasses' compressed video itself (second websocket, one access unit per frame), draws over it: arrow, red on alarm, gaze ring, cell rings
-  - top-down plan view: field, path through it, obstacles. Path color goes to red by avoidance bits, fill opacity by information bits
-  - depth picture (or "risk" = depth recolored by the field) as PNG, at most 10 a second, about 50 ms each, drawn on its own thread so it never delays a plan
-  - sounds: steering tick every 0.7 s (220 Hz, about 8 dB under the alarm) while alarm's down, alarm sound while it's heard. Default "Pulse", a 330 Hz click whose rate goes from 250 ms at 0.7 s or more to contact down to 100 ms at 0.2 s (time measured from how fast the gap closes), parking-sensor style. Three volumes 6 dB apart. Optional music bed under the ear gains
-  - page can flip: depth/risk picture, live/recording side, gaze silencing on/off. Only things it sends back
-  - no path for 1.5 s -> sound stops (a beep would be pointing at a frame that's gone)
-- **also written per run:** `timing.jsonl` (per-frame capture-to-plan delays), `episodes.jsonl` (user model), optional frame log (`--record-to`)
+- Every plan goes out as one JSON message: path offsets, arrow angle, alarm (and whether it's heard), avoidance bits, information bits, path cost bits, danger side (−1 left to +1 right), left and right ear gains. Same message to webpage and phone app socket (phone app not used on the glasses runs)
+- **Webpage:** HTTPS with a self-signed certificate, because the browser's video decoder only runs on a secure origin.
+  - Page decodes glasses' compressed video itself (second websocket, one access unit per frame), draws over it: arrow, red on alarm, gaze ring, cell rings
+  - Top-down plan view: field, path through it, obstacles. Path color goes to red by avoidance bits, fill opacity by information bits
+  - Depth picture (or "risk" = depth recolored by the field) as PNG, at most 10 a second, about 50 ms each, drawn on its own thread so it never delays a plan
+  - Sounds: steering tick every 0.7 s (220 Hz, about 8 dB under the alarm) while alarm's down, alarm sound while it's heard. Default "Pulse", a 330 Hz click whose rate goes from 250 ms at 0.7 s or more to contact down to 100 ms at 0.2 s (time measured from how fast the gap closes), parking-sensor style. Three volumes 6 dB apart. Optional music bed under the ear gains
+  - Page can flip: depth/risk picture, live/recording side, gaze silencing on/off. Only things it sends back
+  - No path for 1.5 s, so sound stops (a beep would be pointing at a frame that's gone)
+- **Also Written per Run:** `timing.jsonl` (per-frame capture-to-plan delays), `episodes.jsonl` (user model), optional frame log (`--record-to`)
 
 ## G. Camera position
-- off by default. `--position odometry` or `dense_slam` adds a camera position. Measured on attention walk replay, 336 px depth, $N$ window 0.5 s:
+- Off by default. `--position odometry` or `dense_slam` adds a camera position. Measured on attention walk replay, 336 px depth, $N$ window 0.5 s:
 
 | Setting | Planned per second | Delay, median / 95th | Positioned | Error | 3 s drift |
 |---|---|---|---|---|---|
@@ -554,9 +558,9 @@ $$X = \frac{(u - c_x)\, z}{f_x}, \qquad Y = \frac{(v - c_y)\, z}{f_y}, \qquad Z 
 | Odometry | 2.42 | 491 / 1315 ms | 95 % | 0.20 m | 0.32 m |
 | Dense SLAM | 2.47 | 534 / 919 ms | 70 % | 1.08 m | 2.21 m |
 
-- error = median distance from reference camera path. 3 s drift = worst tenth
-- no ground truth: reference is COLMAP's path from same video [(Schönberger & Frahm, 2016)](#references), first 18.4 s (~8 m), scale from depth model
-- with a position, cells are fixed to the world and not to the walker, so planner gets different cells, and frames differ too. Alarm frames 56.6 % off, 52.5 % odometry, 60.4 % dense SLAM. No way to score which plan is better
+- Error = median distance from reference camera path. 3 s drift = worst tenth
+- No ground truth: reference is COLMAP's path from same video [(Schönberger & Frahm, 2016)](#references), first 18.4 s (~8 m), scale from depth model
+- With a position, cells are fixed to the world and not to the walker, so planner gets different cells, and frames differ too. Alarm frames 56.6 % off, 52.5 % odometry, 60.4 % dense SLAM. No way to score which plan is better
 - $N$ window 0.5 s against 1 s, same walk and depth, idle GPU, ranges over runs:
 
 | Setting | Runs | Planned per second | Delay, median | Delay, 95th | Measured $N$ | $N$, median | Heading at limit |
@@ -566,5 +570,5 @@ $$X = \frac{(u - c_x)\, z}{f_x}, \qquad Y = \frac{(v - c_y)\, z}{f_y}, \qquad Z 
 | Odometry, 0.5 s | 3 | 2.27-2.61 | 520-606 ms | 928-1167 ms | ~0 % | | 5.1-5.6 % |
 | Odometry, 1 s | 3 | 2.31-2.85 | 435-605 ms | 524-990 ms | 42-50 % | 0.13 m | 21.9-37.6 % |
 
-- wider window: no delay cost we can measure. Odometry's $N$ ~3 times larger and plan at heading limit far more often. With cells fixed to the world, $N$ includes the walker's approach, which likely explains much of that. Can't separate it from tracker error here
-- same setting moves up to ~170 ms at the median between runs, so first table (one run each, 0.5 s window) is looser than it looks
+- Wider window: no delay cost we can measure. Odometry's $N$ ~3 times larger and plan at heading limit far more often. With cells fixed to the world, $N$ includes the walker's approach, which likely explains much of that. Can't separate it from tracker error here
+- Same setting moves up to ~170 ms at the median between runs, so first table (one run each, 0.5 s window) is looser than it looks
