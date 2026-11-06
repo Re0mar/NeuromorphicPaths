@@ -225,11 +225,11 @@ A replayed recording or capture goes through the same processing as a live user,
 
 In total we recorded ~25 minutes of walking, all with the glasses and all indoors. The table below lists a sample of those recordings, the ones used in this report.
 
-| Recording | Date | Length | Used For |
-|---|---|---|---|
-| Walking Demo | 2026-10-09 | 148 s | Demo video, overview figure, measurements |
-| Attention Demo | 2026-10-14 | 44 s | Measurements, depth jitter, camera position |
-| Tiered Room Stairs | 2026-10-08 | 121 s | Stairs scenario |
+| Recording          | Date       | Length | Used For                                    |
+|--------------------|------------|--------|---------------------------------------------|
+| Walking Demo       | 2026-10-09 | 148 s  | Demo video, overview figure, measurements   |
+| Attention Demo     | 2026-10-14 | 44 s   | Measurements, depth jitter, camera position |
+| Tiered Room Stairs | 2026-10-08 | 121 s  | Stairs scenario                             |
 
 The Walking Demo goes through a lecture room past rows of chairs and a bag in the aisle. The Attention Demo follows a script: stare at a chair, walk past it once looking at it and once not, go up the stairs, and walk toward a wall. The Tiered Room Stairs recording walks up and down the stairs of a tiered lecture room.
 
@@ -242,8 +242,8 @@ At the end of the development process of the product, the product needed to be p
 The page prints these values for the frame in the image, ~57 s into the walk:
 
 | Heading | Time to collision | Nearest | Groups | Scene vs Shape |
-|---|---|---|---|---|
-| +8° | 0.7 s | 0.52 m | 171 | 1.30 bits |
+|---------|-------------------|---------|--------|----------------|
+| +8°     | 0.7 s             | 0.52 m  | 171    | 1.30 bits      |
 
 The tables below come from replaying two recorded walks on the server with depth at 336 px: the Walking Demo in the image (~2.5 minutes) and the scripted Attention Demo in a tiered classroom (~45 s, up to a chair, past it, up the stairs, and toward a wall). The numbers are from one run of each, not a benchmark.
 
@@ -252,12 +252,12 @@ The tables below come from replaying two recorded walks on the server with depth
 
 The panel at the top left is the output panel. This is the visual demonstration of what the product feeds back to the user. The top part shows the left and right speaker of the music device of the user. When encountering an obstacle with high risk it will start emitting a beeping noise from that specific side. The five bars on each side show how loud that ear is. On an alarm the ear on the side of the obstacle goes quiet, which is why the left side is gray in the image. There are also options to turn off the sound, or to switch between the **Alarm** and **Noise Cancellation** modes. The **NC** label shows that noise cancellation would be turned off while the alarm sounds.
 
-| | Demo | Attention |
-|---|---|---|
-| Alarm frames | 97 of 315 (30.8 %) | 56 of 112 (50.0 %) |
-| Alarm changes per minute | 16.7 | 25.0 |
-| Quieter ear volume, alarm | 10 % | 10 % |
-| Quieter ear volume, no alarm | 84.1 % | 84.1 % |
+|                              | Demo               | Attention          |
+|------------------------------|--------------------|--------------------|
+| Alarm frames                 | 97 of 315 (30.8 %) | 56 of 112 (50.0 %) |
+| Alarm changes per minute     | 16.7               | 25.0               |
+| Quieter ear volume, alarm    | 10 %               | 10 %               |
+| Quieter ear volume, no alarm | 84.1 %             | 84.1 %             |
 
 In our tests the alarm was up on ~30 to ~50 % of frames, in rooms full of chairs and desks. Volumes are medians. Without an alarm the two ears usually stayed close in volume, so the steering sound is mostly subtle.
 
@@ -266,11 +266,11 @@ In our tests the alarm was up on ~30 to ~50 % of frames, in rooms full of chairs
 
 The panel at the bottom left is the direction the user should walk towards to follow the safe path. This is not part of the output the user sees but the direction is concluded from the calculated path. The direction heading is used to steer the user by sound: the ear away from the heading becomes quieter. It also gives an entry point for different implementations to take input from, to guide the user along the safe path in other ways.
 
-| | Demo | Attention |
-|---|---|---|
-| Median heading | 12.1° | 16.0° |
-| At limit | 10.2 % | 6.2 % |
-| Full swings | 0 | 0 |
+|                | Demo   | Attention |
+|----------------|--------|-----------|
+| Median heading | 12.1°  | 16.0°     |
+| At limit       | 10.2 % | 6.2 %     |
+| Full swings    | 0      | 0         |
 
 Headings are sizes, left or right of straight ahead. The limit is ~36°, a full sidestep at walking speed. A full swing is the heading jumping from the limit on one side to the limit on the other in one frame, and we saw none in our tests.
 
@@ -279,12 +279,12 @@ Headings are sizes, left or right of straight ahead. The limit is ~36°, a full 
 
 The central panel is the field of view from the user, recorded by the camera on the Neon glasses. This video shows the lecture room environment. The video shows the rows of chairs on the right, a wall with glass on the left, and the path between those. In the path is a big black bag placed that functions as an obstacle for the user. This video feed is the input for the product to apply all the earlier mentioned functionalities on.
 
-| Step | Demo median | Demo 95th percentile | Attention median | Attention 95th percentile |
-|---|---|---|---|---|
-| Depth | 411 ms | 720 ms | 340 ms | 480 ms |
-| Point cloud | 83.6 ms | 410 ms | 58.3 ms | 145 ms |
-| Planner | 141 ms | 350 ms | 99.5 ms | 157 ms |
-| **Total** | **646 ms** | **1535 ms** | **514 ms** | **688 ms** |
+| Step        | Demo median | Demo 95th percentile | Attention median | Attention 95th percentile |
+|-------------|-------------|----------------------|------------------|---------------------------|
+| Depth       | 411 ms      | 720 ms               | 340 ms           | 480 ms                    |
+| Point cloud | 83.6 ms     | 410 ms               | 58.3 ms          | 145 ms                    |
+| Planner     | 141 ms      | 350 ms               | 99.5 ms          | 157 ms                    |
+| **Total**   | **646 ms**  | **1535 ms**          | **514 ms**       | **688 ms**                |
 
 In our tests the system planned ~2 to ~3 of the camera's 30 frames a second, and 95 % of frames finished within ~0.7 to ~1.5 s, with 5 % taking longer. We report that figure because the slow frames are the risky ones: at 1.4 m/s a walker covers ~1 to ~2 m in that time, which is why the alarm makes up for the delay (see Collision Detection). The steps don't add up to the total because each one is measured separately.
 
@@ -293,11 +293,11 @@ In our tests the system planned ~2 to ~3 of the camera's 30 frames a second, and
 
 The top right panel shows the planner's view from above. The yellow dots are obstacles and the pink squares are walls, one for each 0.25 m cell that has points in it. The panel also shows colored areas below and around the dots, corresponding to the cost of walking through each spot. The cost goes from dark blue to green to yellow in order of increasing risk, and the gray areas are floor. Finally there is a big red line with an arrow to show the safe path for the user, this path is the cheapest route through these costs and is the source for the [**Heading**](#panel-heading) panel and the steering sound.
 
-| | Demo | Attention |
-|---|---|---|
-| Cells per frame | 141 | 111.5 |
-| Measured $N$ | 15,704 of 41,944 (37.4 %) | 5,633 of 12,730 (44.2 %) |
-| $N$, median | 0.033 m | 0.041 m |
+|                 | Demo                      | Attention                |
+|-----------------|---------------------------|--------------------------|
+| Cells per frame | 141                       | 111.5                    |
+| Measured $N$    | 15,704 of 41,944 (37.4 %) | 5,633 of 12,730 (44.2 %) |
+| $N$, median     | 0.033 m                   | 0.041 m                  |
 
 $N$ is how much a cell's gap changed over the last 1 s, and it needs 3 samples in that window. At ~2 to ~3 planned frames a second ~40 % of cells had enough in our tests, and the rest used the 0.01 m lower bound. The grid moves with the walker, so $N$ partly compares different spots.
 
@@ -307,12 +307,12 @@ $N$ is how much a cell's gap changed over the last 1 s, and it needs 3 samples i
 
 The bottom right panel is the depth image colored with the same costs as the [**From Above**](#panel-from-above) panel, from blue for low risk to red for high risk. The panel shows the high risk, dark red, areas such as the chairs on the right and the wall on the left. It determines the floor as completely safe, seen by the dark blue color, except for the black bag placed. The bag has a clear yellow which indicates it has some risk of collision. Next to the bag is the safe path shown with two red lines. These are the same path as in the [**From Above**](#panel-from-above) panel.
 
-| | Demo | Attention |
-|---|---|---|
-| Camera height | 1.62 m | 1.47 m |
+|               | Demo   | Attention |
+|---------------|--------|-----------|
+| Camera height | 1.62 m | 1.47 m    |
 
-| | Median | Worst tenth |
-|---|---|---|
+|              | Median          | Worst tenth     |
+|--------------|-----------------|-----------------|
 | Depth jitter | 1.3 % (0.027 m) | 5.2 % (0.138 m) |
 
 Camera height is measured above the fitted floor, with nothing to check it against. Depth jitter is how much the depth model's depth for one 3D point changes between frames ~0.2 s apart, measured on the Attention Demo. The floor level was right on 48 of 49 frames we labeled by hand.
@@ -321,15 +321,15 @@ Camera height is measured above the fitted floor, with nothing to check it again
 
 While no formal experiment was done with the prototype, we describe several scenarios in which the technology could be used. Each of these were chosen to reflect a situation a final version of the prototype might be used in, focusing on collision avoidance, navigation, and situational awareness. These range in a steadily increasing grade of difficulty, going from straight line obstacle avoidance to full room navigation.
 
-| Scenario | Desired Response (Prototype) | Expectation | Additional Context |
-|---|---|---|---|
-| Walking straight down a hallway with an object in the way. | The user continues listening to music while the system lowers the volume in the ear nearest the obstacle and provides an alert, helping them steer around it. | V | Shown in the demo video, with a bag in the aisle of a lecture room. |
-| An approaching pedestrian is on a collision course to the user. | The user receives an immediate alert so they can react to the approaching pedestrian. | V | In its current form the system does detect an approaching pedestrian, because the alarm reacts to how fast the gap closes. The limit is processing speed: a fast approach closes much of the gap before the user hears the alarm. |
-| An object is on a collision course to the user. | The user has their noise cancellation negated temporarily until the alarm clears. | V | In the demo video the **NC OFF** label appears while the alarm is active. |
-| A visually impaired person moves throughout a room without sight. | The system uses directional audio feedback to indicate the obstacles and guide the user toward a safer path through the room. | V | Informally tested during development by short sessions navigating with closed eyes and audio cues. |
-| A user moves at high speed towards an obstacle. | The system uses directional audio feedback to indicate the obstacle and guide the user around it | X | The system doesn't plot far enough in advance to avoid the object. |
-| Walking towards a pair of stairs next to chairs in the cinema. | The system guides the user along a path over the stairs, avoiding the chairs | V | Recorded walking up and down the stairs of a tiered lecture room. |
-| Walking along the beach, the user attempts to walk into the water | The system guides the user away from the water, back onto the less risky sand | X | As designed, the system is not expected to distinguish between surface types, making calm water just as safe of a surface as a solid wooden floor. This is untested. |
+| Scenario                                                          | Desired Response (Prototype)                                                                                                                                  | Expectation | Additional Context                                                                                                                                                                                                                |
+|-------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Walking straight down a hallway with an object in the way.        | The user continues listening to music while the system lowers the volume in the ear nearest the obstacle and provides an alert, helping them steer around it. | V           | Shown in the demo video, with a bag in the aisle of a lecture room.                                                                                                                                                               |
+| An approaching pedestrian is on a collision course to the user.   | The user receives an immediate alert so they can react to the approaching pedestrian.                                                                         | V           | In its current form the system does detect an approaching pedestrian, because the alarm reacts to how fast the gap closes. The limit is processing speed: a fast approach closes much of the gap before the user hears the alarm. |
+| An object is on a collision course to the user.                   | The user has their noise cancellation negated temporarily until the alarm clears.                                                                             | V           | In the demo video the **NC OFF** label appears while the alarm is active.                                                                                                                                                         |
+| A visually impaired person moves throughout a room without sight. | The system uses directional audio feedback to indicate the obstacles and guide the user toward a safer path through the room.                                 | V           | Informally tested during development by short sessions navigating with closed eyes and audio cues.                                                                                                                                |
+| A user moves at high speed towards an obstacle.                   | The system uses directional audio feedback to indicate the obstacle and guide the user around it                                                              | X           | The system doesn't plot far enough in advance to avoid the object.                                                                                                                                                                |
+| Walking towards a pair of stairs next to chairs in the cinema.    | The system guides the user along a path over the stairs, avoiding the chairs                                                                                  | V           | Recorded walking up and down the stairs of a tiered lecture room.                                                                                                                                                                 |
+| Walking along the beach, the user attempts to walk into the water | The system guides the user away from the water, back onto the less risky sand                                                                                 | X           | As designed, the system is not expected to distinguish between surface types, making calm water just as safe of a surface as a solid wooden floor. This is untested.                                                              |
 
 # Discussion
 
@@ -463,23 +463,23 @@ $$X = \frac{(u - c_x)\, z}{f_x}, \qquad Y = \frac{(v - c_y)\, z}{f_y}, \qquad Z 
 ## G. Camera position
 - Off by default. `--position odometry` or `dense_slam` adds a camera position. Measured on Attention Demo replay, 336 px depth, $N$ window 0.5 s:
 
-| Setting | Planned per second | Delay, median / 95th | Positioned | Error | 3 s drift |
-|---|---|---|---|---|---|
-| Off | 2.99 | 411 / 471 ms | 0 % | | |
-| Odometry | 2.42 | 491 / 1315 ms | 95 % | 0.20 m | 0.32 m |
-| Dense SLAM | 2.47 | 534 / 919 ms | 70 % | 1.08 m | 2.21 m |
+| Setting    | Planned per second | Delay, median / 95th | Positioned | Error  | 3 s drift |
+|------------|--------------------|----------------------|------------|--------|-----------|
+| Off        | 2.99               | 411 / 471 ms         | 0 %        |        |           |
+| Odometry   | 2.42               | 491 / 1315 ms        | 95 %       | 0.20 m | 0.32 m    |
+| Dense SLAM | 2.47               | 534 / 919 ms         | 70 %       | 1.08 m | 2.21 m    |
 
 - Error = median distance from reference camera path. 3 s drift = worst tenth
 - No ground truth: reference is COLMAP's path from same video [(Schönberger & Frahm, 2016)](#references), first 18.4 s (~8 m), scale from depth model
 - With a position, cells are fixed to the world and not to the walker, so planner gets different cells, and frames differ too. Alarm frames 56.6 % off, 52.5 % odometry, 60.4 % dense SLAM. No way to score which plan is better
 - $N$ window 0.5 s against 1 s, same walk and depth, idle GPU, ranges over runs:
 
-| Setting | Runs | Planned per second | Delay, median | Delay, 95th | Measured $N$ | $N$, median | Heading at limit |
-|---|---|---|---|---|---|---|---|
-| Off, 0.5 s | 2 | 2.80-2.96 | 413-480 ms | 562-644 ms | 0 % | | 8.7-9.8 % |
-| Off, 1 s | 2 | 2.80-2.93 | 447-482 ms | 564-682 ms | 46-49 % | 0.04 m | 6.8-11.6 % |
-| Odometry, 0.5 s | 3 | 2.27-2.61 | 520-606 ms | 928-1167 ms | ~0 % | | 5.1-5.6 % |
-| Odometry, 1 s | 3 | 2.31-2.85 | 435-605 ms | 524-990 ms | 42-50 % | 0.13 m | 21.9-37.6 % |
+| Setting         | Runs | Planned per second | Delay, median | Delay, 95th | Measured $N$ | $N$, median | Heading at limit |
+|-----------------|------|--------------------|---------------|-------------|--------------|-------------|------------------|
+| Off, 0.5 s      | 2    | 2.80-2.96          | 413-480 ms    | 562-644 ms  | 0 %          |             | 8.7-9.8 %        |
+| Off, 1 s        | 2    | 2.80-2.93          | 447-482 ms    | 564-682 ms  | 46-49 %      | 0.04 m      | 6.8-11.6 %       |
+| Odometry, 0.5 s | 3    | 2.27-2.61          | 520-606 ms    | 928-1167 ms | ~0 %         |             | 5.1-5.6 %        |
+| Odometry, 1 s   | 3    | 2.31-2.85          | 435-605 ms    | 524-990 ms  | 42-50 %      | 0.13 m      | 21.9-37.6 %      |
 
 - Wider window: no delay cost we can measure. Odometry's $N$ ~3 times larger and plan at heading limit far more often. With cells fixed to the world, $N$ includes the walker's approach, which likely explains much of that. Can't separate it from tracker error here
 - Same setting moves up to ~170 ms at the median between runs, so first table (one run each, 0.5 s window) is looser than it looks
